@@ -1,0 +1,312 @@
+'use strict';
+// 真实 apiHandler 接线,只监听临时回环端口;不启动常驻入口,不调用 /api/state 或配置写 API。
+const { test, before, after, beforeEach } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const http = require('node:http');
+const { testEnv } = require('../scripts/run-tests');
+
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'mixr-preview-api-'));
+const env = testEnv(process.env, TMP);
+for (const key of Object.keys(process.env)) if (/^(MIXR_|MIXROUTER_|MIXUI_)/.test(key)) delete process.env[key];
+Object.assign(process.env, env);
+for (const dir of ['home', 'data', 'tmp']) fs.mkdirSync(path.join(TMP, dir));
+const mod = require('../mixrouter');
+let server, upstream, upstreamHits = 0;
+const post = (body, headers = {}) => new Promise((resolve, reject) => {
+  const data = typeof body === 'string' ? body : JSON.stringify(body);
+  const req = http.request({ hostname: '127.0.0.1', port: server.address().port, path: '/api/routing/preview',
+    method: 'POST', headers: { 'content-type': 'application/json', ...headers } }, res => {
+    const chunks = [];
+    res.on('data', c => chunks.push(c));
+    res.on('error', reject);
+    res.on('aborted', () => reject(new Error('response aborted')));
+    res.on('end', () => {
+      const text = Buffer.concat(chunks).toString('utf8');
+      resolve({ status: res.statusCode, json: JSON.parse(text), text });
+    });
+  });
+  req.on('error', reject);
+  req.setTimeout(3000, () => req.destroy(new Error('test request timeout')));
+  req.end(data);
+});
+const rule = extra => ({ id: 'r', match: 'x', app: 'claude', enabled: true, when: {}, pool: ['a', 'b'],
+  model: 'route-model', strategy: 'round_robin', ...extra });
+const provider = (id, extra = {}) => ({ id, name: `channel-${id}`, enabled: true,
+  base_url: `http://127.0.0.1:${upstream.address().port}`, api_key: 'FAKE-PROVIDER-SECRET',
+  keys: [{ id: 'key', key: 'FAKE-KEY-SECRET' }], active_key: 'key', models: ['provider-model'], ...extra });
+
+before(async () => {
+  upstream = http.createServer((_req, res) => { upstreamHits++; res.end('{}'); });
+  await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve));
+  server = await mod.listen(0, mod.apiHandler);
+  for (const s of [server, upstream]) assert.ok(![8787, 8788].includes(s.address().port));
+});
+beforeEach(() => {
+  mod._state.store = { claude: [provider('a'), provider('b'), provider('outside')],
+    codex: [provider('chat', { wire_api: 'chat', model: 'chat-model' }), provider('resp', { model: 'resp-model' })] };
+  mod._state.routes = { rules: [rule({})], default: { pool: ['a', 'b'], strategy: 'priority' } };
+  mod._state.slotMap = { claude: {}, codex: {} };
+  mod._state.sessions = new Map();
+  mod._state.cooldowns = {};
+  mod._state.resetPools();
+  mod._state.resetHealth();
+  upstreamHits = 0;
+});
+after(async () => {
+  await Promise.all([server, upstream].filter(Boolean).map(s => new Promise(resolve => s.close(resolve))));
+  fs.rmSync(TMP, { recursive: true, force: true });
+});
+
+test('preview API 返回 explainRoute 本体,含首选来源和默认 kind', async () => {
+  mod._state.pools.r = 1;
+  const input = { app: 'claude', model: 'x' };
+  const r = await post(input);
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.json, mod.explainRoute(input));
+  assert.equal(r.json.input.kind, 'messages');
+  assert.equal(r.json.selection.source, 'strategy');
+  assert.equal(r.json.selection.predicted.providerId, 'b');
+  assert.equal(r.json.selection.predicted.model, 'route-model');
+  assert.ok(r.json.warnings.some(w => w.code === 'new_session_preview'));
+  assert.equal(upstreamHits, 0);
+});
+
+test('preview API 注入真实 sessionSnapshot,不剪枝、不 touch、不写盘、不发上游', async () => {
+  // 夹具的"过期"必须用**自动绑定**(没有 routing、没有 pinned)来表示:
+  // 手动配置(钉定/Key 槽位覆盖)从第二期起不再被 TTL 回收,用 pinned 造过期夹具会变成"它本来就该留下"。
+  const stale = Object.freeze({ providerId: 'a', lastUsed: 0 });
+  const live = Object.freeze({ providerId: 'outside', lastUsed: Date.now(), pinned: true, model: 'pinned-model', reqs: 7 });
+  mod._state.sessions = new Map([['cc:stale', stale], ['cc:full-key', live]]);
+  mod._state.cooldowns = { a: 0 };
+  mod._state.pools.r = 7;
+  const before = JSON.stringify({ sessions: [...mod._state.sessions], cooldowns: mod._state.cooldowns, pools: mod._state.pools });
+  const dataBefore = fs.readdirSync(process.env.MIXR_DATA_DIR);
+  const input = { app: 'claude', model: 'x', context: { session: 'cc:full-key' } };
+  for (let i = 0; i < 3; i++) {
+    const r = await post(input);
+    assert.equal(r.json.selection.source, 'pinned');
+    assert.equal(r.json.selection.predicted.providerId, 'outside');
+    assert.equal(r.json.selection.predicted.model, 'pinned-model');
+    assert.equal(r.json.warnings.some(w => w.code === 'session_snapshot_unavailable'), false);
+  }
+  const expired = await post({ ...input, context: { session: 'cc:stale' } });
+  assert.equal(expired.json.selection.source, 'strategy');
+  assert.equal(expired.json.selection.predicted.providerId, 'b');
+  assert.equal(JSON.stringify({ sessions: [...mod._state.sessions], cooldowns: mod._state.cooldowns, pools: mod._state.pools }), before);
+  assert.equal(mod._state.sessions.get('cc:stale'), stale);
+  assert.equal(mod._state.sessions.get('cc:full-key'), live);
+  assert.deepEqual(fs.readdirSync(process.env.MIXR_DATA_DIR), dataBefore);
+  assert.equal(upstreamHits, 0);
+});
+
+test('preview API 按 slotMap 判断未绑定与不存在,不把内置槽名猜成现存', async () => {
+  // 本用例只看槽位回落,规则改用不可能命中的 match,否则 "mixr-empty" 里的 x 会被
+  // beforeEach 那条 match:'x' 的普通规则截胡,断言就变成在核规则匹配而不是核槽位提示。
+  mod._state.routes = { rules: [rule({ match: 'nomatch-never' })], default: { pool: ['a', 'b'], strategy: 'priority' } };
+  mod._state.slotMap = { claude: { empty: {} }, codex: {} };
+  const unbound = await post({ app: 'claude', model: ' MIXR-EMPTY ' });
+  assert.equal(unbound.json.matched.via, 'default');
+  assert.equal(unbound.json.matched.ruleId, null);
+  assert.ok(unbound.json.warnings.some(w => w.code === 'slot_unbound'));
+  const absent = await post({ app: 'claude', model: 'mixr-haiku' });
+  assert.ok(absent.json.warnings.some(w => w.code === 'slot_fell_through'));
+  assert.equal(absent.json.warnings.some(w => w.code === 'slot_unbound'), false);
+});
+
+test('selection.candidates 在四个分支都列完整候选池,不因有首选就缩成单元素', async () => {
+  // candidates 是候选池,不是最终落点:content / sticky / pinned / strategy 四个分支给同一份
+  // kind 过滤后的有效成员。钉定可以选池外渠道,那时 predicted 故意不在 candidates 里。
+  const expected = ['a', 'b'];
+  const binding = (providerId, extra = {}) => ({ providerId, lastUsed: Date.now(), pinned: false, ...extra });
+
+  mod._state.pools.r = 1;
+  const strategy = await post({ app: 'claude', model: 'x' });
+  assert.equal(strategy.json.selection.source, 'strategy');
+  assert.equal(strategy.json.selection.predicted.providerId, 'b');
+
+  mod._state.sessions = new Map([['cc:pooled', binding('a')]]);
+  const sticky = await post({ app: 'claude', model: 'x', context: { session: 'cc:pooled' } });
+  assert.equal(sticky.json.selection.source, 'sticky');
+
+  mod._state.sessions = new Map([['cc:pinned', binding('outside', { pinned: true, model: 'pinned-model' })]]);
+  const pinned = await post({ app: 'claude', model: 'x', context: { session: 'cc:pinned' } });
+  assert.equal(pinned.json.selection.source, 'pinned');
+  assert.equal(pinned.json.selection.predicted.providerId, 'outside', '钉定故意选池外');
+  assert.equal(pinned.json.selection.candidates.includes('outside'), false);
+
+  mod._state.sessions = new Map();
+  mod._state.routes.rules = [rule({ when: { body: 'needle' }, pool: ['a', 'b'] })];
+  const content = await post({ app: 'claude', model: 'x', context: { bodyText: 'needle' } });
+  assert.equal(content.json.selection.source, 'content');
+  assert.equal(content.json.selection.predicted.providerId, 'a');
+
+  for (const [name, r] of [['strategy', strategy], ['sticky', sticky], ['pinned', pinned], ['content', content]]) {
+    assert.deepEqual(r.json.selection.candidates, expected, `${name} 分支的候选池被压窄了`);
+    assert.deepEqual(r.json.limits.arrays['selection.candidates'], { total: 2, shown: 2, omitted: 0 },
+      `${name} 分支丢了候选池总数`);
+    assert.equal(r.json.effective.length, 2, `${name} 分支的 effective 与候选池不再同源`);
+  }
+});
+
+test('每个展示数组各自截断并保留总数,不被彼此的上限连坐', async () => {
+  // 120 个渠道(60 chat / 60 responses)+ 40 个幽灵引用:六个数组的 total 各不相同,
+  // 任何一个"顺手复用上一个上限"或"用shown冒充total"的实现都会在这里露出来。
+  mod._state.store.codex = Array.from({ length: 120 }, (_, i) =>
+    provider(`p${i}`, i % 2 ? { wire_api: 'chat' } : {}));
+  mod._state.routes = { rules: [rule({ app: 'codex', match: 'x', pool: [
+    ...mod._state.store.codex.map(p => ({ provider: p.id, model: p.models[0], weight: 2, api_key: 'POOL-SECRET' })),
+    ...Array.from({ length: 40 }, (_, i) => ({ provider: `gone-${i}` })),
+  ] })], default: {} };
+  const r = await post({ app: 'codex', model: 'x', kind: 'chat/completions' });
+  assert.equal(r.status, 200, r.text);
+  const arrays = r.json.limits.arrays;
+  assert.deepEqual(
+    { pool: arrays['matched.rule.pool'], candidates: arrays.candidates, effective: arrays.effective,
+      selection: arrays['selection.candidates'], kept: arrays['kindFilter.kept'],
+      dropped: arrays['kindFilter.dropped'], ghosts: arrays.ghosts },
+    { pool: { total: 160, shown: 50, omitted: 110 }, candidates: { total: 120, shown: 50, omitted: 70 },
+      effective: { total: 60, shown: 50, omitted: 10 }, selection: { total: 60, shown: 50, omitted: 10 },
+      kept: { total: 60, shown: 50, omitted: 10 }, dropped: { total: 60, shown: 50, omitted: 10 },
+      ghosts: { total: 40, shown: 40, omitted: 0 } });
+  for (const [field, len] of [['matched.rule.pool', 50], ['candidates', 50], ['effective', 50],
+    ['selection.candidates', 50], ['kindFilter.kept', 50], ['kindFilter.dropped', 50], ['ghosts', 40]])
+    assert.equal(field.split('.').reduce((v, k) => v[k], r.json).length, len, field);
+  assert.equal(r.json.limits.arraysTruncated, true);
+  assert.equal(r.text.includes('POOL-SECRET'), false, '池成员白名单化:非白名单字段不得随截断漏出');
+  assert.deepEqual(r.json.matched.rule.pool[0], { provider: 'p0', model: 'provider-model', weight: 2 });
+});
+
+test('preview API 三种已解析错误按 error.httpStatus 返回,且元数据没有丢', async () => {
+  for (const [target, input, code, status] of [
+    [rule({ pool: [], provider: 'gone' }), { app: 'claude', model: 'x' }, 'no_route_error', 503],
+    [rule({ pool: [], provider: 'a' }), { app: 'claude', model: 'x' }, 'provider_disabled_error', 503],
+    [rule({ app: 'codex', pool: [], provider: 'resp' }), { app: 'codex', model: 'x', kind: 'chat/completions' }, 'wire_api_mismatch_error', 400],
+  ]) {
+    mod._state.store.claude[0].enabled = code !== 'provider_disabled_error';
+    mod._state.routes = { rules: [target], default: {} };
+    const r = await post(input);
+    assert.equal(r.status, status);
+    assert.equal(r.json.ok, false);
+    assert.equal(r.json.error.code, code);
+    assert.equal(r.json.error.httpStatus, status);
+    assert.deepEqual(r.json, mod.explainRoute(input));
+    assert.ok(Array.isArray(r.json.warnings));
+    assert.ok(r.json.matched);
+    assert.ok(Number.isInteger(r.json.limits.rulesTraced));
+    if (code === 'no_route_error') assert.ok(r.json.warnings.some(w => w.code === 'ghost_ref'));
+  }
+  assert.equal(upstreamHits, 0);
+});
+
+test('preview API 复用 JSON 对象验证与跨站闸门', async () => {
+  for (const raw of ['not-json', '[]', 'null', '"a string"']) {
+    const r = await post(raw);
+    assert.equal(r.status, 400);
+    assert.equal(typeof r.json.error, 'string');
+  }
+  for (const headers of [{ 'sec-fetch-site': 'cross-site' }, { origin: 'https://elsewhere.invalid' }]) {
+    const r = await post({ app: 'claude', model: 'x' }, headers);
+    assert.equal(r.status, 403);
+    assert.match(r.json.error, /跨站/);
+  }
+  assert.equal((await post({ app: 'claude', model: 'x' }, { origin: `http://127.0.0.1:${server.address().port}` })).status, 200);
+  const invalidApp = await post({ app: 'other', model: 'x' });
+  assert.equal(invalidApp.status, 400);
+  assert.equal(invalidApp.json.error.code, 'bad_app');
+  assert.ok(Array.isArray(invalidApp.json.warnings));
+  assert.equal(upstreamHits, 0);
+});
+
+test('preview API 保留诊断字段,但凭据与请求正文不回显', async () => {
+  const token = 'FAKE-CLIENT-TOKEN', bodyText = 'FAKE-REQUEST-TEXT';
+  mod._state.routes.rules = [rule({ when: { token }, pool: [
+    { provider: 'a', model: 'member-model', weight: 3, api_key: 'FAKE-POOL-SECRET' }, 'b',
+  ] })];
+  const r = await post({ app: 'claude', model: 'x', context: { token, bodyText, session: 'cc:hidden-full-key' } });
+  assert.equal(r.status, 200);
+  for (const secret of [token, bodyText, 'FAKE-PROVIDER-SECRET', 'FAKE-KEY-SECRET', 'FAKE-POOL-SECRET', 'cc:hidden-full-key'])
+    assert.equal(r.text.includes(secret), false);
+  assert.equal(r.text.includes('base_url'), false);
+  assert.equal(r.json.candidates[0].providerName, 'channel-a');
+  assert.equal(r.json.candidates[0].model, 'member-model');
+  assert.equal(r.json.candidates[0].weight, 3);
+  assert.deepEqual(r.json.matched.rule.when.token, { present: true, len: token.length });
+  assert.deepEqual(r.json.matched.rule.pool[0], { provider: 'a', model: 'member-model', weight: 3 });
+  assert.equal(upstreamHits, 0);
+});
+
+test('会话覆盖预览使用相同槽位解析和固定 Key，过期配置保留且不改变状态', async () => {
+  mod._state.slotMap = { claude: { opus: { provider: 'a', model: 'global-model' } }, codex: {} };
+  const routing = { keys: { outside: 'key' }, slots: { opus: { provider: 'outside', model: 'session-model' } } };
+  mod._state.sessions = new Map([['cc:configured', { app: 'claude', lastUsed: 0, routing }]]);
+  const before = JSON.stringify([...mod._state.sessions]);
+  const r = await post({ app: 'claude', model: 'mixr-opus', context: { session: 'cc:configured' } });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.json.matched.slot, 'opus');
+  assert.equal(r.json.selection.predicted.providerId, 'outside');
+  assert.equal(r.json.selection.predicted.model, 'session-model');
+  assert.equal(r.json.selection.key_id, 'key');
+  assert.equal(r.json.selection.key_pinned, true);
+  assert.equal(r.text.includes('FAKE-KEY-SECRET'), false);
+  assert.equal(JSON.stringify([...mod._state.sessions]), before);
+  assert.equal(upstreamHits, 0);
+});
+
+test('会话固定 Key 失效时预览拒绝而非回退默认账号', async () => {
+  mod._state.slotMap = { claude: { opus: { provider: 'a', model: 'global-model' } }, codex: {} };
+  mod._state.sessions = new Map([['cc:configured', { app: 'claude', lastUsed: Date.now(),
+    routing: { keys: { a: 'deleted' }, slots: {} } }]]);
+  const r = await post({ app: 'claude', model: 'mixr-opus', context: { session: 'cc:configured' } });
+  assert.equal(r.status, 503, r.text);
+  assert.equal(r.json.error.code, 'provider_key_unavailable_error');
+  assert.equal(upstreamHits, 0);
+});
+
+// ---------------------------------------------------------------------------
+// 钉定 + kind:'chat/completions':钉定分支**不重跑** kind 过滤。
+//
+// 这是**照抄真实路径的忠实行为,不是预览缺陷**。2026-09-20 用独立探针(真实 proxyHandler + mock
+// 上游)核过三种组合:钉定到池外 responses 渠道时,真实转发首发就命中该渠道——代理自己把
+// chat 翻译成 responses 送上游(`/v1/responses`,model=钉定 model),客户端拿 200;预览给同一落点。
+// 只有"池里全无 chat 成员"才在上游之前 400 `wire_api_mismatch_error`,两边同码、零上游命中。
+// 证据:`evidence/main-pinned-kind-{probe.test.js,log,report.json}`。
+//
+// ⚠ 改这一带之前先看 `lib/routing/sessions.js` 的钉定分支:它只检查"本组渠道存在、启用、不在冷却",
+//   拿到的 members 已经被 kind 过滤过,但钉定根本不用那份 members。谁把钉定分支"顺手修成"
+//   再过滤一次 kind,谁就把预览改成了不忠实——这两个用例就是拿来挡这一手的。
+const pinnedKindCase = (pool, sessionKey) => {
+  mod._state.store.codex = [provider('chat', { wire_api: 'chat', model: 'chat-model' }),
+    provider('resp', {}), provider('resp2', {})];
+  mod._state.routes = { rules: [rule({ app: 'codex', pool })], default: {} };
+  mod._state.sessions = new Map([[sessionKey, { providerId: 'resp', model: 'resp-pinned-model',
+    pinned: true, lastUsed: Date.now() }]]);
+  return post({ app: 'codex', model: 'x', kind: 'chat/completions', context: { session: sessionKey } });
+};
+
+test('钉定到池外 responses 渠道时不被 chat 过滤挡住,候选池仍只列过滤后的池', async () => {
+  const r = await pinnedKindCase([{ provider: 'chat', model: 'chat-model' }], 'cx:pinned-kind');
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.json.selection.source, 'pinned');
+  assert.equal(r.json.selection.predicted.providerId, 'resp');
+  assert.equal(r.json.selection.predicted.model, 'resp-pinned-model', '沿用钉定时绑定的模型');
+  assert.equal(r.json.selection.predicted.wire, 'responses');
+  assert.equal(r.json.selection.deterministic, true);
+  assert.deepEqual(r.json.selection.candidates, ['chat'], '候选池是 kind 过滤后的池');
+  assert.equal(r.json.selection.candidates.includes('resp'), false, '钉定可以选池外,候选池不因此变宽');
+  assert.equal(r.json.limits.arrays['selection.candidates'].total, 1);
+  assert.equal(upstreamHits, 0);
+});
+
+test('池里全无 chat 成员时在会话解析之前就 400,钉定救不了协议不匹配', async () => {
+  const r = await pinnedKindCase([{ provider: 'resp2', model: 'resp2-model' }], 'cx:pinned-mismatch');
+  assert.equal(r.status, 400, r.text);
+  assert.equal(r.json.ok, false);
+  assert.equal(r.json.error.code, 'wire_api_mismatch_error');
+  assert.equal(r.json.error.httpStatus, 400);
+  assert.ok(Array.isArray(r.json.warnings));
+  assert.equal(r.json.selection, null, '报错早于选择,不该出现半截 selection');
+  assert.equal(upstreamHits, 0);
+});

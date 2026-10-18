@@ -1,0 +1,60 @@
+'use strict';
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const http = require('node:http');
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mixr-window-api-'));
+process.env.MIXR_DATA_DIR = root;
+process.env.MIXR_CLAUDE_SETTINGS = path.join(root, 'settings.json');
+process.env.MIXR_CODEX_CONFIG = path.join(root, 'config.toml');
+const mod = require('../mixrouter');
+const req = (port, method, data, headers = {}, query = '') => new Promise((resolve, reject) => {
+  const text = data ? JSON.stringify(data) : '';
+  const r = http.request({ hostname: '127.0.0.1', port, path: '/api/compact/window' + query, method,
+    headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(text), ...headers } }, res => {
+    let body = ''; res.on('data', c => body += c); res.on('end', () => resolve({ status: res.statusCode, data: JSON.parse(body) }));
+  });
+  r.on('error', reject); r.end(text);
+});
+test('window API persists one key, returns revision, rejects stale and cross-site writes', async t => {
+  fs.writeFileSync(process.env.MIXR_CLAUDE_SETTINGS, JSON.stringify({ autoCompactWindow: 256000, untouched: ['keep'] }));
+  const server = await mod.listen(0, mod.apiHandler);
+  t.after(async () => { await new Promise(ok => server.close(ok)); fs.rmSync(root, { recursive: true, force: true }); });
+  const port = server.address().port;
+  const first = await req(port, 'GET');
+  assert.equal(first.status, 200); assert.equal(first.data.window.value, 256000);
+  assert.equal(first.data.window.coverage.project_checked, false);
+  const body = { scope: 'global', value: '500k', expected_revision: first.data.window.revision };
+  assert.equal((await req(port, 'POST', body, { origin: 'https://untrusted.example' })).status, 403);
+  const saved = await req(port, 'POST', body);
+  assert.equal(saved.status, 200); assert.equal(saved.data.window.value, 500000);
+  assert.deepEqual(JSON.parse(fs.readFileSync(process.env.MIXR_CLAUDE_SETTINGS)), { autoCompactWindow: 500000, untouched: ['keep'] });
+  assert.equal((await req(port, 'POST', body)).status, 409);
+  assert.equal((await req(port, 'POST', { ...body, value: 'invalid' })).status, 400);
+  const removed = await req(port, 'POST', { ...body, value: 'auto', expected_revision: saved.data.window.revision });
+  assert.equal(removed.status, 200); assert.equal(removed.data.window.value, 'auto');
+  assert.equal(removed.data.window.coverage.project_checked, false);
+
+  const project = path.join(root, 'project');
+  fs.mkdirSync(path.join(project, '.claude'), { recursive: true });
+  const projectFile = path.join(project, '.claude/settings.json');
+  const projectBytes = JSON.stringify({ autoCompactWindow: 256000, env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: 'env-override-secret' }, keep: true });
+  fs.writeFileSync(projectFile, projectBytes);
+  const query = '?' + new URLSearchParams({ scope: 'global', project });
+  const checked = await req(port, 'GET', undefined, {}, query);
+  assert.deepEqual(checked.data.window.coverage, { project_checked: true, overridden_by: 'project', environment_override: true });
+  assert.doesNotMatch(JSON.stringify(checked.data), /env-override-secret/);
+  const coveredSave = await req(port, 'POST', { scope: 'global', project, value: '500k', expected_revision: checked.data.window.revision });
+  assert.equal(coveredSave.status, 200);
+  assert.equal(coveredSave.data.window.value, 500000);
+  assert.equal(coveredSave.data.window.configured.value, 256000);
+  assert.equal(coveredSave.data.window.coverage.overridden_by, 'project');
+  assert.ok(coveredSave.data.window.warnings.some(w => w.includes('不会改变该项目')));
+  assert.equal(fs.readFileSync(projectFile, 'utf8'), projectBytes);
+  const local = await req(port, 'GET', undefined, {}, '?' + new URLSearchParams({ scope: 'project', project }));
+  assert.equal(local.data.window.coverage.overridden_by, null);
+  assert.equal(local.data.window.value, 256000);
+  assert.equal(local.data.window.coverage.environment_override, true);
+});

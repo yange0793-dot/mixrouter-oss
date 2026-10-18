@@ -1,0 +1,65 @@
+{
+  "_说明": "providers.json 的模板。复制成 providers.json 再填真实值;providers.json 含明文 Key,权限 0600,已被 .gitignore 排除,不要提交。这里没有真实 Key、没有真实账号,所有 base_url 与 api_key 都是占位值。",
+  "version": 2,
+  "current": {
+    "claude": "p1",
+    "codex": "c1"
+  },
+  "claude": [
+    {
+      "id": "p1",
+      "name": "示例渠道 A",
+      "base_url": "https://api.example.com",
+      "api_key": "sk-placeholder-a",
+      "models": [
+        "claude-opus-5",
+        "claude-opus-5[1M]",
+        "claude-sonnet-5"
+      ],
+      "enabled": true,
+      "ua": "",
+      "note": "Claude 组渠道:默认按 Anthropic /v1/messages 直通。第一个模型是主模型;[1M] 后缀会自动剥离并附加 context-1m beta 头。provider 上不再写 slots(槽位在控制台「渠道」页或 slots.json 里维护)。",
+      "created_at": "1970-01-01T00:00:00.000Z"
+    },
+    {
+      "id": "p2",
+      "name": "示例渠道 B",
+      "base_url": "https://api.example.com/anthropic",
+      "api_key": "sk-placeholder-b",
+      "models": [
+        "claude-opus-5",
+        "claude-sonnet-5"
+      ],
+      "enabled": true,
+      "ua": "claude-cli/2.1.0",
+      "note": "第二个 Claude 组渠道,给渠道池示例当成员。ua 用于上游校验客户端形态的网关;留空则沿用客户端 UA。",
+      "created_at": "1970-01-01T00:00:00.000Z"
+    }
+  ],
+  "codex": [
+    {
+      "id": "c1",
+      "name": "Codex 示例渠道",
+      "base_url": "https://api.example.com",
+      "api_key": "sk-placeholder-c",
+      "model": "gpt-5-codex",
+      "wire_api": "responses",
+      "enabled": true,
+      "note": "Codex 组渠道:请求原样转发到 /v1/responses,只替换模型名。model 必填。",
+      "created_at": "1970-01-01T00:00:00.000Z",
+      "drop_images": false
+    },
+    {
+      "id": "c2",
+      "name": "Codex chat 系示例渠道",
+      "base_url": "https://api.example.com/v1",
+      "api_key": "sk-placeholder-d",
+      "model": "glm-5",
+      "wire_api": "chat",
+      "drop_images": true,
+      "enabled": true,
+      "note": "只开 /v1/chat/completions 的网关:Codex 只说 responses,由代理在进程内翻译。drop_images 会把图片换成一句说明,避免上游 400。",
+      "created_at": "1970-01-01T00:00:00.000Z"
+    }
+  ]
+}

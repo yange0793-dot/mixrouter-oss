@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 安全漏洞(私密)
+    url: https://github.com/yange0793-dot/mixrouter-oss/security
+    about: 不要开公开 issue。仓库 Security 页的「Report a vulnerability」启用时用它;还没启用就先开一个不含细节的 issue 要私密渠道,见 SECURITY.md
+  - name: 使用与排障
+    url: https://github.com/yange0793-dot/mixrouter-oss/blob/HEAD/docs/troubleshooting.md
+    about: 起不来、请求走错、控制台异常,先看排障文档

@@ -1,0 +1,46 @@
+# 含明文 key,永不入库;用 providers.example.json 作模板
+providers.json
+providers.json.tmp
+providers.json.bak*
+
+# 本地路由规则(运行时状态);用 routes.example.json 作模板
+routes.json
+routes.json.tmp
+routes.json.bak*
+
+# 会话绑定(运行时状态,含对话标签=对话内容片段,绝不入库)
+sessions.json
+sessions.json.tmp
+
+# 子代理槽位(运行时状态;含渠道引用,无密钥但属本机状态)
+slots.json
+slots.json.tmp
+slots.json.bak*
+
+# 原子写入中断后可能残留的临时 JSON,同样可能含明文凭据
+*.json.*.tmp
+
+# 客户端配置切换时留下的备份
+*.bak-mixui-*
+# 手工排查/编辑备份也可能带本机路径或凭据,不进入交付仓库
+*.bak
+*.bak-*
+*.bak.*
+
+# 归档的历史备份(内含明文 key 与渠道配置;只在本地留存,绝不入库)
+/backups/
+
+# 运行时产物
+logs/
+.run/
+
+# 本机环境凭据(示例文件可以入库)
+.env
+.env.*
+!.env.example
+
+# 代理/子代理的临时工作区(不该入库)
+.claude/
+
+# 系统
+.DS_Store

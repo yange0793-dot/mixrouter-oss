@@ -1,0 +1,20 @@
+✔ responses router registration reuses existing routes and upstream /v1 appears once (27.819003ms)
+✔ chat direct registration: actual SDK URL shape, independent current and no keys in live (26.542034ms)
+✔ chat router registration reuses existing routes and upstream /v1 appears once (28.764229ms)
+✔ router models use enabled groups, slots and real route overrides, not match substrings (77.727336ms)
+✔ no models or enabled channels returns 400 without creating configuration (7.77041ms)
+✔ strict JSON/object validation and read errors never truncate or back up bad input (10.634029ms)
+✔ safe writes preserve defaults and unknown fields, make unique private backups, and replace atomically (157.935668ms)
+✔ managed ID conflicts and symlinks are rejected without touching foreign content (5.588475ms)
+✔ live match detects base, model, key, kind and enabled drift but ignores desktop selected model (64.565396ms)
+✔ API rejects invalid app/body/wire/model and preserves enabled:false at channel creation (34.539414ms)
+✔ omitted app retains legacy switch; provider deletion clears only associated client pointers (93.662597ms)
+✔ base normalization preserves custom prefixes and rejects embedded secrets (2.585934ms)
+ℹ tests 728
+ℹ suites 0
+ℹ pass 728
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 14470.100812

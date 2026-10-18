@@ -1,0 +1,62 @@
+# 变更记录
+
+格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/);版本号遵循语义化版本。
+发布说明里只放摘要,细节与升级注意事项以本文件为准。
+
+## [Unreleased]
+
+### 3.6.1(未发布)
+
+本版是本地准备:把"自己能用"推到"别人拿到源码能看、能验、能报问题"。协议层没有新能力。
+在打 tag 之前,下面这些内容都可能再改;公开状态以仓库与 Release 页为准。
+
+#### 安全
+
+- 代理与控制台只接受字面量回环 `Host`(`127.0.0.1` / `[::1]`,可带端口)。这不只是网页的事:
+  **用 `localhost` 或自定义域名访问的本机客户端(含 CLI)也会被拒**,统一改用
+  `http://127.0.0.1:8787` / `http://127.0.0.1:8788`。目的是挡住 DNS rebinding 让外部域名
+  成为同源页面后直读控制台或消耗上游 Key。
+- 控制台写操作拒绝跨站来源(`Sec-Fetch-Site` / `Origin`);不带这些头的本机 CLI 不受影响。
+- 代理只接受 `Content-Type: application/json` 的 POST,拒绝 `no-cors` 形式的跨站简单投递;
+  非 POST 的协议路径直接 404,不再落进读体分支。
+
+#### 修复
+
+- 槽位请求(别名 `mixr-*`)不再被对话粘性劫持:备池落点按槽位自己的策略选,不再沿用
+  该对话之前绑定的渠道。
+- 路由预览的落点展示:原先取的是**错误的层级**(把"当前选中项"当成了预测结果),
+  所以推断不出真实落点时页面显示的并不是预测。现在改读 `selection.predicted`,
+  并对槽位请求、全候选未通过预检两种情况的说明文字一并对齐;预测与实际落点仍是两个概念,
+  页面上分别标注。
+
+#### 文档
+
+- README 按"安装 → 配置 → 路由 → 排障"重排,补上专题文档与可直接复制的示例配置。
+- 新增 `CONTRIBUTING.md`(测试与提交流程)、`SECURITY.md`(私密报告渠道)、本变更记录。
+
+#### 发布与工程
+
+- 发版制品是**运行包**(不是完整源码镜像):`test/`、`docs/changes/`、`evidence/`、`.github/`
+  与上线/回退运维脚本都不进包。运行包里的验证方式是 `npm run smoke`;在那里跑 `npm test`
+  会明确报"此运行包不含开发测试套件"并以非 0 退出,不会伪装成全绿。
+- 上线/回退用的 `scripts/deploy-live.sh` 与 `scripts/preflight-live-data.js` 不再进发布物;
+  两者改为必须显式给 `MIXR_LIVE_DIR`,launchd 标签与开发目录也改为按当前用户推导/可配置,
+  不再写死任何人的主目录。
+- 发版工作流校验 tag、`package.json` 的 `version`、`mixrouter.js` 的 `VERSION` 三处一致,
+  不一致直接失败;CI 额外断言运行包里没有开发/内部材料、且验证入口与维护文档齐全。
+- macOS 外壳(`app/MixrouterApp.swift` + `scripts/build-app.sh`)去掉写死的个人目录兜底,
+  改为按安装根的 `releases/current` 链接定位;`BUNDLE_ID` 改为通用值并可用
+  `MIXROUTER_BUNDLE_ID` 覆盖。安装器与外壳都仍是**实验性**的,不是受支持的正式入口。
+
+#### 兼容性
+
+- 运行时仍要求 Node ≥ 18,零第三方依赖。
+- `providers.json`(version 2)、`sessions.json` / `slots.json`(version 1)的落盘格式不变,
+  与 3.6.0 双向兼容;读取侧不做版本闸门,回退前请人工核对,见
+  [`docs/upgrade-and-rollback.md`](docs/upgrade-and-rollback.md)。
+- Host / 来源检查会影响使用 `localhost` 或域名的本机客户端(见上「安全」);改用
+  `127.0.0.1` 字面量即可。
+
+## 更早的版本
+
+本文件从 3.6.1 开始维护。3.6.0 及之前没有逐版变更记录,仓库的 git 历史与 tag 是唯一来源。

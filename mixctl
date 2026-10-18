@@ -1,0 +1,736 @@
+#!/usr/bin/env node
+// mixctl — mixrouter 管理命令
+//   start | stop | restart | status | ls | sessions | slots | explain | backups | restore | logs [n] | gc [天] [--apply] [--archives-only] | route [claude|codex|zcode] [--slots] | open | help
+'use strict';
+const { spawn, execSync } = require('child_process');
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { codeRevision } = require('./lib/runtime-code');
+const { selectLogs, resolveCount, formatLogLine } = require('./lib/observability/log-tail');
+const { compareWithLive } = require('./lib/backup/compare');
+const { backupTargets } = require('./lib/backup/targets');
+const { baseFromBackupName } = require('./lib/backup/naming');
+// CLI 呈现层:备份清点的摊平/打印,与用法串。两者原先都长在本文件里,
+// 与 lib/backup/* 的职责混在一起;搬出去之后本文件只剩"取数 + 拼参数 + 分发"。
+const backupView = require('./lib/cli/backup-view');
+const { runRestoreCmd } = require('./lib/cli/restore');
+const { runLogs } = require('./lib/cli/logs');
+const { runSessions } = require('./lib/cli/sessions');
+const { EXPLAIN_USAGE, BACKUPS_USAGE, SPLIT_USAGE, ROUTE_USAGE, MAIN_USAGE } = require('./lib/cli/usage');
+// 三类路径(开发副本 / 发布目录 / 数据目录)的唯一来源。本文件原先自己拼了四遍
+// (ROOT / RUN_DIR / PID_FILE / REQ_LOG),那四行与 mixrouter.js 的同名常量、以及
+// scripts/launchd-run.sh 里的 `$DIR/.run`,靠"都在仓库根"这一条巧合对齐。
+const paths = require('./lib/paths');
+
+const ROOT = __dirname;
+const RUN_DIR = paths.runDir(ROOT);
+const PID_FILE = paths.pidFile(ROOT);
+const SERVER_LOG = paths.serverLog(ROOT);
+// 数据目录的真值与 mixrouter.js 的 DATA_DIR 是同一份计算(都经 LIVE_FILES.dataDir),
+// 不再各写一遍 `process.env.MIXR_DATA_DIR || ROOT`。
+const REQ_LOG = paths.requestsLog(process.env, ROOT);
+const UI_PORT = process.env.MIXUI_PORT || 8788;
+// 常驻由 LaunchAgent 兜:装了它,start 就走 launchd,不另起一个不受监管的野进程。
+// label 按本机实际装的 plist 找(名字形如 *.mixrouter.plist),源码里不写死用户名。
+const LAUNCHD_DIR = paths.launchAgentDir(os.homedir());
+function launchdJob() {
+  try {
+    const f = fs.readdirSync(LAUNCHD_DIR).find(n => n.endsWith('.mixrouter.plist'));
+    return f ? { label: path.basename(f, '.plist'), plist: path.join(LAUNCHD_DIR, f) } : null;
+  } catch { return null; }
+}
+
+const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
+const getPid = () => { try { return Number(fs.readFileSync(PID_FILE, 'utf8').trim()); } catch { return 0; } };
+const api = p => new Promise((ok, bad) => {
+  http.get(`http://127.0.0.1:${UI_PORT}${p}`, r => {
+    let s = ''; r.on('data', c => s += c); r.on('end', () => { try { ok(JSON.parse(s)); } catch (e) { bad(e); } });
+  }).on('error', bad);
+});
+const apiPost = (p, body = {}) => new Promise((ok, bad) => {
+  const data = JSON.stringify(body);
+  const req = http.request({ hostname: '127.0.0.1', port: UI_PORT, path: p, method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } }, r => {
+    let s = ''; r.on('data', c => s += c);
+    r.on('end', () => { let j = {}; try { j = JSON.parse(s); } catch {} if (r.statusCode >= 400) bad(new Error(j.error || ('HTTP ' + r.statusCode))); else ok(j); });
+  });
+  req.on('error', bad); req.end(data);
+});
+
+// explain 单独走结构化协议,不复用会把 error 对象变成 [object Object] 的 apiPost。
+// (EXPLAIN_USAGE 等用法串在 lib/cli/usage.js,与顶层总览同处维护)
+const EXPLAIN_INPUT_LIMIT = 1024 * 1024;
+const EXPLAIN_RESPONSE_LIMIT = 2 * 1024 * 1024;
+const EXPLAIN_TIMEOUT_MS = 5000;
+const explainError = (code, message) => Object.assign(new Error(message), { code });
+
+function explainArgs(args) {
+  const opts = {}, positional = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--json') {
+      if (opts.json) throw explainError('invalid_arguments', '--json 不能重复');
+      opts.json = true;
+    } else if (['--kind', '--session', '--input', '--ua', '--body'].includes(arg)) {
+      const key = arg.slice(2);
+      if (opts[key] !== undefined) throw explainError('invalid_arguments', `${arg} 不能重复`);
+      const value = args[++i];
+      if (!value || value.startsWith('--')) throw explainError('invalid_arguments', `${arg} 缺少值`);
+      opts[key] = value;
+    } else if (arg.startsWith('-')) {
+      throw explainError('invalid_arguments', '无法识别的 explain 选项;仅支持 --kind / --session / --input / --ua / --body / --json');
+    } else positional.push(arg);
+  }
+  if (opts.input !== undefined) {
+    if (positional.length || opts.kind !== undefined || opts.session !== undefined
+        || opts.ua !== undefined || opts.body !== undefined)
+      throw explainError('invalid_arguments', '--input 与位置参数、--kind、--session、--ua、--body 互斥');
+  } else {
+    // 两种位置式写法都认:
+    //   · `explain <app> <model>`(app 显式给)—— 校验 app 取值;
+    //   · `explain <model> [codex]`(本地旧写法,app 缺省 claude)—— 'codex' 只作为组选择器,
+    //     且只认最后一个位置参数,免得把恰好叫 codex 的模型名吃掉。
+    let app = 'claude', model;
+    if (positional.length === 2) {
+      // app 取值不在这里判:交给 validateExplainInput,好让"app 非法"与 kind/context 的
+      // 非法一样落在 invalid_input 这一档(错误码是接口契约,同一个错因不能有两个码)。
+      [app, model] = positional;
+    } else if (positional.length === 1 && !['claude', 'codex'].includes(positional[0])) {
+      // 单个位置参数:本地写法里的裸模型名(app 缺省 claude)。
+      // 'claude'/'codex' 除外 —— 它们是组名,单独出现只可能是 main 那条写法漏了 model,
+      // 当成模型名会让 `explain claude` 静默变成一次成功的预览,与"缺 model 要报错"相反。
+      model = positional[0];
+    } else {
+      throw explainError('invalid_arguments', '必须提供 app 和 model 两个位置参数,或只给模型名');
+    }
+    if (typeof model !== 'string' || !model) throw explainError('invalid_arguments', '必须提供模型名');
+    // context 只在真有内容时才出现:空对象不是"没给上下文"的对等物,预览接口对
+    // "字段在不在"敏感(缺省走新会话预览,给空对象等于声称给了一份上下文)。
+    const context = {};
+    if (opts.session !== undefined) context.session = opts.session;
+    if (opts.ua !== undefined) context.ua = opts.ua;
+    if (opts.body !== undefined) context.bodyText = opts.body;
+    opts.body = { app, model,
+      ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
+      ...(Object.keys(context).length ? { context } : {}) };
+  }
+  return opts;
+}
+
+function validateExplainInput(body) {
+  const object = v => !!v && typeof v === 'object' && !Array.isArray(v);
+  const invalid = message => { throw explainError('invalid_input', message); };
+  if (!object(body)) invalid('预览输入必须是 JSON 对象');
+  if (Object.keys(body).some(k => !['app', 'model', 'kind', 'context'].includes(k))) invalid('预览输入含未知字段');
+  if (!['claude', 'codex'].includes(body.app)) invalid('app 必须是 claude 或 codex');
+  if (body.model !== undefined && typeof body.model !== 'string') invalid('model 必须是字符串');
+  const kinds = body.app === 'claude' ? ['messages', 'count_tokens'] : ['responses', 'chat/completions'];
+  if (body.kind !== undefined && !kinds.includes(body.kind)) invalid(`kind 必须是 ${kinds.join(' / ')}`);
+  if (body.context !== undefined) {
+    if (!object(body.context)) invalid('context 必须是对象');
+    for (const [key, value] of Object.entries(body.context)) {
+      if (key === 'compactTexts') {
+        if (!Array.isArray(value) || value.some(t => typeof t !== 'string')) invalid('context.compactTexts 必须是字符串数组');
+        continue;
+      }
+      if (!['session', 'ua', 'token', 'bodyText'].includes(key)) invalid('context 含未知字段');
+      if (typeof value !== 'string') invalid(`context.${key} 必须是字符串`);
+    }
+    if (body.context.session !== undefined && !/^(?:cc|cx|fp|cxf):\S+$/.test(body.context.session))
+      invalid('session 必须是带 cc:/cx:/fp:/cxf: 前缀的完整会话键,不能用短 id');
+  }
+  return body;
+}
+
+function readExplainInput(file) {
+  if (file !== '-') {
+    let stat;
+    try { stat = fs.statSync(file); }
+    catch { throw explainError('input_read_error', '无法读取预览输入文件'); }
+    if (!stat.isFile()) throw explainError('input_read_error', '--input 必须指向普通文件,或用 - 读取 stdin');
+    if (stat.size > EXPLAIN_INPUT_LIMIT) throw explainError('input_too_large', '预览输入超过 1 MiB 上限');
+  }
+  return new Promise((resolve, reject) => {
+    const stream = file === '-' ? process.stdin : fs.createReadStream(file);
+    const chunks = [];
+    let bytes = 0, settled = false;
+    const finish = (error, text) => {
+      if (settled) return;
+      settled = true; clearTimeout(timer);
+      if (error) { stream.destroy(); reject(error); } else resolve(text);
+    };
+    const timer = setTimeout(() => finish(explainError('input_timeout', '读取预览输入超过 5000ms')), EXPLAIN_TIMEOUT_MS);
+    stream.on('data', chunk => {
+      bytes += chunk.length;
+      if (bytes > EXPLAIN_INPUT_LIMIT) return finish(explainError('input_too_large', '预览输入超过 1 MiB 上限'));
+      chunks.push(chunk);
+    });
+    stream.on('end', () => finish(null, Buffer.concat(chunks).toString('utf8')));
+    stream.on('error', () => finish(explainError('input_read_error', '读取预览输入失败')));
+    stream.on('close', () => { if (!settled) finish(explainError('input_read_error', '预览输入在读完前关闭')); });
+  });
+}
+
+function previewRequest(body) {
+  return new Promise((resolve, reject) => {
+    const port = Number(UI_PORT);
+    if (!Number.isInteger(port) || port < 1 || port > 65535)
+      return reject(explainError('invalid_port', 'MIXUI_PORT 必须是 1–65535 的端口号'));
+    const data = JSON.stringify(body);
+    if (Buffer.byteLength(data) > EXPLAIN_INPUT_LIMIT)
+      return reject(explainError('input_too_large', '预览输入超过 1 MiB 上限'));
+    let settled = false, responded = false;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true; clearTimeout(timer);
+      if (error) reject(error); else resolve(value);
+    };
+    const req = http.request({ hostname: '127.0.0.1', port, path: '/api/routing/preview', method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } }, res => {
+      responded = true;
+      const chunks = [];
+      let bytes = 0;
+      res.on('data', chunk => {
+        bytes += chunk.length;
+        if (bytes > EXPLAIN_RESPONSE_LIMIT) {
+          finish(explainError('response_too_large', '预览响应超过 2 MiB 上限'));
+          res.destroy(); req.destroy(); return;
+        }
+        chunks.push(chunk);
+      });
+      res.on('aborted', () => finish(explainError('response_aborted', '预览响应在收完前被中断')));
+      res.on('error', () => finish(explainError('response_error', '读取预览响应失败')));
+      res.on('close', () => { if (!res.complete) finish(explainError('response_aborted', '预览响应在收完前关闭')); });
+      res.on('end', () => {
+        let result;
+        try { result = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+        catch { return finish(explainError('invalid_response_json', '预览接口返回的不是合法 JSON')); }
+        if (!result || typeof result !== 'object' || Array.isArray(result))
+          return finish(explainError('invalid_response', '预览接口返回的不是结果对象'));
+        if (typeof result.ok !== 'boolean' || (!result.ok && (!result.error || typeof result.error.message !== 'string'))) {
+          if (res.statusCode >= 400) return finish(null, { ok: false, error: { code: 'preview_http_error',
+            httpStatus: res.statusCode, message: typeof result.error === 'string' ? result.error : `HTTP ${res.statusCode}` } });
+          return finish(explainError('invalid_response', '预览接口响应缺少 ok/error 字段'));
+        }
+        if (res.statusCode >= 400 && result.ok)
+          return finish(explainError('invalid_response', '预览接口 HTTP 状态与结果不一致'));
+        finish(null, result);
+      });
+    });
+    // 总时限不随零碎响应重置,避免一直滴数据把命令吊住;旧 api/apiPost 行为保持不动。
+    const timer = setTimeout(() => {
+      finish(explainError('request_timeout', '路由预览请求超过 5000ms')); req.destroy();
+    }, EXPLAIN_TIMEOUT_MS);
+    // 已经收到响应头之后再断流,是"响应被截断",不能说成连不上——服务器中途 reset 时
+    // req 的 error 常常先于 res 的 close 到达,只看 req.error 会把真实原因盖掉。
+    // 一个字节响应头都没收到时也分两种:连不上(拒绝/找不到)与连上了但被对端 reset,
+    // 前者该去查服务在不在跑,后者该去查它是不是刚重启,处理方法不同。
+    req.on('error', err => {
+      if (responded) return finish(explainError('response_aborted', '预览响应在收完前被中断'));
+      const reset = ['ECONNRESET', 'EPIPE', 'ERR_STREAM_PREMATURE_CLOSE'].includes(err && err.code);
+      finish(reset
+        ? explainError('connection_reset', '与本机路由预览接口的连接在读到头之前被中断(服务可能在处理中重启)')
+        : explainError('request_failed', '无法连接本机路由预览接口'));
+    });
+    req.end(data);
+  });
+}
+
+function printPreview(result) {
+  if (!result.ok) console.log(`预览失败 [${result.error.code}]: ${result.error.message}`);
+  if (result.matched) console.log(`命中: ${result.matched.via} ${result.matched.ruleId || '(兜底)'}${result.matched.slot ? '  槽位 ' + result.matched.slot : ''}`);
+  if (result.selection) {
+    const s = result.selection, p = s.predicted;
+    console.log(`首选来源: ${s.source}  策略: ${s.strategy}  ${s.deterministic ? '当前快照可确定' : '不确定'}`);
+    console.log(p ? `首选: ${p.providerName || p.providerId} (${p.providerId}) @ ${p.model || '(透传请求模型)'}`
+      : `可选渠道: ${(s.candidates || []).join(' / ') || '(无)'}`);
+    console.log(s.note);
+  }
+  for (const w of result.warnings || []) console.log(`提醒 [${w.code}]: ${w.message}`);
+}
+
+async function explainCmd(args) {
+  const json = args.includes('--json');
+  if (args.length === 1 && args[0] === '--help') return console.log(EXPLAIN_USAGE);
+  try {
+    const opts = explainArgs(args);
+    let body = opts.body;
+    if (opts.input !== undefined) {
+      const text = await readExplainInput(opts.input);
+      try { body = JSON.parse(text); }
+      catch { throw explainError('invalid_input_json', '预览输入不是合法 JSON'); }
+    }
+    const result = await previewRequest(validateExplainInput(body));
+    if (json) console.log(JSON.stringify(result, null, 2)); else printPreview(result);
+    if (!result.ok) process.exitCode = 1;
+  } catch (e) {
+    const result = { ok: false, error: { code: e.code || 'preview_failed', message: e.message } };
+    if (json) console.log(JSON.stringify(result, null, 2));
+    else { printPreview(result); if (e.code === 'invalid_arguments') console.log(EXPLAIN_USAGE); }
+    process.exitCode = 1;
+  }
+}
+
+function start() {
+  const pid = getPid();
+  if (pid && alive(pid)) return console.log(`mixrouter 已在运行 (pid ${pid}),控制台 http://127.0.0.1:${UI_PORT}`);
+  fs.mkdirSync(RUN_DIR, { recursive: true });
+  fs.mkdirSync(path.dirname(SERVER_LOG), { recursive: true });
+  // 装了 LaunchAgent 就交给 launchd 拉:崩溃自愈、常驻由它兜,别在外面另起一个不受管的进程
+  const job = launchdJob();
+  if (job) {
+    try {
+      execSync(`launchctl kickstart -k gui/${process.getuid()}/${job.label}`, { stdio: ['ignore', 'ignore', 'pipe'] });
+      const t0 = Date.now();
+      const poll = () => api('/healthz')
+        .then(() => console.log(`mixrouter 已由 launchd 拉起 (${job.label})\n  Claude 代理 http://127.0.0.1:8787/v1/messages\n  Codex  代理 http://127.0.0.1:8787/v1/responses\n  控制台      http://127.0.0.1:${UI_PORT}`))
+        .catch(() => Date.now() - t0 > 6000
+          ? console.log(`已 kickstart ${job.label},但端口未就绪,查看日志: mixctl logs`)
+          : new Promise(r => setTimeout(r, 300)).then(poll));
+      return poll();
+    } catch (e) {
+      console.log(`launchd 拉起失败(${String((e.stderr || e.message || '')).trim().slice(0, 120)}),改为直接派生`);
+    }
+  }
+  const out = fs.openSync(SERVER_LOG, 'a');
+  const child = spawn(process.execPath, [path.join(ROOT, 'mixrouter.js')], { detached: true, stdio: ['ignore', out, out], env: process.env });
+  child.unref();
+  fs.writeFileSync(PID_FILE, String(child.pid));
+  // 等控制台端口就绪(最多 5s)
+  const t0 = Date.now();
+  const poll = () => api('/healthz').then(() => console.log(`mixrouter 已启动 (pid ${child.pid})\n  Claude 代理 http://127.0.0.1:8787/v1/messages\n  Codex  代理 http://127.0.0.1:8787/v1/responses\n  控制台      http://127.0.0.1:${UI_PORT}`))
+    .catch(() => Date.now() - t0 > 5000 ? console.log(`已派生 pid ${child.pid},但端口未就绪,查看日志: mixctl logs`) : setTimeout(poll, 300));
+  poll();
+}
+function stop() {
+  const pid = getPid();
+  if (!pid || !alive(pid)) { try { fs.unlinkSync(PID_FILE); } catch {} return console.log('mixrouter 未在运行'); }
+  process.kill(pid, 'SIGTERM');
+  const t0 = Date.now();
+  const wait = () => alive(pid) ? (Date.now() - t0 > 4000 ? (process.kill(pid, 'SIGKILL'), console.log(`已强杀 pid ${pid}`))
+    : setTimeout(wait, 200)) : (fs.unlinkSync(PID_FILE), console.log(`已停止 (pid ${pid})`));
+  wait();
+}
+async function status() {
+  const pid = getPid();
+  const running = pid && alive(pid);
+  console.log(`进程:   ${running ? `运行中 (pid ${pid})` : '未运行'}`);
+  try {
+    const s = await api('/api/state');
+    console.log(`版本:   v${s.version}   运行时长 ${Math.floor(s.uptime_s / 60)} 分 ${s.uptime_s % 60} 秒`);
+    const diskRevision = codeRevision(ROOT);
+    if (!s.code_revision || !diskRevision) {
+      console.log('代码:   ⚠ 无法核对已加载版本(旧服务或源码不可读);勿将健康检查当作补丁已生效');
+      process.exitCode = 1;
+    } else if (s.code_revision !== diskRevision) {
+      console.log('代码:   ⚠ 源码已更新,运行进程仍是旧版;空闲时执行 mixctl restart 后再查 status');
+      process.exitCode = 1;
+    } else console.log(`代码:   已加载当前源码 ${diskRevision.slice(0, 12)}`);
+    console.log(`端口:   代理 :${s.proxy_port}  控制台 :${s.ui_port}`);
+    console.log(`今日:   ${s.stats.reqs} 次请求,入 ${s.stats.inTok} / 出 ${s.stats.outTok} tokens`);
+  } catch { console.log('控制台不可达'); process.exitCode = 1; }
+}
+async function ls() {
+  let s;
+  try { s = await api('/api/state'); } catch { return console.log('mixrouter 未运行或控制台不可达'); }
+  const nameOf = id => { for (const g of ['claude', 'codex']) { const p = s.providers[g].find(x => x.id === id); if (p) return p.name + (p.enabled ? '' : '(停用)'); } return '(未绑定)'; };
+  // 目标既可能是单一渠道,也可能是渠道池(会话粘性分发),分开显示;规则可只对某一组生效
+  const targetOf = r => {
+    const pool = (r.pool || []).map(m => typeof m === 'string' ? m : m.provider);
+    const appTag = r.app === 'codex' ? '[Cx] ' : (r.app === 'claude' ? '[CC] ' : '');
+    if (pool.length) return `${appTag}池[${pool.map(nameOf).join(' | ')}] ${r.strategy}`;
+    return appTag + nameOf(r.provider);
+  };
+  console.log('路由(请求模型名子串 → 目标 @ 模型,prio 大者先匹配;端点决定用哪组渠道):');
+  for (const r of s.routes.rules)
+    console.log(`  ${r.enabled ? ' ' : '#'} [p${Number(r.priority) || 0}] ${r.model ? '' : ''}${r.match || '(空)'}  →  ${targetOf(r)}${r.model ? ' @ ' + r.model : ''}`);
+  console.log(`  兜底 [p${Number(s.routes.default.priority) || 0}]  →  ${targetOf(s.routes.default)}${s.routes.default.model ? ' @ ' + s.routes.default.model : ''}`);
+  const cur = s.current, live = s.live, R = s.router || {};
+  const modeOf = (app, lv) => lv.router ? `路由模式 ${lv.base_url}` : (lv.base_url || '(未配置)');
+  console.log(`\nClaude Code 渠道 ${s.providers.claude.length} 个(当前生效 ${modeOf('claude', live.claude)},${cur.claude ? '库内选中 ' + (cur.claude === R.id ? '路由模式' : nameOf(cur.claude)) + (live.claude.match ? ' ✓' : ' ⚠配置漂移') : '库内未选中'}):`);
+  for (const p of s.providers.claude)
+    console.log(`  ${cur.claude === p.id ? '*' : ' '} [${p.enabled ? '启用' : '停用'}] ${p.name}  ${p.base_url}  ${p.models.join(', ') || '(未配模型)'}`);
+  console.log(`\nCodex 渠道 ${s.providers.codex.length} 个(当前生效 ${modeOf('codex', live.codex)},${cur.codex ? '库内选中 ' + (cur.codex === R.id ? '路由模式' : nameOf(cur.codex)) + (live.codex.match ? ' ✓' : ' ⚠配置漂移') : '库内未选中'}):`);
+  for (const p of s.providers.codex)
+    console.log(`  ${cur.codex === p.id ? '*' : ' '} [${p.enabled ? '启用' : '停用'}] ${p.name}  ${p.base_url}  ${p.model} (${p.wire_api})`);
+}
+// 活跃对话:每个会话当前锁在哪个渠道
+async function sessions() {
+  let s;
+  try { s = await api('/api/state'); } catch { return console.log('mixrouter 未运行或控制台不可达'); }
+  const list = s.sessions || [];
+  if (!list.length) return console.log('还没有活跃对话。经 127.0.0.1:8787 发起的 Claude Code / Codex 会话会出现在这里。');
+  console.log(`活跃对话 ${list.length} 个(会话 TTL ${s.session_ttl_min} 分钟,渠道冷却 ${s.cooldown_s} 秒):\n`);
+  console.log(`  ${'会话'.padEnd(12)}${'组'.padEnd(6)}${'渠道'.padEnd(20)}${'请求'.padEnd(6)}${'最近活跃'.padEnd(11)}对话`);
+  for (const x of list) {
+    const ago = Math.max(0, Math.round((Date.now() - x.lastUsed) / 1000));
+    const seen = ago < 60 ? `${ago} 秒前` : ago < 3600 ? `${Math.floor(ago / 60)} 分前` : `${Math.floor(ago / 3600)} 小时前`;
+    const prov = x.provider_name + (x.pinned ? ' ★钉定' : '') + (x.cooldown ? ' ⚠冷却' : '');
+    console.log(`  ${String(x.short).padEnd(12)}${(x.app === 'codex' ? 'Codex' : 'Claude').padEnd(6)}${prov.padEnd(20)}${String(x.reqs).padEnd(6)}${seen.padEnd(11)}${x.label || '-'}`);
+  }
+  if (s.cooldowns && s.cooldowns.length) {
+    console.log('\n冷却中的渠道:');
+    for (const c of s.cooldowns) console.log(`  ${c.name}  还有 ${Math.max(0, Math.round((c.until - Date.now()) / 1000))} 秒`);
+  }
+  // 上面两列只有**短 id**(便于和客户端显示的会话号对上),而覆盖子命令要的是**完整会话键**。
+  // 所以把每一条的完整键都列出来 —— 包括还没配覆盖的新会话:第一次 set-key 用的就是它,
+  // 只列"已覆盖"的那些等于新会话永远拿不到可用的键。
+  console.log('\n完整会话键(覆盖子命令用这个,不是上面的短 id):');
+  for (const x of list) {
+    const marked = x.routing && (Object.keys(x.routing.keys || {}).length || Object.keys(x.routing.slots || {}).length);
+    console.log(`  ${marked ? '*' : ' '} ${x.key}`);
+  }
+}
+// 把客户端切到路由模式(此后流量按路由规则分发);--slots 同时按槽位表写 Claude 槽位 env
+async function route(app, wire = 'anthropic', withSlots = false) {
+  if (!['claude', 'codex', 'zcode'].includes(app)) return console.log(ROUTE_USAGE);
+  if (app === 'zcode' && !['anthropic', 'responses', 'chat'].includes(wire)) return console.log('ZCode 协议必须为 anthropic、responses 或 chat');
+  if (withSlots && app !== 'claude') return console.log('--slots 只对 claude 有意义(Codex 槽位是路由别名,客户端无需写入)');
+  try {
+    const r = await apiPost('/api/router/' + app, app === 'zcode' ? { wire_api: wire } : (withSlots ? { slots: true } : {}));
+    const label = { claude: 'Claude Code', codex: 'Codex', zcode: 'ZCode' }[app];
+    // 备份池轮换预警(/api/router 自带 warnings,渠道库那份也在里面)。
+    // 池满时最老那份备份在本次写入过程中已经被清掉,只留给服务端日志等于没提示。
+    for (const w of r.warnings || []) console.log(`提醒: ${w}`);
+    console.log(`${app === 'zcode' ? '已注册路由接入' : '已切到路由模式'}:${label} → ${r.live.base_url}`);
+    if (withSlots && Array.isArray(r.slots)) {
+      const on = r.slots.filter(s => s.provider);
+      console.log(on.length ? `槽位已写入:${on.map(s => `${s.name}=${s.alias}`).join('  ')}` : '槽位表为空,本次未写任何槽位 env(先在控制台或 slots 页配置)');
+    }
+    console.log(app === 'zcode'
+      ? '请在 ZCode 模型选择器选择 Mixrouter 模型；如未出现请重启客户端，新会话生效。未修改当前会话或默认模型。'
+      : app === 'codex' ? 'Codex 需重启生效(重启后所有对话按「路由」页的规则分发)。' : 'Claude Code 需重启会话生效。');
+  } catch (e) { console.log('接入失败:' + e.message); process.exitCode = 1; }
+}
+
+// 子代理槽位一览:每个槽的别名与落点(渠道 @ 模型)
+async function slotsCmd() {
+  let s;
+  try { s = await api('/api/slots'); } catch { return console.log('mixrouter 未运行或控制台不可达'); }
+  const row = (app, x) => {
+    const target = x.provider ? `${x.provider_name}${x.enabled ? '' : '(停用)'} @ ${x.model || '(渠道未配模型)'}` : '(未配置)';
+    return `  ${(x.name).padEnd(8)}${x.alias.padEnd(14)}→ ${target}${x.env ? '   [env ' + x.env + ']' : ''}`;
+  };
+  console.log('Claude Code 槽位(路由模式下客户端 env 写别名,别名请求按槽位分发):');
+  for (const x of s.slots.claude) console.log(row('claude', x));
+  console.log('\nCodex 槽位(codex exec -m <别名> 或 codex -m <别名>;客户端无需额外写入):');
+  if (!s.slots.codex.length) console.log('  (还没有自定义槽位,在控制台「渠道」页添加)');
+  for (const x of s.slots.codex) console.log(row('codex', x));
+}
+
+async function splitCmd(args) {
+  const apply = args.includes('--apply');
+  const values = args.filter(a => a !== '--apply');
+  let body;
+  if (values.length === 4) body = {
+    main: { provider: values[0], model: values[1] },
+    subagent: { provider: values[2], model: values[3] }, apply,
+  };
+  else if (values.length === 3 && values[0] === 'subagent') body = {
+    subagent: { provider: values[1], model: values[2] }, apply,
+  };
+  else {
+    console.log(SPLIT_USAGE);
+    process.exitCode = 1; return;
+  }
+  try {
+    const r = await apiPost('/api/claude/split', body);
+    for (const name of ['main', 'subagent']) {
+      const s = r.slots.find(x => x.name === name);
+      console.log(`${name}: ${s.provider_name} @ ${s.model}`);
+    }
+    // 备份池轮换预警(/api/router 那条路径带回来的 warnings)也要打出来:
+    // 池满时最老那份在本次写入过程中已经被清掉了,只留给服务端日志等于没提示。
+    for (const w of r.warnings || []) console.log(`提醒: ${w}`);
+    console.log(r.applied ? '已写入 Claude Code 路由别名，请新开会话生效。' : '已保存槽位；未改客户端配置。首次接入用 mixctl route claude --slots。');
+  } catch (e) { console.log('双路配置失败:' + e.message); process.exitCode = 1; }
+}
+
+// ---------------------------------------------------------------- backups
+// mixrouter.js 每次改写客户端配置前都会 copyFileSync 一份 `.bak-mixui-<时间戳>-<随机>` 到同目录,
+// 池子超出 BACKUP_KEEP 就按**纯字典序**删掉最前几个 —— 但从头到尾没有任何东西把这些备份列出来过,
+// 所以"盘上到底有哪些、下一份备份会顶掉谁"一直只能靠手动 ls。backups 补的就是这一步。
+//
+// 这条命令是**只读**的:只 stat 与读目录项,不产生、不改写、不删除任何文件。真正的还原/写回是另一批的事,
+// 所以这里既不提供也没有留任何写入路径(不新增 unlink/rename/copyFile 调用点)。
+//
+// 配置路径与 mixrouter.js 同源同默认值(那里是 CLAUDE_SETTINGS / CODEX_CONFIG 两个常量),
+// 环境变量名也照抄 —— 测试靠它们把两处重定向到临时目录。这里读的只有**目录项**(备份文件名),
+// 配置正文一个字节都不读:列备份池需要的就是文件名。
+const BACKUPS_KEEP = backupView.BACKUPS_KEEP;  // = mixrouter.js BACKUP_KEEP(lib/config-backup.js 的 DEFAULT_KEEP)
+const BACKUPS_MAX_BYTES = 512 * 1024;         // 差异预览的读回上限
+// 用法串在 lib/cli/usage.js(与 EXPLAIN_USAGE、顶层总览同处维护;顶层那段必须收录这一段)
+const backupsError = (code, message) => Object.assign(new Error(message), { code });
+
+// 备份池目标表:**唯一**一份在 lib/backup/targets.js,/api/backups 也从那里取。
+// 这里只把 root 与 home 交给它 —— root 必须用 mixctl 自己的 ROOT(`__dirname`,即仓库目录),
+// 对应 mixrouter.js 的 `DATA_DIR = process.env.MIXR_DATA_DIR || ROOT`。
+// ⚠ 这里曾经写成 `path.resolve(__dirname, '..')`,那是**仓库的父目录**,不是仓库目录:
+//   默认路径(DATA_DIR 没被重定向)下会在父目录清点 providers.json 的备份池然后报"0 份",
+//   而真备份躺在仓库目录里。测试全程设了 MIXR_DATA_DIR,所以它一次都没照出来。
+//   targets.js 现在对 root 做绝对路径校验,但"绝对路径"本身挡不住指错目录 —— 所以这条靠
+//   一条**默认路径**(不设 MIXR_DATA_DIR、只有 CLI 自身进程)的用例钉住。
+function backupLocations() {
+  return backupTargets({ root: ROOT, home: os.homedir(), env: process.env });
+}
+
+// --diff:与**一份指定备份**做差异预览。位置参数就是备份名(基名,或一个带路径的完整路径)。
+// 现役文件默认由备份名推导,推不出来就报错;要覆盖用 `--file <现役路径>` 显式给。
+// 重复给选项一律报错:静默取最后一个会让 `--file a --file b` 这种明显写错的调用看起来成功了。
+function parseBackupsArgs(args) {
+  const opts = { json: false, diff: false, base: null, file: null };
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--json') {
+      if (opts.json) throw backupsError('invalid_arguments', '--json 不能重复');
+      opts.json = true;
+    } else if (arg === '--diff') {
+      if (opts.diff) throw backupsError('invalid_arguments', '--diff 不能重复');
+      opts.diff = true;
+    } else if (arg === '--file') {
+      if (opts.file !== null) throw backupsError('invalid_arguments', '--file 不能重复');
+      const value = args[++i];
+      if (!value || value.startsWith('--')) throw backupsError('invalid_arguments', '--file 缺少值');
+      opts.file = value;
+    } else if (arg === '--help' || arg === '-h') {
+      opts.help = true;
+    } else if (arg.startsWith('-')) {
+      throw backupsError('invalid_arguments', `无法识别的 backups 选项: ${arg};仅支持 --json / --diff / --file / --help`);
+    } else if (opts.base === null) {
+      opts.base = arg;
+    } else {
+      throw backupsError('invalid_arguments', `只接受一个文件名前缀,多给了: ${arg}`);
+    }
+  }
+  if (opts.diff && !opts.base) {
+    throw backupsError('invalid_arguments', '--diff 必须指定要预览的备份:给出它的备份名,例如 mixctl backups --diff settings.json.bak-mixui-20260601-120000-000-abcd');
+  }
+  // --file 只在 --diff 下有意义:清点按目标表走,没有"指定现役文件"这回事。
+  if (opts.file !== null && !opts.diff) {
+    throw backupsError('invalid_arguments', '--file 只在 --diff 下有意义');
+  }
+  return opts;
+}
+
+async function backupsCmd(args) {
+  const opts = parseBackupsArgs(args);
+  if (opts.help) return console.log(BACKUPS_USAGE);
+  // --diff 走另一条路:它要的是**一份指定的备份**,不是"某个前缀下的所有备份池"。
+  if (opts.diff) return diffCmd(opts);
+  const locations = backupLocations().filter(loc => backupView.matchesBase(loc, opts.base));
+  if (!locations.length) throw backupsError('invalid_arguments', `没有配置匹配前缀 ${JSON.stringify(opts.base)} 的备份池(可用:${backupLocations().map(l => path.basename(l.file)).join(' / ')})`);
+  const scanned = locations.map(loc => backupView.scanLocation(loc, BACKUPS_KEEP));
+  return { ok: true, keep: BACKUPS_KEEP, dirs: scanned, diff: null };
+}
+
+// ---- --diff:预览**一份指定备份**与它现役文件的差异
+// 现役文件是**推**出来的:用户给的是一个备份名,而 compareWithLive 要两个路径。推导过程逐条:
+//   1. 备份名 -> base,用 naming.js 的 baseFromBackupName(推不出返回 null)。推不出就报错,
+//      **不许猜一个来比** —— 猜错的那个文件与备份毫无关系,而预览会照常给出一份"差异报告",
+//      看着专业、结论是错的(这条与 compare.js 内部 mismatched-base 那条 note 同一精神)。
+//   2. base -> 受管目标(目标表里 basename 等于 base 的那一条)。命中 0 条或 >1 条都报错:
+//      0 条说明这个备份不属于任何受管文件;>1 条说明 base 有歧义,拿哪条都不确定。
+//   3. 现役文件 = 该目标的 file。**它是推出来的,结果里带 fileInferred:true**,不静静替用户猜。
+//      要覆盖就显式给 --file <现役路径>,此时 fileInferred 为 false。
+// 备份路径:参数带路径分隔符就当路径用(备份可能不在原位);只给基名就按"与现役文件同目录"
+// 去拼 —— 那是 backupFile 唯一会写备份的地方。
+//
+// 关于 secrets(已知值层):这条命令**不读 providers.json、也不经 _state.store**,所以手上没有
+// 渠道密钥清单,脱敏只有 compare.js 的**形状层**在起作用。这一点写进结果里(redaction.secrets),
+// 不当作"已经完整脱敏"报出去 —— 自定义格式的密钥形状判据认不出来,那正是已知值层要补的洞。
+// 为了补这个洞去读 providers.json(混着明文 api_key)等于把明文密钥穿过一个面向控制台的命令,
+// 不做。
+function diffCmd(opts) {
+  const arg = opts.base;
+  const givenPath = typeof arg === 'string' && arg.includes(path.sep);
+  const backupPath = givenPath ? path.resolve(arg) : null;
+  const backupName = path.basename(arg);
+  const base = baseFromBackupName(backupName);
+  if (!base) {
+    throw backupsError('undecidable_base', `从 ${JSON.stringify(backupName)} 推不出它备份的是哪个文件(名字里没有 ${'.bak-mixui-'} 段);--diff 不接受猜一个来比。请给出完整的备份名,或先用 mixctl backups 看清单`);
+  }
+  const live = opts.file ? path.resolve(opts.file) : null;
+  const inferred = !live;
+  // 按 base 找出这条备份属于哪个受管文件。**无论现役文件是不是显式给的都要做这一步** ——
+  // 只给基名(不带路径)的备份要有个目录去拼路径,而那个目录就是受管文件的目录。
+  const hits = backupLocations().filter(loc => path.basename(loc.file) === base);
+  let target = hits.length === 1 ? hits[0] : null;
+  let file = live;
+  if (file === null) {
+    if (!target) {
+      throw backupsError('undecidable_target', hits.length
+        ? `备份名推出的 ${base} 同时对应多个受管文件(${hits.map(h => h.file).join(' / ')}),拿哪条都不确定;用 --file <现役路径> 指明`
+        : `备份名推出的 ${base} 不是任何受管配置(受管的是 ${backupLocations().map(l => path.basename(l.file)).join(' / ')});用 --file <现役路径> 指明`);
+    }
+    file = target.file;
+  }
+  // 备份路径:带路径就当路径用(备份可能不在原位);只给基名就得有个目录来拼。
+  // 目录优先取受管的那个;base 不在受管表里时(用户配了 --file 指一个自定义文件),
+  // 退到现役文件的目录 —— backupFile 只会把备份写在活文件同目录,这是它唯一的行为。
+  let resolvedBackup = backupPath;
+  if (!resolvedBackup) {
+    const dir = target ? target.dir : path.dirname(file);
+    resolvedBackup = path.join(dir, backupName);
+  }
+  let result;
+  try {
+    result = compareWithLive({ file, backupPath: resolvedBackup, maxBytes: BACKUPS_MAX_BYTES });
+  } catch (e) {
+    throw backupsError(e.code || 'compare_failed', e.message);
+  }
+  return {
+    ok: true, keep: BACKUPS_KEEP, dirs: [],
+    diff: {
+      backup: backupName, backupPath: resolvedBackup,
+      file, fileInferred: inferred,
+      // 推出来的现役文件必须自报来源,别让调用方以为它是显式给的。
+      fileSource: inferred ? `由备份名推出(base=${base}),未经用户确认` : '用户以 --file 显式指定',
+      targetId: target ? target.id : null,
+      // 已知值层缺席这件事要在结果里说清楚(见 diffCmd 文件头),不假装已完整脱敏。
+      redaction: { ...result.redaction, secrets: 'unavailable', note: '本次未提供已知密钥清单,仅形状层生效;自定义格式的密钥可能不被盖住' },
+      result,
+    },
+  };
+}
+
+async function runBackupsCmd(args) {
+  const json = args.includes('--json');
+  try {
+    const result = await backupsCmd(args);
+    if (result === undefined) return;             // --help 已经自己打印过用法
+    if (json) console.log(JSON.stringify(result, null, 2)); else backupView.printBackups(result);
+  } catch (e) {
+    if (json) console.log(JSON.stringify({ ok: false, error: { code: e.code || 'backups_failed', message: e.message } }, null, 2));
+    else { console.log(`清点失败 [${e.code || 'backups_failed'}]: ${e.message}`); console.log(BACKUPS_USAGE); }
+    process.exitCode = 1;
+  }
+}
+
+// 运行期日志清理:清掉超过 N 天的 responses 归档目录与 launchd.log。
+// 与服务内定时器共用 lib/log-retention.js 的同一份逻辑,靠 .retention.lock 串行 ——
+// 服务在跑时执行本命令也安全(并发只会让其中一方本轮跳过)。
+// 默认只报数(--dry-run 是默认行为),加 --apply 才真删;天数为位置参数,默认走 MIXR_LOG_RETAIN_DAYS 或 2。
+// requests.jsonl 不归这里(它由 request-log 那套按天轮转管理),所以本命令不需要 --archives-only。
+function gc(args = []) {
+  const apply = args.includes('--apply');
+  const archiveOnly = args.includes('--archives-only');
+  const daysArg = args.find(a => /^[0-9]+$/.test(a));
+  const { sweepLogs, DEFAULT_RETAIN_DAYS } = require('./lib/log-retention');
+  const envDays = Number(process.env.MIXR_LOG_RETAIN_DAYS);
+  const retainDays = daysArg !== undefined ? Number(daysArg)
+    : (Number.isSafeInteger(envDays) && envDays >= 0 ? envDays : DEFAULT_RETAIN_DAYS);
+  // CLI 是一次性任务,不限单轮删除数(服务内定时器才需要把单次卡顿压到 1s 级)。
+  // 清理目录从 paths 取,与上面 REQ_LOG 同一份计算;这里原先又自己拼了一遍
+  // `MIXR_DATA_DIR || ROOT` —— 第三次拼同一个语义,正是本模块要收掉的重复。
+  const r = sweepLogs({ directory: paths.logDir(process.env, ROOT), retainDays, dryRun: !apply, maxRemovalsPerSweep: 0, archiveOnly });
+  if (r.skipped === 'disabled') return console.log(`日志保留已关闭(retainDays=${retainDays});不改动任何文件`);
+  if (r.skipped === 'no_dir') return console.log('logs/ 目录不存在,无需清理');
+  if (r.skipped === 'locked') return console.log('另一处清理正在进行(锁被占用),本轮跳过');
+  const mb = n => (Number(n || 0) / 1048576).toFixed(1) + 'MB';
+  console.log(`${apply ? '已清理' : '将清理(预览,--apply 才实删)'} 保留 ${retainDays} 天(截止 ${r.cutoff})${archiveOnly ? '[仅 responses 归档]' : ''}:`);
+  // requests.jsonl / .old 归 request-log 的按天轮转管,这里只在模块确实报了这两项时才打印 ——
+  // 写死输出会在保留清理不碰它们时给出"删了 0 行"的假象。
+  if (r.requests) console.log(`  requests.jsonl     删 ${r.requests.dropped} 行,留 ${r.requests.kept} 行`);
+  if (r.rotation) console.log(`  requests.jsonl.old ${r.rotation.deleted ? '整份删除' : `删 ${r.rotation.dropped || 0} 行`}`);
+  if (r.launchd) console.log(`  launchd.log        删 ${r.launchd.dropped || 0} 行,留 ${r.launchd.kept || 0} 行`);
+  if (r.responses) console.log(`  responses 归档     删 ${r.responses.removed} 个目录(约 ${mb(r.responses.bytes)}),跳过无关项 ${r.responses.skipped || 0} 个`);
+  for (const e of r.errors) console.log(`  ⚠ 失败项 ${e}`);
+}
+
+// logs 的两条通路,按**控制台是否可达**选,不靠参数猜:
+//   · 控制台在跑 —— 走 /api/logs,历史、游标、时间窗、各维筛选都在那边。
+//   · 连不上   —— 退回本机 requests.jsonl 的只读尾读(有界反读,坏行跳过)。
+// 退回是为了"服务没起来时还能看上一轮的日志",不是替代 API:把"控制台没跑"报成
+// "没有日志",会把一次停机的排查引向错的方向。退回只认位置式条数 —— 带选项的查询
+// (历史/游标/筛选)没有文件版对应物,如实说明,不假装支持。
+// 只有**连不上**才退回;真的 API 报错(游标过期、选项写错)原样报到 stderr 并以非 0 退出,
+// 不能借退回把服务端的错误吞掉 —— 那正是最需要看到的一类错误。
+// 离线退回用的文件尾读:位置式条数 → 本机 requests.jsonl 的有界反读(log-tail,坏行跳过)。
+// 与 /api/logs 的区别不是"新旧",而是数据源:这里读的是**本进程看得见的那个文件**。
+function logs(arg) {
+  let result;
+  try { result = selectLogs(REQ_LOG, resolveCount(arg)); }
+  catch { return console.log('暂无请求日志'); }
+  if (result.incomplete) console.error('日志尾读达到上限或文件在读取期间被截短,以下仅为已读到的完整记录。');
+  if (!result.entries.length) {
+    if (!result.incomplete) console.log('暂无请求日志');
+    return;
+  }
+  for (const e of result.entries) console.log(formatLogLine(e));
+}
+
+const OFFLINE_RE = /ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENOTFOUND|ECONNABORTED|ETIMEDOUT|socket hang up/i;
+async function logsCmd(args) {
+  let errText = '';
+  const code = await runLogs(args, { request: api, stderr: { write: text => { errText += text; } } });
+  if (code === 0) { process.exitCode = 0; return; }
+  if (!OFFLINE_RE.test(errText)) { process.stderr.write(errText); process.exitCode = code; return; }
+  if (args.some(a => a.startsWith('-'))) {
+    process.stderr.write('logs: 控制台不可达,离线只支持 `mixctl logs [条数]`;带选项的查询需要控制台在运行。\n');
+    process.exitCode = 1;
+    return;
+  }
+  const positional = args.filter(a => !a.startsWith('-'));
+  logs(positional[positional.length - 1]);
+}
+
+const cmd = process.argv[2] || 'status';
+if (cmd === 'start') start();
+else if (cmd === 'stop') stop();
+else if (cmd === 'restart') { const pid = getPid(); if (pid && alive(pid)) stop(); setTimeout(start, 600); }
+else if (cmd === 'status') status();
+else if (cmd === 'ls') ls();
+// sessions 无参数时仍是原来的活跃对话列表(api 走 /api/state);带了子命令才转给会话覆盖那套读写。
+else if (cmd === 'sessions' || cmd === 'sess') {
+  const rest = process.argv.slice(3);
+  if (!rest.length) sessions();
+  else runSessions(rest, {
+    // 会话覆盖要读 404/409/400 的错误体来分型,apiPost 会把它们压成一句 Error.message,
+    // 所以这里给它一个带回状态码与原始体的通道;路径与超时由调用方给,本函数只负责发。
+    //
+    // 三条收尾都必须做,少一条就会挂住或报错报错原因:
+    //   · 响应体只在**收完整**时才解析 — 半截 JSON 解出来的是 {} 而不是"没收到",
+    //     会把一次中断报成"字段不完整",把人引去做错的排查。
+    //   · res 的 error/aborted(服务端中途断流)以前没人接:Promise 永远不落,命令就那么挂着。
+    //   · 超时由调用方传(sessions.js 的 REQUEST_TIMEOUT_MS),这里只负责在到点时放弃并销毁请求。
+    request: (method, p, body, timeoutMs) => new Promise((ok, bad) => {
+      const data = body === undefined ? '' : JSON.stringify(body);
+      let settled = false;
+      let timer = null;
+      const done = (error, value) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        if (error) bad(error); else ok(value);
+      };
+      const req = http.request({ hostname: '127.0.0.1', port: Number(UI_PORT), path: p, method,
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } }, r => {
+        let s = '';
+        r.on('data', c => s += c);
+        r.on('aborted', () => done(new Error('控制台在收完响应前中断了连接')));
+        r.on('error', e => done(new Error(`读取控制台响应失败:${(e && e.message) || e}`)));
+        r.on('end', () => {
+          if (!r.complete) return done(new Error('控制台响应被截断'));
+          let parsed = {};
+          try { parsed = JSON.parse(s); } catch {}   // 非 JSON 体按空对象走,由状态码分型
+          done(null, { status: r.statusCode, data: parsed });
+        });
+      });
+      req.on('error', e => done(e));
+      req.end(data);
+      if (Number.isFinite(timeoutMs) && timeoutMs > 0)
+        timer = setTimeout(() => { req.destroy(); done(new Error(`等待控制台响应超过 ${timeoutMs}ms`)); }, timeoutMs);
+    }),
+  }).then(code => { process.exitCode = code; });
+}
+else if (cmd === 'slots') slotsCmd();
+else if (cmd === 'explain') explainCmd(process.argv.slice(3));
+else if (cmd === 'backups') runBackupsCmd(process.argv.slice(3));
+else if (cmd === 'restore') runRestoreCmd(process.argv.slice(3), { root: ROOT, home: os.homedir(), env: process.env });
+else if (cmd === 'split') splitCmd(process.argv.slice(3));
+else if (cmd === 'logs') logsCmd(process.argv.slice(3));
+else if (cmd === 'gc') gc(process.argv.slice(3));
+else if (cmd === 'route') route(process.argv[3], process.argv[4] && !process.argv[4].startsWith('--') ? process.argv[4] : 'anthropic', process.argv.includes('--slots'));
+else if (cmd === 'open') execSync(`open http://127.0.0.1:${UI_PORT}`);
+else console.log(MAIN_USAGE);

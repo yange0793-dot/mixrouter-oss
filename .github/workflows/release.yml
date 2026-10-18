@@ -1,0 +1,175 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # tag 必须与 package.json 的 version、mixrouter.js 的 VERSION 三处相等。
+      # 这一条放在测试之前:版本对不上时后面每一步都会"成功"地发出一个自相矛盾的制品,
+      # 而没有任何后续步骤能发现它。失败点是**本地可复现**的:
+      #   node scripts/release-manifest.js version-check --tag "$GITHUB_REF_NAME"
+      - name: 校验 tag 与版本一致(tag × package.json × 入口 VERSION)
+        run: node scripts/release-manifest.js version-check --tag "$GITHUB_REF_NAME"
+      # 测试与离线验收均通过才发版;与本地/CI 共用超时与隔离入口
+      - run: npm test
+      - run: npm run smoke
+      # ---- 打包 ----------------------------------------------------------
+      # 打包文件**只来自制品清单**(scripts/release-manifest.js),不用裸 `git archive HEAD`。
+      # 区别不只是"少几个文件":清单是显式的,gitignore 被改错、或运行数据被人
+      # `git add -f` 进索引时,制品仍然只含清单内的文件。
+      #
+      # 取文件的方式:`git ls-tree -r HEAD` 列出已跟踪文件 → 清单**逐个文件**过滤 →
+      # 结果作为路径参数交给 `git archive`。**故意不用 `git archive HEAD lib public …`
+      # 这种目录参数**:目录参数整棵子树照收、只认 git 跟踪状态,`git add -f` 过的
+      # 运行数据会跟着进包(本地实测过:force-add 的 public/providers.json 会被收进去)。
+      # 逐文件过滤后,清单说不要的任何路径都进不去。用 git archive(而非 tar 压工作区)
+      # 则保留可执行位,且只从 HEAD 取内容,未提交的工作区改动不会被误发。
+      # 副作用(免费的第二道闸):清单里若有尚未提交的路径,git archive 会以退出码 128
+      # 直接失败,而不是静默少打一个文件。
+      - name: 生成制品文件清单
+        run: node scripts/release-manifest.js paths > /tmp/archive-files.txt && cat /tmp/archive-files.txt
+      - name: 打包源码(仅清单内文件)
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          # 用命令替换展开文件清单而不是 `xargs`:文件一多 xargs 可能拆成多次调用,每次都会
+          # 覆盖同一个 -o 文件,只会留下最后一批 —— 制品静默少东西。命令替换保证单次调用。
+          # 未加引号是**有意**的:靠 IFS 分词,前提是清单路径不含空白或 shell 元字符 ——
+          # 这条前提由 test/release-manifest.test.js 钉死,不靠"应该没空格"的默契。
+          #
+          # 直接产出 .tar.gz 而**不**走"先打 tar、追加身份文件、再 gzip":那条路上
+          # gzip 会把输入文件的 mtime 写进压缩头,tar -rf 也会记下身份文件的落盘时间,
+          # 于是同一 commit 两次打包得到不同字节 —— 校验和就失去核对意义(本地实测到过)。
+          # 这里用 git archive 自带的 gzip,输出可复现,校验和才值得发。
+          git archive --format=tar.gz -9 -o "mixrouter-${VER}.tar.gz" HEAD $(cat /tmp/archive-files.txt)
+          # SHA-256 校验和:Linux runner 用 sha256sum(仓库默认 runner 即 Linux)
+          sha256sum "mixrouter-${VER}.tar.gz" > "mixrouter-${VER}.tar.gz.sha256"
+          cat "mixrouter-${VER}.tar.gz.sha256"
+      # 版本与源码修订单独成文件,作为**同一次 Release 的另一个附件**随包发布,
+      # 不再塞进 tarball(塞进去就要动 mtime,破坏可复现性,见上一步的说明)。
+      # revision 是对外可核对的 git SHA;code_revision 是运行期源码指纹
+      # (lib/runtime-code.js,只哈希 mixrouter.js 与 lib/**.js),两者不是一回事。
+      - name: 生成版本与源码修订文件
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          REV="$(git rev-parse HEAD)"
+          CODE_REV="$(node -e 'process.stdout.write(require("./lib/runtime-code").codeRevision(process.cwd()))')"
+          node scripts/release-manifest.js release-info \
+            --version "$VER" --revision "$REV" --code-revision "$CODE_REV" > "mixrouter-${VER}.RELEASE-INFO.json"
+          cat "mixrouter-${VER}.RELEASE-INFO.json"
+          echo "REV=$REV" >> "$GITHUB_ENV"
+          echo "CODE_REV=$CODE_REV" >> "$GITHUB_ENV"
+      # 解包自查:制品里不含任何运行数据、关键入口齐全。打包成功不等于内容对,
+      # 这一步把"清单说了什么"与"tarball 里实际有什么"钉在一起。
+      - name: 校验制品内容
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          rm -rf /tmp/unpacked && mkdir -p /tmp/unpacked
+          tar -xzf "mixrouter-${VER}.tar.gz" -C /tmp/unpacked
+          node scripts/release-manifest.js check /tmp/unpacked
+          sha256sum -c "mixrouter-${VER}.tar.gz.sha256"
+      # ---- 发布说明 ------------------------------------------------------
+      # 版本、源码修订、兼容性与回滚写进 Release 正文,而不是只留在 CI 日志里。
+      # --generate-notes 会追加"本次改动"清单,上面的正文作为前置说明。
+      - name: 撰写发布说明
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          cat > /tmp/notes.md <<NOTES_EOF
+          ## 版本与源码修订
+
+          - **版本**:\`${VER}\`(来自 \`package.json\` 的 \`version\`)
+          - **源码修订**:\`${REV}\`(\`git rev-parse HEAD\`,对外可核对的 git SHA)
+          - **运行期源码指纹**:\`${CODE_REV}\`(\`lib/runtime-code.js\` 的 \`codeRevision()\`)
+          - 同一 Release 另附 \`mixrouter-${VER}.RELEASE-INFO.json\`(记录以上三项)与
+            \`mixrouter-${VER}.tar.gz.sha256\`(制品校验和)。
+
+          > 源码修订与运行期指纹不是一回事:前者是 git 里的位置,后者是"这台机器上正在跑的
+          > \`mixrouter.js + lib/**.js\` 有没有被换过"的哈希。控制台/接口自报的指纹应与这里
+          > 的「运行期源码指纹」一致;不一致说明跑的不是这份代码。
+
+          核对方式:
+
+          \`\`\`bash
+          sha256sum -c mixrouter-${VER}.tar.gz.sha256   # macOS 上用 shasum -a 256 -c
+          \`\`\`
+
+          ## 制品内容
+
+          制品是**运行包**:只含**显式清单**内的源码与资源(\`scripts/release-manifest.js\`),
+          不含任何运行数据。
+
+          - 纳入:\`mixrouter.js\`、\`mixctl\`、\`package.json\`、\`LICENSE\`、\`README.md\`、
+            \`lib/\`、\`public/\`(含 \`js/app.js\`、\`styles/base.css\`)、\`app/\`、示例配置模板、
+            README 让用户直接运行的 \`scripts/\`,以及 \`CONTRIBUTING.md\` / \`SECURITY.md\` /
+            \`CHANGELOG.md\`。零依赖,解压后 \`node mixrouter.js\` 直接跑,不需要 \`npm install\`。
+          - **验证方式**:在解压目录里跑 \`npm run smoke\`(随包的 \`scripts/smoke-offline.js\`,
+            临时实例 + 进程内 mock 上游,不需要 Key、不出网、不占 8787/8788)。完整开发测试套件
+            只在 GitHub 源码仓库里跑(\`npm test\`);**运行包里没有 \`test/\`**,在那里跑
+            \`npm test\` 会明确报错而不是伪装成全绿。
+          - **不含**:\`providers.json\`、\`routes.json\`、\`sessions.json\`、\`slots.json\`、
+            \`logs/\`、\`backups/\`(它们含**明文渠道 Key、会话记录与请求日志**)、
+            \`test/\`、\`docs/changes/\`、\`evidence/\`、\`.github/\`,以及上线/回退用的运维脚本
+            \`scripts/deploy-live.sh\` / \`scripts/preflight-live-data.js\`(会切换代码并重启服务,
+            必须先给 \`MIXR_LIVE_DIR\`,不是安装路径)。
+
+          ## 兼容性
+
+          - **运行时**:Node ≥ 18(见 \`package.json\` 的 \`engines\`)。零第三方依赖,解压即可
+            \`node mixrouter.js\` 运行,无需 \`npm install\`。
+          - **配置格式**:\`providers.json\` 当前落盘为 \`version: 2\`,\`sessions.json\` 与
+            \`slots.json\` 为 \`version: 1\`。读取侧对旧形态**向前兼容**(v2.0 的裸数组渠道库
+            仍可读、缺少 \`version\` 字段按当前结构解析)。
+
+          > ⚠ **当前持久化格式没有"拒绝读取"的版本闸门**:读取侧只做形状归一化,不会因
+          > \`version\` 高于本版而报错。也就是说,**没有任何自动机制能阻止用旧版去读新版写出
+          > 的数据**。回退版本前请人工核对配置兼容性,详见「回滚」。
+
+          ## 回滚
+
+          回退 = 用旧版制品替换代码,数据目录不动。
+
+          1. **先停服务再换代码**,不要让两个版本同时写同一个数据目录。
+          2. 用对应版本附带的 \`.sha256\` 核对旧版制品完整,再解压到发布目录。
+          3. **数据格式无版本闸门,不能盲目回退**:
+             - 若新版本**没有改变** \`providers.json\` / \`routes.json\` / \`sessions.json\` /
+               \`slots.json\` 的结构(本版即是),旧代码可直接沿用现有数据。
+             - 若曾用更新版本改写过这些文件,请先**备份对比**(控制台的备份与
+               \`mixctl backups --diff\` 都能做),确认旧代码能解析后再回退;解析不了就
+               **停止回退并保留现场**,不要用旧快照覆盖用户后来保存的新设置。
+          4. 回退后用控制台/接口自报的**运行期源码指纹**确认跑的是旧版代码(应与旧版
+             \`RELEASE-INFO.json\` 里的 \`code_revision\` 一致)。
+
+          ## 未包含的能力
+
+          本流程**不**提供自动更新或自动回退保护;升级/回退均由使用者手动执行。签名、
+          公证与 Windows/Linux 安装制品不在本版范围内(macOS 外壳源码随包提供,需自行
+          用 CommandLineTools 构建)。
+          NOTES_EOF
+          # 不需要再去缩进:YAML 里 run 块的公共前导空格本就被解析器剥掉,
+          # 这里的 heredoc 内容在写入时已没有那 10 个空格(实测确认过)。
+      - name: 创建 GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "mixrouter-${GITHUB_REF_NAME#v}.tar.gz" \
+            "mixrouter-${GITHUB_REF_NAME#v}.tar.gz.sha256" \
+            "mixrouter-${GITHUB_REF_NAME#v}.RELEASE-INFO.json" \
+            --title "mixrouter $GITHUB_REF_NAME" \
+            --notes-file /tmp/notes.md \
+            --generate-notes

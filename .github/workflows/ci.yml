@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [18, 22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # 版本一致性:package.json 与 mixrouter.js 的 VERSION 必须相同。(tag 只在 Release
+      # 工作流里有;这里是 push/PR,没有 tag 可核。)
+      - name: 校验版本一致(package.json × 入口 VERSION)
+        run: node scripts/release-manifest.js version-check
+      # 零依赖;与本地共用隔离/超时入口,Node 18 自动跳过未支持的测试 flag
+      - run: npm test
+      - run: npm run smoke
+      # 制品内容校验:CI **只验不发**。按制品清单(scripts/release-manifest.js,与
+      # release.yml 同一个来源)打包,解出来断言"不含任何运行数据 + 关键入口齐全"。
+      # 这一步防的是:清单改了名/漏了目录、或有人把运行数据加进索引时,发布包会静默
+      # 带出 Key 与日志 —— 那种情况下打包和发版都不会报错,只有内容检查才看得见。
+      #
+      # 打包命令与 release.yml **逐字相同**(同一条 git archive 形式),这样 CI 验的就是
+      # 发版真正会产出的东西,而不是一个"差不多"的复现。
+      - name: 校验制品内容(release tarball)
+        run: |
+          set -euo pipefail
+          node scripts/release-manifest.js paths > /tmp/archive-files.txt
+          # 命令替换展开文件清单而非 xargs:见 release.yml 的说明(文件被拆成多次调用会互相覆盖 -o)
+          git archive --format=tar.gz -9 -o /tmp/ci-artifact.tar.gz HEAD $(cat /tmp/archive-files.txt)
+          rm -rf /tmp/ci-unpacked && mkdir -p /tmp/ci-unpacked
+          tar -xzf /tmp/ci-artifact.tar.gz -C /tmp/ci-unpacked
+          # 显式再钉一次运行数据文件名:check 用的是同一份基线判定,这里额外用 shell
+          # 数一遍,证明"解包目录里确实一个都没有",而不是只看函数返回。
+          for f in providers.json routes.json sessions.json slots.json; do
+            if [ -e "/tmp/ci-unpacked/$f" ]; then echo "× 制品含运行数据: $f"; exit 1; fi
+          done
+          for d in logs backups .run; do
+            if [ -e "/tmp/ci-unpacked/$d" ]; then echo "× 制品含运行数据目录: $d/"; exit 1; fi
+          done
+          # 上线/回退运维脚本不得进包:它会 checkout 代码并重启服务,不是安装路径。
+          for f in scripts/deploy-live.sh scripts/preflight-live-data.js; do
+            if [ -e "/tmp/ci-unpacked/$f" ]; then echo "× 制品含本机上线工具: $f"; exit 1; fi
+          done
+          # 运行包要能验:验证入口是随包的 npm run smoke,加上三份维护文档。
+          # **不要求 test/**:整套开发测试只在 GitHub 源码仓库跑,不少用例依赖 .github /
+          # .gitignore / docs/changes / evidence,这些同样不进包。
+          for d in scripts/smoke-offline.js CONTRIBUTING.md SECURITY.md CHANGELOG.md; do
+            if [ ! -e "/tmp/ci-unpacked/$d" ]; then echo "× 制品缺少维护条目: $d"; exit 1; fi
+          done
+          # 开发测试套件与内部记录不得进包。
+          for d in test evidence docs/changes; do
+            if [ -e "/tmp/ci-unpacked/$d" ]; then echo "× 制品含开发/内部材料: $d"; exit 1; fi
+          done
+          node scripts/release-manifest.js check /tmp/ci-unpacked

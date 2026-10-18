@@ -1,0 +1,20 @@
+主会话独立核算 — 白名单差集（必交项①）
+mixrouter.js sha256: 1be5a43915eed1cc86ba0af31aff5e67a47cbec5d5810b097974286c67ec7eec
+request-log.js sha256: 15840ce0c53694313197f388736cc4c99263395dc4ffc455b332db606d95ee21
+
+单体实际写入的 entry 字段数: 26
+  app attempts cache_read err err_class failover in kind model_in model_out ms out pool provider reasoning rule session session_kind status sticky strategy stream think tools_dropped ts wire
+LOG_FIELDS 白名单字段数: 26
+  app attempts cache_read err err_class failover in kind model_in model_out ms out pool provider reasoning rule session session_kind status sticky strategy stream think tools_dropped ts wire
+
+会无声消失(单体写、白名单没收): 【空集 — 零字段会消失】
+死字段(白名单收、单体从不写): 【空集】
+
+producer 唯一性: ring.push 出现次数 = 1 (L396, logRequest 内)
+=> 没有第二个往 ring 里塞条目的地方,差集对 ring 全体成立
+
+--- 反证（同脚本，注入后重跑）---
+预期：注入 entry.trace_id = '...' 与字面量键 client_ip: '1.2.3.4' → 差集应报 2 个
+实得：['client_ip', 'trace_id']  → 2 个，与预期一致
+两处注入均回读确认落地；跑的是沙箱副本 /tmp/diffset-counterproof-*，未碰仓库
+=> 空集是"脚本确实没抓到白名单外字段"，不是"脚本抓不到东西"

@@ -1,0 +1,88 @@
+name: 缺陷报告
+description: 服务起不来、请求走错、控制台异常等可复现的问题
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交前请先确认:
+
+        - 已经读过 `docs/troubleshooting.md`,并试过那里的排查步骤;
+        - 尽量附上 `npm run smoke` 的输出(它不碰真实配置、不花钱)。它只验证 mock 上游下的
+          基础链路,通过**不代表**你的问题不是产品缺陷 —— 它不覆盖真实上游、客户端与具体配置组合;
+        - **安全问题不要开公开 issue**,见 `SECURITY.md`。
+
+        贴任何输出前先删掉 `api_key`、会话标签与请求体里的敏感内容。
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 发生了什么
+      description: 期望的行为与实际的行为各一句,再给复现步骤。步骤要能让别人照着走到同一个结果。
+      placeholder: |
+        期望:...
+        实际:...
+        步骤:
+        1. ...
+        2. ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: "`curl -s http://127.0.0.1:8787/healthz` 里的 `version`,或 `mixrouter.js` 里 `VERSION` 的值"
+      placeholder: "3.6.1"
+    validations:
+      required: true
+
+  - type: input
+    id: node
+    attributes:
+      label: Node 版本与系统
+      placeholder: "v22.11.0 / macOS 14.5"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 影响范围
+      multiple: true
+      options:
+        - 代理转发(Claude /v1/messages)
+        - 代理转发(Codex /v1/responses、/v1/chat/completions)
+        - 渠道 / Key 配置
+        - 路由规则与会话分发
+        - 槽位路由
+        - 控制台页面
+        - 备份与恢复
+        - 日志与诊断
+        - 安装 / 启动 / launchd
+        - 桌面外壳(macOS)
+        - 文档
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志与最小复现配置
+      description: |
+        控制台「日志」页或 `./mixctl logs` 的相关片段。配置请用 `providers.example.json` 的形状
+        **重写一份不含真实 Key 的**;不要粘贴完整的 `providers.json` / `sessions.json`。
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 确认
+      options:
+        - label: 上面的内容里没有真实 API Key、会话内容或完整运行数据文件
+          required: true
+        - label: 这不是安全问题(安全问题走 `SECURITY.md` 的私密通道)
+          required: true
