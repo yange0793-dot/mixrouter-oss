@@ -55,7 +55,7 @@ const INCLUDE_WHY = Object.freeze({
   'public': '控制台页面与静态资源:index.html、js/app.js、styles/base.css',
   'app': 'WKWebView 外壳源码(Swift + 图标 + 旧启动脚本)',
   'scripts': '用户可跑的脚本(安装 / 诊断 / 导入 / 离线验收);注意 scripts/run-tests.js 还是**运行期依赖**(lib/diagnostics/run.js 直接 require 它取 testEnv),所以它在包里,但运行包里 `npm test` 会明确报"没有开发测试套件"。上线/回退运维用的 deploy-live.sh 与 preflight-live-data.js 由 EXCLUDE 单独减掉',
-  'docs': '用户文档(quick-start 等)。其中 docs/changes/ 是内部记录,由 EXCLUDE 单独减掉',
+  'docs': '用户文档(quick-start 等)',
 });
 
 // ---------------------------------------------------------------- 排除清单
@@ -64,7 +64,7 @@ const INCLUDE_WHY = Object.freeze({
 // 前两项(release 制品 vs 本地安装)口径可以不同,但每一条都要能回答"为什么不进包"。
 const EXCLUDE = [
   // — 基底内部要减掉的细分 —
-  { path: 'docs/changes', why: '内部改动记录,含**尚未发布的规划**(refactor-plan、各期 implementation)与取证过程;是内部证据,不是用户文档' },
+  { path: 'docs/changes', why: '内部改动记录,含尚未发布的规划与取证过程;是内部证据,不是用户文档,也不在公开仓库索引里' },
   { path: 'scripts/deploy-live.sh', why: '**上线/回退**运维脚本:会 checkout 代码、备份并 stop/restart 服务,前提是"一台长期维护的线上机器"。它必须先给 MIXR_LIVE_DIR 才动,不是公开安装路径;随包发布只会把一条会重启服务的命令递给别人' },
   { path: 'scripts/preflight-live-data.js', why: 'deploy-live.sh 的预检:读 MIXR_LIVE_DIR 下的数据、在临时端口拉起实例。与上线脚本同一适用范围,没有独立用途' },
   // — 绝不发布的运行数据(基底里没有,列在这里是"明令禁止"兼文档) —
@@ -75,9 +75,9 @@ const EXCLUDE = [
   { path: 'logs', why: '运行期日志(server.log / requests.jsonl / 响应归档)' },
   { path: 'backups', why: '历史备份归档,内含明文 Key 与渠道配置' },
   // — 内部材料与系统垃圾(基底里没有;写死防将来被误加进基底) —
-  { path: 'test', why: '开发测试套件:只在 GitHub 源码仓库里跑。Release 是**运行包**,验证方式是随包的 `npm run smoke`;把整套测试塞进运行包会扩大包体,而且不少用例依赖 .github / .gitignore / docs/changes / evidence 这些同样不进包的文件' },
-  { path: 'evidence', why: '内部取证脚本与运行日志(等价性对照、走线 diff),README 不引用它' },
-  { path: 'AUDIT-2026-09-17.md', why: '历史内部审计报告,记录的是当时状态,README 不引用它' },
+  { path: 'test', why: '开发测试套件:只在 GitHub 源码仓库里跑。Release 是**运行包**,验证方式是随包的 `npm run smoke`;把整套测试塞进运行包会扩大包体,而且不少用例依赖 .github / .gitignore 这些同样不进包的文件' },
+  { path: 'evidence', why: '内部取证脚本与运行日志(等价性对照、走线 diff);只留本地,不在公开仓库索引里' },
+  { path: 'AUDIT-2026-09-17.md', why: '历史内部审计报告,记录的是当时状态;只留本地,不在公开仓库索引里' },
   { path: '.github', why: '上游仓库的 CI/发版自动化与 issue/PR 模板;制品消费者没有 workflow runner,收进去只会多一份会与仓库分叉的定义' },
   { path: 'node_modules', why: '本项目零依赖,本就不该存在;显式写死防误加' },
   { path: '.claude', why: '本地代理/子代理的临时工作区' },
@@ -95,7 +95,7 @@ const RUNTIME_DATA_DIRS = ['logs', 'backups', '.run'];
 const REQUIRED_ENTRIES = ['mixrouter.js', 'public/index.html', 'public/js/app.js', 'public/styles/base.css'];
 
 // 运行包的维护条目:解压后能验、能读、能报告问题。**不含 test/** —— 整套开发测试只在
-// GitHub 源码仓库跑(不少用例依赖 .github / .gitignore / docs/changes / evidence,这些都不进包)。
+// GitHub 源码仓库跑(不少用例依赖 .github / .gitignore 这些不进包的文件)。
 // 运行包的验证入口是随包的 `npm run smoke`;`npm test` 在包里会明确失败,不会伪装通过。
 const REQUIRED_MAINTENANCE_ENTRIES = [
   'package.json', 'scripts/smoke-offline.js',

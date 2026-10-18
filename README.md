@@ -286,7 +286,7 @@ npm run smoke            # 离线端到端验收;退出码 0 = 全绿
 详见[离线运行与验收](docs/offline-run-and-acceptance.md)。
 
 **两个入口的测试范围不同**:GitHub 源码 clone 里有完整 `test/`,可以 `npm test`;
-Release 运行包**不含** `test/`、`.github/`、`docs/changes/` 等开发材料,保留用户文档;`npm test` 会明确提示缺开发套件,
+Release 运行包**不含** `test/`、`.github/` 等开发材料,保留用户文档;`npm test` 会明确提示缺开发套件,
 验收请用 `npm run smoke`。
 
 ## 安全

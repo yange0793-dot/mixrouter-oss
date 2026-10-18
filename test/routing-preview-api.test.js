@@ -272,7 +272,7 @@ test('会话固定 Key 失效时预览拒绝而非回退默认账号', async () 
 // 上游)核过三种组合:钉定到池外 responses 渠道时,真实转发首发就命中该渠道——代理自己把
 // chat 翻译成 responses 送上游(`/v1/responses`,model=钉定 model),客户端拿 200;预览给同一落点。
 // 只有"池里全无 chat 成员"才在上游之前 400 `wire_api_mismatch_error`,两边同码、零上游命中。
-// 证据:`evidence/main-pinned-kind-{probe.test.js,log,report.json}`。
+// 当时的探针与日志属内部取证材料,不随仓库发布。
 //
 // ⚠ 改这一带之前先看 `lib/routing/sessions.js` 的钉定分支:它只检查"本组渠道存在、启用、不在冷却",
 //   拿到的 members 已经被 kind 过滤过,但钉定根本不用那份 members。谁把钉定分支"顺手修成"

@@ -54,7 +54,7 @@ const server = http.createServer((req, res) => {
       // 剩下的余量在共享 CI runner 上会被一次调度推迟吃干净。
       // CI 实测(run 36308749561,Node 18):`运输层等不到响应头 → 首字节超时(400ms)`,
       // 断言里却写着"这一条只可能是总 deadline 干的"。本机把桩上游 flush 头的那一跳
-      // 人为推迟到 400ms 之后也能复现同一条失败(见 docs/changes/2026-09-27.md)。
+      // 人为推迟到 400ms 之后也能复现同一条失败(开发期记录,不随仓库发布)。
       // 现在先 write 一个字节,头**同步**就上路,150ms 的心跳只用来产生"字节在流动"这件事。
       res.write(': 起流\n\n');
       const t = setInterval(() => { try { res.write('data: 滴\n\n'); } catch {} }, 150);

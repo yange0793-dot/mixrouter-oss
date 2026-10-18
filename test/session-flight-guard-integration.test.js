@@ -5,7 +5,8 @@
 // 先前那条在途请求的响应不能覆盖新绑定或新配置。
 // 接线已由主会话完成(在 `lib/proxy/prepare.js` 捕获令牌、`lib/proxy/attempt.js` 结算落点、
 // `mixrouter.js` 的 `settleSession` 结算用量),本文件 5/5 通过,是接线完成的验收证据;
-// 接线点与签名见 docs/changes/phase2-session-boundaries-2026-10-16.md。
+// 接线点在 lib/proxy/prepare.js 捕获令牌、lib/proxy/attempt.js 结算落点
+// (内部规划记录不随仓库发布)。
 //
 // 两件事在这里同时钉:
 // 上游是本进程内的桩(手动放行,不 sleep 猜时间),HTTP 全部走 127.0.0.1 临时端口,

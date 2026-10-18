@@ -32,12 +32,13 @@
 #### 文档
 
 - README 按"安装 → 配置 → 路由 → 排障"重排,补上专题文档与可直接复制的示例配置。
-- 新增 `CONTRIBUTING.md`(测试与提交流程)、`SECURITY.md`(私密报告渠道)、本变更记录。
+- 新增 `CONTRIBUTING.md`(测试与提交流程)、`SECURITY.md`(私密报告渠道)、本变更记录;
+  内部开发记录(`docs/changes/`、`evidence/`、审计报告)只留本地,不进公开索引。
 
 #### 发布与工程
 
-- 发版制品是**运行包**(不是完整源码镜像):`test/`、`docs/changes/`、`evidence/`、`.github/`
-  与上线/回退运维脚本都不进包。运行包里的验证方式是 `npm run smoke`;在那里跑 `npm test`
+- 发版制品是**运行包**(不是完整源码镜像):`test/`、`.github/` 与上线/回退运维脚本都不进包
+  (内部开发记录与取证材料也不在公开仓库索引里)。运行包里的验证方式是 `npm run smoke`;在那里跑 `npm test`
   会明确报"此运行包不含开发测试套件"并以非 0 退出,不会伪装成全绿。
 - 上线/回退用的 `scripts/deploy-live.sh` 与 `scripts/preflight-live-data.js` 不再进发布物;
   两者改为必须显式给 `MIXR_LIVE_DIR`,launchd 标签与开发目录也改为按当前用户推导/可配置,

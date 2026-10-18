@@ -240,6 +240,6 @@ test('mixctl 从 paths 取到的四个路径与改动前逐字相同(等价搬�
       path.join(env.MIXR_DATA_DIR || root, 'logs', 'requests.jsonl'));
   }
   // 注意 serverLog 用的是**代码目录**,requestsLog 用的是**数据目录** —— 现状如此,
-  // 本次只做等价搬迁,不在这条线里顺手统一(见 docs/changes 里的"后续可迁移点")。
+  // 本次只做等价搬迁,不在这条线里顺手统一(口径统一列为后续可迁移点)。
   assert.notEqual(paths.serverLog('/data/x'), paths.requestsLog({ MIXR_DATA_DIR: '/data/x' }, ROOT));
 });
