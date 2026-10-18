@@ -44,3 +44,8 @@ logs/
 
 # 系统
 .DS_Store
+
+# 内部开发记录与取证:只留本地,不随公开仓库发布
+/evidence/
+/docs/changes/
+/AUDIT-2026-09-17.md
