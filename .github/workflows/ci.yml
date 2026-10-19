@@ -5,6 +5,17 @@ on:
     branches: ['**']
   pull_request:
 
+# CI 只读仓库。需要写权限的只有 Release 工作流里创建 Release 的那一步,
+# 它在自己的 job 上单独声明 contents: write,不要在这里放开。
+permissions:
+  contents: read
+
+# 同一个 PR 上的新提交取消上一轮(旧结果已经过时);push 到分支不取消,
+# 每个提交都保留一份完整结果。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -63,3 +74,25 @@ jobs:
             if [ -e "/tmp/ci-unpacked/$d" ]; then echo "× 制品含开发/内部材料: $d"; exit 1; fi
           done
           node scripts/release-manifest.js check /tmp/ci-unpacked
+      # 内容对不等于消费者能跑:上面的检查只回答"解包里有什么",不回答"解包后能不能起来"。
+      # 这一步在**解包目录内**先跑随包的 doctor --offline(入口能加载、首次运行不写数据),
+      # 再跑 npm run smoke(真实一进一出)。目录里没有 .git / test / node_modules,跑通就说明
+      # 运行包不依赖源码仓库。脚本内部把 HOME、数据目录、TMPDIR 全部重定向到一次性临时目录,
+      # 端口由 smoke 自己向内核申请并断言避开 8787/8788。这是执行制品代码,不是安全扫描。
+      - name: 在解包制品里实跑 doctor 与 smoke(隔离 HOME/数据/端口)
+        run: node scripts/verify-release.js --dir /tmp/ci-unpacked
+
+  # 发行包也要在 macOS 上验一次:核心服务是跨平台的,而上面的 Linux 矩阵证明不了
+  # macOS 的 Node / 文件系统语义下同样能起来。只跑 Node 24 一条,不宣称全系统支持。
+  # 本地主机无法复现 GitHub 的 macOS runner,这一步以远端 CI 结果为准。
+  artifact-smoke-macos:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # 默认模式:从 HEAD + 同一份制品清单打包、解包、校验内容,再在解包目录跑 doctor 与 smoke。
+      - name: 从 HEAD 打包并验收解包制品
+        run: node scripts/verify-release.js

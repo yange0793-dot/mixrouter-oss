@@ -14,6 +14,22 @@
 
 ---
 
+## 新入口的下载包升级
+
+`npm run local` 默认采用固定数据目录 `~/.local/share/mixrouter/data`。
+升级时将新版包解压到**新的空目录**,先在新版目录执行 `npm run doctor -- --offline` 与
+`npm run smoke`,通过后在旧版终端按 Ctrl+C 并等待退出,备份原数据目录,再从新版目录运行
+`npm run local`。若使用了 `--data-dir` / 自定义端口,新版也必须传相同参数。
+完成后再跑 `npm run doctor`,确认服务加载的是新版源码。
+
+回退时同样先停止新版,保留并核对数据兼容性,再从保留的旧版目录启动。
+不把旧数据备份覆盖到后来更新的数据上,也不允许两个版本同时写同一目录。
+这是**手动升级**的可靠起点,不是自动更新或一键回退。
+
+`local` 的启动预检会拒绝已知配置文件中比本版更新的 `version`,但仅核对 JSON 与顶层结构,
+不是完整的迁移或兼容性证明。旧版 `npm start` / `mixctl` 的读取行为没有改变,
+下面关于旧入口与数据格式的边界仍然适用。
+
 ## 1. 三个目录:代码、安装根、数据
 
 | 概念 | 默认值 | 说明 |
@@ -219,7 +235,8 @@ scripts/install-macos.sh --apply --yes   # 真正写入
 
 ```bash
 node scripts/release-manifest.js paths                  # 打印要打包的文件路径
-node scripts/release-manifest.js check <解包目录>        # 校验制品内容
+node scripts/release-manifest.js check <解包目录>        # 静态校验制品内容
+npm run verify:release -- --dir <解包目录>              # 执行可信制品里的离线自检与 smoke
 node scripts/release-manifest.js release-info --version <v> --revision <40位sha> [--code-revision <64位哈希>]
 ```
 

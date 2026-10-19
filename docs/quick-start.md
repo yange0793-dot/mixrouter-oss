@@ -11,10 +11,35 @@
 
 ## 0. 起服务
 
+以下新入口从 **v3.7.0** 起提供,用于包含这些脚本的源码或 v3.7.0 及之后的 Release 解压目录。已发布的 **v3.6.1** 运行包
+不含 `local` / `doctor`,请按包内 README 使用 `npm start`,数据目录设置见[安装说明](installation.md)。
+
+新安装在相应目录里运行:
+
 ```bash
 node --version          # 推荐 v22 / v24;最低 v18
-npm start               # = node mixrouter.js,前台运行;不需要先 npm install(零依赖)
+npm run doctor          # 本机只读自检;尚未启动、尚无渠道属于警告
+npm run local           # 前台运行,Ctrl+C 停止;不需要 npm install
 ```
+
+`local` 默认把数据放在 `~/.local/share/mixrouter/data`,不写进源码目录。
+不自动添加渠道、改客户端配置或安装后台服务。端口被占时可以显式改端口:
+
+```bash
+npm run local -- --port 18787 --ui-port 18788
+npm run doctor -- --port 18787 --ui-port 18788
+```
+
+自定义数据目录用 `--data-dir <绝对路径>`;命令行参数优先于对应环境变量。
+`npm start` / `node mixrouter.js` 保留旧行为:不设 `MIXR_DATA_DIR` 时仍在代码目录存数据。
+新入口发现源码目录已有运行数据时会要求明确指定,不自动迁移,也不静默开空库:
+
+```bash
+npm run local -- --data-dir "/原来保存 providers.json 的目录"
+```
+
+若接着用 `mixctl backups` / `restore` / 离线 `logs` 等读文件命令,须给它同一份
+`MIXR_DATA_DIR`;`npm run local` 的环境不会反向写进另一个终端。
 
 服务只绑回环,两个口:代理 `127.0.0.1:8787`、控制台 `127.0.0.1:8788`
 (`mixrouter.js` 的 `HOST = '127.0.0.1'`,没有 `0.0.0.0` 分支)。前台跑起来后:
@@ -24,7 +49,9 @@ curl --fail http://127.0.0.1:8787/healthz     # 回 {"ok":true,"service":"mixrou
 open http://127.0.0.1:8788/                   # macOS;其他系统浏览器打开同一地址
 ```
 
-想让它后台常驻、崩了自愈:
+需要后台运行时使用旧版 `mixctl` 入口(它与前台 `npm run local` 二选一,不要同时启动)。
+`mixctl` 默认仍读代码目录的数据,若沿用新入口数据,先设置 `MIXR_DATA_DIR`。
+后台派生本身不保证崩溃自愈;只有另行配置了 launchd 托管才有该能力:
 
 ```bash
 ./mixctl start          # 后台常驻,pid 写进 .run/mixrouter.pid
@@ -36,7 +63,7 @@ open http://127.0.0.1:8788/                   # macOS;其他系统浏览器打�
 ```
 
 `./mixctl start` 如果检测到本机装的是 `*.mixrouter.plist`(launchd 常驻),会走
-`launchctl kickstart`,不再另派生一个野进程。常驻 plist 的模板见 README「常驻(可选,launchd)」。
+`launchctl kickstart`,不再另派生一个野进程。常驻 plist 的模板见[命令行与运行边界](cli.md)的常驻一节。
 
 端口、数据目录都可用环境变量改,但**路径类与端口类必须在进程启动前设好**
 (`mixrouter.js` 在模块顶层就读它们,require 之后再改不生效):
@@ -204,7 +231,7 @@ section,用户自己的 section 一字不动,二次切换会清掉旧的 mixr se
 | OpenAI Responses | `openai` | Codex / OpenAI |
 | OpenAI Chat | `openai-compatible` | Codex / OpenAI 中的 chat 渠道 |
 
-> ZCode 接入的写入边界见 [`reference.md`](reference.md) 与 README「客户端接入」。
+> ZCode 接入的写入边界见 [`reference.md`](reference.md) 与[命令行与运行边界](cli.md#3-客户端接入)。
 
 ### 代理端点一览(不用背,记住"两个口")
 
@@ -268,16 +295,24 @@ MIXR_DATA_DIR=/absolute/path node scripts/diagnose-upstream.js --mode provider -
 
 ## 5. 改完代码之后
 
+先在源码仓库跑 `npm test`。`mixrouter.js` 与 `lib/**/*.js` **不热加载**;
+等手上在途的请求结束,再按启动方式重启:
+
+- **前台 `npm run local`**:回到原终端按 Ctrl+C,退出后再执行原来的启动命令。
+  它没有 pid 文件,不由 `mixctl restart` 管理。另开终端执行 `npm run doctor`,
+  自定义的 `--data-dir`、`--port`、`--ui-port` 要与启动时一致。
+- **后台 `./mixctl start`**:才使用下面的命令,并沿用启动时的数据目录和端口环境变量:
+
 ```bash
-npm test                 # 先跑测试
-./mixctl restart         # 等手上在途的请求结束再重启
+./mixctl restart
 ./mixctl status          # 必须显示「已加载当前源码」
 ```
 
-`mixrouter.js` 与 `lib/**/*.js` **不热加载**。`./mixctl status` 比较服务启动时记下的
-`/api/state.code_revision` 与磁盘当前源码的 SHA-256(由 `lib/runtime-code.js` 的
-`codeRevision()` 算);不一致或无法核对时退出码为 1。**`/healthz` 回 200 不能当作补丁生效的证据**
-——它只说明进程活着。
+`npm run doctor` 与 `./mixctl status` 都会比较服务启动时记下的 `/api/state.code_revision`
+与磁盘当前源码的 SHA-256(由 `lib/runtime-code.js` 的 `codeRevision()` 算)。
+服务未启动在 doctor 中只是 WARN;重启后还要确认服务探测及源码核对均为 OK。
+`./mixctl status` 在不一致或无法核对时退出码为 1。
+**`/healthz` 回 200 不能当作补丁生效的证据**——它只说明进程活着。
 
 槽位 / 渠道 / 会话 / 路由等**运行时配置**不计入源码指纹,改它们不需要重启。
 

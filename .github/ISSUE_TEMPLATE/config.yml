@@ -6,3 +6,6 @@ contact_links:
   - name: 使用与排障
     url: https://github.com/yange0793-dot/mixrouter-oss/blob/HEAD/docs/troubleshooting.md
     about: 起不来、请求走错、控制台异常,先看排障文档
+  - name: 支持范围与提问方式
+    url: https://github.com/yange0793-dot/mixrouter-oss/blob/HEAD/SUPPORT.md
+    about: 这是社区维护的项目,没有商业 SLA 或固定响应时间;先看支持范围与报告里该放什么

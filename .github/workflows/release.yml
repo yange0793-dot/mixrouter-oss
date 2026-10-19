@@ -4,13 +4,16 @@ on:
   push:
     tags: ['v*']
 
+# 工作流默认只读;只有下面创建 Release 的 job 需要写权限。
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   release:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -82,6 +85,12 @@ jobs:
           tar -xzf "mixrouter-${VER}.tar.gz" -C /tmp/unpacked
           node scripts/release-manifest.js check /tmp/unpacked
           sha256sum -c "mixrouter-${VER}.tar.gz.sha256"
+      # 内容校验只证明制品里有什么;这一步证明**这份解包产物**在消费者环境里起得来:
+      # 解包目录内先跑随包的 doctor --offline(入口能加载、首次运行不写数据),再跑
+      # npm run smoke。临时 HOME / 数据目录 / 端口,不依赖 .git / test/ / node_modules。
+      # 校验和在此之后仍按原逻辑生成与核对,不受影响。这是执行制品代码,不是安全扫描。
+      - name: 在解包制品里实跑 doctor 与 smoke(隔离 HOME/数据/端口)
+        run: node scripts/verify-release.js --dir /tmp/unpacked
       # ---- 发布说明 ------------------------------------------------------
       # 版本、源码修订、兼容性与回滚写进 Release 正文,而不是只留在 CI 日志里。
       # --generate-notes 会追加"本次改动"清单,上面的正文作为前置说明。
@@ -90,6 +99,13 @@ jobs:
           set -euo pipefail
           VER="${GITHUB_REF_NAME#v}"
           cat > /tmp/notes.md <<NOTES_EOF
+          ## 使用与本版改动
+
+          在解压目录运行 \`npm run doctor\` 检查环境,再运行 \`npm run local\` 前台启动。
+          新入口默认把数据保存在 \`~/.local/share/mixrouter/data\`,不自动修改客户端配置或安装系统服务。
+          既有部署继续沿用原来的启动命令与数据目录,不要为了升级静默换成空库。
+          详细改动与兼容性说明见 [CHANGELOG](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/CHANGELOG.md)。
+
           ## 版本与源码修订
 
           - **版本**:\`${VER}\`(来自 \`package.json\` 的 \`version\`)
@@ -116,11 +132,13 @@ jobs:
           - 纳入:\`mixrouter.js\`、\`mixctl\`、\`package.json\`、\`LICENSE\`、\`README.md\`、
             \`lib/\`、\`public/\`(含 \`js/app.js\`、\`styles/base.css\`)、\`app/\`、示例配置模板、
             README 让用户直接运行的 \`scripts/\`,以及 \`CONTRIBUTING.md\` / \`SECURITY.md\` /
-            \`CHANGELOG.md\`。零依赖,解压后 \`node mixrouter.js\` 直接跑,不需要 \`npm install\`。
-          - **验证方式**:在解压目录里跑 \`npm run smoke\`(随包的 \`scripts/smoke-offline.js\`,
-            临时实例 + 进程内 mock 上游,不需要 Key、不出网、不占 8787/8788)。完整开发测试套件
-            只在 GitHub 源码仓库里跑(\`npm test\`);**运行包里没有 \`test/\`**,在那里跑
-            \`npm test\` 会明确报错而不是伪装成全绿。
+            \`CHANGELOG.md\`。零依赖,解压后 \`npm run local\` 直接跑,不需要 \`npm install\`。
+          - **验证方式**:在解压目录里先跑只读的 \`npm run doctor -- --offline\`,再跑 \`npm run smoke\`(随包的 \`scripts/smoke-offline.js\`,
+            临时实例 + 进程内 mock 上游,不需要 Key、不出网、不占 8787/8788)。发布流程
+            本身也会在解包目录内实跑同一条 smoke(临时 HOME / 数据目录 / 端口),
+            确认发出去的这份制品不依赖源码仓库的 \`.git\` / \`test/\` / \`node_modules\`。
+            完整开发测试套件只在 GitHub 源码仓库里跑(\`npm test\`);**运行包里没有
+            \`test/\`**,在那里跑 \`npm test\` 会明确报错而不是伪装成全绿。
           - **不含**:\`providers.json\`、\`routes.json\`、\`sessions.json\`、\`slots.json\`、
             \`logs/\`、\`backups/\`(它们含**明文渠道 Key、会话记录与请求日志**)、
             \`test/\`、\`docs/changes/\`、\`evidence/\`、\`.github/\`,以及上线/回退用的运维脚本
@@ -129,15 +147,15 @@ jobs:
 
           ## 兼容性
 
-          - **运行时**:Node ≥ 18(见 \`package.json\` 的 \`engines\`)。零第三方依赖,解压即可
-            \`node mixrouter.js\` 运行,无需 \`npm install\`。
+          - **运行时**:Node ≥ 18,推荐 22 / 24(见 \`package.json\` 的 \`engines\`)。零第三方依赖,
+            解压即可 \`npm run local\` 运行,无需 \`npm install\`;旧 \`npm start\` 保留原数据目录行为。
           - **配置格式**:\`providers.json\` 当前落盘为 \`version: 2\`,\`sessions.json\` 与
             \`slots.json\` 为 \`version: 1\`。读取侧对旧形态**向前兼容**(v2.0 的裸数组渠道库
             仍可读、缺少 \`version\` 字段按当前结构解析)。
 
-          > ⚠ **当前持久化格式没有"拒绝读取"的版本闸门**:读取侧只做形状归一化,不会因
-          > \`version\` 高于本版而报错。也就是说,**没有任何自动机制能阻止用旧版去读新版写出
-          > 的数据**。回退版本前请人工核对配置兼容性,详见「回滚」。
+          > ⚠ **旧入口的持久化读取没有版本闸门**:\`npm start\` / \`mixctl\` 仍只做形状归一化。
+          > 新 \`npm run local\` 会在启动前拒绝已知配置文件中比本版更新的 \`version\`,
+          > 但这只是 JSON 与顶层结构检查,不是完整兼容性证明。回退前仍须人工核对,详见「回滚」。
 
           ## 回滚
 

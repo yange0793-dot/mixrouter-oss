@@ -1,6 +1,6 @@
 {
   "name": "mixrouter",
-  "version": "3.6.1",
+  "version": "3.7.0",
   "private": true,
   "description": "零依赖的本地 AI 路由器:Claude Code、Codex 与 ZCode 的渠道切换、会话分发和槽位路由",
   "main": "mixrouter.js",
@@ -16,6 +16,9 @@
   },
   "scripts": {
     "start": "node mixrouter.js",
+    "local": "node scripts/start-local.js",
+    "doctor": "node scripts/doctor.js",
+    "verify:release": "node scripts/verify-release.js",
     "test": "node scripts/run-tests.js",
     "smoke": "node scripts/smoke-offline.js"
   },

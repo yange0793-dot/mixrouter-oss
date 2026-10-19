@@ -46,6 +46,8 @@ const INCLUDE_WHY = Object.freeze({
   'package.json': 'version 与 engines.node>=18 的来源;`npm test` / `npm run smoke` 也靠它',
   'LICENSE': 'MIT 许可证,发布物必须带',
   'README.md': '用户文档入口(快速开始、环境变量、命令总览)',
+  'README.en.md': '英文项目入口与启动说明',
+  'SUPPORT.md': '求助路径、诊断信息与隐私边界',
   'CONTRIBUTING.md': '测试与提交流程:完整开发测试在源码克隆里跑,运行包里用 `npm run smoke` 验证',
   'SECURITY.md': '安全问题的私密报告渠道:不要把 Key 或可利用细节发到公开 issue',
   'CHANGELOG.md': '本版改了什么、升级时要注意什么;发版说明只给摘要,细节在这里',
@@ -98,8 +100,8 @@ const REQUIRED_ENTRIES = ['mixrouter.js', 'public/index.html', 'public/js/app.js
 // GitHub 源码仓库跑(不少用例依赖 .github / .gitignore 这些不进包的文件)。
 // 运行包的验证入口是随包的 `npm run smoke`;`npm test` 在包里会明确失败,不会伪装通过。
 const REQUIRED_MAINTENANCE_ENTRIES = [
-  'package.json', 'scripts/smoke-offline.js',
-  'CONTRIBUTING.md', 'SECURITY.md', 'CHANGELOG.md',
+  'package.json', 'scripts/smoke-offline.js', 'scripts/start-local.js', 'scripts/doctor.js',
+  'README.en.md', 'SUPPORT.md', 'CONTRIBUTING.md', 'SECURITY.md', 'CHANGELOG.md',
 ];
 
 // ---------------------------------------------------------------- 纯函数

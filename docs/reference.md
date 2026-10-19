@@ -530,6 +530,13 @@ MIXR_DATA_DIR=/absolute/path node scripts/diagnose-upstream.js --mode provider -
 路径类与端口类都在 `mixrouter.js` 模块顶层读取,必须在 `require()` **之前**设好;
 require 之后再改不生效。
 
+下表保留原始入口 `npm start` / `node mixrouter.js` 的默认值。
+新入口 `npm run local` 会先设置固定数据目录 `~/.local/share/mixrouter/data`,再启动服务;
+命令行 `--data-dir` / `--port` / `--ui-port` 优先于对应环境变量。
+`npm run doctor` 使用同一套路径选择,旧部署需显式给出原数据目录。
+`MIXR_INSTALL_PREFIX` 可改变新入口的默认安装根,数据位于该根的 `data/`。
+这些入口不修改客户端配置或现有常驻配置。
+
 | 变量 | 默认 | 作用 |
 | --- | --- | --- |
 | `MIXROUTER_PORT` / `MIXUI_PORT` | 8787 / 8788 | 代理口 / 控制台口 |

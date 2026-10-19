@@ -1,0 +1,11 @@
+# 只更新 workflow 里用到的 actions(actions/checkout、actions/setup-node)。
+# 项目零第三方依赖,所以故意不配置 npm 生态的更新。
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    groups:
+      github-actions:
+        patterns: ["*"]

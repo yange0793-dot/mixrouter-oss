@@ -13,7 +13,8 @@ mixrouter 是零依赖的 Node 项目:没有 `npm install`、没有构建步骤�
 
 ```bash
 node --version                 # v18 或更高(推荐 22 / 24)
-git clone <repo> mixrouter && cd mixrouter
+git clone https://github.com/yange0793-dot/mixrouter-oss.git
+cd mixrouter-oss
 npm test                       # = node scripts/run-tests.js
 npm run smoke                  # = node scripts/smoke-offline.js,真实一进一出的离线验收
 npm start                      # = node mixrouter.js,前台起服务
@@ -30,7 +31,8 @@ npm start                      # = node mixrouter.js,前台起服务
   `RELEASE_ITEMS`,再减去 `EXCLUDE`)。新增顶层文件或目录时,改 `RELEASE_ITEMS` 那一处,
   不要复制一份白名单。
 
-改协议/路由之前,先看 README 的「环境变量」「命令总览」两节与 `test/*.test.js` 里的相关断言:
+改协议/路由之前,先看 [`docs/cli.md`](docs/cli.md) 的「命令总览」、
+[`docs/reference.md`](docs/reference.md#10-环境变量) 的环境变量表,以及 `test/*.test.js` 里的相关断言:
 **有一部分**文档口径与测试断言是成对的(改了文档里那句承诺,对应断言会红)。不是所有文档都会这样,
 但看到无端变红的断言时,先检查是不是自己改了它引用的那段话。
 
@@ -94,6 +96,18 @@ node scripts/release-manifest.js check <解包目录>
 **不含 `test/`**,所以在解压目录里跑 `npm test` 会明确报"此运行包不含开发测试套件"并以非 0 退出
 (那是在提醒你去源码仓库跑,不是测试失败)。完整测试只在 GitHub 源码克隆里跑。
 
+### 验收制品
+
+```bash
+npm run verify:release                  # 从 HEAD 按制品清单打包 → 解包 → 校验内容 → 跑 doctor/smoke
+npm run verify:release -- --dir <目录>   # 验收一个已经解包的制品
+```
+
+它验收的是**消费者实际拿到的那份制品**,不是工作树。默认模式只打包 HEAD 里**已跟踪**的文件:
+未提交的新增文件不会进包,也不会被验到。要验收工作区里尚未提交的改动,先提交,或明确用
+`--dir` 指向已经解好的目录。`--dir` 模式下脚本不会替你重新打包或修正内容。
+
 上线/回退用的 `scripts/deploy-live.sh` 与 `scripts/preflight-live-data.js` 不在发布物里,
 它们不是安装路径。`scripts/install-macos.sh` 与 macOS 外壳仍是**实验性**组件,不是受支持的
-正式安装入口;公开使用直接 `node mixrouter.js`(或用 `mixctl start` 常驻)。
+正式安装入口;公开使用推荐在源码或解压目录里 `npm run local`(见
+[安装、运行与卸载](docs/installation.md)),已经配置好的部署可用 `mixctl start` 常驻。

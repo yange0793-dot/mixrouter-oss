@@ -19,12 +19,20 @@
 
 ```bash
 node -v          # 需要 v18 或更高
-git clone <repo> mixrouter-src && cd mixrouter-src
-npm start        # 等价于 node mixrouter.js;不需要先 npm install
+git clone https://github.com/yange0793-dot/mixrouter-oss.git
+cd mixrouter-oss
+npm run doctor   # 无 Key、未启动的警告是正常的;不修改配置
+npm run local    # 前台启动;数据与代码分离,不需要 npm install
 ```
 
-`npm start` 会监听两个口(都可改,见 §2):代理 `127.0.0.1:8787`、控制台 `127.0.0.1:8788`。
+`npm run local` 会监听两个口(都可改,见 §2):代理 `127.0.0.1:8787`、控制台 `127.0.0.1:8788`。
 两个口都**写死只绑回环**,代码里没有 `0.0.0.0` / `[::]`。
+新入口默认数据目录为 `~/.local/share/mixrouter/data`,支持 `--data-dir`、`--port`、`--ui-port`。
+旧版 `npm start` 不改变默认值:未设 `MIXR_DATA_DIR` 时仍使用代码目录。
+
+`npm run doctor -- --offline` 完全不连接端口,也不建目录或修改配置。
+机器可读输出用 `npm run --silent doctor -- --json`;它不输出 Key、渠道地址或会话内容,
+但包含数据目录路径,分享前仍应检查用户名等本机信息。自检不调用上游,不能证明 Key 或模型有效。
 
 ## 1. 三分钟离线验收(推荐先跑这个)
 
@@ -138,13 +146,14 @@ node mixrouter.js
 | 组件 | 边界 | 缺了会怎样 |
 | --- | --- | --- |
 | `scripts/import-ccswitch.js` | 需要系统 `sqlite3` 命令(不在 Node 里,也不在 `package.json` 里) | 导入命令直接失败;核心服务不受影响。**未验证**:仓库里没有 cc-switch 库的样本,没在干净环境实跑过 |
-| `~/Library/LaunchAgents/*.mixrouter.plist` | 开机常驻,纯可选外壳,仅 macOS。plist 内容见 README「常驻(可选,launchd)」 | `mixctl start` 退回自己 `spawn` 一个后台进程,功能一样,只是没有开机自启与崩溃拉起 |
+| `~/Library/LaunchAgents/*.mixrouter.plist` | 开机常驻,纯可选外壳,仅 macOS。plist 内容见 [CLI 文档的常驻一节](cli.md#8-常驻可选launchdmacos) | `mixctl start` 退回自己 `spawn` 一个后台进程,功能一样,只是没有开机自启与崩溃拉起 |
 | `app/MixrouterApp.swift` + `scripts/build-app.sh` | **实验性**桌面窗口,纯可选外壳。需要 macOS + CommandLineTools 里的 `swiftc`、`codesign`、`plutil` | 用浏览器开 `http://127.0.0.1:8788` 即可,功能一样 |
 | `MIXR_UPSTREAM_PROXY` | 出站 CONNECT 隧道,只在"端口式代理"的网络里需要 | 直连。注意 `lib/upstream-proxy.js` 只支持 `http://` 的 CONNECT;环回地址永不隧道 |
 
-**CI 跑在 Linux 上**(`.github/workflows/ci.yml`,`ubuntu-latest`,Node 18/22/24 矩阵),
-先 `npm test` 再 `npm run smoke`,不跑任何 macOS 外壳脚本——也就是说外壳的跨平台性没有被 CI
-覆盖,它本来也不打算跨平台。
+**完整 CI 跑在 Linux 上**(`.github/workflows/ci.yml`,`ubuntu-latest`,Node 18/22/24 矩阵),
+先 `npm test` 再 `npm run smoke`。工作流另有 macOS Node 24 的解包制品验收任务,
+但不跑 Swift 桌面外壳构建。工作流已配置不等于本次分支已在 GitHub 跑过;
+实际运行结果以 Actions 为准,Windows 与桌面外壳不在该矩阵范围内。
 
 ## 4. 跑测试
 

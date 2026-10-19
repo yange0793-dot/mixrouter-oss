@@ -137,15 +137,15 @@ test('W1 只在 require.main 块里用 lifecycle;排空口径合规;保留合并
 });
 
 // 「4000ms 这条线上限从哪来」也要有出处,否则预算断言只是我拍的数。
-test('W2b 4000ms 强杀线确实来自 mixctl 与 README 的 plist,不是测试自己拍的', async t => {
+test('W2b 4000ms 强杀线确实来自 mixctl 与 CLI 文档的 plist,不是测试自己拍的', async t => {
   guard(t);
   const mixctl = fs.readFileSync(path.join(ROOT, 'mixctl'), 'utf8');
   const stopFn = mixctl.slice(mixctl.indexOf('function stop()'));
   assert.match(stopFn.slice(0, 600), /Date\.now\(\) - t0 > 4000/,
     'mixctl 的 stop() 里找不到 4000ms 强杀线 —— 上游改了,本文件的预算判据要重新核对');
-  const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
-  assert.match(readme, /KeepAlive<\/key><dict><key>SuccessfulExit<\/key><false\/><\/dict>/,
-    'README 里的 KeepAlive.SuccessfulExit=false 找不到 —— 「非 0 退出会被立刻拉起」这条前提要重新核对');
+  const cliDoc = fs.readFileSync(path.join(ROOT, 'docs', 'cli.md'), 'utf8');
+  assert.match(cliDoc, /KeepAlive<\/key><dict><key>SuccessfulExit<\/key><false\/><\/dict>/,
+    'CLI 文档里的 KeepAlive.SuccessfulExit=false 找不到 —— 「非 0 退出会被立刻拉起」这条前提要重新核对');
 });
 
 // ---------------------------------------------------------------- 2) 子进程探针设施

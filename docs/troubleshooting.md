@@ -7,12 +7,23 @@
 
 - `./mixctl` 指仓库根的 `mixctl`;**多数命令需要控制台在跑**(走 `http://127.0.0.1:8788`);
   `backups` / `restore` / `gc` 是本地命令,与 `mixrouter.js` 无关。
-- 请求日志在 `<MIXR_DATA_DIR>/logs/requests.jsonl`,默认数据目录就是仓库根。**日志里不含 Key 明文**
+- 请求日志在 `<MIXR_DATA_DIR>/logs/requests.jsonl`;旧入口默认数据目录是仓库根,
+  `npm run local` 默认是 `~/.local/share/mixrouter/data`。**日志里不含 Key 明文**
   (只有 `key_id` / `key_source` 这类非明文来源字段)。
 
 ---
 
 ## 0. 先分清"服务有没有在跑"
+
+包含新入口的源码/新版运行包可先跑 `npm run doctor`;只查文件、不连端口用
+`npm run doctor -- --offline`。它不调用上游、不修改配置,也不会打印 Key 或会话内容。
+默认数据目录与 `npm run local` 一致;旧部署用 `--data-dir <原数据目录>`。
+纯 JSON 输出用 `npm run --silent doctor -- --json`,分享前检查其中的本机路径。
+v3.6.1 发布包尚不含这个命令,使用下方旧入口诊断。
+
+`npm run local` / `npm start` 的前台进程不写 `mixctl` PID 文件。对它们请看运行终端与
+`doctor` 的回环服务结果,不要因 `mixctl status` 的“进程:未运行”就再启动一个服务。
+以下 PID 判据仅适用于通过 `mixctl` 或 launchd 启动的部署:
 
 ```bash
 ./mixctl status

@@ -335,19 +335,19 @@ test('未知子命令与 sessions --help 打出用法串,不发任何请求', as
   assert.equal(bogus.writes.length, 0);
 });
 
-// ------------------------------------------------------------------ 6) README 与用法串
+// ------------------------------------------------------------------ 6) CLI 文档与用法串
 
-test('README 命令总览逐行收录 sessions 覆盖子命令,边界也写进正文', () => {
+test('CLI 文档命令总览逐行收录 sessions 覆盖子命令,边界也写进正文', () => {
   const fs = require('node:fs');
-  const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
-  const overview = readme.split('## 运行\n')[1].split('\n- **代理端口')[0];
+  const cliDoc = fs.readFileSync(path.join(__dirname, '..', 'docs', 'cli.md'), 'utf8');
+  const overview = cliDoc.split('## 1. 命令总览')[1].split('```text\n')[1].split('```')[0];
   for (const line of SESSIONS_USAGE.split('\n').slice(0, 6))
-    assert.ok(overview.includes(`./${line}`), `README 缺少 ${line}`);
+    assert.ok(overview.includes(`./${line}`), `docs/cli.md 缺少 ${line}`);
   assert.ok(require('../lib/cli/usage').MAIN_USAGE.includes(SESSIONS_USAGE), '总览必须收录整段用法');
   // 交付物只描述接口约定与本地行为:不写"已部署/已联调真实上游"这类没做过的验证。
   for (const text of ['不接受 Key 明文', '不重复存 Key 明文', 'expected_revision',
     '同身份子请求的边界', 'provider_key_unavailable_error', '显式配置过的会话不被空闲 TTL 剪掉']) {
-    assert.ok(readme.includes(text), `README 缺少边界说明:${text}`);
+    assert.ok(cliDoc.includes(text), `docs/cli.md 缺少边界说明:${text}`);
   }
 });
 
