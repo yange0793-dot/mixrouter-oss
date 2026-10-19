@@ -78,6 +78,24 @@ test('会话槽优先全局，覆盖不带备池，不改全局dropTools；未�
   assert.equal(resolveSessionSlot(global, 'mixr-opus', 'claude', config, []).provider, null);
 });
 
+test('会话槽:Claude 兼容别名按同一槽名覆盖,Codex 组不认这个前缀', () => {
+  const ps = providers(), config = routing();
+  const global = { name: 'opus', model: 'global', dropTools: ['Tool'], rule: { pool: ['pa', 'pb'] } };
+  const snapshot = structuredClone(global);
+  const compat = resolveSessionSlot(global, ' claude-mixr-opus ', 'claude', config, ps);
+  assert.equal(compat.session, true);
+  assert.equal(compat.name, 'opus');
+  assert.equal(compat.model, 'other-model');
+  assert.equal(compat.provider, ps[0]);
+  assert.equal(compat.rule.key_id, 'ka');
+  assert.deepEqual(compat.rule.pool, [], '会话槽覆盖不带备池,与 mixr-* 一致');
+  assert.deepEqual(global, snapshot, '全局槽位快照不被改动');
+  // 带 [1m] 上下文后缀时按同一槽名覆盖
+  assert.equal(resolveSessionSlot(global, 'claude-mixr-opus[1m]', 'claude', config, ps).name, 'opus');
+  // Codex 组只认 mixr-<槽名>:同一个字符串在 Codex 组是普通模型名,原样继承全局槽位
+  assert.equal(resolveSessionSlot(global, 'claude-mixr-opus', 'codex', config, ps), global);
+});
+
 test('Key 优先级为槽位、会话渠道、全局；内容规则不受覆盖，无共享对象写入', () => {
   const ps = providers(), config = routing(), before = structuredClone(ps);
   const slotKey = selectSessionKey(ps[0], { slot: 'opus' }, config);

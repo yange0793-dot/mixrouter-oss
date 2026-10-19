@@ -116,6 +116,41 @@ test('preview API 按 slotMap 判断未绑定与不存在,不把内置槽名猜�
   assert.equal(absent.json.warnings.some(w => w.code === 'slot_unbound'), false);
 });
 
+test('preview API 对 Claude 兼容别名给出同样的命中/未绑定/不存在结论', async () => {
+  mod._state.routes = { rules: [rule({ match: 'nomatch-never' })], default: { pool: ['a', 'b'], strategy: 'priority' } };
+  // 命中:兼容别名与规范别名指向同一条槽位规则、同一个落点
+  mod._state.slotMap = { claude: { haiku: { provider: 'a', model: 'slot-model' } }, codex: {} };
+  const hitCompat = await post({ app: 'claude', model: ' claude-mixr-haiku ' });
+  const hitCanonical = await post({ app: 'claude', model: 'mixr-haiku' });
+  for (const r of [hitCompat, hitCanonical]) {
+    assert.equal(r.json.matched.via, 'slot');
+    assert.equal(r.json.matched.slot, 'haiku');
+    assert.equal(r.json.matched.ruleId, 'slot:claude/haiku');
+    assert.equal(r.json.selection.predicted.model, 'slot-model');
+    assert.equal(r.json.selection.predicted.providerId, 'a');
+    assert.equal(r.json.stages.find(s => s.stage === 'slot').outcome, 'hit');
+  }
+  // 槽位在表里但没绑渠道:兼容别名同样要报 slot_unbound,不能当成普通模型名
+  mod._state.slotMap = { claude: { haiku: {} }, codex: {} };
+  const unbound = await post({ app: 'claude', model: 'claude-mixr-haiku' });
+  assert.ok(unbound.json.warnings.some(w => w.code === 'slot_unbound'));
+  // 压根没这个槽:兼容别名同样报 slot_fell_through
+  mod._state.slotMap = { claude: {}, codex: {} };
+  const absent = await post({ app: 'claude', model: 'claude-mixr-sonnet' });
+  assert.ok(absent.json.warnings.some(w => w.code === 'slot_fell_through'));
+  assert.equal(absent.json.warnings.some(w => w.code === 'slot_unbound'), false);
+  // 带 [1m] 上下文后缀的别名仍然命中同一个槽,预览不能报成普通模型名
+  mod._state.slotMap = { claude: { haiku: { provider: 'a', model: 'slot-model' } }, codex: {} };
+  const suffix = await post({ app: 'claude', model: 'claude-mixr-haiku[1m]' });
+  assert.equal(suffix.json.matched.via, 'slot');
+  assert.equal(suffix.json.matched.slot, 'haiku');
+  // 不跨组:Codex 请求里同一字符串只是普通模型名,不是槽位别名
+  const codex = await post({ app: 'codex', model: 'claude-mixr-main' });
+  const codexSlot = codex.json.stages.find(s => s.stage === 'slot');
+  assert.equal(codexSlot.outcome, 'not_alias');
+  assert.ok(!codex.json.warnings.some(w => w.code === 'slot_fell_through'));
+});
+
 test('selection.candidates 在四个分支都列完整候选池,不因有首选就缩成单元素', async () => {
   // candidates 是候选池,不是最终落点:content / sticky / pinned / strategy 四个分支给同一份
   // kind 过滤后的有效成员。钉定可以选池外渠道,那时 predicted 故意不在 candidates 里。

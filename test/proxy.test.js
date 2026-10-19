@@ -741,3 +741,123 @@ test('槽位备池用 priority 策略:主渠道健康时不会被轮询打到备
   await rawRequest(uiPort, 'DELETE', `/api/providers/${slotA}`);
   await rawRequest(uiPort, 'DELETE', `/api/providers/${slotB}`);
 });
+
+// ---------------------------------------------------------------- Claude 桌面兼容别名
+// Claude Desktop 只接受名字里含 claude / opus / sonnet 的网关模型,所以 Claude 组在
+// mixr-<槽名> 之外精确接受 claude-mixr-<槽名>。下面钉住三件事:落点仍是被命中的原槽
+// (渠道/模型/池/dropTools 都不是另一份配置)、请求 model 被改写成槽位实际模型、
+// 而日志 model_in 保留客户端发来的兼容别名。
+const withTools = (model, sessionId, tools) => rawRequest(proxyPort, 'POST', '/v1/messages', {
+  headers: { 'Content-Type': 'application/json', 'x-claude-code-session-id': sessionId },
+  body: { model, max_tokens: 4, messages: [{ role: 'user', content: 'hi' }], ...(tools ? { tools } : {}) },
+});
+
+test('兼容别名命中同一槽位:请求模型改写为槽位实际模型,日志 model_in 保留兼容别名', async () => {
+  const slotA = await mkClaudeProvider('兼容别名主渠道', 'sk-compat-a-0001');
+  const slotB = await mkClaudeProvider('兼容别名备渠道', 'sk-compat-b-0002');
+  const rulesSave = mod._state.routes;
+  const slotsSave = structuredClone(mod._state.slotMap);
+  const mockSave = mock.requests.length;
+  mod._state.routes = { rules: [], default: { provider: '', model: '' } };
+  mod._state.slotMap = { claude: {
+    // 池 + dropTools 都配在这个槽上:兼容别名必须复用同一份槽位配置,而不是另起一份
+    haiku: { provider: slotA, model: 'compat-slot-target', dropTools: ['Bash'],
+      pool: [{ provider: slotB, model: 'compat-pool-target' }], strategy: 'priority' },
+  }, codex: {} };
+  mod._state.resetPools();
+  for (const sid of ['cc:compat1', 'cc:compat2']) mod._state.sessions.delete(sid);
+
+  const r = await withTools('claude-mixr-haiku', 'cc:compat1', [{ name: 'Bash' }, { name: 'Read' }]);
+  assert.strictEqual(r.status, 200, r.text);
+  const sent = mock.requests.at(-1);
+  assert.strictEqual(sent.body.model, 'compat-slot-target', '发往上游的 model 必须是槽位绑定的实际模型');
+  assert.strictEqual(sent.headers['x-api-key'], 'sk-compat-a-0001', '走槽位主渠道');
+  assert.deepStrictEqual(sent.body.tools.map(t => t.name), ['Read'], '槽位 dropTools 对兼容别名同样生效');
+
+  const logs = JSON.parse((await rawRequest(uiPort, 'GET', '/api/logs')).text);
+  // /api/logs 按时间倒序(最新在前):直接 find 拿到的就是本轮这条
+  const compat = logs.logs.find(l => l.model_in === 'claude-mixr-haiku');
+  assert.ok(compat, '日志 model_in 必须保留客户端发来的兼容别名');
+  assert.strictEqual(compat.model_out, 'compat-slot-target', '日志 model_out 记实际落点模型');
+  assert.strictEqual(compat.slot, 'haiku');
+  assert.strictEqual(compat.rule, 'slot:claude/haiku', '命中的仍是原槽位规则');
+  assert.strictEqual(compat.pool, 2, '槽位备池原样生效(不是只有单点)');
+  assert.strictEqual(compat.tools_dropped, 1);
+
+  // 规范别名发同一槽位:落点、规则、池完全一致 —— 两个别名是同一条槽,不是两份配置
+  const beforeCanonical = mock.requests.length;
+  const c = await withTools('mixr-haiku', 'cc:compat2');
+  assert.strictEqual(c.status, 200, c.text);
+  const sentCanonical = mock.requests[beforeCanonical];
+  assert.strictEqual(sentCanonical.body.model, 'compat-slot-target');
+  assert.strictEqual(sentCanonical.headers['x-api-key'], 'sk-compat-a-0001');
+  const canonical = JSON.parse((await rawRequest(uiPort, 'GET', '/api/logs')).text).logs
+    .find(l => l.model_in === 'mixr-haiku');
+  assert.ok(canonical);
+  assert.strictEqual(canonical.rule, compat.rule);
+  assert.strictEqual(canonical.slot, compat.slot);
+  assert.strictEqual(canonical.model_out, compat.model_out);
+
+  mod._state.routes = rulesSave;
+  mod._state.slotMap = slotsSave;
+  for (const sid of ['cc:compat1', 'cc:compat2']) mod._state.sessions.delete(sid);
+  mod._state.resetPools();
+  await rawRequest(uiPort, 'DELETE', `/api/providers/${slotA}`);
+  await rawRequest(uiPort, 'DELETE', `/api/providers/${slotB}`);
+});
+
+test('兼容别名带 [1m] 上下文后缀仍落同一槽,日志保留原样的 model_in', async () => {
+  const slotA = await mkClaudeProvider('上下文后缀渠道', 'sk-compat-1m-0001');
+  const rulesSave = mod._state.routes;
+  const slotsSave = structuredClone(mod._state.slotMap);
+  mod._state.routes = { rules: [], default: { provider: '', model: '' } };
+  mod._state.slotMap = { claude: { main: { provider: slotA, model: 'compat-1m-target' } }, codex: {} };
+  mod._state.resetPools();
+  mod._state.sessions.delete('cc:compat-1m');
+  try {
+    // [1m] 只声明上下文大小,不改路由:同一个槽、同一个落点,日志照抄客户端发来的名字
+    const r = await withTools('claude-mixr-main[1m]', 'cc:compat-1m');
+    assert.strictEqual(r.status, 200, r.text);
+    assert.strictEqual(mock.requests.at(-1).body.model, 'compat-1m-target');
+    const hit = JSON.parse((await rawRequest(uiPort, 'GET', '/api/logs')).text).logs
+      .find(l => l.model_in === 'claude-mixr-main[1m]');
+    assert.ok(hit, '日志 model_in 保留客户端发来的 [1m] 后缀');
+    assert.strictEqual(hit.rule, 'slot:claude/main');
+    assert.strictEqual(hit.slot, 'main');
+  } finally {
+    mod._state.routes = rulesSave;
+    mod._state.slotMap = slotsSave;
+    mod._state.sessions.delete('cc:compat-1m');
+    mod._state.resetPools();
+    await rawRequest(uiPort, 'DELETE', `/api/providers/${slotA}`);
+  }
+});
+
+test('兼容别名沿用槽位错误分型:绑定渠道已删/停用都明确拒绝,不静默落到普通规则', async () => {
+  const rulesSave = mod._state.routes;
+  const slotsSave = structuredClone(mod._state.slotMap);
+  const rulesBefore = structuredClone(mod._state.routes);
+  try {
+    mod._state.slotMap = { claude: { main: { provider: 'gone-provider', model: 'x' } }, codex: {} };
+    const gone = await withTools('claude-mixr-main', 'cc:compat-gone');
+    assert.strictEqual(gone.status, 503);
+    const goneErr = JSON.parse(gone.text).error;
+    assert.strictEqual(goneErr.type, 'no_route_error');
+    assert.match(goneErr.message, /槽位 "main" 的别名 "claude-mixr-main" 已无可用渠道/,
+      '错误里说清是哪个别名命中的哪个槽位');
+
+    const dead = await mkClaudeProvider('兼容禁用渠道', 'sk-compat-dead-0001');
+    mod._state.store.claude.find(p => p.id === dead).enabled = false;
+    mod._state.slotMap = { claude: { opus: { provider: dead, model: 'x' } }, codex: {} };
+    const disabled = await withTools('claude-mixr-opus', 'cc:compat-dead');
+    assert.strictEqual(disabled.status, 503);
+    assert.strictEqual(JSON.parse(disabled.text).error.type, 'provider_disabled_error');
+    await rawRequest(uiPort, 'DELETE', `/api/providers/${dead}`);
+  } finally {
+    mod._state.routes = rulesSave;
+    mod._state.slotMap = slotsSave;
+    for (const sid of ['cc:compat-gone', 'cc:compat-dead']) mod._state.sessions.delete(sid);
+    mod._state.resetPools();
+  }
+  assert.deepStrictEqual(mod._state.routes, rulesBefore, '兼容别名不改路由表');
+});

@@ -13,8 +13,9 @@ const assert = require('node:assert/strict');
 
 const slots = require('../lib/routing/slots.js');
 const {
-  CLAUDE_SLOTS, CLAUDE_SLOT_ENV, CLAUDE_SLOT_KEYS, CODEX_SLOT_NAME_RE,
-  slotAlias, normalizeChannelSlots, normalizeSlotsFile, createSlotTable,
+  CLAUDE_SLOTS, CLAUDE_SLOT_ENV, CLAUDE_SLOT_KEYS, CODEX_SLOT_NAME_RE, CLAUDE_COMPAT_PREFIX,
+  slotAlias, slotAliases, slotNameFromAlias, stripContextSuffix, normalizeChannelSlots, normalizeSlotsFile,
+  createSlotTable,
 } = slots;
 
 // ---------------------------------------------------------------- fixture
@@ -72,6 +73,25 @@ test('Codex 槽名规则:小写字母数字连字符,首字符非连字符,≤24
 test('slotAlias:固定 mixr- 前缀', () => {
   assert.equal(slotAlias('claude', 'haiku'), 'mixr-haiku');
   assert.equal(slotAlias('codex', 'worker'), 'mixr-worker');
+});
+
+test('兼容别名:Claude 组认 claude-mixr-<槽名>,Codex 组不认这个前缀', () => {
+  assert.equal(CLAUDE_COMPAT_PREFIX, 'claude-mixr-');
+  assert.deepEqual(slotAliases('claude', 'main'), ['mixr-main', 'claude-mixr-main']);
+  assert.deepEqual(slotAliases('codex', 'worker'), ['mixr-worker']);
+  assert.equal(slotNameFromAlias('claude', ' MIXR-MAIN '), 'main');
+  assert.equal(slotNameFromAlias('claude', ' claude-mixr-main '), 'main');
+  assert.equal(slotNameFromAlias('codex', 'claude-mixr-worker'), null, 'Codex 不认 Claude 兼容前缀');
+  assert.equal(slotNameFromAlias('claude', 'claude-opus-5'), null);
+});
+
+test('[1m] 上下文后缀不影响槽位识别', () => {
+  assert.equal(stripContextSuffix(' claude-mixr-main[1M] '), 'claude-mixr-main');
+  assert.equal(stripContextSuffix('mixr-opus'), 'mixr-opus');
+  assert.equal(slotNameFromAlias('claude', 'claude-mixr-main[1m]'), 'main');
+  assert.equal(slotNameFromAlias('claude', 'mixr-subagent[1m]'), 'subagent');
+  // 只剥结尾那一处;名字中间的 [1m] 留着,不会误命中 main
+  assert.notEqual(slotNameFromAlias('claude', 'claude-mixr-[1m]main'), 'main');
 });
 
 // ---------------------------------------------------------------- normalizeSlotsFile
@@ -141,6 +161,9 @@ test('resolveSlot:精确匹配别名才命中,子串/前缀/大写不命中', ()
   assert.equal(t.resolveSlot(map, 'claude', 'mixr-main').name, 'main');
   // 子串不命中
   assert.equal(t.resolveSlot(map, 'claude', 'claude-mixr-haiku-x'), null);
+  // 带 [1m] 上下文后缀仍落同一个槽,不是新的模型名
+  assert.equal(t.resolveSlot(map, 'claude', 'claude-mixr-haiku[1m]').name, 'haiku');
+  assert.equal(t.resolveSlot(map, 'claude', 'mixr-main[1M]').name, 'main');
   assert.equal(t.resolveSlot(map, 'claude', 'mixr-haiku-x'), null);
   assert.equal(t.resolveSlot(map, 'claude', 'mixr'), null);
   // 大小写不敏感(模块内 toLowerCase)
@@ -155,6 +178,47 @@ test('resolveSlot:不跨组命中(Claude 槽不会被 codex 请求选中)', () =
   assert.equal(t.resolveSlot(map, 'codex', 'mixr-main'), null, 'codex 组没有 main 槽');
   assert.equal(t.resolveSlot(map, 'claude', 'mixr-worker'), null, 'claude 组没有 worker 槽');
   assert.equal(t.resolveSlot(map, 'codex', 'mixr-worker').name, 'worker');
+});
+
+test('resolveSlot:Claude 五个固定槽都接受兼容别名,命中与 mixr-* 相同的槽位与 rule', () => {
+  const t = T();
+  const map = { claude: {
+    main: { provider: 'pa', model: 'm-main', pool: [{ provider: 'pb', model: 'm-pool' }], strategy: 'priority' },
+    opus: { provider: 'pa', model: 'm-opus' },
+    sonnet: { provider: 'pb', model: 'm-sonnet' },
+    haiku: { provider: 'pa', model: 'm-haiku', dropTools: ['Bash', 'mcp__*'] },
+    subagent: { provider: 'pb', model: 'm-subagent' },
+  }, codex: {} };
+  for (const name of CLAUDE_SLOTS) {
+    const canonical = t.resolveSlot(map, 'claude', 'mixr-' + name);
+    const compat = t.resolveSlot(map, 'claude', 'claude-mixr-' + name);
+    assert.ok(canonical && compat, name);
+    assert.equal(compat.name, name);
+    assert.deepEqual(compat.rule, canonical.rule, `${name}: 兼容别名必须复用同一槽位规则`);
+    assert.equal(compat.rule.id, `slot:claude/${name}`);
+    assert.equal(compat.model, canonical.model, `${name}: 落点模型一致`);
+    assert.equal(compat.provider.id, canonical.provider.id);
+  }
+  // 池 / dropTools 不是被"兼容别名"另造一份,而是原样命中原槽配置
+  assert.deepEqual(t.resolveSlot(map, 'claude', 'claude-mixr-main').rule.pool,
+    [{ provider: 'pa', model: 'm-main' }, { provider: 'pb', model: 'm-pool' }]);
+  assert.deepEqual(map.claude.haiku.dropTools, ['Bash', 'mcp__*'], '槽位表本身不被改动');
+  // 仍然只做精确比较:多一个字符、少一个槽名都不命中
+  assert.equal(t.resolveSlot(map, 'claude', 'claude-mixr-main-x'), null);
+  assert.equal(t.resolveSlot(map, 'claude', 'claude-mixr-'), null);
+  assert.equal(t.resolveSlot(map, 'codex', 'claude-mixr-main'), null, '不跨到 Codex 组');
+  assert.equal(t.resolveSlot(map, 'claude', 'CLAUDE-MIXR-OPUS').name, 'opus', '大小写不敏感');
+});
+
+test('resolveSlot:兼容别名与 mixr-* 同样跳过未绑定槽,渠道已删时同样返回 null provider', () => {
+  const t = T();
+  const unbound = { claude: { main: { provider: '', model: 'm' }, opus: { model: 'm' } }, codex: {} };
+  assert.equal(t.resolveSlot(unbound, 'claude', 'claude-mixr-main'), null);
+  assert.equal(t.resolveSlot(unbound, 'claude', 'claude-mixr-opus'), null);
+  const gone = { claude: { main: { provider: 'pdeleted', model: 'm' } }, codex: {} };
+  const compat = t.resolveSlot(gone, 'claude', 'claude-mixr-main');
+  assert.equal(compat.name, 'main');
+  assert.equal(compat.provider, null, '转发层据此报"槽位已无可用渠道"');
 });
 
 test('resolveSlot:只认绑了 provider 的槽;未绑定与渠道不存在的槽都跳过', () => {

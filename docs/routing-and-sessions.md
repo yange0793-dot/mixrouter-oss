@@ -42,6 +42,21 @@
 | `haiku` | `mixr-haiku` | `ANTHROPIC_DEFAULT_HAIKU_MODEL` |
 | `subagent` | `mixr-subagent` | `CLAUDE_CODE_SUBAGENT_MODEL` |
 
+Claude 桌面只接受名字含 `claude` / `opus` / `sonnet` 的网关模型,所以 Claude 组额外
+精确接受兼容别名 `claude-mixr-<槽名>`(如 `claude-mixr-main`、`claude-mixr-subagent`,
+五个固定槽都有)。它和 `mixr-<槽名>` 命中同一条槽位规则:渠道、模型、备池、`dropTools`、
+会话覆盖、预览与错误分型完全一致,不是第二份路由配置。规范别名仍是 `mixr-<槽名>`,
+客户端 env 与直连清理继续写它;Codex 组不认 `claude-mixr-` 前缀。
+
+兼容别名可以带 `[1m]` 后缀(`claude-mixr-main[1m]`)。后缀只影响客户端的上下文窗口
+估算,匹配槽位前会被剥掉:照常命中同一个槽,`model_in` 保留客户端原文。Claude Code 遇到
+不认识的 `claude-*` 名会忽略 `CLAUDE_CODE_MAX_CONTEXT_TOKENS` 并退回 200k,所以需要 1M
+窗口时由同步器给别名补 `[1m]`。
+
+兼容别名只解决桌面端模型名校验,**不冒充上游模型的真实身份**;实际模型看槽位落点
+(日志 `model_out`),而 `model_in` 保留客户端发来的别名。标签跟随 mixrouter 并注明
+Main 跟随 mixrouter 槽位。
+
 `fable` 槽已移除(Claude Code 在当前接法下不消费 `ANTHROPIC_DEFAULT_FABLE_MODEL`),
 加载时会从内存槽表清理旧 `fable` 与未知 Claude 槽,**不因启动而改写磁盘槽表或客户端配置**。
 
