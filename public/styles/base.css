@@ -256,7 +256,7 @@ body[data-connection=offline] .run { color: var(--err-text); }
   border-radius: var(--radius);
 }
 .icon-button:hover:not(:disabled) { background: var(--surface-2); border-color: var(--border); color: var(--text); }
-#sidebar-toggle { display: none; }
+#sidebar-toggle, .sidebar-toggle { display: none; }
 .sidebar-backdrop, #sidebar-backdrop {
   display: none; position: fixed; inset: 0; z-index: 55;
   background: var(--overlay); border: 0; padding: 0; border-radius: 0;
@@ -283,7 +283,7 @@ body[data-connection=offline] .run { color: var(--err-text); }
 }
 .quick-nav-button:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); background: var(--surface); }
 .quick-nav-button .icon { width: 15px; height: 15px; flex-shrink: 0; }
-.quick-nav-button > span { white-space: nowrap; }
+.quick-nav-button > span, .quick-nav-label { white-space: nowrap; }
 .kbd {
   font: 10.5px/1.5 var(--mono); background: var(--surface-2); border: 1px solid var(--border-soft);
   border-radius: 4px; padding: 0 4px; color: var(--dim);
@@ -909,7 +909,7 @@ body[data-connection=offline] .card.cur { border-color: var(--border); }
   body.nav-open .sidebar { transform: none; box-shadow: var(--shadow-overlay); }
   #sidebar-backdrop { display: none; }
   body.nav-open #sidebar-backdrop, #sidebar-backdrop.show, .sidebar-backdrop.show { display: block; }
-  #sidebar-toggle { display: inline-grid; }
+  #sidebar-toggle, .sidebar-toggle { display: inline-grid; }
   .nav-label, .nav-caption { display: block; }
   nav { display: flex; flex-direction: column; gap: 1px; padding: 0 8px 8px; }
   nav a { justify-content: flex-start; gap: 9px; padding: 6px 10px; min-height: 34px; margin: 0; font-size: 13px; white-space: nowrap; }
