@@ -419,7 +419,7 @@ MIXR_DATA_DIR=/absolute/path node scripts/diagnose-upstream.js --mode provider -
 
 ### 请求日志
 
-`<MIXR_DATA_DIR>/logs/requests.jsonl`,每条一行,30 个白名单字段。按 **UTC 跨日 + 5MiB**
+`<MIXR_DATA_DIR>/logs/requests.jsonl`,每条一行,31 个白名单字段。按 **UTC 跨日 + 5MiB**
 轮转,使用不覆盖的唯一归档名,默认保留 30 天;gzip 默认关闭,`MIXR_LOG_COMPRESS=on` 启用。
 旧 `requests.jsonl.old` 可查但不覆盖、不压缩、不自动清理。
 
@@ -429,6 +429,7 @@ MIXR_DATA_DIR=/absolute/path node scripts/diagnose-upstream.js --mode provider -
 | --- | --- |
 | `attempts` / `failover` | 实际网络尝试次数 / 是否发生过失败转移 |
 | `err` / `err_class` | 终态错误文本 / 错误分型 |
+| `bytes_in` | 客户端请求体字节数(不是 token)。大上下文/带截图时可达十几 MB,而首字延迟主要由它决定 —— 上游面板只从收完请求体开始计时 |
 | `slot` | 命中的槽位;空槽记 `none`,缺字段的旧日志记 `unknown` |
 | `sticky` / `strategy` / `rule` | 是否走了会话粘性 / 策略 / 命中的规则 id |
 | `key_id` / `key_source` | 用哪把 Key(**非明文**的来源标记) |

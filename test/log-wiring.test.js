@@ -51,11 +51,11 @@ const ui = (m, p) => raw(uiPort, m, p);
 const ask = (model, extra = {}) => raw(proxyPort, 'POST', '/v1/messages',
   { model, max_tokens: 8, messages: [{ role: 'user', content: 'hi' }], ...extra });
 
-// 与 mixrouter.js 的 entry 字面量 + entry.X 赋值点逐字对应的 25 个字段。
+// 与 entry 字面量 + entry.X 赋值点逐字对应的运行时字段。
 // think / reasoning / tools_dropped 是**条件写入**(mixrouter.js 的 `if (dropped)` 与 `if (conv)`),
 // 本文件的用例都不触发那两个分支,所以它们不在**运行时**出现 —— 但它们是**活字段**,
 // 下面"白名单外字段会被静默丢弃"那条源码级断言才是它们的主场。
-const RUNTIME_FIELDS = ['app', 'attempts', 'cache_read', 'effort', 'err', 'err_class', 'failover', 'in', 'key_id', 'key_source', 'kind', 'model_in',
+const RUNTIME_FIELDS = ['app', 'attempts', 'bytes_in', 'cache_read', 'effort', 'err', 'err_class', 'failover', 'in', 'key_id', 'key_source', 'kind', 'model_in',
   'model_out', 'ms', 'out', 'pool', 'provider', 'rule', 'session', 'session_kind', 'slot', 'status', 'sticky',
   'strategy', 'stream', 'ts', 'wire'].sort();
 const keysOf = o => Object.keys(o).sort();

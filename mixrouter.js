@@ -430,7 +430,8 @@ function reportGhostRoutes() {
 // 模块无状态:上面这些调用点把 slotMap 逐个显式传进去,模块既不读它也不改它。
 // 常量与别名用解构再导出的写法接过来,调用点与 module.exports 一字不用改。
 const {
-  CLAUDE_SLOTS, CLAUDE_SLOT_ENV, CLAUDE_SLOT_KEYS, slotAlias, normalizeChannelSlots,
+  CLAUDE_SLOTS, CLAUDE_SLOT_ENV, CLAUDE_SLOT_KEYS, slotAlias, slotAliases, stripContextSuffix,
+  normalizeChannelSlots,
 } = slotsLib;
 
 function loadSlots() {
@@ -674,8 +675,13 @@ const resolveRoute = createResolver({
 const explainRoute = createExplainer({
   getRoutes: () => routes, storeOf: app => storeOf(app),
   resolveSlot: (app, modelIn) => resolveSlot(app, modelIn), findProvider, providerApp,
-  slotExists: (app, modelIn) => Object.keys(slotMap[app] || {})
-    .some(name => slotAlias(app, name) === String(modelIn || '').trim().toLowerCase()),
+  slotExists: (app, modelIn) => {
+    const raw = stripContextSuffix(modelIn);
+    // 精确比较每个槽名的**全部**别名(Claude 组含 claude-mixr-* 兼容别名),
+    // 不做前缀猜测 —— "槽存在但没绑渠道"的预览提示据此区分。
+    return Object.keys(slotMap[app] || {})
+      .some(name => slotAliases(app, name).includes(raw));
+  },
   listPools: () => sess.pools, inCooldown, healthEligible: id => health.eligible(id),
   sessionSnapshot: () => ({ bindings: sess.sessions, now: Date.now(), ttlMs: SESSION_TTL_MS, max: SESSION_MAX }),
   uiPort: UI_PORT,
