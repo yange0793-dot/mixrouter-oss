@@ -17,7 +17,7 @@ class Element {
   constructor(id = '') {
     this.id = id; this.style = {}; this.attributes = {}; this.value = ''; this.checked = false;
     this.disabled = false; this.hidden = false; this.textContent = ''; this._html = ''; this.dataset = {};
-    this.children = []; this.classList = { set: new Set() };
+    this.children = []; this.parentNode = null; this.className = ''; this.classList = { set: new Set() };
     this.classList.add = (...xs) => xs.forEach(x => this.classList.set.add(x));
     this.classList.remove = (...xs) => xs.forEach(x => this.classList.set.delete(x));
     this.classList.contains = x => this.classList.set.has(x);
@@ -29,14 +29,29 @@ class Element {
   getAttribute(name) { return this.attributes[name]; }
   removeAttribute(name) { delete this.attributes[name]; }
   addEventListener(name, callback) { (this.events ||= {})[name] = callback; }
-  appendChild(child) { this.children.push(child); return child; }
+  appendChild(child) { child.parentNode = this; this.children.push(child); return child; }
   insertAdjacentHTML() {}
-  querySelector(selector) { return (this.children || []).find(child => selector.includes(child.className) || selector === '.' + child.className) || null; }
+  // SVG 内容在真实浏览器里是节点树,这里只有 innerHTML 字符串 —— 对 .chart-crosshair
+  // 这类由模板写出的部件返回一个替身元素,让交互测试能断言属性更新。
+  querySelector(selector) {
+    const byId = selector.startsWith('#');
+    const name = selector.slice(1);
+    for (const child of this.children || []) {
+      if (byId ? child.id === name : String(child.className || '').split(/\s+/).includes(name)) return child;
+      const nested = child.querySelector ? child.querySelector(selector) : null;
+      if (nested) return nested;
+    }
+    if (!byId && this._html.includes(`class="${name}"`)) {
+      this._stubs ||= {};
+      return (this._stubs[selector] ||= Object.assign(new Element(), { tagName: 'svg-part' }));
+    }
+    return null;
+  }
   querySelectorAll() { return []; }
   closest() { return null; }
   focus() {}
   getBoundingClientRect() { return { left: 0, top: 0, width: 900, height: 260 }; }
-  get clientWidth() { return 900; }
+  get clientWidth() { return this._clientWidth ?? 900; }
   set clientWidth(value) { this._clientWidth = value; }
   get offsetWidth() { return 160; }
   set offsetWidth(value) { this._offsetWidth = value; }
@@ -55,17 +70,24 @@ function harness(options = {}) {
     'usage-cache-hint', 'usage-status', 'usage-rows', 'usage-count', 'usage-range-label',
     'usage-svg', 'usage-chart-holder', 'usage-sync', 'usage-app', 'usage-provider', 'usage-model', 'usage-interval',
     'usage-range-tabs']) elements.set(id, new Element(id));
+  // .usage-chart 是 index.html 里 holder 的父节点:图表下方的明细表与播报区都挂在这上面。
+  const chart = new Element('usage-chart');
+  chart.className = 'usage-chart';
+  chart.appendChild(elements.get('usage-chart-holder'));
+  elements.set('usage-chart', chart);
   for (const id of RANGE_IDS) { const el = new Element(); el.dataset.range = id; segs.range.push(el); }
   for (const id of METRIC_IDS) { const el = new Element(); el.dataset.metric = id; segs.metric.push(el); }
   const requests = [];
   let response = options.response || usageFixture();
   let failNext = null;
+  const documentHandlers = {};
   const document = {
     visibilityState: 'visible',
+    activeElement: null,
     getElementById: id => get(id),
     querySelectorAll: selector => selector.startsWith('.usage-range') ? segs.range : selector.startsWith('.usage-tabs') ? segs.metric : [],
     querySelector: () => null,
-    addEventListener: () => {},
+    addEventListener: (name, callback) => { (documentHandlers[name] ||= []).push(callback); },
     createElement: tag => Object.assign(new Element(), { tagName: tag }),
   };
   const store = new Map();
@@ -90,7 +112,9 @@ function harness(options = {}) {
   });
   context.toast = message => context.toasts.push(message);
   // 顶层 function 声明会挂到 vm 的全局对象上,但 const 不会 —— 用脚本尾部导出这些 const。
-  vm.runInContext(SOURCE + '\n;globalThis.__t = { usageState, usageTok, usagePct, usageMs, usageNiceMax, usageMetricOf, usageQuery };', context, { filename: 'public/js/usage.js' });
+  vm.runInContext(SOURCE + '\n;globalThis.__t = { usageState, usageTok, usagePct, usageMs, usageNiceMax, usageAxisLabel, usageMetricOf, usageSeriesHasRequests, usageQuery, usageBucketLabel, usageMetricText, getTrend: () => usageTrend, getLive: () => usageLive };', context, { filename: 'public/js/usage.js' });
+  // 页面在 DOMContentLoaded 里挂图表交互监听;这里也跑一遍,测试才能拿到 holder.events。
+  for (const callback of documentHandlers.DOMContentLoaded || []) callback();
   return {
     run: code => vm.runInContext(code, context),
     get,
@@ -172,7 +196,10 @@ test('面积图:空序列不画线,有数据时画出面积与折线且点数与
   const svg = h.get('usage-svg').innerHTML;
   assert.match(svg, /chart-area/);
   assert.match(svg, /chart-line/);
-  assert.equal((svg.match(/<circle/g) || []).length, 2, '两个桶画两个点');
+  assert.equal((svg.match(/class="chart-dot"/g) || []).length, 2, '两个桶画两个点');
+  assert.match(svg, /chart-crosshair/, '十字光标要预先建好,交互时只改坐标');
+  assert.match(svg, /chart-active-dot/, '当前桶的高亮点');
+  assert.match(svg, /chart-hit/, '透明命中层要覆盖整个绘图区,窄点也能悬停');
   assert.match(svg, /linearGradient/, '面积需要渐变填充');
   // Y 轴刻度要是"好看的数":上界取 1/2/2.5/5×10^n
   assert.equal(h.helpers.usageNiceMax(71400), 100000);
@@ -247,8 +274,24 @@ test('刻度文字要短、X 轴刻度不跳号', async () => {
   assert.equal(new Set(dates).size, 7, '刻度不能重复/跳号');
   assert.equal(dates[0], '10-13');
   assert.equal(dates.at(-1), '10-20');
+  // 窄屏:7 个 5 字符标签会重叠,刻度数按绘图宽度收缩,但首尾仍要保留
+  h.get('usage-chart-holder').clientWidth = 360;
+  h.run('usageRenderChart(usageState.data)');
+  const narrow = [...h.get('usage-svg').innerHTML.matchAll(/text-anchor="(?:start|middle|end)">([^<]+)</g)]
+    .map(m => m[1]).filter(t => t.startsWith('10-'));
+  assert.ok(narrow.length >= 2 && narrow.length <= 5, `窄屏刻度要收缩到 5 个以内,实际 ${narrow.length} 个`);
+  assert.equal(narrow[0], '10-13');
+  assert.equal(narrow.at(-1), '10-20');
   // Y 轴不出现两位小数的 M(750.00M 这种会把左边距撑爆)
   assert.doesNotMatch(svg, /\d\.\d\dM</, '刻度文字只保留 0–1 位小数');
+  // 1.5M 不能四舍五入成 2M —— 那会和上一格重复,读者分不清两格差在哪
+  assert.equal(h.helpers.usageAxisLabel(1_500_000), '1.5M');
+  assert.equal(h.helpers.usageAxisLabel(2_000_000), '2M');
+  assert.equal(h.helpers.usageAxisLabel(12_400_000), '12M');
+  assert.equal(h.helpers.usageAxisLabel(500_000), '500k');
+  assert.equal(h.helpers.usageAxisLabel(1_500), '1.5k');
+  assert.equal(h.helpers.usageAxisLabel(0), '0');
+  assert.equal(h.helpers.usageAxisLabel(1_200_000_000), '1.2B');
 });
 
 test('轮询不重建没变化的筛选下拉,避免下拉自己收起/滚回顶部', async () => {
@@ -263,4 +306,258 @@ test('轮询不重建没变化的筛选下拉,避免下拉自己收起/滚回顶
   await h.run('loadUsage()');
   assert.equal(provider._html, before, '供应商清单没变,仍然不重建');
   assert.match(h.get('usage-model')._html, /only-model/, '模型清单变了才重建');
+});
+
+test('图表颜色只走主题变量:单序列线/面积,不用 --accent 或状态绿', async () => {
+  const h = harness();
+  await h.run('loadUsage()');
+  const svg = h.get('usage-svg').innerHTML;
+  assert.match(svg, /stroke="var\(--chart-series[,)]/, '折线用 --chart-series');
+  assert.match(svg, /stop-color="var\(--chart-area[,)]/, '面积用 --chart-area');
+  assert.doesNotMatch(svg, /var\(--accent\)|var\(--ok\)|#3fb950|#4c9ffe/i, '通用趋势图不能借用强调色/状态绿');
+  // 单序列不需要图例,标题负责说明指标。
+  assert.equal(h.get('usage-range-label').textContent, 'Tokens 使用趋势 · 近 7 天');
+  h.run("setUsageMetric('reqs')");
+  assert.equal(h.get('usage-range-label').textContent, '请求 使用趋势 · 近 7 天');
+  assert.match(h.get('usage-svg').innerHTML, /stroke="var\(--chart-series[,)]/, '换指标后同一套变量');
+  // 表格/图里都没有金额或折算痕迹。
+  assert.doesNotMatch(h.get('usage-svg').innerHTML, /¥|cost|price/i);
+  assert.doesNotMatch(h.run('usageTrend.body.innerHTML'), /¥|cost|price/i);
+});
+
+test('悬停:十字线吸附最近的 X,浮层给出时间与数值;移出后收起', async () => {
+  const h = harness();
+  await h.run('loadUsage()');
+  const holder = h.get('usage-chart-holder');
+  holder.events.mousemove({ clientX: 880, type: 'mousemove' });
+  assert.equal(h.state.chartIndex, 1, '指到右端应吸到第二个桶');
+  const tip = holder.querySelector('.chart-tip');
+  assert.equal(tip.hidden, false);
+  assert.match(tip.textContent, /2026-10-20 09:00 · 54\.5k tokens/);
+  const crosshair = h.get('usage-svg').querySelector('.chart-crosshair');
+  assert.equal(crosshair.attributes.hidden, undefined, '光标要显示出来');
+  assert.equal(crosshair.attributes.x1, '886.0', '十字线落在吸附的桶上');
+  const dot = h.get('usage-svg').querySelector('.chart-active-dot');
+  assert.equal(dot.attributes.hidden, undefined);
+  assert.match(dot.attributes.cy, /^\d/, '高亮点有真实 y 坐标');
+  // 反过来移到左端
+  holder.events.mousemove({ clientX: 60, type: 'mousemove' });
+  assert.equal(h.state.chartIndex, 0);
+  assert.match(tip.textContent, /2026-10-20 08:00 · 16\.9k tokens/);
+  holder.events.mouseleave();
+  assert.equal(tip.hidden, true);
+  assert.equal(crosshair.attributes.hidden, '');
+  assert.equal(h.state.chartIndex, null, '移出后回到未选中,下次渲染不会莫名浮出旧读数');
+});
+
+test('键盘与触摸:方向键/Home/End 读同一份信息,aria-live 播报,点击也能吸附', async () => {
+  const h = harness();
+  await h.run('loadUsage()');
+  const holder = h.get('usage-chart-holder');
+  assert.equal(typeof holder.events.keydown, 'function');
+  assert.equal(typeof holder.events.click, 'function', '触摸/点击要能打开读数');
+
+  h.run('usageState.chartFocus = true');
+  h.run("usageChartKey({ key: 'End' })");
+  assert.equal(h.state.chartIndex, 1);
+  const live = h.helpers.getLive();
+  assert.ok(live, '键盘读数要有 aria-live 播报区');
+  assert.equal(live.getAttribute('aria-live'), 'polite');
+  assert.match(live.textContent, /2026-10-20 09:00:54\.5k tokens/);
+  h.run("usageChartKey({ key: 'Home' })");
+  assert.equal(h.state.chartIndex, 0);
+  h.run("usageChartKey({ key: 'ArrowRight' })");
+  assert.equal(h.state.chartIndex, 1);
+  h.run("usageChartKey({ key: 'ArrowRight' })");
+  assert.equal(h.state.chartIndex, 1, '到末尾就停住,不越界');
+  const tip = holder.querySelector('.chart-tip');
+  assert.match(tip.textContent, /09:00 · 54\.5k tokens/, '键盘与悬停说同一句话');
+  // Esc 收起,但输入焦点仍在图里
+  h.run("usageChartKey({ key: 'Escape' })");
+  assert.equal(tip.hidden, true);
+
+  // 触摸:click 事件带 clientX,同样按最近的桶吸附
+  holder.events.click({ clientX: 60, type: 'click' });
+  assert.equal(h.state.chartIndex, 0);
+  assert.match(tip.textContent, /08:00/);
+  // 鼠标/触摸自己打开的浮层,指针移出就收起
+  holder.events.mouseleave();
+  assert.equal(tip.hidden, true);
+
+  // 方向键读数则不受鼠标移出影响
+  h.run("usageChartKey({ key: 'End' })");
+  holder.events.mouseleave();
+  assert.equal(tip.hidden, false);
+  holder.events.focusout();
+  assert.equal(tip.hidden, true);
+  assert.equal(h.state.chartFocus, false);
+});
+
+test('同一批时间桶重画时保留读数位置;数据没变则连重画都省掉', async () => {
+  const h = harness();
+  await h.run('loadUsage()');
+  const holder = h.get('usage-chart-holder');
+  holder.events.mousemove({ clientX: 60, type: 'mousemove' });
+  assert.equal(h.state.chartIndex, 0);
+
+  // 轮询返回完全相同的数据:不重画,浮层保持打开
+  await h.run('loadUsage()');
+  assert.equal(h.state.chartIndex, 0);
+  assert.equal(holder.querySelector('.chart-tip').hidden, false, '同数据的轮询不该把正在看的浮层关掉');
+
+  // 同一批桶、数值变了:重画,但读数仍停在同一个桶
+  const next = usageFixture();
+  next.series = next.series.map(bucket => ({ ...bucket, tokens_in: bucket.tokens_in + 100 }));
+  h.setResponse(next);
+  await h.run('loadUsage()');
+  assert.equal(h.state.chartIndex, 0, '时间轴没换,键盘/悬停位置不能无端重置');
+  assert.equal(holder.querySelector('.chart-tip').hidden, false);
+  assert.match(holder.querySelector('.chart-tip').textContent, /16\.9k|17\.0k/, '浮层跟着新数据更新');
+});
+
+test('按桶明细表:懒建一次,逐桶列出全部数值,标签转义', async () => {
+  const h = harness();
+  await h.run('loadUsage()');
+  const trend = h.helpers.getTrend();
+  assert.ok(trend, '图表旁边要有按时间桶的表');
+  assert.equal(trend.details.className, 'usage-trend-table');
+  assert.equal(trend.details.hidden, false);
+  assert.equal(trend.summary.textContent, '按时间桶查看数据(共 2 个桶)');
+  assert.equal((trend.body.innerHTML.match(/<tr>/g) || []).length, 2);
+  assert.match(trend.body.innerHTML, /2026-10-20 08:00/);
+  assert.match(trend.body.innerHTML, /16\.9k/, '08:00 桶的合计 tokens 与浮层一致');
+  assert.match(trend.body.innerHTML, /54\.5k/);
+  const head = trend.body.parentNode.children.find(child => child.tagName === 'thead');
+  assert.doesNotMatch(head._html, /金额|成本|价格/, '明细表没有金额列');
+
+  // 时间字符串来自日志,必须转义后再进表格
+  const evil = '<img src=x onerror="alert(1)">';
+  h.setResponse({ ...usageFixture(), series: [{ t: `2026-10-20T08:00${evil}`, reqs: 1, tokens_in: 1000, tokens_out: 0, cache_read: 0 }] });
+  await h.run('loadUsage()');
+  assert.match(trend.body.innerHTML, /&lt;img src=x onerror=&quot;alert\(1\)&quot;&gt;/, '标签要被转义');
+  assert.doesNotMatch(trend.body.innerHTML, /<img/, '不能把日志内容当 HTML 插进来');
+  // 浮层用 textContent,同样的字符串只当文字
+  const holder = h.get('usage-chart-holder');
+  holder.events.mousemove({ clientX: 50, type: 'mousemove' });
+  const tip = holder.querySelector('.chart-tip');
+  assert.equal(tip._html, '', '浮层不走 innerHTML');
+  assert.match(tip.textContent, /<img src=x/, '原样文字显示,不执行');
+});
+
+test('空区间:不画图、不留空表;窄屏浮层夹在可视宽度内而不是隐藏', async () => {
+  const h = harness();
+  h.setResponse({ ...usageFixture(), series: [] });
+  await h.run('loadUsage()');
+  assert.match(h.get('usage-svg').innerHTML, /这个区间里没有请求/);
+  assert.doesNotMatch(h.get('usage-svg').innerHTML, /chart-line/);
+  assert.equal(h.run('usageTrend'), null, '空区间不建按桶表');
+
+  // 先有数据再变空:表要收起
+  h.setResponse(usageFixture());
+  await h.run('loadUsage()');
+  const trend = h.helpers.getTrend();
+  assert.equal(trend.details.hidden, false);
+  h.setResponse({ ...usageFixture(), series: [] });
+  await h.run('loadUsage()');
+  assert.equal(trend.details.hidden, true);
+  assert.equal(trend.body.innerHTML, '');
+
+  // 窄屏:浮层不隐藏,只把 left 夹到面板内
+  h.setResponse(usageFixture());
+  await h.run('loadUsage()');
+  const holder = h.get('usage-chart-holder');
+  const svg = h.get('usage-svg');
+  holder.getBoundingClientRect = () => ({ left: 0, top: 0, width: 320, height: 210 });
+  svg.getBoundingClientRect = () => ({ left: 0, top: 0, width: 320, height: 210 });
+  holder.events.mousemove({ clientX: 300, type: 'mousemove' });
+  const tip = holder.querySelector('.chart-tip');
+  assert.equal(tip.hidden, false, '手机上要显示浮层,不能整块藏掉');
+  assert.equal(tip.style.left, '152px', '320 - 160 - 8:贴在面板右侧内边距里');
+  assert.equal(tip.style.top, '8px');
+  const live = h.helpers.getLive();
+  assert.doesNotMatch(String(live && live.className), /chart-tip/, '播报区不是浮层');
+});
+
+test('使用说明与无障碍:svg 可聚焦、标注指标与键盘操作', async () => {
+  const h = harness();
+  await h.run('loadUsage()');
+  const svg = h.get('usage-svg');
+  assert.equal(svg.attributes.tabindex, '0');
+  assert.equal(svg.attributes.role, 'img');
+  assert.match(svg.attributes['aria-label'], /Tokens 趋势/);
+  assert.match(svg.attributes['aria-label'], /左右方向键/);
+  // 空区间时说明为什么没有图
+  h.setResponse({ ...usageFixture(), series: [] });
+  await h.run('loadUsage()');
+  assert.match(svg.attributes['aria-label'], /没有请求/);
+});
+
+test('明细表跟图表指纹解耦:合计不变、分项变化时表也要更新', async () => {
+  const h = harness();
+  await h.run('loadUsage()');
+  const trend = h.helpers.getTrend();
+  const lineBefore = (h.get('usage-svg').innerHTML.match(/class="chart-line"[^>]*d="([^"]+)"/) || [])[1];
+  assert.ok(lineBefore, '折线要画出来');
+
+  // 新增输入 -1000 / 输出 +1000:当前指标(合计 tokens)完全不变 → 图线不该动
+  const shifted = usageFixture();
+  shifted.series = shifted.series.map(bucket => ({
+    ...bucket, tokens_in: bucket.tokens_in - 1000, tokens_out: bucket.tokens_out + 1000,
+  }));
+  h.setResponse(shifted);
+  await h.run('loadUsage()');
+  const lineAfter = (h.get('usage-svg').innerHTML.match(/class="chart-line"[^>]*d="([^"]+)"/) || [])[1];
+  assert.equal(lineAfter, lineBefore, '合计不变时同一批桶的折线应完全相同');
+  // 但明细表必须反映新的分项
+  assert.match(trend.body.innerHTML, /3\.0k/, '08:00 新增输入从 4.0k 变 3.0k,表要更新');
+  assert.match(trend.body.innerHTML, /1\.9k/, '08:00 输出从 0.9k 变 1.9k,表要更新');
+
+  // 请求数变化而 tokens 合计不变(当前指标是 tokens):表里的请求列也要更新
+  const reqShift = usageFixture();
+  reqShift.series = reqShift.series.map((bucket, i) => ({ ...bucket, reqs: bucket.reqs + 100 + i }));
+  h.setResponse(reqShift);
+  await h.run('loadUsage()');
+  assert.match(trend.body.innerHTML, /<td>110<\/td>/, '08:00 请求数 10 → 110');
+});
+
+test('空桶补齐但确实没有请求:不画贴底 0 线,表也收起', async () => {
+  const h = harness();
+  // 接口给 24 个补齐的零桶,reqs 全 0、tokens 全 0
+  const zeroBuckets = Array.from({ length: 24 }, (_, i) => ({
+    t: `2026-10-20T${String(i).padStart(2, '0')}:00`, reqs: 0, tokens_in: 0, tokens_out: 0, cache_read: 0,
+  }));
+  h.setResponse({ ...usageFixture(), totals: { ...usageFixture().totals, reqs: 0, tokens_total: 0 }, series: zeroBuckets });
+  await h.run('loadUsage()');
+  assert.match(h.get('usage-svg').innerHTML, /这个区间里没有请求/, '零桶不能画成一条贴底的线');
+  assert.doesNotMatch(h.get('usage-svg').innerHTML, /chart-line/);
+  assert.match(h.get('usage-svg').attributes['aria-label'], /没有请求/);
+  assert.equal(h.run('usageTrend'), null, '全零区间不留一张全零表');
+  assert.equal(h.helpers.usageSeriesHasRequests({ totals: { reqs: 0 } }, zeroBuckets), false);
+
+  // 有请求但当前指标为 0(tokens 全 0):仍然要画线,不能被当成"没有请求"
+  const reqOnly = zeroBuckets.map((bucket, i) => ({ ...bucket, reqs: i + 1 }));
+  h.setResponse({ ...usageFixture(), totals: { ...usageFixture().totals, reqs: 300, tokens_total: 0 }, series: reqOnly });
+  await h.run('loadUsage()');
+  assert.match(h.get('usage-svg').innerHTML, /chart-line/, '有请求就是有数据,哪怕是 0 token');
+  assert.doesNotMatch(h.get('usage-svg').innerHTML, /这个区间里没有请求/);
+  assert.equal(h.helpers.usageSeriesHasRequests({ totals: { reqs: 300 } }, reqOnly), true);
+  // 切到请求指标后是一条正常的阶梯线,不是空态
+  h.run("setUsageMetric('reqs')");
+  assert.match(h.get('usage-svg').innerHTML, /chart-line/);
+  assert.match(h.helpers.getTrend().body.innerHTML, /<td>1<\/td>/, '按桶表照常列出真实请求数');
+});
+
+test('总量未知(totals 缺失)时按桶判断:有请求就画,全 0 才判空', async () => {
+  const h = harness();
+  const buckets = Array.from({ length: 3 }, (_, i) => ({ t: `2026-10-20T0${i}:00`, reqs: i === 1 ? 4 : 0, tokens_in: 100, tokens_out: 0, cache_read: 0 }));
+  assert.equal(h.helpers.usageSeriesHasRequests({}, buckets), true);
+  assert.equal(h.helpers.usageSeriesHasRequests({ totals: {} }, buckets), true, 'totals.reqs 缺失不等于 0');
+  const dead = buckets.map(bucket => ({ ...bucket, reqs: 0, tokens_in: 0 }));
+  assert.equal(h.helpers.usageSeriesHasRequests({ totals: {} }, dead), false);
+  // totals 明确为 0 但桶里确有请求:以桶为准,照画(不把真实请求吞掉)
+  assert.equal(h.helpers.usageSeriesHasRequests({ totals: { reqs: 0 } }, buckets), true);
+  assert.equal(h.helpers.usageSeriesHasRequests(null, []), false, '没有数据也不抛');
+  // 老日志行没有 reqs 字段但有 tokens:那是真实消耗,不能当空区间藏掉
+  assert.equal(h.helpers.usageSeriesHasRequests({ totals: {} }, [{ t: '2026-10-20T01:00', cache_read: 500 }]), true);
+  assert.equal(h.helpers.usageSeriesHasRequests({ totals: { reqs: 0 } }, [{ t: '2026-10-20T01:00', tokens_in: 20 }]), true);
 });

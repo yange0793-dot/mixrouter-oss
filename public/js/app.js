@@ -183,7 +183,9 @@ function refresh() {
   })();
   return refreshTask;
 }
-setInterval(refresh, 5000);
+// 标签页在后台时不轮询:没人看的状态没必要每 5 秒打一次 /api/state,切回来立刻补一次。
+setInterval(() => { if (document.hidden) return; refresh(); }, 5000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
 window.addEventListener('offline', () => { setConnection(false, '网络连接已断开'); renderProviders(); });
 window.addEventListener('online', refresh);
 
@@ -220,6 +222,10 @@ function showView(name) {
     // 预览本来就是"按你填的模型预测落点",没有模型就没有可解释的东西;交给下面的「解释一次」
     // 按钮与输入框回车(两者都调 loadPreview),用户想看图就点一下。
   }
+  // 外壳(URL / 抽屉)是可选的:没有 workspace 模块时这里什么都不做,默认视图仍是概览。
+  if (typeof workspaceViewChanged === 'function') {
+    try { workspaceViewChanged(view); } catch (e) { console.error(e); }
+  }
   refresh();
 }
 // 健康快照按需读取一次。渠道卡片与设置页都要它,两处共用同一个入口 —— 每次切视图都再打一遍
@@ -237,6 +243,9 @@ function setApp(app) {
   for (const key of Object.keys(APPS)) { const tab = $('tab-' + key); tab.classList.toggle('active', key === app); tab.setAttribute('aria-selected', String(key === app)); tab.tabIndex = key === app ? 0 : -1; }
   $('agent-panel').setAttribute('aria-labelledby', 'tab-' + app);
   $('zcode-protocol').hidden = app !== 'zcode'; renderProviders(); renderSlots();
+  if (typeof workspaceAppChanged === 'function') {
+    try { workspaceAppChanged(app); } catch (e) { console.error(e); }
+  }
 }
 function setZcodeWire(wire) { if (['anthropic', 'responses', 'chat'].includes(wire)) { zcodeWire = wire; renderProviders(); } }
 document.querySelector('.apptabs').addEventListener('keydown', e => {
@@ -358,21 +367,56 @@ function liveFacts(app) {
 function liveLine() {
   const { lv, cur, selected, healthy, inRouter, direct, stateLabel, slot, configuredName } = liveFacts(curApp);
   const modeBadge = enabled => enabled ? '<span class="badge on">已写入配置</span>' : `<span class="badge off">${!healthy ? '待确认' : '未接入'}</span>`;
-  return `${curApp === 'codex' ? `<dl class="current-config">
+  // 三个客户端共用同一块「当前配置」摘要。以前只有 Codex 有,Claude Code / ZCode 得在整页里
+  // 自己找写了什么;现在口径一致(liveFacts 一处判定),接入细节默认收起、按客户端记住展开状态。
+  // 详情里仍是那两张模式卡与配置行,离线时 liveFacts 会把它们降级成「待确认」,不冒充已写入。
+  return `<dl class="current-config">
     <div><dt>配置供应商</dt><dd>${esc(configuredName)}</dd><small>${esc(stateLabel)}</small></div>
     <div><dt>默认模型</dt><dd class="mono">${esc(slot?.model || lv?.model || '未配置')}</dd>${slot ? `<small>槽位 ${esc(lv.model)}</small>` : ''}</div>
     <div><dt>接入方式</dt><dd>${!healthy ? '待确认' : inRouter ? '本地路由' : direct ? '直连' : '未接入'}</dd><small>${esc(lv?.wire_api || '')}</small></div>
-    </dl><details class="connection-details" ${connectionExpanded[curApp] ? 'open' : ''} ontoggle="connectionExpanded['${curApp}']=this.open"><summary>连接配置</summary>` : ''}<div class="mode-grid">
+    </dl><details class="connection-details"${connectionExpanded[curApp] ? ' open' : ''} ontoggle="connectionExpanded['${curApp}']=this.open"><summary>连接配置</summary><div class="mode-grid">
     <article class="mode-card ${direct ? 'selected' : ''}"><div class="top"><h2>直连渠道</h2>${modeBadge(direct)}</div><p>${direct ? esc(lv.match === true ? selected?.name || lv.provider || '自定义上游' : lv.provider || '自定义上游（配置未匹配）') : '客户端直接请求上游，不经过本地路由'}</p><p class="mono">${esc(lv?.base_url && !lv.router ? lv.base_url : '从下方渠道卡片选择接入')}</p></article>
     <article class="mode-card ${inRouter ? 'selected' : ''}"><div class="top"><h2>路由模式</h2>${modeBadge(inRouter)}</div><p>经本地代理按规则分发，按会话保持渠道粘性</p><p class="mono">${esc(inRouter ? lv.base_url || routerBase() : routerBase() || '等待后端提供路由地址')}</p></article>
     </div><p class="config-line">${esc(APPS[curApp].cfg)} · ${stateLabel}${lv?.wire_api ? ' · 协议 ' + esc(lv.wire_api) : ''}${lv?.model ? ' · 配置模型 ' + esc(lv.model) : ''}${cur ? ' · 库内选中 ' + esc(cur === (state.router?.id || '@router') ? '路由模式' : selected?.name || cur) : ''}</p>
-    <p class="integration-note">${curApp === 'zcode' ? esc(ZCODE_HELP) + '。以上仅表示集成配置，不代表当前运行会话已切换；写入时合并并保留其他 provider，不默认更改现有默认模型。' : '切换会写入客户端配置，原文件自动备份。' + (curApp === 'claude' ? 'Claude Code 需重启会话生效。' : 'Codex 需重启生效。')}</p>${curApp === 'codex' ? '</details>' : ''}`;
+    <p class="integration-note">${curApp === 'zcode' ? esc(ZCODE_HELP) + '。以上仅表示集成配置，不代表当前运行会话已切换；写入时合并并保留其他 provider，不默认更改现有默认模型。' : '切换会写入客户端配置，原文件自动备份。' + (curApp === 'claude' ? 'Claude Code 需重启会话生效。' : 'Codex 需重启生效。')}</p></details>`;
 }
+// 渠道库布局:list(默认,高密度行式账本)或 grid(并列卡片)。偏好记在 localStorage,
+// 但读写全程兜底:隐私模式、旧浏览器或坏值都不能把渠道页带崩,读不到就退回默认。
+const PROVIDER_LAYOUT_KEY = 'mixr.provider.layout';
+function providerLayoutStore() {
+  try { return window.localStorage || null; } catch { return null; }
+}
+let providerLayout = 'list';
+{
+  const store = providerLayoutStore();
+  if (store) {
+    try {
+      const saved = store.getItem(PROVIDER_LAYOUT_KEY);
+      if (saved === 'list' || saved === 'grid') providerLayout = saved;
+    } catch { /* 读失败按默认 */ }
+  }
+}
+function applyProviderLayout() {
+  const grid = $('prov-grid');
+  if (grid) grid.dataset.layout = providerLayout;
+  // 外壳可能还没加这两个按钮(老页面/老测试):拿不到就跳过,布局本身照常生效。
+  for (const [id, layout] of [['provider-layout-list', 'list'], ['provider-layout-grid', 'grid']]) {
+    const btn = $(id);
+    if (btn) btn.setAttribute('aria-pressed', String(providerLayout === layout));
+  }
+}
+function setProviderLayout(layout) {
+  providerLayout = layout === 'grid' ? 'grid' : 'list';
+  const store = providerLayoutStore();
+  if (store) { try { store.setItem(PROVIDER_LAYOUT_KEY, providerLayout); } catch { /* 写失败不影响本次切换 */ } }
+  applyProviderLayout();
+}
+applyProviderLayout();   // 首帧就把记住的布局落到 #prov-grid,别等第一次进渠道页
 function renderProviders() {
   document.body.dataset.client = curApp;
-  $('providers-title').textContent = curApp === 'codex' ? '供应商' : '渠道管理';
-  $('providers-eyebrow').hidden = curApp === 'codex';
-  $('providers-subtitle').hidden = curApp === 'codex';
+  // 标题对所有客户端同一口径;大小写眉标与副标题由外壳按设计处理,这里不再按客户端藏。
+  const title = $('providers-title'); if (title) title.textContent = '渠道与 Key';
+  applyProviderLayout();
   const isZcode = curApp === 'zcode', group = providerGroup();
   $('btn-router').textContent = isZcode ? '接入路由' : '路由模式';
   $('btn-router').disabled = !online || !state || (isZcode && !zcodeSupported());
@@ -427,23 +471,52 @@ function renderProviders() {
     if (cool) healthBits.push(`<span class="badge drift" title="冷却中">冷却至 ${esc(new Date(cool.until).toLocaleTimeString('zh-CN', { hour12: false }))}</span>`);
     // enabled !== false 才算可用:渠道停用或按健康快照不可达都会让池跳过它,提前说出来免得用户以为它在用
     if (hp && hp.eligible === false && !cool && p.enabled) healthBits.push('<span class="badge off" title="按健康状态不可用">暂不可用</span>');
-    return `<article class="card ${p.enabled ? '' : 'off'} ${verified ? 'cur' : ''}">
-      <div class="top"><span class="cdot" aria-hidden="true"></span><h3 class="name">${esc(p.name)}</h3>${isCur ? `<span class="badge ${verified ? 'on' : 'off'}">${verified ? '已写入配置' : '库内选中'}</span>` : ''}${drift && online ? '<span class="badge drift">配置不一致</span>' : ''}<span class="badge ${p.enabled ? 'info' : 'off'}">${p.enabled ? '启用' : '停用'}</span>${deadKeys.length ? `<span class="badge off" title="有停用的 Key">${deadKeys.length} 把 Key 已停用</span>` : ''}${healthBits.join('')}</div>
-      <div class="mono endpoint">${esc(p.base_url)}</div><div class="tags"><span class="tag">${esc(wire)}</span>${models.map(m => `<span class="tag">${esc(m)}</span>`).join('')}${p.drop_images ? '<span class="tag">纯文本</span>' : ''}${p.direct ? '<span class="tag">直连</span>' : ''}</div>
-      <div class="mono keyrow">API key · ${keys.length
-        ? `<select class="keypick" data-provider="${esc(p.id)}" data-action="key" aria-label="${esc(p.name)} 当前账号" onchange="setActiveKey(${arg},this.value)">${keys.map(k => `<option value="${esc(k.id)}" ${k.id === p.active_key ? 'selected' : ''}>${esc(k.label)} · ${esc(k.key_masked)}${k.enabled === false ? ' · 已停用' : ''}</option>`).join('')}</select><span class="muted">（${keys.length} 个账号${deadKeys.length ? '，' + deadKeys.length + ' 把已停用' : ''}）</span>`
-        : esc(p.key_masked || '未配置')}</div>
-      ${deadKeys.length ? `<p class="note">已停用的 Key：${deadKeys.map(k => `${esc(k.label || k.id)}（${esc(k.id)}）`).join('、')}。停用只影响固定选它的会话与压缩规则，不会自动改选其他 Key。</p>` : ''}${p.note ? `<p class="note">${esc(p.note)}</p>` : ''}
-      ${isZcode && group === 'codex' && wire !== zcodeWire ? `<p class="note">此渠道按 ${esc(wire)} 协议接入，与上方路由协议选择不同。</p>` : ''}${tline}
-      <div class="foot"><button class="small ${verified ? 'cur' : 'primary'}" data-action="switch" data-provider="${esc(p.id)}" onclick="switchProvider(${arg})" ${locked ? 'disabled' : ''} title="${convOnly ? '该渠道只挂 Codex 型通道，直连不可用：请用上方「路由模式」' : ''}">${isZcode ? '接入 ZCode' : isCur ? '重新写入' : '切换'}</button><button class="small" data-action="test" data-provider="${esc(p.id)}" onclick="testProvider(${arg})" ${!online || t?.wait ? 'disabled' : ''}>测试</button><button class="small" data-action="edit" data-provider="${esc(p.id)}" onclick="openProvider(${arg})">编辑</button><button class="small" data-action="toggle" data-provider="${esc(p.id)}" onclick="toggleProvider(${arg})" ${!online ? 'disabled' : ''}>${p.enabled ? '停用' : '启用'}</button><button class="small danger" data-action="delete" data-provider="${esc(p.id)}" onclick="delProvider(${arg})" ${!online ? 'disabled' : ''}>删除</button></div></article>`;
+    // 卡片分四块:身份(头像 + 名称 + 状态徽标)、内容(地址/协议/模型/告警)、账号与测试结果、
+    // 动作。旧类名 .card/.top/.foot/.tags 保留,新增的 provider-* 只负责分区;动作按钮与 data-*
+    // 原样不动,样式层按这套区块做 grid/list 两种排布。
+    // 头像用渠道名首字母(ASCII 取前两位),纯装饰,不参与朗读。
+    const nameText = String(p.name || '?').trim();
+    const avatar = (/^[\x20-\x7e]+$/.test(nameText) ? nameText.slice(0, 2) : nameText.slice(0, 1)).toUpperCase() || '?';
+    const statusBadges = [
+      isCur ? `<span class="badge ${verified ? 'on' : 'off'}">${verified ? '已写入配置' : '库内选中'}</span>` : '',
+      drift && online ? '<span class="badge drift">配置不一致</span>' : '',
+      `<span class="badge ${p.enabled ? 'info' : 'off'}">${p.enabled ? '启用' : '停用'}</span>`,
+      deadKeys.length ? `<span class="badge off" title="有停用的 Key">${deadKeys.length} 把 Key 已停用</span>` : '',
+      ...healthBits,
+    ].join('');
+    // 账号只露 label / 掩码,明文 Key 从不进入卡片(停用的 Key 也一样)。
+    const account = keys.length
+      ? `<select class="keypick" data-provider="${esc(p.id)}" data-action="key" aria-label="${esc(p.name)} 当前账号" onchange="setActiveKey(${arg},this.value)">${keys.map(k => `<option value="${esc(k.id)}" ${k.id === p.active_key ? 'selected' : ''}>${esc(k.label)} · ${esc(k.key_masked)}${k.enabled === false ? ' · 已停用' : ''}</option>`).join('')}</select><span class="muted">（${keys.length} 个账号${deadKeys.length ? '，' + deadKeys.length + ' 把已停用' : ''}）</span>`
+      : esc(p.key_masked || '未配置');
+    return `<article class="card ${p.enabled ? '' : 'off'} ${verified ? 'cur' : ''}" data-provider="${esc(p.id)}">
+      <header class="top provider-identity">
+        <span class="provider-avatar" aria-hidden="true">${esc(avatar)}</span>
+        <div class="provider-info"><h3 class="name">${esc(p.name)}</h3><div class="provider-status">${statusBadges}</div></div>
+      </header>
+      <div class="provider-content">
+        <div class="mono endpoint" title="${esc(p.base_url)}">${esc(p.base_url)}</div>
+        <div class="provider-models tags"><span class="tag">${esc(wire)}</span>${models.map(m => `<span class="tag">${esc(m)}</span>`).join('')}${p.drop_images ? '<span class="tag">纯文本</span>' : ''}${p.direct ? '<span class="tag">直连</span>' : ''}</div>
+        ${deadKeys.length ? `<p class="note">已停用的 Key：${deadKeys.map(k => `${esc(k.label || k.id)}（${esc(k.id)}）`).join('、')}。停用只影响固定选它的会话与压缩规则，不会自动改选其他 Key。</p>` : ''}${p.note ? `<p class="note">${esc(p.note)}</p>` : ''}
+        ${isZcode && group === 'codex' && wire !== zcodeWire ? `<p class="note">此渠道按 ${esc(wire)} 协议接入，与上方路由协议选择不同。</p>` : ''}
+      </div>
+      <div class="provider-meta mono keyrow">API key · ${account}${tline}</div>
+      <div class="foot provider-actions"><button class="small ${verified ? 'cur' : 'primary'}" data-action="switch" data-provider="${esc(p.id)}" onclick="switchProvider(${arg})" ${locked ? 'disabled' : ''} title="${convOnly ? '该渠道只挂 Codex 型通道，直连不可用：请用上方「路由模式」' : ''}">${isZcode ? '接入 ZCode' : isCur ? '重新写入' : '切换'}</button><button class="small" data-action="test" data-provider="${esc(p.id)}" onclick="testProvider(${arg})" ${!online || t?.wait ? 'disabled' : ''}>测试</button><button class="small" data-action="edit" data-provider="${esc(p.id)}" onclick="openProvider(${arg})">编辑</button><button class="small" data-action="toggle" data-provider="${esc(p.id)}" onclick="toggleProvider(${arg})" ${!online ? 'disabled' : ''}>${p.enabled ? '停用' : '启用'}</button><button class="small danger" data-action="delete" data-provider="${esc(p.id)}" onclick="delProvider(${arg})" ${!online ? 'disabled' : ''}>删除</button></div></article>`;
   }).join('');
-  // Avoid detaching focused card buttons or modal return targets on a status poll.
+  // 轮询只更新状态,但不能在用户正操作卡片时拆 DOM:下拉展开时重建会把菜单关掉,焦点恢复也救不回来。
+  // 焦点在卡片内的输入/下拉上就等失焦后的下一次刷新再重绘;按钮没有展开态,照旧重建并恢复焦点。
   const grid = $('prov-grid');
   if (grid.innerHTML !== html) {
     if (activeDialog) return;
-    const focus = grid.contains(document.activeElement) ? { ...document.activeElement.dataset } : null;
+    const activeEl = document.activeElement;
+    if (grid.contains(activeEl) && ['INPUT', 'SELECT', 'TEXTAREA'].includes(activeEl.tagName)) return;
+    const focus = grid.contains(activeEl) ? { ...activeEl.dataset } : null;
     grid.innerHTML = html;
-    if (focus) [...grid.querySelectorAll('button,select')].find(b => b.dataset.provider === focus.provider && b.dataset.action === focus.action)?.focus();
+    if (focus) {
+      const restored = [...grid.querySelectorAll('button,select')].find(b => b.dataset.provider === focus.provider && b.dataset.action === focus.action);
+      // 删除后原按钮随卡片一起没了:别把焦点丢给 body,交给仍然存在的「新建渠道」。
+      if (restored) restored.focus();
+      else $('new-provider')?.focus();
+    }
   }
 }
 function openProvider(id) {
@@ -697,7 +770,7 @@ function claudeSlotRow(s) {
 // 全局与会话槽位共用原有行布局;差异只在控件的读写范围。
 function slotLine(s, providerCell, modelCell, badge, clear, attributes = '') {
   return `<div class="rc-line"${attributes}>
-    <label class="field" style="flex:0 0 auto;min-width:170px">${SLOT_LABELS[s.name] || esc(s.name)}<span class="mono">${esc(s.alias)} · ${esc(s.env || '')}</span></label>
+    <label class="field slot-ident">${SLOT_LABELS[s.name] || esc(s.name)}<span class="mono">${esc(s.alias)} · ${esc(s.env || '')}</span></label>
     <label class="field" style="flex:2">渠道${providerCell}</label>
     <label class="field" style="flex:2">落点模型${modelCell}</label>
     <span style="align-self:center">${badge}</span>
@@ -706,7 +779,7 @@ function slotLine(s, providerCell, modelCell, badge, clear, attributes = '') {
 }
 function codexSlotRow(s) {
   return `<div class="rc-line">
-    <label class="field" style="flex:0 0 auto;min-width:170px">${esc(s.name)}<span class="mono">${esc(s.alias)} · codex -m ${esc(s.alias)}</span></label>
+    <label class="field slot-ident">${esc(s.name)}<span class="mono">${esc(s.alias)} · codex -m ${esc(s.alias)}</span></label>
     <label class="field" style="flex:2">渠道<select aria-label="${esc(s.name)} 渠道" onchange="setSlot('codex','${s.name}','provider',this.value)">${slotChannelOptions(s.provider, 'codex')}</select></label>
     <span style="align-self:center">${slotBadge(s, false)}</span>
     ${s.provider ? `<button class="iconbtn" aria-label="删除 ${esc(s.name)} 槽" onclick="clearSlot('codex','${s.name}')">×</button>` : ''}
@@ -794,8 +867,11 @@ async function switchCodexModel(name, provider) {
 function renderSlots(force) {
   renderCodexModels(force);
   const panel = $('slots-panel');
-  if (!state || curApp === 'zcode') { panel.hidden = true; return; }
-  panel.hidden = false;
+  // 外壳可能把同一块 slots-panel 放进 details#slots-details 并挪到渠道库下方:这里不另包
+  // details(重复包裹会让折叠标题出现两次),只同步显隐;拿不到包装层就按老结构单独用 panel。
+  const details = $('slots-details');
+  if (!state || curApp === 'zcode') { panel.hidden = true; if (details) details.hidden = true; return; }
+  panel.hidden = false; if (details) details.hidden = false;
   const isClaude = curApp === 'claude';
   $('slots-hint').textContent = isClaude
     ? '把每个槽位绑定到「渠道 @ 模型」：应用后客户端 env 写入别名（mixr-…），该槽的所有请求——含子代理与后台任务——按槽位落点分发，优先于路由规则。落点模型从渠道模型列表里挑，要写渠道没登记的模型名就选「自定义模型…」。'
@@ -806,7 +882,7 @@ function renderSlots(force) {
   const rows = isClaude
     ? list.map(claudeSlotRow).join('')
     : list.filter(s => !['main', 'reviewer'].includes(s.name)).map(codexSlotRow).join('') + `<div class="rc-line">
-        <label class="field" style="flex:0 0 auto;min-width:170px">新槽位<span class="mono">别名 mixr-&lt;槽名&gt;</span></label>
+        <label class="field slot-ident">新槽位<span class="mono">别名 mixr-&lt;槽名&gt;</span></label>
         <label class="field" style="flex:1">槽位名<input id="slot-new-name" placeholder="如 worker" autocomplete="off" spellcheck="false"></label>
         <label class="field" style="flex:2">渠道<select id="slot-new-provider">${slotChannelOptions('', 'codex')}</select></label>
         <button class="small" style="align-self:center" onclick="addCodexSlot()" ${online ? '' : 'disabled'}>＋ 添加槽位</button>
