@@ -675,12 +675,19 @@ function claudeSlotRow(s) {
     : slotModelEdit.claude?.name === s.name
       ? `<input type="text" aria-label="${esc(s.name)} 槽模型" list="slot-models-${esc(s.name)}" value="${esc(cur)}" placeholder="模型名，可带 [1M] 后缀" spellcheck="false" autocomplete="off" onkeydown="slotModelKey(event,'claude','${s.name}')" onchange="commitSlotModel('claude','${s.name}',this.value)" onblur="endSlotModelEdit('claude','${s.name}',this.value)"><datalist id="slot-models-${esc(s.name)}">${suggestions}</datalist>`
       : `<select aria-label="${esc(s.name)} 槽模型" onchange="onSlotModelPick('claude','${s.name}',this.value)">${options}</select>`;
-  return `<div class="rc-line">
+  return slotLine(s,
+    `<select aria-label="${esc(s.name)} 槽渠道" onchange="setSlot('claude','${s.name}','provider',this.value)">${slotChannelOptions(s.provider, 'claude')}</select>`,
+    modelCell, slotBadge(s, !!state.live?.claude?.router),
+    s.provider ? `<button class="iconbtn" aria-label="清空 ${esc(s.name)} 槽" onclick="clearSlot('claude','${s.name}')">×</button>` : '');
+}
+// 全局与会话槽位共用原有行布局;差异只在控件的读写范围。
+function slotLine(s, providerCell, modelCell, badge, clear, attributes = '') {
+  return `<div class="rc-line"${attributes}>
     <label class="field" style="flex:0 0 auto;min-width:170px">${SLOT_LABELS[s.name] || esc(s.name)}<span class="mono">${esc(s.alias)} · ${esc(s.env || '')}</span></label>
-    <label class="field" style="flex:2">渠道<select aria-label="${esc(s.name)} 槽渠道" onchange="setSlot('claude','${s.name}','provider',this.value)">${slotChannelOptions(s.provider, 'claude')}</select></label>
+    <label class="field" style="flex:2">渠道${providerCell}</label>
     <label class="field" style="flex:2">落点模型${modelCell}</label>
-    <span style="align-self:center">${slotBadge(s, !!state.live?.claude?.router)}</span>
-    ${s.provider ? `<button class="iconbtn" aria-label="清空 ${esc(s.name)} 槽" onclick="clearSlot('claude','${s.name}')">×</button>` : ''}
+    <span style="align-self:center">${badge}</span>
+    ${clear}
   </div>`;
 }
 function codexSlotRow(s) {
@@ -1435,11 +1442,16 @@ function renderSessions() {
         <div style="font-size:11px;color:var(--dim);font-family:inherit">${esc(KIND_LABEL[s.kind] || s.kind || '')}</div></td>
       <td><span class="badge ${app === 'codex' ? 'info' : 'on'}">${app === 'codex' ? 'OpenAI' : 'Anthropic'}</span></td>
       <td style="font-family:inherit"><span class="lbl" title="${esc(s.label || '')}">${esc(s.label || '-')}</span></td>
-      <td><label class="sr-only" for="session-${esc(s.short)}">会话 ${esc(s.short)} 的当前绑定渠道</label><select id="session-${esc(s.short)}" class="pin-sel" onchange="pinSession(${handlerArg(s.key)}, this.value)" ${!online ? 'disabled' : ''}>
-            <option value="" ${b.provider ? '' : 'selected'}>(未绑定)</option>${opts}</select>
-          <div class="bind-src"><span class="badge ${srcCls}">${srcText}</span></div>
-          ${s.cooldown ? '<div class="cool">⚠ 渠道冷却中</div>' : ''}
-          ${hasPool ? '' : '<div style="font-size:11px;color:var(--dim)">不在任何池内</div>'}</td>
+      <td class="session-binding">
+          ${sessionSlotsCell(s)}
+          <button class="small" onclick="openRouting(${handlerArg(s.key)})" ${online ? '' : 'disabled'} aria-label="配置会话 ${esc(s.short)} 的 Key 与槽位">配置 Key / 槽位</button>
+          <details class="session-pin"><summary>普通请求渠道 · ${esc(b.provider_name || b.provider || '未绑定')}</summary>
+            <label class="field" for="session-${esc(s.short)}">仅用于非槽位、非内容分流请求<select id="session-${esc(s.short)}" class="pin-sel" onchange="pinSession(${handlerArg(s.key)}, this.value)" ${!online ? 'disabled' : ''}>
+              <option value="" ${b.provider ? '' : 'selected'}>(未绑定)</option>${opts}</select></label>
+            <div class="bind-src"><span class="badge ${srcCls}">${srcText}</span></div>
+            ${s.cooldown ? '<div class="cool">⚠ 渠道冷却中</div>' : ''}
+            ${hasPool ? '' : '<div class="rt-note">不在任何池内</div>'}
+          </details></td>
       <td>${actualCell(s, b)}</td>
       <td>${esc(b.model || '-')}</td>
       <td>${esc(b.rule || '-')}</td>
@@ -1448,7 +1460,6 @@ function renderSessions() {
       <td>${s.lastUsed ? new Date(s.lastUsed).toLocaleTimeString('zh-CN', { hour12: false }) : '-'}</td>
       <td>${routingCell(s)}</td>
       <td><div class="sess-acts">
-        <button class="small" onclick="openRouting(${handlerArg(s.key)})" ${online ? '' : 'disabled'} aria-label="配置会话 ${esc(s.short)} 的 Key 与槽位">配置 Key / 槽位</button>
         <button class="small" onclick="gotoLogs(${handlerArg(s.short)})">日志</button>
         <button class="small danger" onclick="unbindSession(${handlerArg(s.key)})" ${online ? '' : 'disabled'}>解绑</button>
       </div></td></tr>`;
@@ -1460,9 +1471,9 @@ function actualCell(s, bound) {
   const a = actualOf(s);
   if (!a) return '<span class="actual-cell"><span class="sub">暂无</span></span>';
   const name = a.provider_name || a.provider || s.actual_text || '未知渠道';
-  // 钉的是 X、最近真打的却是 Y —— 这正是最该被看见的情况(钉定渠道挂了,请求回退到别处)。
-  // 只在两边都有渠道时算差异:未绑定没有对照物,不能说成"与当前绑定不同"。
-  const diff = !!a.provider && !!bound.provider && a.provider !== bound.provider;
+  // 普通请求对照渠道绑定,槽位请求对照该槽配置。没有配置渠道时无从比较,不报差异。
+  const expected = actualExpectedProvider(s, bound);
+  const diff = !!a.provider && !!expected && a.provider !== expected;
   const statusCls = !a.status ? '' : a.status >= 400 ? 'st4' : 'st2';
   const meta = [
     a.status ? `<span class="${statusCls}">${esc(String(a.status))}</span>` : '',
@@ -1475,8 +1486,17 @@ function actualCell(s, bound) {
     <span class="sub">${esc(a.model || '-')}${meta ? ' · ' + meta : ''}</span>
     ${diff ? '<span class="sub">与当前绑定不同</span>' : ''}</span>`;
 }
-// 只用于统计条:某条会话的最近实际落点与当前绑定是不是两个渠道。
-const actualDiffers = s => { const a = actualOf(s), b = boundOf(s); return !!a && !!a.provider && !!b.provider && a.provider !== b.provider; };
+// 槽位请求对照该槽的独立/全局配置,不能拿普通请求渠道把正常的主链/子代理分流标成异常。
+function actualExpectedProvider(s, bound = boundOf(s)) {
+  const a = actualOf(s);
+  if (a?.slot) {
+    const entry = Object.hasOwn(s.routing?.slots || {}, a.slot)
+      ? s.routing.slots[a.slot] : globalSessionSlot(groupOfSession(s), a.slot);
+    return entry?.provider || '';
+  }
+  return bound.provider || '';
+}
+const actualDiffers = s => { const a = actualOf(s), expected = actualExpectedProvider(s); return !!a?.provider && !!expected && a.provider !== expected; };
 async function pinSession(key, provider) {
   if (!online) return toast('控制台离线，未改绑会话', 'err');
   try {
@@ -1529,6 +1549,7 @@ const SESSION_SLOT_NAMES = ['main', 'opus', 'sonnet', 'haiku', 'subagent'];
 // 与服务端 CODEX_SLOT_NAME_RE 同一套规则(小写字母/数字开头,后接小写字母、数字、连字符,最长 24)
 const SLOT_NAME_RE = /^[a-z0-9][a-z0-9-]{0,23}$/;
 let routingSession = null, routingDraft = null, routingRevision = null, routingDirty = false, routingSaving = false, routingTask = null, routingLoadSeq = 0, routingError = '', routingConflict = false;
+let routingModelEdit = null, routingKeysOpen = false;
 // 会话所属协议组＝这份覆盖的作用范围
 const routingGroup = () => (routingSession?.app === 'codex' ? 'codex' : 'claude');
 const groupOfSession = s => (s?.app === 'codex' ? 'codex' : 'claude');
@@ -1730,7 +1751,27 @@ function routingKeyRows() {
   }
   return rows.join('') || '<div class="rt-note">该协议组还没有渠道。</div>';
 }
-function routingSlotRow(name) {
+// 同一份全局落点同时用于列表摘要和编辑器的继承提示,不把继承值写入会话覆盖。
+function globalSessionSlot(group, name) {
+  return (slotsOf()[group] || []).find(s => s.name === name) || null;
+}
+function sessionSlotsCell(s) {
+  const group = groupOfSession(s), overrides = s.routing?.slots || {};
+  const names = group === 'claude' ? SESSION_SLOT_NAMES : [...new Set([
+    ...(slotsOf().codex || []).map(slot => slot.name), ...Object.keys(overrides),
+  ])];
+  const count = Object.keys(overrides).length;
+  return `<div class="session-slot-summary"><span class="rt-note">${count ? `${count} 个独立槽位` : '继承全局槽位'}</span>
+    ${names.map(name => {
+      const overridden = Object.hasOwn(overrides, name);
+      const slot = overridden ? overrides[name] : globalSessionSlot(group, name);
+      const p = slot?.provider ? routingProviderOf(group, slot.provider) : null;
+      const model = slot?.model || (group === 'codex' ? p?.model : p?.models?.[0]) || '';
+      const target = slot?.provider ? `${p?.name || '渠道已删除'}${model ? ' @ ' + model : ''}` : '未配置';
+      return `<div class="session-slot-item${overridden ? ' overridden' : ''}" title="${esc((overridden ? '本会话：' : '继承全局：') + target)}"><span>${esc(name)}</span><b>${esc(target)}</b></div>`;
+    }).join('')}</div>`;
+}
+function routingSlotRow(name, keyOnly = false) {
   const group = routingGroup();
   const e = routingDraft.slots[name] || null;
   const ps = routingProvidersOf(group);
@@ -1738,16 +1779,31 @@ function routingSlotRow(name) {
   const ghost = !!e && !p;
   // 空 provider 的槽位:服务端照样存着,界面也照样摆出来,别让它看起来像"没配"
   const empty = !!e && !routingEntryUsable(e);
-  const providerOptions = ['<option value="">继承全局槽位</option>']
-    .concat(ps.map(x => `<option value="${esc(x.id)}"${x.id === e?.provider ? ' selected' : ''}>${esc(x.name)}${x.enabled ? '' : '（停用）'}</option>`))
+  const inherited = globalSessionSlot(group, name);
+  const inheritedProvider = inherited?.provider ? routingProviderOf(group, inherited.provider) : null;
+  const inheritedTarget = inherited?.provider
+    ? `${inheritedProvider?.name || '渠道已删除'} @ ${inherited.model || '未登记模型'}${inherited.enabled ? '' : '（不可用）'}`
+    : '未配置，按普通路由分发';
+  const providerOptions = [`<option value=""${e ? '' : ' selected'}>继承全局槽位${inherited?.provider ? ' · ' + esc(inheritedProvider?.name || '渠道已删除') : '（未配置）'}</option>`]
+    .concat(ps.map(x => {
+      const active = activeKeyOf(group, x.id);
+      return `<option value="${esc(x.id)}"${x.id === e?.provider ? ' selected' : ''}>${esc(x.name)}${active ? ' · ' + esc(active.label || active.id) : ''}${x.enabled ? '' : '（停用）'}</option>`;
+    }))
     .concat(ghost && !empty ? [`<option value="${esc(e.provider)}" selected>⚠ 渠道已删除（${esc(e.provider)}）</option>`] : []).join('');
   // 落点模型留空＝用所选渠道的默认模型(codex 取渠道 model,claude 取模型列表第一项),
   // 不是"继承全局槽位那个模型"——本会话槽位一旦覆盖,就不再看全局槽位表了。
   const known = [...new Set([...(p?.models || []), ...(group === 'codex' && p?.model ? [p.model] : [])])];
   const defaultModel = group === 'codex' ? p?.model : (p?.models || [])[0];
-  const modelOptions = [`<option value="">渠道默认模型${defaultModel ? '（' + esc(defaultModel) + '）' : '（该渠道未登记模型）'}</option>`]
+  const modelOptions = [`<option value=""${e?.model ? '' : ' selected'}>渠道默认模型${defaultModel ? '（' + esc(defaultModel) + '）' : '（该渠道未登记模型）'}</option>`]
     .concat(known.map(m => `<option value="${esc(m)}"${m === e?.model ? ' selected' : ''}>${esc(m)}</option>`))
-    .concat(e?.model && !known.includes(e.model) ? [`<option value="${esc(e.model)}" selected>${esc(e.model)}（渠道未登记）</option>`] : []).join('');
+    .concat(e?.model && !known.includes(e.model) ? [`<option value="${esc(e.model)}" selected>${esc(e.model)}（自定义）</option>`] : [])
+    .concat(`<option value="${SLOT_MODEL_CUSTOM}">自定义模型…</option>`).join('');
+  const modelId = `rt-slot-${name}-model`;
+  const modelCell = !e
+    ? `<select id="${esc(modelId)}" disabled><option>${esc(inherited?.model || '（跟随全局槽位）')}</option></select>`
+    : routingModelEdit?.name === name
+      ? `<input id="${esc(modelId)}" type="text" value="${esc(e.model || '')}" placeholder="模型名，可带 [1M] 后缀" spellcheck="false" autocomplete="off" oninput="routingSetSlotModel(${handlerArg(name)},this.value)" onkeydown="routingModelKey(event,${handlerArg(name)})" onblur="routingEndModelEdit(${handlerArg(name)},this.value)" ${ghost || !online ? 'disabled' : ''}>`
+      : `<select id="${esc(modelId)}" onchange="routingPickSlotModel(${handlerArg(name)},this.value)" ${ghost || !online ? 'disabled' : ''}>${modelOptions}</select>`;
   const ring = p?.keys || [];
   const keyMissing = !!e?.key_id && !ring.some(k => k.id === e.key_id);
   const keyEmpty = !!e && Object.hasOwn(e, 'key_id') && !e.key_id;
@@ -1755,21 +1811,21 @@ function routingSlotRow(name) {
     .concat(ring.map(k => `<option value="${esc(k.id)}"${k.enabled === false ? ' disabled' : ''}${k.id === e?.key_id ? ' selected' : ''}>${esc(k.label || k.id)}（${esc(k.id)}）${k.enabled === false ? ' · 已停用' : ''}</option>`))
     .concat(keyEmpty ? [`<option value="" disabled selected>已指定为空 Key（${esc(e.key_id)}）· 保存会被拒，请改选或清掉</option>`] : [])
     .concat(keyMissing ? [`<option value="${esc(e.key_id)}" disabled selected>已失效 Key（${esc(e.key_id)}）· 保留原选择</option>`] : []).join('');
-  const note = !e ? '留空：该槽位继续按全局槽位表分发。'
+  const note = !e ? `继承全局：${inheritedTarget}${inherited?.pool?.length ? '；保留全局后备池' : ''}。`
     : empty ? '这条槽位没有选渠道，服务端会拒绝保存；请选一个渠道，或点「恢复继承」删掉它。'
       : ghost ? '渠道已删除或不属于本会话的协议组，保存会被服务端拒绝；请改选渠道或恢复继承。'
         : keyEmpty ? '这条槽位指定了空 Key，服务端会拒绝保存；请改选一把 Key，或清掉这条指定。'
           : `覆盖全局槽位。取 Key 顺序：本槽位指定 → 本会话该渠道 Key → 渠道当前 Key${p?.enabled === false ? '（该渠道已停用，覆盖要等它启用才可用）' : ''}。`;
-  return `<div class="rt-row">
-    <div class="rt-name">${esc(slotLabelOf(name))}<span class="mono">${esc(name)}</span>${empty ? '<span class="badge off">无效条目</span>' : ghost ? '<span class="badge drift">渠道已失效</span>' : e ? '<span class="badge info">已覆盖</span>' : ''}</div>
-    <div class="rt-line">
-      <label class="field">槽位渠道<select id="rt-slot-${esc(name)}-provider" onchange="routingSetSlotProvider(${handlerArg(name)},this.value)" ${online ? '' : 'disabled'}>${providerOptions}</select></label>
-      <label class="field">落点模型<select id="rt-slot-${esc(name)}-model" onchange="routingSetSlotModel(${handlerArg(name)},this.value)" ${(!e || ghost || !online) ? 'disabled' : ''}>${modelOptions}</select></label>
-      <label class="field">指定 Key<select id="rt-slot-${esc(name)}-key" onchange="routingSetSlotKey(${handlerArg(name)},this.value)" ${(!e || ghost || !online) ? 'disabled' : ''}>${keyOptions}</select></label>
-      ${e ? `<button class="small danger" type="button" onclick="routingRemoveSlot(${handlerArg(name)})">恢复继承</button>` : ''}
-    </div>
+  if (keyOnly) return `<div class="rt-row">
+    <div class="rt-name">${esc(slotLabelOf(name))}</div>
+    <label class="field">指定 Key<select id="rt-slot-${esc(name)}-key" onchange="routingSetSlotKey(${handlerArg(name)},this.value)" ${(!e || ghost || !online) ? 'disabled' : ''}>${keyOptions}</select></label>
     <div class="rt-note${(ghost || empty || keyMissing || keyEmpty) ? ' warn' : ''}">${esc(note)}</div>
   </div>`;
+  const badge = `<span class="badge ${empty ? 'off' : ghost ? 'drift' : e ? 'info' : 'off'}">${empty ? '无效条目' : ghost ? '渠道已失效' : e ? '已覆盖' : '继承全局'}</span>`;
+  const clear = e ? `<button class="iconbtn" aria-label="恢复 ${esc(name)} 槽继承" onclick="routingRemoveSlot(${handlerArg(name)})" ${online ? '' : 'disabled'}>×</button>` : '';
+  return slotLine({ name, alias: inherited?.alias || 'mixr-' + name, env: inherited?.env || '' },
+    `<select id="rt-slot-${esc(name)}-provider" onchange="routingSetSlotProvider(${handlerArg(name)},this.value)" ${online ? '' : 'disabled'}>${providerOptions}</select>`,
+    modelCell, badge, clear, ` data-routing-slot="${esc(name)}"`);
 }
 function slotLabelOf(name) { return routingGroup() === 'claude' ? (SLOT_LABELS[name] || name) : `槽位 ${name}`; }
 // Claude 是固定五槽;Codex 槽名自拟,所以只列槽位表里登记过的,外加草稿里已有的名字
@@ -1784,17 +1840,23 @@ function renderRoutingEditor() {
   if (!routingDraft) { box.innerHTML = ''; return; }
   const group = routingGroup();
   const keys = routingKeyRows();
-  const slots = routingSlotNames().map(routingSlotRow).join('') || '<div class="rt-note">该协议组还没有槽位。</div>';
-  box.innerHTML = `<div class="rt-group"><h4>${esc(GROUPS[group])}</h4>
-    <p>渠道 Key：默认继承渠道当前生效账号；要指定就选一把已有 Key。这里只保存引用，不显示也不存放明文，也不会切换渠道当前账号。</p>
-    <div class="rt-list">${keys}</div>
-    <p>槽位落点：留空表示继续用全局槽位表；填了渠道的槽位才覆盖本会话。</p>
-    <div class="rt-list">${slots}</div>
+  const names = routingSlotNames();
+  const slots = names.map(name => routingSlotRow(name)).join('') || '<div class="rt-note">该协议组还没有槽位。</div>';
+  box.innerHTML = `<div class="panel" id="routing-slots-panel"><h2>会话模型槽位</h2>
+    <p class="hint">每行分别选择渠道与模型；未覆盖的槽位继承全局。模型留空使用渠道默认模型。保存只影响本会话后续新请求，不改全局槽位或客户端配置；内容分流（含压缩）仍优先。</p>
+    <div>${slots}</div>
     ${group === 'codex' ? `<div class="rt-line" style="margin-top:10px">
       <label class="field">新增槽位覆盖<input id="rt-new-slot" placeholder="如 worker（小写字母/数字/连字符）" autocomplete="off" spellcheck="false"></label>
       <button class="small" type="button" onclick="routingAddSlot()" ${online ? '' : 'disabled'}>＋ 添加槽位覆盖</button>
     </div>` : ''}
-  </div>`;
+    <div class="savebar"><button class="primary" type="button" onclick="saveRouting()" ${online && !routingSaving ? '' : 'disabled'}>保存该会话槽位</button>
+      <button class="small" type="button" onclick="routingCopyGlobalSlots()" ${online ? '' : 'disabled'}>复制全局槽位为独立配置</button></div>
+  </div>
+  <details class="rt-group" ${routingKeysOpen ? 'open' : ''} ontoggle="routingKeysOpen=this.open"><summary>渠道 Key 设置${Object.keys(routingDraft.keys).length ? '（' + Object.keys(routingDraft.keys).length + ' 项指定）' : '（默认继承）'}</summary>
+    <p>渠道 Key：默认继承渠道当前生效账号；要指定就选一把已有 Key。这里只保存引用，不显示也不存放明文，也不会切换渠道当前账号。</p>
+    <div class="rt-list">${keys}</div>
+    <p>槽位 Key 与继承来源</p><div class="rt-list">${names.map(name => routingSlotRow(name, true)).join('')}</div>
+  </details>`;
 }
 function routingSetKey(pid, kid) {
   if (!routingDraft) return;
@@ -1804,9 +1866,52 @@ function routingSetKey(pid, kid) {
 function routingSetSlotProvider(name, pid) {
   if (!routingDraft) return;
   // 换渠道就把模型和 Key 一起清掉:它们属于上一个渠道,留着就是指向别家渠道的脏值
+  routingModelEdit = null;
   if (!pid) delete routingDraft.slots[name];
   else routingDraft.slots[name] = { provider: pid };
   routingTouch(); rerenderRouting(`rt-slot-${name}-provider`);
+}
+function routingPickSlotModel(name, value) {
+  if (value === SLOT_MODEL_CUSTOM) {
+    const e = routingDraft?.slots?.[name];
+    if (!e) return;
+    routingModelEdit = { name, value: e.model || '' };
+    rerenderRouting(`rt-slot-${name}-model`);
+    return;
+  }
+  routingModelEdit = null;
+  routingSetSlotModel(name, value);
+}
+function routingModelKey(event, name) {
+  if (event.key === 'Enter') {
+    event.preventDefault(); routingEndModelEdit(name, event.target.value);
+  } else if (event.key === 'Escape') {
+    event.preventDefault(); event.stopPropagation();
+    const edit = routingModelEdit;
+    routingModelEdit = null;
+    if (edit?.name === name) routingSetSlotModel(name, edit.value);
+    rerenderRouting(`rt-slot-${name}-model`);
+  }
+}
+function routingEndModelEdit(name, value) {
+  if (routingModelEdit?.name !== name) return;
+  routingModelEdit = null;
+  routingSetSlotModel(name, (value || '').trim());
+  // 失焦时不重画鼠标下的控件,避免吞掉用户正在点击的保存/渠道选择。
+  const model = $(`rt-slot-${name}-model`);
+  if (model && document.activeElement === model) rerenderRouting(model.id);
+}
+function routingCopyGlobalSlots() {
+  const gate = routingGate('复制全局槽位'); if (gate) return toast(gate, 'err');
+  let copied = 0;
+  for (const slot of slotsOf()[routingGroup()] || []) {
+    if (!slot.provider || Object.hasOwn(routingDraft.slots, slot.name)) continue;
+    routingDraft.slots[slot.name] = { provider: slot.provider, ...(slot.model ? { model: slot.model } : {}) };
+    copied++;
+  }
+  routingModelEdit = null;
+  routingTouch(); renderRoutingEditor();
+  toast(copied ? `已复制 ${copied} 个全局槽位到草稿，已有覆盖未改动；复制仅含渠道与模型，不含后备池，保存后才生效。` : '没有可复制的全局槽位，已有独立配置未改动。');
 }
 function routingSetSlotModel(name, model) {
   const e = routingDraft?.slots?.[name];
@@ -1822,6 +1927,7 @@ function routingSetSlotKey(name, kid) {
 }
 function routingRemoveSlot(name) {
   if (!routingDraft?.slots?.[name]) return;
+  if (routingModelEdit?.name === name) routingModelEdit = null;
   delete routingDraft.slots[name];
   routingTouch(); renderRoutingEditor();
 }
@@ -1858,6 +1964,7 @@ async function loadRouting() {
       if (!res || res.routing == null || res.revision == null || typeof res.routing !== 'object' || Array.isArray(res.routing))
         throw new Error('响应缺少完整的 routing/revision 字段');
       routingDraft = routingClone(res.routing); routingRevision = res.revision; routingDirty = false; routingError = '';
+      routingModelEdit = null;
       renderRoutingEditor(); renderRoutingStatus();
     } catch (e) {
       if (!routingIdentityOk(full, seq)) return;
@@ -1880,6 +1987,7 @@ function openRouting(identity) {
   const s = sessionByIdentity(identity) || sessionById(identity);
   if (!s) return toast('该会话已不在当前列表，请刷新后重试', 'err');
   routingSession = s; routingDraft = null; routingRevision = null; routingDirty = false; routingError = ''; routingConflict = false;
+  routingModelEdit = null; routingKeysOpen = false;
   renderRoutingIdent(); renderRoutingEditor(); renderRoutingStatus();
   $('routing-msg').textContent = '正在读取该会话的覆盖配置…';
   showDialog('routing-mask', 'routing-close');

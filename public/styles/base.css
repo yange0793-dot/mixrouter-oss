@@ -233,8 +233,18 @@
   .bk-dir { border: 1px solid var(--border); border-radius: 9px; padding: 13px 15px; margin-bottom: 12px; background: #151e22; }
   .bk-dir .bk-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; font-size: 13px; }
   .bk-dir .bk-head .mono { margin-left: auto; }
-  /* 会话 Key / 槽位覆盖弹窗。行布局沿用 .field/.rc-line 的换行语义,窄屏整行落下。 */
-  #routing-mask .modal { width: 780px; }
+  /* 会话槽位沿用渠道页的行式配置,列表给摘要,弹窗才编辑整组。 */
+  #routing-mask .modal { width: 1060px; }
+  .session-binding { min-width: 300px; }
+  .session-slot-summary { display: grid; gap: 5px; margin-bottom: 10px; }
+  .session-slot-item { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 8px; color: var(--dim); }
+  .session-slot-item b { font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .session-slot-item.overridden { color: var(--accent); }
+  .session-pin { margin-top: 8px; }
+  .session-pin summary { cursor: pointer; color: var(--dim); font: 11px/1.6 var(--mono); }
+  .session-pin .field { margin-top: 8px; }
+  /* 去掉弹窗通用 label 的额外间距,槽位行完全沿用原来的 .rc-line/.field。 */
+  #routing-slots-panel label { display: flex; margin: 0; }
   .rt-ident { display: grid; gap: 5px; margin: 14px 0 12px; }
   .rt-ident .row { display: flex; gap: 10px; align-items: baseline; font-size: 11px; color: var(--dim); }
   .rt-ident .row > span { flex-shrink: 0; min-width: 92px; }

@@ -128,7 +128,10 @@ Responses 型通道上 → Claude 组标 `responses`;网关只开 `/v1/chat/comp
 ### 会话级 Key 与槽位覆盖
 
 覆盖存在 `sessions.json` 的会话记录里(`routing: {keys, slots}`),只引用渠道内已有的
-**Key ID**,**不重复存 Key 明文**;空映射即继承全局。接口是
+**Key ID**,**不重复存 Key 明文**;空映射即继承全局。控制台入口为
+「会话 → 当前绑定 → 配置 Key / 槽位」:逐槽选择渠道和落点模型,模型可自定义,
+可复制未覆盖的全局渠道/模型到草稿(不含备池),点击保存才写入。普通请求钉定在
+「普通请求渠道」展开设置,渠道级 Key 位于槽位编辑器下方。接口是
 `GET/PUT /api/sessions/:key/routing`,命令行包装是
 `mixctl sessions config|set-key|set-slot|clear-slot|reset`。
 
