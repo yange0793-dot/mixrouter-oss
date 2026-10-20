@@ -3,7 +3,8 @@
 // 变量与函数,不重复声明 `$` / `esc` / `toast` / `fmtTok`(重复声明会当场报错,这是安全网)。
 //
 // 数据来自 GET /api/usage:磁盘 logs/requests.jsonl + 内存环,按本地时区分桶、空桶已补齐。
-// 成本是**估算**:按价目表(USD / 1M tokens)折算,未定价模型记 0 并在页面上点名。
+// 这里只呈现真实消耗(请求数 / tokens / 缓存命中):金额要按渠道单价折算,单价随时间与
+// 渠道变动,本机算出来的数只会和渠道账单对不上,不如不显示。
 //
 // 三条容易做错的边界,这里都写死:
 //   1) series[].t 是本地时间字符串('YYYY-MM-DDTHH:00' 或 'YYYY-MM-DD'),**不**用
@@ -13,19 +14,19 @@
 
 const USAGE_PREF_KEY = 'mixr.usage.prefs';
 const USAGE_RANGE_LABELS = { today: '今天', '24h': '近 24 小时', '7d': '近 7 天', '30d': '近 30 天', all: '全部' };
-const USAGE_METRIC_LABELS = { tokens: 'Tokens', reqs: '请求', cost: '成本' };
+const USAGE_METRIC_LABELS = { tokens: 'Tokens', reqs: '请求' };
 
 // 页面状态只在这里一处。`data` 是上次成功读取的响应,失败时保留旧图并只更新状态行 ——
 // 一次轮询失败不该把整页清空。
 const usageState = {
   range: '7d', app: '', provider: '', model: '', metric: 'tokens', interval: 60,
-  data: null, pricing: null, pricingBase: null,
+  data: null,
   inited: false, visible: false, timer: null, controller: null, seq: 0, lastSync: 0,
 };
 
 // ---- 数值格式 -------------------------------------------------------------
 // null / undefined / '' 一律当"没有这个数"——Number(null) 是 0,直接塞进 Number.isFinite
-// 会让「没有成本」显示成「$0.000」,看起来像真的花了 0 元。
+// 会让「没有数据」显示成 0,看起来像真的发生过请求。
 const usageNum = value => (value === null || value === undefined || value === ''
   ? null : (Number.isFinite(Number(value)) ? Number(value) : null));
 const usageTok = value => {
@@ -36,13 +37,6 @@ const usageTok = value => {
   if (abs >= 1e6) return (n / 1e6).toFixed(2) + 'M';
   if (abs >= 1e3) return (n / 1e3).toFixed(1) + 'k';
   return String(Math.round(n));
-};
-const usageMoney = value => {
-  const n = usageNum(value);
-  if (n === null) return '—';
-  if (n >= 1000) return '$' + Math.round(n).toLocaleString('en-US');
-  if (n >= 1) return '$' + n.toFixed(2);
-  return '$' + n.toFixed(3);
 };
 const usagePct = value => {
   const n = usageNum(value);
@@ -154,7 +148,6 @@ function usageInitControls() {
   if (app) app.value = usageState.app;
   const interval = $('usage-interval');
   if (interval) interval.value = String(usageState.interval);
-  usageState.pricingBase = null;
   usageSchedule();
 }
 
@@ -223,19 +216,6 @@ function setUsageInterval(value) {
 function usageRender(data) {
   const totals = data.totals || {};
   const set = (id, text) => { const el = $(id); if (el) el.textContent = text; };
-  set('usage-cost', usageMoney(totals.cost));
-  // 成本只覆盖价目表里有的模型:未定价的模型按 0 计。不把覆盖率说清楚,「总成本 $3.93」
-  // 会被读成「这个区间只花了 3.93 美元」——实际大头可能是还没定价的那些。
-  const missing = new Set(data.pricing?.missing || []);
-  if (missing.size) {
-    const models = data.by_model || [];
-    const all = models.reduce((sum, row) => sum + (Number(row.reqs) || 0), 0);
-    const unpriced = models.reduce((sum, row) => sum + (missing.has(row.model) ? (Number(row.reqs) || 0) : 0), 0);
-    const share = all ? Math.round(unpriced * 100 / all) : 0;
-    set('usage-cost-hint', `按价目表折算 · ${missing.size} 个模型未定价${share ? `(占 ${share}% 请求)` : ''}，成本只含已定价部分`);
-  } else {
-    set('usage-cost-hint', '按价目表折算，非账单');
-  }
   set('usage-reqs', usageInt(totals.reqs));
   set('usage-ok-rate', totals.ok_rate === null || totals.ok_rate === undefined
     ? '暂无成功率样本' : `成功率 ${Number(totals.ok_rate).toFixed(1)}%`);
@@ -245,7 +225,6 @@ function usageRender(data) {
   set('usage-cache-hint', `速度 ${totals.speed_tps ? Math.round(totals.speed_tps) + ' tok/s' : '—'} · 首字 ${usageMs(totals.ttfb_p50_ms)}`);
   usageRenderFilters(data);
   usageRenderChart(data);
-  usageRenderMissing(data);
   usageRenderTable(data);
 }
 
@@ -271,27 +250,18 @@ function usageRenderFilters(data) {
   fill('usage-model', data.by_model || [], usageState.model, m => m.model, m => m.model);
 }
 
-function usageRenderMissing(data) {
-  const el = $('usage-missing');
-  if (!el) return;
-  const missing = data.pricing?.missing || [];
-  if (!missing.length) { el.hidden = true; el.textContent = ''; return; }
-  el.hidden = false;
-  el.textContent = `${missing.length} 个模型未定价,成本按 0 计:${missing.join('、')}。可在「价目表」里补上单价。`;
-}
-
 function usageRenderTable(data) {
   const body = $('usage-rows');
   const count = $('usage-count');
   const rows = data.by_model || [];
   if (count) {
     count.textContent = rows.length
-      ? `区间内 ${rows.length} 个模型;按成本降序,未定价的记 0。`
+      ? `区间内 ${rows.length} 个模型;按请求数降序。`
       : '当前区间内没有请求。';
   }
   if (!body) return;
   if (!rows.length) {
-    body.innerHTML = '<tr><td colspan="7" style="color:var(--dim)">这个区间里没有请求。调整区间或筛选条件再试。</td></tr>';
+    body.innerHTML = '<tr><td colspan="6" style="color:var(--dim)">这个区间里没有请求。调整区间或筛选条件再试。</td></tr>';
     return;
   }
   body.innerHTML = rows.map(row => {
@@ -299,20 +269,18 @@ function usageRenderTable(data) {
     const hit = denom ? (Number(row.cache_read) || 0) / denom : null;
     return `<tr><td>${esc(row.model || '—')}</td><td>${usageInt(row.reqs)}</td>
       <td>${usageTok(row.tokens_in)}</td><td>${usageTok(row.tokens_out)}</td><td>${usageTok(row.cache_read)}</td>
-      <td>${hit === null ? '—' : (hit * 100).toFixed(1) + '%'}</td><td>${usageMoney(row.cost)}</td></tr>`;
+      <td>${hit === null ? '—' : (hit * 100).toFixed(1) + '%'}</td></tr>`;
   }).join('');
 }
 
 // ---- 面积图(手写 SVG,零依赖) -------------------------------------------
 function usageMetricOf(bucket, metric) {
   if (metric === 'reqs') return Number(bucket.reqs) || 0;
-  if (metric === 'cost') return Number(bucket.cost) || 0;
   return (Number(bucket.tokens_in) || 0) + (Number(bucket.tokens_out) || 0) + (Number(bucket.cache_read) || 0);
 }
 // 刻度文字要短:usageTok 给的是 2 位小数(750.00M),四个字符的宽度会把左边距撑爆、
 // 被 SVG 边界裁掉。刻度只需要量级可读,统一压到 0–1 位小数。
-function usageAxisLabel(value, metric) {
-  if (metric === 'cost') return value >= 100 ? '$' + Math.round(value) : '$' + value.toFixed(2);
+function usageAxisLabel(value) {
   const n = Number(value) || 0;
   const abs = Math.abs(n);
   if (abs >= 1e9) return (n / 1e9).toFixed(abs >= 1e10 ? 0 : 1) + 'B';
@@ -340,7 +308,7 @@ function usageRenderChart(data) {
   const height = Math.round(svg.getBoundingClientRect().height) || 260;
   // 左边距由最长刻度文字决定:写死 52px 时「750M」这类标签会越过 viewBox 左边界被裁掉。
   const widest = series.length
-    ? Math.max(...[0, 0.25, 0.5, 0.75, 1].map(ratio => usageAxisLabel(usageNiceMax(Math.max(...series.map(bucket => usageMetricOf(bucket, usageState.metric)), 0)) * (1 - ratio), usageState.metric).length))
+    ? Math.max(...[0, 0.25, 0.5, 0.75, 1].map(ratio => usageAxisLabel(usageNiceMax(Math.max(...series.map(bucket => usageMetricOf(bucket, usageState.metric)), 0)) * (1 - ratio)).length))
     : 4;
   const padLeft = Math.min(96, Math.max(44, Math.round(widest * 6.8) + 10)), padRight = 14, padTop = 12, padBottom = 26;
   const plotW = Math.max(10, width - padLeft - padRight);
@@ -373,7 +341,7 @@ function usageRenderChart(data) {
     const y = padTop + plotH * ratio;
     const value = maxValue * (1 - ratio);
     return `<line x1="${padLeft}" x2="${width - padRight}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}"></line>
-      <text x="${padLeft - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end">${esc(usageAxisLabel(value, usageState.metric))}</text>`;
+      <text x="${padLeft - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end">${esc(usageAxisLabel(value))}</text>`;
   }).join('');
 
   // X 轴刻度:最多 7 个,首尾必显。小时桶显示 HH:00,天桶显示 MM-DD。
@@ -423,144 +391,12 @@ function usageChartMove(event) {
   for (const point of points) if (Math.abs(point.x - x) < Math.abs(best.x - x)) best = point;
   let tip = holder.querySelector('.chart-tip');
   if (!tip) { tip = document.createElement('div'); tip.className = 'chart-tip'; holder.appendChild(tip); }
-  const value = usageState.metric === 'cost' ? usageMoney(best.value)
-    : usageState.metric === 'reqs' ? usageInt(best.value) + ' 次'
+  const value = usageState.metric === 'reqs' ? usageInt(best.value) + ' 次'
     : usageTok(best.value) + ' tokens';
   tip.textContent = `${best.t} · ${value}`;
   const left = (best.x / scale) + (svgBox.left - box.left);
   tip.style.left = Math.min(Math.max(8, left + 12), Math.max(8, box.width - tip.offsetWidth - 8)) + 'px';
   tip.style.top = '8px';
-}
-
-// ---- 价目表 ---------------------------------------------------------------
-async function openUsagePricing() {
-  const mask = $('usage-pricing-mask');
-  if (!mask) return;
-  mask.classList.add('show');
-  usagePricingMsg('正在读取价目表…');
-  try {
-    const body = await fetch('/api/pricing', { cache: 'no-store' }).then(async r => {
-      const json = await r.json();
-      if (!r.ok) throw new Error(json.error || `HTTP ${r.status}`);
-      return json;
-    });
-    usageState.pricing = body;
-    usageState.pricingBase = JSON.parse(JSON.stringify(body.pricing || {}));
-    usageRenderPricing(body);
-    usagePricingMsg(`来源:${body.source === 'custom' ? '自定义' : '默认参考价'} · 单价按 USD / 1M tokens`);
-  } catch (e) {
-    usagePricingMsg('读取价目表失败:' + e.message, true);
-  }
-}
-function closeUsagePricing() {
-  $('usage-pricing-mask')?.classList.remove('show');
-}
-function usagePricingMsg(text, isErr = false) {
-  const el = $('usage-pricing-msg');
-  if (!el) return;
-  el.textContent = text;
-  el.style.color = isErr ? 'var(--err-text)' : 'var(--dim)';
-}
-function usagePriceRow(name, price, custom) {
-  const value = field => {
-    const n = Number(price?.[field]);
-    return Number.isFinite(n) && n ? String(n) : '';
-  };
-  return `<tr data-model="${esc(name)}" data-custom="${custom ? '1' : ''}">
-    <td><input type="text" class="price-name" value="${esc(name)}" spellcheck="false" aria-label="模型名"></td>
-    <td><input type="number" class="price-in" min="0" step="0.01" value="${value('in')}" aria-label="输入单价"></td>
-    <td><input type="number" class="price-out" min="0" step="0.01" value="${value('out')}" aria-label="输出单价"></td>
-    <td><input type="number" class="price-cache" min="0" step="0.01" value="${value('cache_read')}" aria-label="缓存读单价"></td>
-    <td><button type="button" class="iconbtn" onclick="this.closest('tr').remove()" aria-label="删除该模型">×</button></td>
-  </tr>`;
-}
-function usageRenderPricing(body) {
-  const box = $('usage-pricing-body');
-  if (!box) return;
-  const effective = body.pricing?.models || {};
-  const custom = body.custom?.models || {};
-  const names = [...new Set([...Object.keys(effective), ...Object.keys(custom)])].sort();
-  box.innerHTML = `<div class="table-wrap" tabindex="0" role="region" aria-label="价目表，可横向滚动">
-    <table><caption class="sr-only">模型单价（USD / 1M tokens）</caption>
-    <thead><tr><th scope="col">模型</th><th scope="col">输入</th><th scope="col">输出</th><th scope="col">缓存读</th><th scope="col"></th></tr></thead>
-    <tbody id="usage-pricing-rows">
-      ${names.map(name => usagePriceRow(name, effective[name], Object.hasOwn(custom, name))).join('')}
-    </tbody></table></div>
-    <p class="usage-note">标了灰点的行是自定义价;没改过的默认行保存时不会写进 pricing.json。</p>`;
-}
-function addPricingRow() {
-  const body = $('usage-pricing-rows');
-  if (!body) return;
-  body.insertAdjacentHTML('beforeend', usagePriceRow('', null, true));
-  const input = body.lastElementChild?.querySelector('.price-name');
-  if (input) input.focus();
-}
-
-async function saveUsagePricing() {
-  const rows = [...document.querySelectorAll('#usage-pricing-rows tr')];
-  const models = {};
-  const customBefore = usageState.pricing?.custom?.models || {};
-  const base = usageState.pricingBase?.models || {};
-  for (const row of rows) {
-    const name = row.querySelector('.price-name')?.value.trim();
-    if (!name) continue;
-    const read = cls => {
-      const raw = row.querySelector(cls)?.value.trim();
-      if (raw === '' || raw === undefined) return null;
-      const n = Number(raw);
-      return Number.isFinite(n) && n >= 0 ? n : NaN;
-    };
-    const price = { in: read('.price-in'), out: read('.price-out'), cache_read: read('.price-cache') };
-    if (Object.values(price).some(v => Number.isNaN(v))) {
-      usagePricingMsg(`「${name}」的单价必须是非负数字。`, true);
-      return;
-    }
-    // 三个都留空且原本不是自定义价 = 这行只是默认参考值,不写盘。
-    const isCustom = row.dataset.custom === '1' || Object.hasOwn(customBefore, name);
-    const touched = Object.values(price).some(v => v !== null)
-      && !(Object.hasOwn(base, name) && !Object.hasOwn(customBefore, name)
-        && ['in', 'out', 'cache_read'].every(f => Number(price[f] ?? base[name][f]) === Number(base[name][f])));
-    if (!isCustom && !touched) continue;
-    models[name] = {
-      in: price.in ?? (Number(base[name]?.in) || 0),
-      out: price.out ?? (Number(base[name]?.out) || 0),
-      cache_read: price.cache_read ?? (Number(base[name]?.cache_read) || 0),
-    };
-  }
-  const payload = {
-    version: 1, models,
-    // 渠道级覆盖这一版不在表格里编辑,原样带回,避免保存时被抹掉。
-    providers: usageState.pricing?.custom?.providers || {},
-    expected_revision: usageState.pricing?.revision,
-  };
-  const button = $('usage-pricing-save');
-  if (button) { button.disabled = true; button.textContent = '保存中…'; }
-  try {
-    const response = await fetch('/api/pricing', {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload), cache: 'no-store',
-    });
-    const body = await response.json().catch(() => ({}));
-    if (response.status === 409) {
-      // 冲突时先把服务端的最新表读回来,再把提示写回去 —— 重载会把状态行改成「来源:…」,
-      // 顺序反过来用户就看不到"为什么没保存成功"。
-      usageState.pricing = null;
-      await openUsagePricing();
-      usagePricingMsg('价目表已被其他请求修改,已载入最新版本;请核对后重新修改。', true);
-      return;
-    }
-    if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
-    usageState.pricing = body;
-    usageState.pricingBase = JSON.parse(JSON.stringify(body.pricing || {}));
-    usageRenderPricing(body);
-    usagePricingMsg('已保存。' + (body.source === 'custom' ? '当前使用自定义价目表。' : ''));
-    toast('价目表已保存');
-    loadUsage();
-  } catch (e) {
-    usagePricingMsg('保存失败:' + e.message, true);
-  } finally {
-    if (button) { button.disabled = false; button.textContent = '保存价目表'; }
-  }
 }
 
 // 图表尺寸随窗口变化:重建 SVG 才不会出现被拉伸变形的刻度文字。
@@ -574,18 +410,10 @@ document.addEventListener('visibilitychange', () => {
   // 从后台切回来立即刷新一次:轮询在隐藏期间是跳过的,回来时数字可能已经过时。
   if (document.visibilityState === 'visible' && usageState.visible && usageState.inited) loadUsage();
 });
-document.addEventListener('keydown', event => {
-  if (event.key !== 'Escape') return;
-  const mask = $('usage-pricing-mask');
-  if (mask?.classList.contains('show')) { event.preventDefault(); closeUsagePricing(); }
-});
 document.addEventListener('DOMContentLoaded', () => {
   const holder = $('usage-chart-holder');
   if (holder) {
     holder.addEventListener('mousemove', usageChartMove);
     holder.addEventListener('mouseleave', usageHideTip);
   }
-  $('usage-pricing-mask')?.addEventListener('click', event => {
-    if (event.target === $('usage-pricing-mask')) closeUsagePricing();
-  });
 });

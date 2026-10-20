@@ -28,6 +28,7 @@ process.env.MIXR_CLAUDE_SETTINGS = path.join(TMP, 'settings.json');
 process.env.MIXR_CODEX_CONFIG = path.join(TMP, 'config.toml');
 process.env.MIXR_ZCODE_CONFIG = path.join(TMP, 'zcode.json');
 process.env.MIXR_RESPONSE_ARCHIVE = 'off';
+process.env.MIXR_RETRY_DELAY_MS = '0'; // 重试间隔在测试里没有意义,只会让每个失败用例白等一秒
 process.env.MIXROUTER_PORT = '0';
 process.env.MIXUI_PORT = '0';
 
@@ -214,14 +215,13 @@ test('compact 落到 chat 渠道:回 501 unsupported_compaction,不打上游', a
 });
 
 test('compact 的失败不会把 chat 渠道标成不可用(后续请求照常)', async () => {
-  // 501 是能力边界而不是上游故障:熔断/冷却若被它触发,会把一条健康的 chat 渠道
-  // 从池子里摘掉,同池的普通 responses 请求跟着一起遭殃。
+  // 501 是能力边界而不是上游故障:冷却若被它触发,会把一条健康的 chat 渠道
+  // 从优先候选里摘掉,同池的普通 responses 请求跟着一起遭殃。
   const r = await compact({ instructions: 'y', input: [], store: false }, { model: 'glm-5.3-flash' });
   assert.equal(r.status, 501);
   const view = mod.healthStatus().providers.find(p => p.provider === 'k-chat');
   assert.ok(view, 'chat 渠道应当出现在健康视图里');
-  assert.equal(view.state, 'closed', 'chat 渠道不该因为 501 被熔断');
-  assert.equal(view.failures, 0, '501 不该计入渠道失败次数');
+  assert.equal(view.cooldown_until, 0, 'chat 渠道不该因为 501 进冷却');
   assert.equal(view.eligible, true);
   const follow = await request(proxyPort, 'POST', '/v1/responses', {
     headers: { 'Content-Type': 'application/json', 'session-id': 'after-501' },

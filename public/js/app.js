@@ -21,7 +21,7 @@ let windowSnapshot = null, windowDirty = false, windowRevision = 0, windowSelect
 // 而"客户端需重开(新开会话)"是**必须**的一步。
 let windowOutcome = null;
 let online = false, lastSync = null, refreshTask = null, activeDialog = null, returnFocus = null, confirmResolve = null, savingProvider = false;
-// /api/health 的最近一次只读快照(渠道页的冷却/熔断徽标与设置页共用)。它是**独立**的一次
+// /api/health 的最近一次只读快照(渠道页的冷却/可用性徽标与设置页共用)。它是**独立**的一次
 // fetch:读失败只让徽标与设置页那一块显示"未读取",绝不阻断 /api/state 的整页刷新。
 let liveHealth = null, healthError = '', healthTask = null;
 const providerGroup = () => curApp === 'zcode' ? (zcodeWire === 'anthropic' ? 'claude' : 'codex') : curApp;
@@ -394,8 +394,8 @@ function renderProviders() {
   if ($('liveinfo').innerHTML !== liveHtml && !$('liveinfo').contains(document.activeElement))
     $('liveinfo').innerHTML = liveHtml;
   const lv = state.live?.[curApp], curId = state.current?.[curApp];
-  // 冷却与熔断状态按渠道 id 索引一次,卡片里按 id 取。两者都只读:
-  // 冷却来自 /api/state(会话页也在用),熔断来自 /api/health(liveHealth,可能还没回来或读失败)。
+  // 冷却与可用性按渠道 id 索引一次,卡片里按 id 取。两者都只读:
+  // 冷却来自 /api/state(会话页也在用),可用性来自 /api/health(liveHealth,可能还没回来或读失败)。
   const cooldownById = new Map((state.cooldowns || []).map(c => [c.provider, c]));
   const healthById = new Map((liveHealth?.providers || []).map(h => [h.provider, h]));
   let warning = '';
@@ -406,7 +406,7 @@ function renderProviders() {
   // 健康端点挂了不能把整页拖垮:读不到就只显示一句"健康状态未读取",其余卡片照常渲染。
   // 冷却徽标来自 /api/state,与健康端点无关,所以它不受这一条影响。
   $('prov-health').hidden = !!liveHealth;
-  $('prov-health').textContent = liveHealth ? '' : (healthError ? `健康状态未读取（${healthError}）：熔断器信息暂时不可用，冷却状态仍然准确。` : '健康状态尚未读取；进入「设置与备份」页可读取熔断器信息。');
+  $('prov-health').textContent = liveHealth ? '' : (healthError ? `健康状态未读取（${healthError}）：渠道可用性暂时不可用，冷却状态仍然准确。` : '健康状态尚未读取；进入「设置与备份」页可读取渠道可用性。');
   const html = shown.map(p => {
     const isCur = curId === p.id, drift = isCur && lv?.match === false;
     const verified = online && !lv?.error && isCur && lv?.match === true && !lv.router;
@@ -425,11 +425,7 @@ function renderProviders() {
     const hp = healthById.get(p.id);
     const healthBits = [];
     if (cool) healthBits.push(`<span class="badge drift" title="冷却中">冷却至 ${esc(new Date(cool.until).toLocaleTimeString('zh-CN', { hour12: false }))}</span>`);
-    if (hp && hp.state && hp.state !== 'closed') healthBits.push(`<span class="badge drift" title="熔断器状态">熔断 ${esc(hp.state)}</span>`);
-    // 熔断 closed 也要看得见:否则"没徽标"既可能是"健康都正常",也可能是"健康端点还没回来",
-    // 两种完全不同的状态长得一模一样。健康读过就总是显示它。
-    else if (hp && hp.state) healthBits.push(`<span class="badge on" title="熔断器状态">熔断 closed</span>`);
-    // enabled !== false 才算可用:熔断开着或渠道停用都会让池跳过它,提前说出来免得用户以为它在用
+    // enabled !== false 才算可用:渠道停用或按健康快照不可达都会让池跳过它,提前说出来免得用户以为它在用
     if (hp && hp.eligible === false && !cool && p.enabled) healthBits.push('<span class="badge off" title="按健康状态不可用">暂不可用</span>');
     return `<article class="card ${p.enabled ? '' : 'off'} ${verified ? 'cur' : ''}">
       <div class="top"><span class="cdot" aria-hidden="true"></span><h3 class="name">${esc(p.name)}</h3>${isCur ? `<span class="badge ${verified ? 'on' : 'off'}">${verified ? '已写入配置' : '库内选中'}</span>` : ''}${drift && online ? '<span class="badge drift">配置不一致</span>' : ''}<span class="badge ${p.enabled ? 'info' : 'off'}">${p.enabled ? '启用' : '停用'}</span>${deadKeys.length ? `<span class="badge off" title="有停用的 Key">${deadKeys.length} 把 Key 已停用</span>` : ''}${healthBits.join('')}</div>
@@ -2103,7 +2099,7 @@ function routingCell(s) {
 // ---------------- 设置与备份(只读) ----------------
 // 这一页把后端早就存在、前端此前零引用的四个端点接出来。四条都是**只读**:
 //   /api/backups        备份清点(只有文件名/大小/时间/摘要,响应里没有任何配置正文或密钥)
-//   /api/health         熔断器/冷却/超时与重试配置
+//   /api/health         渠道冷却/可用性与超时、重试配置
 //   /api/routing/preview 路由解释(预测,不消耗游标、不写绑定)
 //   /api/metrics        Prometheus 文本,可导出
 // 全部走 api(),不新增任何写请求。这里没有任何"恢复"入口:真正的恢复写入不在本期。
@@ -2150,19 +2146,19 @@ async function loadHealth() {
       ['流式首字节(ms)', s.stream_first_header_timeout_ms], ['流式空闲(ms)', s.stream_idle_timeout_ms],
       ['非流式总超时(ms)', s.nonstream_total_timeout_ms], ['最大尝试', s.max_attempts],
       ['单请求上游调用上界', s.max_upstream_calls], ['冷却(ms)', s.cooldown_ms],
-      ['熔断阈值', s.failure_threshold], ['恢复阈值', s.recovery_threshold],
+      ['重试间隔(ms)', s.retry_delay_ms],
     ].filter(([, v]) => v !== undefined);
     $('health-body').innerHTML = `<dl class="config-facts">${facts.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(String(v))}</dd></div>`).join('')}</dl>`
       + (Array.isArray(h.providers) && h.providers.length
-        ? `<div class="table-wrap"><table><caption class="sr-only">各渠道可用性</caption><thead><tr><th scope="col">渠道</th><th scope="col">协议组</th><th scope="col">启用</th><th scope="col">可用</th><th scope="col">熔断</th><th scope="col">冷却至</th></tr></thead><tbody>${h.providers.map(p => `<tr><td class="mono">${esc(p.provider)}</td><td>${esc(p.app || '')}</td><td>${p.enabled ? '是' : '否'}</td><td>${p.eligible ? '是' : '否'}</td><td>${esc(p.state || '')}</td><td class="mono">${p.cooldown_until ? esc(new Date(p.cooldown_until).toLocaleTimeString('zh-CN', { hour12: false })) : '—'}</td></tr>`).join('')}</tbody></table></div>`
+        ? `<div class="table-wrap"><table><caption class="sr-only">各渠道可用性</caption><thead><tr><th scope="col">渠道</th><th scope="col">协议组</th><th scope="col">启用</th><th scope="col">可用</th><th scope="col">冷却至</th></tr></thead><tbody>${h.providers.map(p => `<tr><td class="mono">${esc(p.provider)}</td><td>${esc(p.app || '')}</td><td>${p.enabled ? '是' : '否'}</td><td>${p.eligible ? '是' : '否'}</td><td class="mono">${p.cooldown_until ? esc(new Date(p.cooldown_until).toLocaleTimeString('zh-CN', { hour12: false })) : '—'}</td></tr>`).join('')}</tbody></table></div>`
         : '');
     box.textContent = '已读取;这是各渠道当前可用性视图,不改任何状态。';
-    // 渠道页的卡片也要跟着更新(冷却/熔断徽标);拿不到健康不影响卡片渲染。
+    // 渠道页的卡片也要跟着更新(冷却/可用性徽标);拿不到健康不影响卡片渲染。
     if (view === 'providers') renderProviders();
   } catch (e) {
     liveHealth = null; healthError = e.message;
     $('health-body').innerHTML = '';
-    box.textContent = '健康状态读取失败：' + e.message + '。熔断/冷却徽标暂时不可用，渠道列表照常显示。';
+    box.textContent = '健康状态读取失败：' + e.message + '。可用性徽标暂时不可用，渠道列表照常显示。';
     if (view === 'providers') renderProviders();
   }
 }

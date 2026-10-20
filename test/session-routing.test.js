@@ -16,6 +16,8 @@ process.env.MIXR_CODEX_CONFIG = path.join(TMP, 'codex.toml');
 process.env.MIXR_RESPONSE_ARCHIVE = 'off';
 process.env.MIXR_CONV_RETRIES = '1';
 process.env.MIXR_MAX_ATTEMPTS = '3';
+// 重试间隔默认 1s:这里要的是重试次数与账号粘性,不是真的等一秒
+process.env.MIXR_RETRY_DELAY_MS = '0';
 const mod = require('../mixrouter');
 
 const EMPTY = { keys: {}, slots: {} };
@@ -189,7 +191,7 @@ beforeEach(() => {
     haiku: { provider: 'primary', model: 'shared-model' } },
   codex: { main: { provider: 'cx-primary' }, chat: { provider: 'cx-chat' } } };
   mod._state.sessions.clear(); mod._state.cooldowns = {};
-  mod._state.resetHealth(); mod._state.resetPools();
+  mod._state.resetPools();
   onHit = null; hits.length = 0;
   saveFixtureFiles();
 });
@@ -360,14 +362,12 @@ for (const [name, mutate] of invalidKeys) test(`${name} explicit key returns 503
   await configure('A', routing({ primary: 'account-a' }));
   mutate(provider());
   const before = hits.length;
-  const health = mod.health.view('primary');
   const cooldowns = structuredClone(mod._state.cooldowns);
   const result = await send('A');
   assert.equal(result.status, 503, result.text);
   assert.equal(result.data.error.type, 'provider_key_unavailable_error');
   assert.equal(hits.length, before, 'must reject locally, not contact active account or pool fallback');
-  assert.deepEqual(mod.health.view('primary'), health);
-  assert.deepEqual(mod._state.cooldowns, cooldowns);
+  assert.deepEqual(mod._state.cooldowns, cooldowns, '本地校验拒绝不该把渠道打进冷却');
   assert.equal(result.text.includes(secret('primary', 'account-a')), false);
   const preview = await api('/api/routing/preview', 'POST', {
     app: 'claude', model: 'mixr-main', context: { session: sessionKey('A') },
@@ -405,26 +405,22 @@ for (const wire of ['responses', 'chat']) test(`${wire} retry keeps the same acc
   assert.equal(provider().active_key, 'account-b');
 });
 
-test('retry re-reads the current store and a deleted session key stops before a second acquire or upstream call', async () => {
+test('retry re-reads the current store and a deleted session key stops before a second upstream call', async () => {
   provider().wire_api = 'responses';
   mod._state.slotMap.claude.main.pool = ['secondary'];
   await configure('A', routing({ primary: 'account-a' }));
-  const original = mod.health.acquire;
-  let acquired = 0;
-  mod.health.acquire = id => { acquired++; return original(id); };
-  try {
-    onHit = (req, res) => {
-      mod._state.store = structuredClone(mod._state.store);
-      provider().keys = provider().keys.filter(k => k.id !== 'account-a');
-      res.writeHead(500, { 'content-type': 'application/json' });
-      res.end('{"error":{"message":"fixture removed during request"}}'); return true;
-    };
-    const result = await send('A');
-    assert.equal(result.status, 503, result.text);
-    assert.equal(result.data.error.type, 'provider_key_unavailable_error');
-    assert.equal(result.hits.length, 1); assert.equal(acquired, 1);
-    assert.equal(result.hits[0].headers.authorization, 'Bearer ' + secret('primary', 'account-a'));
-  } finally { mod.health.acquire = original; }
+  onHit = (req, res) => {
+    mod._state.store = structuredClone(mod._state.store);
+    provider().keys = provider().keys.filter(k => k.id !== 'account-a');
+    res.writeHead(500, { 'content-type': 'application/json' });
+    res.end('{"error":{"message":"fixture removed during request"}}'); return true;
+  };
+  const result = await send('A');
+  assert.equal(result.status, 503, result.text);
+  assert.equal(result.data.error.type, 'provider_key_unavailable_error');
+  // 第二发之前重新查 store:固定账号已被删,本地拒绝,上游只被打了这一次
+  assert.equal(result.hits.length, 1, '删除会话固定账号后不得再打上游');
+  assert.equal(result.hits[0].headers.authorization, 'Bearer ' + secret('primary', 'account-a'));
 });
 
 test('fixed-account upstream failure never spills into the slot fallback pool', async () => {

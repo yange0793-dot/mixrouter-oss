@@ -51,14 +51,15 @@ Not a good fit:
   side.
 - **Session affinity, best effort.** Conversations from the same agent can use different keys
   on different providers, while a conversation is kept on one provider when possible. This is
-  not a hard guarantee: cooldowns, circuit breaking, rebinding after failure, failover, manual
-  pinning, and session overrides can all change the target.
+  not a hard guarantee: cooldowns, rebinding after failure, failover, manual pinning, and
+  session overrides can all change the target.
 - **Slot routing.** Bind a provider and model to a `mixr-<slot>` alias so the main chain and
   subagents can use separate accounts. The session console lets each conversation use its own
   provider and model per slot; slots without an override inherit the global configuration.
 - **Local console.** `127.0.0.1:8788` manages providers, routes, sessions, slots, logs, and
   backups. The usage page aggregates requests, tokens, cache hits, throughput, and
-  time-to-first-byte over a time range, and estimates cost from an editable price table.
+  time-to-first-byte over a time range. It reports measured usage only and never converts it
+  into money.
 
 ## Quick start
 
@@ -161,7 +162,7 @@ The linked pages are in Chinese; the table says what each one covers.
 | [Quick start](docs/quick-start.md) | Where to change what: start the service, add providers, configure routes, connect clients, run tests |
 | [CLI and runtime boundaries](docs/cli.md) | Every `mixctl` subcommand, ports and data directory, slots and sessions, logs and archives, backup/restore, read-only diagnostics, local self-check |
 | [Routing and sessions](docs/routing-and-sessions.md) | Match order, session identity, slots, pool strategies, session overrides, protocol translation |
-| [Troubleshooting](docs/troubleshooting.md) | Symptom-oriented: 503 classes, cooldowns and circuit breaking, invalid keys, affinity anomalies, log locations |
+| [Troubleshooting](docs/troubleshooting.md) | Symptom-oriented: 503 classes, cooldowns and retries, invalid keys, affinity anomalies, log locations |
 | [Reference](docs/reference.md) | Full mechanisms and fields, all environment variables, diagnostic limits |
 | [Upgrade and rollback](docs/upgrade-and-rollback.md) | Source upgrades and rollbacks, data directory, client config recovery, install-script boundaries |
 | [Offline run and acceptance](docs/offline-run-and-acceptance.md) | Keyless, network-free acceptance flow and what has actually been verified |

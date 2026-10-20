@@ -58,7 +58,7 @@ test('路由诊断:固定快照与真实转发的直接对照', async t => {
   const env = testEnv(process.env, tmp);
   for (const key of Object.keys(process.env)) if (/^(MIXR_|MIXROUTER_|MIXUI_)/.test(key)) delete process.env[key];
   Object.assign(process.env, env, { MIXR_SESSION_TTL_MIN: '1', MIXR_SESSION_MAX: '3',
-    MIXR_SESSION_LABEL: '0', MIXR_BREAKER_FAILURE_THRESHOLD: '1' });
+    MIXR_SESSION_LABEL: '0' });
   for (const dir of ['home', 'data', 'data/logs', 'tmp']) fs.mkdirSync(path.join(tmp, dir), { recursive: true });
   fs.writeFileSync(path.join(tmp, 'data', 'sessions.json'), '{"version":1,"bindings":{}}\n');
   const mod = require('../mixrouter');
@@ -91,13 +91,12 @@ test('路由诊断:固定快照与真实转发的直接对照', async t => {
     mod._state.sessions = new Map();
     mod._state.cooldowns = {};
     mod._state.resetPools();
-    mod._state.resetHealth();
     mock.requests.length = 0;
   };
   const allProviders = () => [...mod._state.store.claude, ...mod._state.store.codex];
   const snapshot = () => structuredClone({ routes: mod._state.routes, store: mod._state.store,
     slots: mod._state.slotMap, sessions: [...mod._state.sessions], pools: mod._state.pools,
-    cooldowns: mod._state.cooldowns, health: allProviders().map(p => [p.id, mod.health.view(p.id)]) });
+    cooldowns: mod._state.cooldowns });
   const explainer = options => createExplainer({
     getRoutes: () => mod._state.routes,
     storeOf: app => mod._state.store[app],
@@ -108,7 +107,8 @@ test('路由诊断:固定快照与真实转发的直接对照', async t => {
     providerApp: id => ['claude', 'codex'].find(app => mod._state.store[app].some(p => p.id === id)),
     listPools: () => mod._state.pools,
     inCooldown: mod.inCooldown,
-    healthEligible: mod.health.eligible,
+    // 装配处恒为 true:熔断器删除后渠道可用性只由冷却表决定(与 mixrouter.js 的接线一致)
+    healthEligible: () => true,
     sessionCounts: () => {
       const counts = {};
       for (const row of mod._state.sessions.values()) counts[row.providerId] = (counts[row.providerId] || 0) + 1;
@@ -249,14 +249,6 @@ test('路由诊断:固定快照与真实转发的直接对照', async t => {
     mod._state.cooldowns.b = Date.now() + 600000;
     mod._state.sessions.set('cc:cooldown', binding('b', { pinned: true }));
     await compare({ expected: 'a', session: 'cc:cooldown' });
-  });
-  await t.test('钉定渠道开路时预览与发送都回到可用成员', async () => {
-    reset({ pool: members('a', 'c') });
-    const release = mod.health.acquire('b');
-    release('failure', 'fixture failure', 503);
-    assert.equal(mod.health.eligible('b'), false);
-    mod._state.sessions.set('cc:breaker', binding('b', { pinned: true, model: 'b-out' }));
-    await compare({ expected: 'a', session: 'cc:breaker' });
   });
   await t.test('槽位请求不被会话钉定劫持', async () => {
     reset();

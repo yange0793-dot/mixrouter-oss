@@ -226,7 +226,7 @@
   .usage-range .seg { min-height: 32px; padding: 6px 14px; border: 1px solid transparent; background: transparent; color: var(--dim); border-radius: 6px; font-size: 12px; white-space: nowrap; }
   .usage-range .seg:hover:not(:disabled) { background: #1a1f26; color: var(--text); }
   .usage-range .seg.active, .usage-range .seg[aria-selected="true"], .usage-range .seg[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent-text); }
-  .usage-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
+  .usage-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
   .usage-grid .metric { padding: 16px 18px; }
   .usage-chart { position: relative; background: var(--panel); border: 1px solid var(--border-soft); border-radius: 12px; padding: 18px 20px 12px; margin-bottom: 18px; overflow: hidden; }
   .usage-chart-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; color: var(--dim); font-size: 12px; }
@@ -256,7 +256,6 @@
   .usage-table th:nth-child(n+2), .usage-table td:nth-child(n+2) { text-align: right; font-variant-numeric: tabular-nums; }
   .usage-table td:first-child { color: var(--text); }
   .usage-note { font-size: 11px; color: var(--dim); line-height: 1.7; }
-  .usage-missing { font-size: 11px; color: var(--warn-text); }
   .muted { color: var(--dim); }
   /* ---- 概览页(只读)。行式清单与规则页的 .rc-line 同风格,但这里是"读"不是"填"。 ---- */
   .ov-row { display: grid; grid-template-columns: minmax(120px, 180px) auto 1fr; gap: 8px 16px; align-items: baseline; padding: 11px 0; border-top: 1px solid var(--border-soft); font-size: 12px; }
@@ -357,8 +356,8 @@
     .logbar label { min-width: calc(50% - 12px); } .logbar button { min-height: 40px; }
     .card .foot button { min-height: 40px; }
     #toast { right: 16px; bottom: 16px; }
-    /* 用量页:指标卡两列;筛选与分段控件允许换行,图表压低,明细表横向滚动而不是撑破页面 */
-    .usage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    /* 用量页:三张指标卡在窄屏改单列(两列会剩一张半宽卡,看着像没对齐);筛选与分段控件允许换行,图表压低,明细表横向滚动而不是撑破页面 */
+    .usage-grid { grid-template-columns: minmax(0, 1fr); }
     .usage-range { width: 100%; }
     .usage-range .seg { flex: 1 1 auto; padding: 6px 10px; min-height: 40px; }
     .usage-bar { gap: 8px; }

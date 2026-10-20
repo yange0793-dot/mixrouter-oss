@@ -1,8 +1,9 @@
 'use strict';
-// 用量统计(/api/usage)、价目表(/api/pricing)与 ttfb_ms 落盘的回归。
+// 用量统计(/api/usage)与 ttfb_ms 落盘的回归。
 //
+// 价目表与成本整块删除之后,这里只剩用量本身:请求数、token、缓存命中率、速率、TTFB 分位。
 // 造数方式分两层:
-//   · 聚合/价目表:直接写 requests.jsonl 的合成行,时间点相对 now 定,不受运行时刻影响;
+//   · 聚合:直接写 requests.jsonl 的合成行,时间点相对 now 定,不受运行时刻影响;
 //   · ttfb_ms:走真代理请求 → mock 上游 → requests.jsonl,证明字段确实从代理写到了磁盘。
 // 两条都只用生产路径:合成行是日志文件本身的格式,不是测试专用后门。
 const { test } = require('node:test');
@@ -29,8 +30,8 @@ const NOW = Date.now();
 const iso = ms => new Date(ms).toISOString();
 const MIN = 60000;
 
-// 4 条合成日志:24h 内 2 条(一成一败)、2 天前 1 条(未定价模型)、40 天前 1 条。
-// 数值刻意取整,便于手算成本/速率。
+// 4 条合成日志:24h 内 2 条(一成一败)、2 天前 1 条、40 天前 1 条。
+// 数值刻意取整,便于手算总量/速率。
 const synthetic = [
   { ts: iso(NOW - 10 * MIN), app: 'claude', provider: '渠道A', model_in: 'claude-sonnet-4-5', model_out: 'claude-sonnet-4-5',
     status: 200, in: 1000000, out: 100000, cache_read: 200000, ms: 2000, ttfb_ms: 300, err: '' },
@@ -44,7 +45,6 @@ const synthetic = [
 fs.writeFileSync(LOG, synthetic.map(e => JSON.stringify(e)).join('\n') + '\n');
 
 const { createUsageSummary } = require('../lib/usage/summary');
-const { DEFAULT_PRICING, createPricingStore, priceEntry, costOf } = require('../lib/usage/pricing');
 
 const mock = createMockUpstream();
 let mod, proxySrv, uiSrv, proxyPort, uiPort, mockPort;
@@ -110,24 +110,22 @@ test('summary:24h 过滤、totals 数值与 by_provider/by_model', async () => {
   assert.strictEqual(out.totals.cache_hit_rate, 0.1176);       // 200k / (1.5M + 200k)
   assert.strictEqual(out.totals.speed_tps, 50000);             // 150k tokens / 3s
   assert.strictEqual(out.totals.ttfb_p50_ms, 300);             // 最近邻,两样本取第 1 个
-  // sonnet 4.5: 1M in × $3 + 100k out × $15 + 200k cache × $0.3 = 4.56
-  // gpt-5:      500k in × $1.25 + 50k out × $10          = 1.125
-  assert.strictEqual(out.totals.cost, 5.685);
-  assert.deepStrictEqual(out.pricing.missing, []);
+  // 响应里不该再有任何金额:价目表删除后总计只有用量,前端的"成本"格子也已移除
+  assert.equal('cost' in out.totals, false);
+  assert.equal('pricing' in out, false);
 
   assert.strictEqual(out.by_provider.length, 2);
   const pa = out.by_provider.find(p => p.name === '渠道A');
-  assert.deepStrictEqual(pa, { provider: '渠道A', name: '渠道A', reqs: 1, tokens_in: 1000000, tokens_out: 100000, cache_read: 200000, cost: 4.56 });
-  assert.strictEqual(out.by_model.find(m => m.model === 'gpt-5').cost, 1.125);
+  assert.deepStrictEqual(pa, { provider: '渠道A', name: '渠道A', reqs: 1, tokens_in: 1000000, tokens_out: 100000, cache_read: 200000 });
+  assert.strictEqual(out.by_model.find(m => m.model === 'gpt-5').cost, undefined);
 });
 
-test('summary:range 过滤(7d/all/自定义)与未定价模型', async () => {
+test('summary:range 过滤(7d/all/自定义)', async () => {
   const summary = createUsageSummary({ file: LOG });
 
   const week = await summary.summarize({ range: '7d' });
   assert.strictEqual(week.scope.bucket, 'day');
   assert.strictEqual(week.totals.reqs, 3);
-  assert.deepStrictEqual(week.pricing.missing, ['unknown-model-x']);
 
   const all = await summary.summarize({ range: 'all' });
   assert.strictEqual(all.totals.reqs, 4);
@@ -185,67 +183,30 @@ test('summary:磁盘增量缓存 —— 追加一行后第二次查询能看到,
   assert.deepStrictEqual((await summary.summarize({ range: '24h' })).totals, p2.totals);
 });
 
-test('pricing:默认价、日期后缀、provider 覆盖与未定价', () => {
-  const sonnet = priceEntry(DEFAULT_PRICING, 'claude-sonnet-4-5', 'x');
-  assert.deepStrictEqual(sonnet, { in: 3, out: 15, cache_read: 0.3 });
-  // 日志里的模型名常带日期后缀:按最长前缀落价
-  assert.deepStrictEqual(priceEntry(DEFAULT_PRICING, 'claude-sonnet-4-5-20250929', 'x'), sonnet);
-  assert.deepStrictEqual(priceEntry(DEFAULT_PRICING, 'gpt-5-mini-2025-08-07', 'x'), { in: 0.25, out: 2, cache_read: 0.025 });
-  assert.strictEqual(priceEntry(DEFAULT_PRICING, 'totally-unknown', 'x'), null);
-
-  const table = { version: 1, models: { 'm1': { in: 1, out: 2, cache_read: 0.5 } },
-    providers: { p1: { m1: { in: 9 }, 'm2': { in: 4, out: 4, cache_read: 0 } } } };
-  assert.deepStrictEqual(priceEntry(table, 'm1', 'p1'), { in: 9, out: 2, cache_read: 0.5 }, 'provider 覆盖优先,未给的项继承 model 级');
-  assert.deepStrictEqual(priceEntry(table, 'm2', 'p1'), { in: 4, out: 4, cache_read: 0 });
-  assert.deepStrictEqual(priceEntry(table, 'm1', 'p2'), { in: 1, out: 2, cache_read: 0.5 });
-  assert.strictEqual(costOf(table, { model: 'm2', provider: 'p1', in: 1000000, out: 0, cache_read: 0 }).cost, 4);
-  assert.strictEqual(costOf(table, { model: 'nope', provider: 'p1' }).priced, false);
-});
-
-test('pricing store:默认兜底、自定义落盘 0600、未知模型保留、PUT 校验与冲突', () => {
-  const file = path.join(TMP, 'pricing-unit.json');
-  const store = createPricingStore({ file });
-
-  const initial = store.read();
-  assert.strictEqual(initial.source, 'default');
-  assert.strictEqual(initial.pricing.models['claude-opus-4-5'].out, 75);
-  assert.ok(!fs.existsSync(file), '内置默认价目表不写盘');
-
-  const saved = store.write({
-    version: 1,
-    models: { 'my-internal-model': { in: 1, out: 2, cache_read: 0.5 } },
-    providers: { p1: { 'claude-sonnet-4-5': { in: 9, out: 9, cache_read: 9 } } },
-  }, { expected_revision: initial.revision });
-  assert.strictEqual(saved.source, 'custom');
-  assert.strictEqual(saved.pricing.models['my-internal-model'].in, 1, '未知模型键必须保留');
-  assert.strictEqual(saved.pricing.models['claude-opus-4-5'].in, 15, '默认价仍作为兜底合并进来');
-  assert.strictEqual(fs.statSync(file).mode & 0o777, 0o600);
-  assert.strictEqual(saved.revision, store.read().revision);
-  assert.notStrictEqual(saved.revision, initial.revision);
-
-  // 负数 / 非对象 / 未知字段
-  assert.throws(() => store.write({ models: { x: { in: -1 } } }), e => e.statusCode === 400);
-  assert.throws(() => store.write('nope'), e => e.statusCode === 400);
-  assert.throws(() => store.write({ models: { x: { in: 1, bogus: 2 } } }), e => /未知字段/.test(e.message));
-  assert.throws(() => store.write({ unknown_top: 1 }), e => /未知字段/.test(e.message));
-  // 未知模型键保存后仍在(上一步的失败写入没有破坏它)
-  assert.strictEqual(store.read().pricing.models['my-internal-model'].out, 2);
-  // 乐观并发:旧 revision 回 409
-  const current = store.read();
-  assert.throws(() => store.write({ models: {} }, { expected_revision: initial.revision }),
-    e => e.statusCode === 409 && e.code === 'PRICING_CONFLICT' && e.revision === current.revision);
+test('/api/pricing 已整体删除:GET 与 PUT 都是 404', async () => {
+  // 价目表删除后这个路径就是个不存在的端点,不能只删掉 GET 而把 PUT 留着(那样
+  // 控制台旧页面还能把 pricing.json 写回来,读的人会以为成本又算上了)
+  for (const method of ['GET', 'PUT']) {
+    const r = await ui(method, '/api/pricing', method === 'PUT' ? { models: {} } : undefined);
+    assert.strictEqual(r.status, 404, `${method} /api/pricing 应回 404`);
+    assert.ok(!fs.existsSync(path.join(TMP, 'pricing.json')), '不能再有任何价目表落盘');
+  }
 });
 
 test('API GET /api/usage:结构、过滤、400 与无密钥', async () => {
   const r = await json('GET', '/api/usage?range=24h');
   assert.strictEqual(r.status, 200);
   assert.deepStrictEqual(Object.keys(r.body).sort(),
-    ['by_model', 'by_provider', 'pricing', 'scope', 'series', 'totals']);
+    ['by_model', 'by_provider', 'scope', 'series', 'totals']);
   assert.deepStrictEqual(Object.keys(r.body.totals).sort(),
-    ['cache_hit_rate', 'cache_read', 'cost', 'ok_rate', 'reqs', 'speed_tps', 'tokens_in', 'tokens_out', 'tokens_total', 'ttfb_p50_ms']);
+    ['cache_hit_rate', 'cache_read', 'ok_rate', 'reqs', 'speed_tps', 'tokens_in', 'tokens_out', 'tokens_total', 'ttfb_p50_ms']);
+  // 每个序列桶也只带用量:前端画的是曲线,不是金额
+  for (const b of r.body.series)
+    assert.deepStrictEqual(Object.keys(b).sort(), ['cache_read', 'reqs', 't', 'tokens_in', 'tokens_out']);
+  for (const row of [...r.body.by_provider, ...r.body.by_model])
+    assert.equal('cost' in row, false, `by_provider/by_model 不该再有 cost:${JSON.stringify(row)}`);
   assert.strictEqual(r.body.totals.reqs, 2);
   assert.strictEqual(r.body.scope.bucket, 'hour');
-  assert.strictEqual(r.body.pricing.source, 'default');
 
   const filtered = await json('GET', '/api/usage?range=all&provider=' + encodeURIComponent('渠道B'));
   assert.strictEqual(filtered.body.totals.reqs, 1);
@@ -262,43 +223,26 @@ test('API GET /api/usage:结构、过滤、400 与无密钥', async () => {
   assert.ok(!r.text.includes(SECRET), '用量响应不得出现渠道 Key');
 });
 
-test('API /api/pricing:GET / PUT / 400 / 409', async () => {
-  const before = await json('GET', '/api/pricing');
-  assert.strictEqual(before.status, 200);
-  // custom 只含自定义键:控制台保存时原样写回,避免把默认表冻结进 pricing.json。
-  assert.deepStrictEqual(Object.keys(before.body).sort(), ['custom', 'pricing', 'revision', 'source']);
-  assert.strictEqual(before.body.source, 'default');
-  assert.ok(before.body.revision);
-  assert.ok(!before.text.includes(SECRET));
+test('API /api/usage:by_provider/by_model 按请求数降序,同数按名字', async () => {
+  // 合成行改成"渠道A 三条、渠道B 一条",并让两个名字比请求数更能区分排序键:
+  // 降序在前,同数时按名字升序 —— 排序口径写在 summary.js 里,这条钉住它不被改回按金额
+  const file = path.join(LOG_DIR, 'rank.jsonl');
+  const row = (provider, model, minutesAgo) => JSON.stringify({ ts: iso(NOW - minutesAgo * MIN), app: 'claude',
+    provider, model_in: model, model_out: model, status: 200, in: 1, out: 1, cache_read: 0, ms: 1, ttfb_ms: 1, err: '' });
+  fs.writeFileSync(file, [
+    row('zeta', 'm-zeta', 1), row('zeta', 'm-zeta', 2), row('zeta', 'm-zeta', 3),
+    row('alpha', 'm-alpha', 4),
+    row('beta', 'm-beta', 5), row('beta', 'm-beta', 6),
+  ].join('\n') + '\n');
+  const out = await createUsageSummary({ file }).summarize({ range: '24h' });
+  assert.deepStrictEqual(out.by_provider.map(p => p.name), ['zeta', 'beta', 'alpha']);
+  assert.deepStrictEqual(out.by_model.map(m => m.model), ['m-zeta', 'm-beta', 'm-alpha']);
 
-  const negative = await json('PUT', '/api/pricing', { models: { x: { in: -5 } } });
-  assert.strictEqual(negative.status, 400);
-  assert.strictEqual(negative.body.code, 'PRICING_INVALID');
-
-  const unknown = await json('PUT', '/api/pricing', { models: { x: { in: 1, nope: 2 } } });
-  assert.strictEqual(unknown.status, 400);
-
-  const conflict = await json('PUT', '/api/pricing', { models: {}, expected_revision: 'stale-revision' });
-  assert.strictEqual(conflict.status, 409);
-  assert.strictEqual(conflict.body.code, 'PRICING_CONFLICT');
-
-  const ok = await json('PUT', '/api/pricing', {
-    version: 1,
-    models: { 'gpt-5': { in: 2, out: 20, cache_read: 0.2 } },
-    providers: { 'p-mock': { 'echo-model': { in: 1, out: 1, cache_read: 0 } } },
-    expected_revision: before.body.revision,
-  });
-  assert.strictEqual(ok.status, 200);
-  assert.strictEqual(ok.body.source, 'custom');
-  assert.strictEqual(ok.body.pricing.models['gpt-5'].in, 2);
-  assert.notStrictEqual(ok.body.revision, before.body.revision);
-  assert.strictEqual(fs.statSync(path.join(TMP, 'pricing.json')).mode & 0o777, 0o600);
-
-  // 价目表立即影响统计:24h 内的 gpt-5 从 $1.25 变成 $2 / 1M
-  const usage = await json('GET', '/api/usage?range=24h');
-  assert.strictEqual(usage.body.pricing.source, 'custom');
-  assert.strictEqual(usage.body.totals.cost, 4.56 + (0.5 * 2 + 0.05 * 20)); // 4.56 + 2 = 6.56
-  assert.ok(!usage.text.includes(SECRET));
+  // 同请求数时按名字升序(与请求数降序方向相反,这样"谁在干活"排前面,平手按字母)
+  const tie = path.join(LOG_DIR, 'tie.jsonl');
+  fs.writeFileSync(tie, [row('bbb', 'bbb-m', 1), row('aaa', 'aaa-m', 1)].join('\n') + '\n');
+  const tied = await createUsageSummary({ file: tie }).summarize({ range: '24h' });
+  assert.deepStrictEqual(tied.by_provider.map(p => p.name), ['aaa', 'bbb']);
 });
 
 test('ttfb_ms 真的落盘;/api/usage 不把内存与磁盘重复计数', async () => {

@@ -130,7 +130,7 @@ test('W1 只在 require.main 块里用 lifecycle;排空口径合规;保留合并
   });
   assert.equal(r.status, 0, r.stderr);
   const keys = JSON.parse(r.stdout.match(/KEYS=(.*)/)[1]);
-  assert.equal(keys.length, 87, `合并后的导出键数目变了(应为 87,现在 ${keys.length})`);
+  assert.equal(keys.length, 86, `合并后的导出键数目变了(应为 86,现在 ${keys.length})`);
   for (const k of ['proxyHandler', 'apiHandler', 'listen', 'explainRoute', 'resolveRoute', '_state',
     'sweepLogsNow', 'startLogRetention', 'updateCodexConfig'])
     assert.ok(keys.includes(k), `导出面少了 ${k}`);

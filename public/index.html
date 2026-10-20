@@ -67,11 +67,10 @@
       <section id="view-usage" style="display:none" aria-labelledby="usage-title">
         <div class="head">
           <div><div class="eyebrow">TRAFFIC / USAGE</div><h1 id="usage-title">用量统计</h1>
-            <div class="sub">按时间、协议组、渠道与模型汇总真实消耗。成本按「价目表」里的单价折算，只是估算，以渠道账单为准。</div></div>
+            <div class="sub">按时间、协议组、渠道与模型汇总真实消耗：请求数、tokens 与缓存命中，全部来自本机请求日志。</div></div>
           <div class="actions">
             <button class="small" id="usage-sync" onclick="loadUsage()">立即同步</button>
             <label class="rc-mini" for="usage-interval">同步<select id="usage-interval" onchange="setUsageInterval(this.value)"><option value="30">每 30 秒</option><option value="60" selected>每 60 秒</option><option value="300">每 5 分钟</option><option value="0">关闭</option></select></label>
-            <button class="small" id="usage-pricing-open" onclick="openUsagePricing()">价目表</button>
           </div>
         </div>
         <div class="usage-bar">
@@ -87,7 +86,6 @@
           <select id="usage-model" aria-label="模型" onchange="setUsageFilter('model', this.value)"><option value="">全部模型</option></select>
         </div>
         <div class="usage-grid">
-          <div class="metric"><span class="metric-label">总成本</span><b id="usage-cost">—</b><small id="usage-cost-hint">按价目表折算，非账单</small></div>
           <div class="metric"><span class="metric-label">总请求数</span><b id="usage-reqs">—</b><small id="usage-ok-rate">成功率读取中</small></div>
           <div class="metric"><span class="metric-label">真实消耗 Tokens</span><b id="usage-tokens">—</b><small id="usage-token-split">输入 / 输出 / 缓存</small></div>
           <div class="metric"><span class="metric-label">缓存命中率</span><b id="usage-cache">—</b><small id="usage-cache-hint">缓存读 / (新增输入 + 缓存读)</small></div>
@@ -97,37 +95,21 @@
             <div class="usage-tabs" role="group" aria-label="图表指标">
               <button class="seg" data-metric="tokens" onclick="setUsageMetric('tokens')">Tokens</button>
               <button class="seg" data-metric="reqs" onclick="setUsageMetric('reqs')">请求</button>
-              <button class="seg" data-metric="cost" onclick="setUsageMetric('cost')">成本</button>
             </div>
           </div>
           <div class="chart-holder" id="usage-chart-holder"><svg id="usage-svg" role="img" aria-label="用量趋势图"></svg></div>
         </div>
         <p class="usage-note" id="usage-status" role="status">尚未读取用量。</p>
-        <p class="usage-missing" id="usage-missing" role="status" hidden></p>
         <div class="panel">
           <h2>按模型汇总</h2>
           <p class="hint" id="usage-count">当前区间内的模型明细；点击列头可排序。</p>
           <div class="table-wrap usage-table" tabindex="0" role="region" aria-label="用量明细表，可横向滚动">
             <table><caption class="sr-only">按模型汇总的用量</caption>
-              <thead><tr><th scope="col">模型</th><th scope="col">请求</th><th scope="col">新增输入</th><th scope="col">输出</th><th scope="col">缓存命中</th><th scope="col">命中率</th><th scope="col">成本</th></tr></thead>
+              <thead><tr><th scope="col">模型</th><th scope="col">请求</th><th scope="col">新增输入</th><th scope="col">输出</th><th scope="col">缓存命中</th><th scope="col">命中率</th></tr></thead>
               <tbody id="usage-rows"></tbody></table>
           </div>
         </div>
       </section>
-
-      <div class="mask" id="usage-pricing-mask">
-        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="usage-pricing-title" aria-describedby="usage-pricing-desc" tabindex="-1">
-          <h3 id="usage-pricing-title">价目表</h3>
-          <p class="description" id="usage-pricing-desc">单价按每 100 万 tokens 计，单位美元。成本只是本机估算，以渠道账单为准。未定价的模型成本记 0 并在页面上提示。</p>
-          <div id="usage-pricing-body"></div>
-          <p id="usage-pricing-msg" role="status"></p>
-          <div class="foot">
-            <button type="button" id="usage-pricing-close" onclick="closeUsagePricing()">关闭</button>
-            <button type="button" onclick="addPricingRow()">＋ 添加模型</button>
-            <button type="button" class="primary" id="usage-pricing-save" onclick="saveUsagePricing()">保存价目表</button>
-          </div>
-        </div>
-      </div>
 
       <section id="view-providers" style="display:none" aria-labelledby="providers-title">
         <div class="head">
@@ -251,7 +233,7 @@
         </div>
         <div class="panel" aria-labelledby="settings-health-title">
           <h2 id="settings-health-title">运行健康</h2>
-          <p class="hint">熔断器状态、冷却与超时/重试配置。与冷却时长属只读视图,调整要改服务端启动参数。</p>
+          <p class="hint">渠道冷却状态与超时/重试配置,属只读视图,调整要改服务端启动参数。</p>
           <div id="health-status" class="hint" role="status">正在读取健康状态…</div>
           <div id="health-body"></div>
         </div>

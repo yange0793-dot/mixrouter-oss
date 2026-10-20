@@ -26,6 +26,10 @@ process.env.MIXR_STREAM_FIRST_HEADER_TIMEOUT_MS = '400';
 process.env.MIXR_STREAM_IDLE_TIMEOUT_MS = '60000'; // 会被总 deadline 夹住,滴流场景下它也轮不到
 process.env.MIXR_NONSTREAM_TOTAL_TIMEOUT_MS = '60000';
 process.env.MIXR_SSE_KEEPALIVE_MS = '120';
+// 这一段量的是单个上游连接的看门狗,不是重试策略:一发失败就收,别让重试把总预算吃光
+process.env.MIXR_MAX_ATTEMPTS = '1';
+// 间隔关掉:总预算只有 900ms,等一秒的话量到的就全是"总预算用尽"而不是要测的那一段
+process.env.MIXR_RETRY_DELAY_MS = '0';
 
 // ---------------------------------------------------------------- 桩上游
 // mode 决定上游怎么"坏":noHeaders / quietBody / drip / commitThenSlow / responsesSlowError

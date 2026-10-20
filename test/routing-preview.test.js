@@ -320,7 +320,7 @@ test('零副作用:不建会话、不改粘性(写会话的入口根本没有被
   assert.equal(touched, 0, '预览路径上不得出现任何写会话/剪枝动作');
 });
 
-test('零副作用:不消耗熔断/冷却计数,不改冷却表', () => {
+test('零副作用:不标记冷却,也不改冷却表', () => {
   const routes = { rules: [rule({ id: 'r1', match: 'x', pool: ['pa', 'pb'] })], default: {} };
   const deps = mkDeps({ routes, cooldowns: { pa: 1e9 } });
   const before = JSON.parse(JSON.stringify(deps._liveCooldowns));

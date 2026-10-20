@@ -17,6 +17,8 @@ process.env.MIXR_CLAUDE_SETTINGS = path.join(TMP, 'claude.json');
 process.env.MIXR_CODEX_CONFIG = path.join(TMP, 'codex.toml');
 process.env.MIXR_RESPONSE_ARCHIVE = 'off';
 process.env.MIXR_CONV_RETRIES = '1';
+// 重试间隔默认 1s:测试要的是重试次数本身,不是真的等一秒
+process.env.MIXR_RETRY_DELAY_MS = '0';
 const mod = require('../mixrouter');
 const ACTIVE = 'fixture-active-secret-value';
 const COMPACT = 'fixture-compact-secret-value';
@@ -81,7 +83,7 @@ beforeEach(() => {
     keys: [{ id: 'compact', label: 'Other account', key: 'fixture-other-secret' }] }], codex: [] };
   mod._state.routes = makeRules();
   mod._state.slotMap = { claude: { main: { provider: 'primary', model: 'ordinary' } }, codex: {} };
-  mod._state.cooldowns = {}; mod._state.sessions.clear(); mod._state.resetHealth(); mod._state.resetPools();
+  mod._state.cooldowns = {}; mod._state.sessions.clear(); mod._state.resetPools();
   hits.length = 0; onHit = null;
 });
 
@@ -160,13 +162,13 @@ const invalidMutations = [
   ['control', p => { p.keys[1].key = 'fixture\nsecret'; }],
   ['non-string', p => { p.keys[1].key = {}; }],
 ];
-for (const [name, mutate] of invalidMutations) test(`${name} pinned key returns 503 with zero upstream calls and no health/cooldown changes`, async () => {
+for (const [name, mutate] of invalidMutations) test(`${name} pinned key returns 503 with zero upstream calls and no cooldown changes`, async () => {
   await choose('compact'); mutate(provider());
-  const before = mod.health.view('primary'); const cooldowns = structuredClone(mod._state.cooldowns);
+  const cooldowns = structuredClone(mod._state.cooldowns);
   const r = await send();
   assert.equal(r.status, 503, r.text); assert.equal(r.data.error.type, 'provider_key_unavailable_error');
-  assert.equal(hits.length, 0); assert.deepEqual(mod.health.view('primary'), before);
-  assert.deepEqual(mod._state.cooldowns, cooldowns);
+  assert.equal(hits.length, 0);
+  assert.deepEqual(mod._state.cooldowns, cooldowns, '本地校验拒绝不该把渠道打进冷却');
   const view = (await api()).data.compact;
   assert.equal(view.mode, 'mixed'); assert.equal(view.selection, null);
   assert.equal(view.rules[0].targets[0].key_id, 'compact');
@@ -290,27 +292,16 @@ for (const wire of ['chat', 'responses']) test(`${wire}: retry keeps the same ex
   assert.ok(hits.every(h => h.headers.authorization === 'Bearer ' + COMPACT));
 });
 
-test('retry re-reads the current store and a removed pin stops before a second acquire/call', async () => {
+test('retry re-reads the current store and a removed pin stops before a second upstream call', async () => {
   provider().wire_api = 'responses'; await choose('compact');
-  let afterUpstreamFailure;
-  const original = mod.health.acquire;
-  let acquired = 0;
-  mod.health.acquire = id => {
-    acquired++;
-    const release = original(id);
-    return (...args) => { release(...args); afterUpstreamFailure = mod.health.view(id); };
+  onHit = (req, res) => {
+    mod._state.store = structuredClone(mod._state.store); provider().keys.splice(1, 1);
+    res.writeHead(500, { 'content-type': 'application/json' }); res.end('{"error":{"message":"retry fixture"}}'); return true;
   };
-  try {
-    onHit = (req, res) => {
-      mod._state.store = structuredClone(mod._state.store); provider().keys.splice(1, 1);
-      res.writeHead(500, { 'content-type': 'application/json' }); res.end('{"error":{"message":"retry fixture"}}'); return true;
-    };
-    const r = await send();
-    assert.equal(r.status, 503); assert.equal(r.data.error.type, 'provider_key_unavailable_error');
-    assert.equal(hits.length, 1); assert.equal(acquired, 1);
-    assert.deepEqual(mod.health.view('primary'), afterUpstreamFailure);
-    assert.deepEqual(mod._state.cooldowns, {});
-  } finally { mod.health.acquire = original; }
+  const r = await send();
+  assert.equal(r.status, 503); assert.equal(r.data.error.type, 'provider_key_unavailable_error');
+  // 第二发在发出去之前就重查了 store:固定 Key 已被删,本地拒绝,上游只被打了这一次
+  assert.equal(hits.length, 1, '删除固定 Key 后不得再打上游');
 });
 
 for (const status of [401, 403]) test(`upstream ${status} remains an upstream error, not a local-key retry`, async () => {

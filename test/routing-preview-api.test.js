@@ -52,7 +52,6 @@ beforeEach(() => {
   mod._state.sessions = new Map();
   mod._state.cooldowns = {};
   mod._state.resetPools();
-  mod._state.resetHealth();
   upstreamHits = 0;
 });
 after(async () => {

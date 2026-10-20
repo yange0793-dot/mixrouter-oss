@@ -461,8 +461,8 @@ test('接线:chat 上游的错误正文翻给客户端时是**纯截断**,与原
   } finally { upstream.close(); }
 });
 
-test('接线:导出面保留 main 的 86 键与本地 Codex 配置更新入口', () => {
-  assert.equal(Object.keys(mod).length, 87);
+test('接线:导出面保留合并后的 86 键与本地 Codex 配置更新入口', () => {
+  assert.equal(Object.keys(mod).length, 86);
   assert.equal(typeof mod.updateCodexConfig, 'function');
 });
 

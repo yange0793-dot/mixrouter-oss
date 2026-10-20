@@ -289,9 +289,13 @@ test('mixctl logs:尾读渲染、坏行跳过,且尊重 MIXR_DATA_DIR', async t 
   // 中间夹一条坏行:旧实现会因它整批抛出
   fs.writeFileSync(path.join(logs, 'requests.jsonl'), [row(1), '{ 坏行', row(2), row(3)].join('\n') + '\n');
 
+  // `mixctl logs` 先探控制台、连不上才退回读本机文件(见 mixctl 的 logsCmd)。
+  // 本机要是正跑着一个真控制台(默认 8788),它就会走 API 拿到**线上**日志,
+  // 这条"尊重 MIXR_DATA_DIR"的断言就变成在看别人的数据。指向一个不可能在听的端口
+  // (1 号端口要 root 才绑得上),让它稳定走离线尾读 —— 这才是这条用例要验的那条路。
   const runLogs = args => new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [path.join(__dirname, '..', 'mixctl'), ...args], {
-      env: { ...process.env, MIXR_DATA_DIR: dataDir }, stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, MIXR_DATA_DIR: dataDir, MIXUI_PORT: '1' }, stdio: ['ignore', 'pipe', 'pipe'],
     });
     let output = '';
     child.stdout.on('data', c => { output += c; });

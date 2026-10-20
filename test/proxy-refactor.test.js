@@ -13,6 +13,9 @@ process.env.MIXR_CLAUDE_SETTINGS = path.join(TMP, 'settings.json');
 process.env.MIXR_CODEX_CONFIG = path.join(TMP, 'config.toml');
 process.env.MIXR_RESPONSE_ARCHIVE = 'off';
 process.env.MIXR_SSE_KEEPALIVE_MS = '0';
+// 重试次数与间隔在这里都是被数的对象:固定成小值、间隔关掉,断言才有确定含义
+process.env.MIXR_MAX_ATTEMPTS = '3';
+process.env.MIXR_RETRY_DELAY_MS = '0';
 
 let mod, upstream, proxy, ui;
 let reply, hits = 0;
@@ -132,7 +135,13 @@ test('converted Chat HTTP failures retry within the shared budget and log actual
   assert.equal(response.status, 500);
   const logs = JSON.parse((await request(ui, 'GET', '/api/logs?model=converted-model')).body).logs;
   const health = JSON.parse((await request(ui, 'GET', '/api/health')).body);
-  assert.equal(attempts, Math.min(1 + health.settings.conversion_retries, health.settings.failure_threshold));
+  // 恒失败时真实调用数正好是视图声明的上界:候选表(按 MAX_ATTEMPTS 循环填满)走完,
+  // 再叠加整条请求共用的 CONV_RETRIES 次换 key/换 cache 代际重试 —— 两者是分开的配额,
+  // 所以是 MAX_ATTEMPTS + CONV_RETRIES,不是相乘,也不是取其中较小的一个。
+  assert.equal(attempts, health.settings.max_upstream_calls,
+    `恒失败应打满声明的上界 ${health.settings.max_upstream_calls} 次,实际 ${attempts}`);
+  assert.equal(health.settings.max_upstream_calls,
+    health.settings.max_attempts + health.settings.conversion_retries);
   assert.equal(logs[0].attempts, attempts);
   assert.match(logs[0].err, /persistent fixture failure/);
 });

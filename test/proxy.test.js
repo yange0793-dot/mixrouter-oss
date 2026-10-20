@@ -16,6 +16,7 @@ process.env.MIXR_DATA_DIR = TMP;
 process.env.MIXR_CLAUDE_SETTINGS = path.join(TMP, 'settings.json');
 process.env.MIXR_CODEX_CONFIG = path.join(TMP, 'config.toml');
 process.env.MIXR_BODY_LIMIT_MB = '1'; // 便于测 413(默认 64MB,不必真发大包)
+process.env.MIXR_RETRY_DELAY_MS = '0'; // 重试间隔在测试里没有意义,只会让每个失败用例白等一秒
 
 const P1 = {
   id: 'p1', name: '测试渠道一', base_url: '', api_key: 'sk-test-p1', enabled: true,

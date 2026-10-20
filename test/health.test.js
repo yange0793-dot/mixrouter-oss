@@ -1,6 +1,9 @@
 'use strict';
-// v3.4 上游健康测试:熔断器(闭/开/半开)、错误分型、三段超时(首字节/流式空闲/非流式总)、
-// 客户端断开收尾、4xx 冷却、default 路由策略、加权池冷却恢复、/api/health 视图。
+// v3.4 上游可靠性测试:错误分型、三段超时(首字节/流式空闲/非流式总)、客户端断开收尾、
+// 4xx 冷却、重试次数与间隔、default 路由策略、加权池冷却恢复、/api/health 视图。
+//
+// 熔断器已整体删除(渠道可用性只由冷却表决定,冷却只是软偏好),所以这里不再测开路/半开;
+// 原来靠"熔断开路后不再打上游"表达的意图,改由「重试次数」与「上游调用上界」直接钉住。
 // mock 上游 + 临时数据目录,不触碰真实配置与真实上游
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -22,72 +25,13 @@ process.env.MIXR_FIRST_HEADER_TIMEOUT_MS = '1200';
 process.env.MIXR_STREAM_FIRST_HEADER_TIMEOUT_MS = '1200';
 process.env.MIXR_STREAM_IDLE_TIMEOUT_MS = '600';
 process.env.MIXR_NONSTREAM_TOTAL_TIMEOUT_MS = '800';
-process.env.MIXR_BREAKER_FAILURE_THRESHOLD = '3';
+// 重试间隔默认 1s:本文件量的是重试次数与转移落点,不是真的等一秒。
+// 延时逻辑本身在下面的调度层用例里单独覆盖(用非零值)。
+process.env.MIXR_RETRY_DELAY_MS = '0';
 
-const { createHealth } = require('../lib/upstream-health.js');
 const mod = require('../mixrouter.js');
 const { sessionIdentity, errorClass, normalizeRule, _state } = mod;
-
-// ---------------------------------------------------------------- 熔断器单元(假时钟)
-test('熔断器:连败到阈值开路,期满后半开,探测成功闭合', () => {
-  let now = 0;
-  const h = createHealth({ cooldownMs: 1000, failureThreshold: 3, recoveryThreshold: 1, now: () => now });
-  assert.strictEqual(h.eligible('p'), true, '初始应闭合可用');
-  h.acquire('p')('failure', 'x', 500);
-  h.acquire('p')('failure', 'x', 500);
-  assert.strictEqual(h.view('p').state, 'closed', '两次失败未到阈值不开路');
-  h.acquire('p')('failure', 'x', 500);
-  assert.strictEqual(h.view('p').state, 'open', '第三次失败开路');
-  assert.strictEqual(h.eligible('p'), false);
-  now = 1001;
-  assert.strictEqual(h.view('p').state, 'half-open', '期满进入半开');
-  const probe = h.acquire('p');
-  assert.ok(probe, '半开首个请求拿到探测名额');
-  assert.strictEqual(h.acquire('p'), null, '探测在途时不再放行第二个');
-  assert.strictEqual(h.eligible('p'), false);
-  probe('success', '', 200);
-  assert.strictEqual(h.view('p').state, 'closed', '探测成功闭合');
-  assert.strictEqual(h.eligible('p'), true);
-});
-
-test('熔断器:半开探测失败立刻重新开路并重新计时', () => {
-  let now = 0;
-  const h = createHealth({ cooldownMs: 1000, failureThreshold: 2, recoveryThreshold: 1, now: () => now });
-  h.acquire('p')('failure', 'x', 500);
-  h.acquire('p')('failure', 'x', 500);
-  assert.strictEqual(h.view('p').state, 'open');
-  now = 1000;
-  const probe = h.acquire('p');
-  probe('failure', 'x', 500);
-  assert.strictEqual(h.view('p').state, 'open');
-  assert.strictEqual(h.view('p').openUntil, 2000, '从探测失败那刻重新计时');
-});
-
-test('熔断器:上一代的迟到成功不能闭合新开路的熔断器', () => {
-  let now = 0;
-  const h = createHealth({ cooldownMs: 1000, failureThreshold: 1, recoveryThreshold: 1, now: () => now });
-  const first = h.acquire('p');
-  h.acquire('p')('failure', 'x', 500);
-  assert.strictEqual(h.view('p').state, 'open');
-  first('success', '', 200);
-  assert.strictEqual(h.view('p').state, 'open', '旧一代的成功不该把熔断器关上');
-  now = 1000;
-  h.acquire('p')('success', '', 200);
-  assert.strictEqual(h.view('p').state, 'closed');
-});
-
-test('熔断器:4xx 拒绝证明连通,清零失败计数;客户端取消不改变计数', () => {
-  const h = createHealth({ cooldownMs: 1000, failureThreshold: 2, recoveryThreshold: 1, now: () => 0 });
-  h.acquire('p')('failure', 'x', 500);
-  h.acquire('p')('rejected', '', 401);
-  assert.strictEqual(h.view('p').failures, 0, '拒绝清零失败计数');
-  assert.strictEqual(h.view('p').state, 'closed');
-  assert.strictEqual(h.view('p').lastOutcome, 'rejected');
-  h.acquire('p')('failure', 'x', 500);
-  h.acquire('p')('cancelled');
-  assert.strictEqual(h.view('p').failures, 1, '取消既不算成功也不算失败');
-  assert.strictEqual(h.view('p').lastOutcome, 'cancelled');
-});
+const { createAttemptRunner } = require('../lib/proxy/attempts.js');
 
 // ---------------------------------------------------------------- 纯函数
 test('errorClass:状态码与网络错误分型', () => {
@@ -112,6 +56,57 @@ test('sessionIdentity:无头无 metadata 的 codex chat 请求按 system+首条�
   assert.strictEqual(a.key, sessionIdentity(req, mk('sys-a'), 'codex').key, '同内容跨轮稳定');
   assert.notStrictEqual(a.key, sessionIdentity(req, mk('sys-b'), 'codex').key, '不同内容分开');
   assert.strictEqual(sessionIdentity(req, { messages: [] }, 'codex').key, 'cx-anon');
+});
+
+// ---------------------------------------------------------------- 调度层:重试间隔
+// 这是重试节奏本身唯一的直接覆盖:其它用例都把间隔设成 0,只看"重试了几次"。
+// 这里用非零间隔证明"下一发确实被一个定时器推到之后",而不是立刻递归打出去。
+function schedulerCtx() {
+  return {
+    finalized: false, clientClosed: false, deadlineHit: false,
+    netAttempts: 0, maxUpstreamCalls: 10, capWhy: 'cap',
+    entry: {}, started: Date.now(),
+    finish() { this.finalized = true; },
+    sendErr() { this.finalized = true; },
+  };
+}
+
+test('调度层:非零 retryDelayMs 时下一发要等间隔,间隔为 0 时同步重试', async () => {
+  const plan = () => ({ ordered: [{ provider: { name: 'a' } }, { provider: { name: 'b' } }], sessionKey: 's' });
+
+  const seen = [];
+  const delayed = createAttemptRunner({
+    convRetries: 0, retryDelayMs: 40,
+    runAttempt: (loop, p, ctx, i) => { seen.push({ i, at: Date.now() }); if (i === 0) loop.retry(1); },
+  });
+  delayed.runAttempts(plan(), schedulerCtx());
+  assert.strictEqual(seen.length, 1, '间隔未到之前不该立刻打第二发');
+  await new Promise(ok => setTimeout(ok, 90));
+  assert.strictEqual(seen.length, 2, '间隔到点后继续打第二发');
+  assert.ok(seen[1].at - seen[0].at >= 30, `两发之间应至少隔 30ms,实际 ${seen[1].at - seen[0].at}ms`);
+
+  // 0 是"关掉间隔"的开关:测试与排障要它立刻重打
+  const immediate = [];
+  const sync = createAttemptRunner({
+    convRetries: 0, retryDelayMs: 0,
+    runAttempt: (loop, p, ctx, i) => { immediate.push(i); if (i === 0) loop.retry(1); },
+  });
+  sync.runAttempts(plan(), schedulerCtx());
+  assert.deepStrictEqual(immediate, [0, 1], '间隔为 0 时第二发在同一个调用栈里就发出去了');
+});
+
+test('调度层:排队等间隔期间请求已收尾就不再打上游', async () => {
+  const ctx = schedulerCtx();
+  let calls = 0;
+  const runner = createAttemptRunner({
+    convRetries: 0, retryDelayMs: 30,
+    runAttempt: loop => { calls++; loop.retry(1); },
+  });
+  runner.runAttempts({ ordered: [{ provider: { name: 'a' } }], sessionKey: 's' }, ctx);
+  assert.strictEqual(calls, 1);
+  ctx.finalized = true; // 客户端在间隔里断开
+  await new Promise(ok => setTimeout(ok, 70));
+  assert.strictEqual(calls, 1, '收尾之后的定时器不该再发请求');
 });
 
 // ---------------------------------------------------------------- 集成:假上游们
@@ -175,13 +170,17 @@ function createSlowSseUpstream() {
   });
   return { server, state };
 }
-// 固定 500 上游(熔断用)
+// 固定 500 上游(重试与调用上界用);hits 记录被打了多少次
 function createFailingUpstream() {
+  const state = { hits: 0 };
   const server = http.createServer((req, res) => {
     req.resume();
-    req.on('end', () => { res.writeHead(500, { 'Content-Type': 'application/json' }); res.end('{"error":{"message":"boom"}}'); });
+    req.on('end', () => {
+      state.hits++;
+      res.writeHead(500, { 'Content-Type': 'application/json' }); res.end('{"error":{"message":"boom"}}');
+    });
   });
-  return { server };
+  return { server, state };
 }
 
 let proxySrv, uiSrv, proxyPort, uiPort;
@@ -226,7 +225,6 @@ function setRoutes(rules, def = { provider: '', model: '' }) {
 function resetRouting() {
   _state.cooldowns = {};
   _state.resetPools();
-  _state.resetHealth();
   _state.sessions.clear();
 }
 
@@ -245,6 +243,7 @@ test('setup:三段超时 + 各类假上游', async () => {
     ports[k] = v.server.address().port;
   }
   ports.slowSseState = special.slowSse.state;
+  ports.failState = special.fail.state;
   mock.server.unref();
 
   const p = (id, name, port) => ({ id, name, base_url: `http://127.0.0.1:${port}`, api_key: `sk-${id}`, enabled: true, models: ['claude-opus-5'], slots: {} });
@@ -273,7 +272,7 @@ test('首字节超时:上游装死时换下一个渠道,不把请求打回客户
   assert.strictEqual(r.status, 200);
   assert.strictEqual(r.headers['x-mixrouter-provider'], 'provA', '装死渠道超时后应转移到 pa');
   const log = await lastLog();
-  assert.strictEqual(log.failover, true);
+  assert.strictEqual(log.failover, true, '真的换了渠道才算故障转移');
   assert.strictEqual(log.err_class, 'timeout', '转移原因留在 err_class(err 字段只记终态失败)');
   assert.strictEqual(log.err, '', '转移成功不算失败记录');
 });
@@ -315,7 +314,7 @@ test('客户端中途断开:掐掉上游、记一条 cancelled,不烧后台渠�
   assert.notStrictEqual(JSON.stringify(log), before, '取消也应有日志');
 });
 
-test('4xx 非重试错误:原样透传、进冷却、分型 authentication、熔断不累计', async () => {
+test('4xx 非重试错误:原样透传、进冷却、分型 authentication', async () => {
   setRoutes([{ id: 'r4', match: 'opus', pool: ['p401', 'pa'], strategy: 'priority', enabled: true }]);
   const r = await callWithSession('auth-1');
   assert.strictEqual(r.status, 401, '401 应原样透传给客户端');
@@ -357,24 +356,38 @@ test('加权池:冷却中的成员退出轮转,恢复后能重新进轮转', asy
   assert.ok(nA >= 1, `冷却过期后 pa 应重新参与轮转,实际 ${JSON.stringify(after)}`);
 });
 
-test('熔断器集成:连败开路后即使清掉冷却也不再选中该渠道', async () => {
-  setRoutes([{ id: 'rb', match: 'opus', pool: ['pbad', 'pa'], strategy: 'priority', enabled: true }]);
-  // 三轮:每轮 pbad 500 → 转移 pa。轮间清冷却但保留熔断状态,让 pbad 每轮都被优先选中
-  for (let i = 0; i < 3; i++) {
-    _state.cooldowns = {};
-    const r = await callWithSession(`brk-${i}`);
-    assert.strictEqual(r.status, 200);
-    assert.strictEqual((await lastLog()).failover, true);
-  }
-  const h = JSON.parse((await rawRequest(uiPort, 'GET', '/api/health')).text);
-  const bad = h.providers.find(p => p.provider === 'pbad');
-  assert.strictEqual(bad.state, 'open', '三次失败应把熔断器打开');
-  // 冷却已清、但熔断开着:priority 跳过 pbad,一次尝试直接落到 pa
-  _state.cooldowns = {};
-  const r = await callWithSession('brk-after');
+test('上游恒失败:同一渠道被重试到调用上界,整个过程不算故障转移', async () => {
+  setRoutes([{ id: 'rb', match: 'opus', pool: ['pbad'], strategy: 'priority', enabled: true }]);
+  ports.failState.hits = 0;
+  const r = await callWithSession('retry-same-1');
+  // 最后一发就是上游的真实状态码(500 原样透传),不再被本地改写成 502
+  assert.strictEqual(r.status, 500);
+  // 单渠道池:候选表按 MAX_ATTEMPTS 循环填满,失败后隔一个间隔重打同一个渠道
+  assert.strictEqual(ports.failState.hits, 3, `应打满 MIXR_MAX_ATTEMPTS=3 次,实际 ${ports.failState.hits}`);
+  const log = await lastLog();
+  assert.strictEqual(log.attempts, 3, '日志里的 attempts 是真实上游调用数');
+  assert.strictEqual(log.failover, false, '候选表里只有同一渠道,重试不是故障转移');
+  assert.strictEqual(log.err_class, 'upstream_server');
+});
+
+test('上游恒失败:换渠道后 failover 只为真正的转移置位', async () => {
+  setRoutes([{ id: 'rb2', match: 'opus', pool: ['pbad', 'pa'], strategy: 'priority', enabled: true }]);
+  ports.failState.hits = 0;
+  const r = await callWithSession('retry-mixed-1');
   assert.strictEqual(r.status, 200);
-  assert.strictEqual(r.headers['x-mixrouter-provider'], 'provA');
-  assert.strictEqual((await lastLog()).attempts, 1, '熔断开路的渠道不该再被尝试');
+  // 第一发 pbad 500 → 换到 pa 成功;转换线没有(直通 anthropic),不消耗 convRetries
+  assert.strictEqual(ports.failState.hits, 1);
+  const log = await lastLog();
+  assert.strictEqual(log.failover, true, '换了渠道才是 failover');
+  assert.strictEqual(log.attempts, 2, '一次 pbad + 一次 pa');
+});
+
+test('冷却只做软偏好:全池都在冷却时仍退回全量候选,不会 502 甩锅', async () => {
+  setRoutes([{ id: 'rcd', match: 'opus', pool: ['pa', 'pb'], strategy: 'priority', enabled: true }]);
+  _state.cooldowns = { pa: Date.now() + 60000, pb: Date.now() + 60000 };
+  const r = await callWithSession('all-cold-1');
+  assert.strictEqual(r.status, 200, '全池冷却也要照打,冷却不是硬闸门');
+  assert.ok(['provA', 'provB'].includes(r.headers['x-mixrouter-provider']));
 });
 
 test('/api/health:只读视图带超时/重试配置与各渠道可用性', async () => {
@@ -388,7 +401,11 @@ test('/api/health:只读视图带超时/重试配置与各渠道可用性', asyn
   assert.strictEqual(j.settings.nonstream_total_timeout_ms, 800);
   assert.strictEqual(j.settings.cooldown_ms, 60000);
   assert.strictEqual(j.settings.max_attempts, 3);
-  assert.strictEqual(j.settings.failure_threshold, 3);
+  assert.strictEqual(j.settings.retry_delay_ms, 0, '本进程把重试间隔关了(见文件头),视图要如实反映');
+  assert.strictEqual(j.settings.max_upstream_calls, 3 + 3);
+  // 熔断器删掉后这三项没有意义,不能再出现在视图里(控制台会照着渲染)
+  for (const gone of ['failure_threshold', 'recovery_threshold', 'half_open_max_probes'])
+    assert.strictEqual(gone in j.settings, false, `settings 不该再有 ${gone}`);
   // ---- 端到端预算必须落在客户端(Claude Code)的预算里面 ----
   // CC 侧默认 API_TIMEOUT_MS=300s(整条请求)与 CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS=120s(多久没收到字节)。
   // 本进程任何一段比它长,客户端都会先放弃并重发,我们还在替一条没人接收的响应占着上游连接和渠道额度,
@@ -406,13 +423,20 @@ test('/api/health:只读视图带超时/重试配置与各渠道可用性', asyn
   }
   const pa = j.providers.find(p => p.provider === 'pa');
   assert.ok(pa, 'providers 里应包含 pa');
+  // 视图每项的键集就是契约:控制台按它渲染,多一个少一个都会让面板读错
+  assert.deepStrictEqual(Object.keys(pa).sort(), ['app', 'cooldown_until', 'eligible', 'enabled', 'provider']);
   assert.strictEqual(pa.app, 'claude');
   assert.strictEqual(pa.enabled, true);
   assert.strictEqual(pa.eligible, true);
-  assert.strictEqual(pa.state, 'closed');
-  assert.strictEqual(pa.lastOutcome, 'success');
-  const disabled = j.providers.find(p => p.provider === 'psilent');
-  assert.strictEqual(disabled.cooldown_until, 0);
+  assert.strictEqual(pa.cooldown_until, 0);
+  // 冷却中的渠道 eligible 必须是 false(cooldown_until 是它唯一的依据)
+  _state.cooldowns = { pa: Date.now() + 60000 };
+  const cold = JSON.parse((await rawRequest(uiPort, 'GET', '/api/health')).text).providers.find(p => p.provider === 'pa');
+  assert.strictEqual(cold.eligible, false);
+  assert.ok(cold.cooldown_until > Date.now());
+  assert.strictEqual(mod.providerEligible('pa'), false, 'providerEligible 现在等价于"不在冷却中"');
+  _state.cooldowns = {};
+  assert.strictEqual(mod.providerEligible('pa'), true);
 });
 
 test('全池连不上:502 返回客户端,日志状态如实落盘', async () => {

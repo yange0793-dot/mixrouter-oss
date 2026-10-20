@@ -11,10 +11,9 @@
   用于只接受名字含 `claude` 的网关模型名的客户端。Codex 组不认该前缀。
 - 请求日志新增「请求体」列(`bytes_in`,客户端请求体字节数),用于观察大上下文下的首字延迟。
 - 控制台新增「用量统计」页:按区间(今天 / 24 小时 / 7 天 / 30 天 / 全部)、协议组、渠道与模型
-  汇总请求数、tokens、缓存命中率、速度与首字延迟,并用可编辑价目表折算成本。
+  汇总请求数、tokens、缓存命中率、速度与首字延迟。页面只报真实消耗,不折算金额。
   统计读磁盘 `requests.jsonl`(含轮转归档),内存环只补更新条目,不重复计数。
-- 日志新增 `ttfb_ms`(请求开始到上游响应头到达),接口 `GET /api/usage`、
-  `GET/PUT /api/pricing`。默认价目表只是参考值,可覆盖或按渠道单独设价。
+- 日志新增 `ttfb_ms`(请求开始到上游响应头到达),接口 `GET /api/usage`。
 
 #### 改进
 
@@ -24,6 +23,27 @@
 - 会话页「当前绑定」只保留一个「配置 Key / 槽位」入口,点开即编辑该会话的整组槽位;
   编辑器沿用全局槽位的行式布局,支持模型下拉、自定义模型、复制全局渠道/模型到草稿及逐槽恢复继承。
   渠道 Key 与普通请求钉定分开设置;保存只影响该会话,沿用现有路由优先级与落盘格式。
+
+- 请求重试放宽:`MIXR_MAX_ATTEMPTS` 默认 3 → 10,语义是**一次请求最多打多少次上游**——
+  同一个渠道也会被重复尝试,不再是"最多几个候选渠道";新增 `MIXR_RETRY_DELAY_MS`
+  (默认 1000,范围 0–60000)控制每次重试前的等待毫秒数。一次请求的上游调用总上界为
+  `MIXR_MAX_ATTEMPTS` + `MIXR_CONV_RETRIES`(默认 13);端到端总预算仍优先,预算用尽后不再重试。
+
+#### 移除
+
+- 上游健康里的断路器整体移除:不再有闭/开/半开状态、失败阈值、恢复阈值与半开探测名额,
+  也没有 `circuit_open` 错误类。渠道失败后只进冷却:在 `MIXR_COOLDOWN_SEC`(默认 60 秒)内
+  不参与挑选,全池都不可用时退回全量候选,请求照常发出,不会被拒绝。
+  两个阈值环境变量随之删除;设置里的 `failure_threshold` / `recovery_threshold` /
+  `half_open_max_probes` 一并移除,新增 `retry_delay_ms`。`GET /api/health` 的 providers 每项为
+  `{provider, app, enabled, eligible, cooldown_until}`;控制台渠道卡片不再显示断路器徽标,
+  设置页健康表不再有这一列。
+- 用量统计不再折算金额:移除价格表文件及其读写接口、控制台价格表弹窗、金额指标卡、
+  金额图表 tab 与明细表的金额列。`GET /api/usage` 的 `totals` 为
+  `{reqs, ok_rate, tokens_in, tokens_out, cache_read, tokens_total, cache_hit_rate, speed_tps, ttfb_p50_ms}`,
+  `series` 每桶 `{t, reqs, tokens_in, tokens_out, cache_read}`,
+  `by_provider` / `by_model` 每项 `{provider, name | model, reqs, tokens_in, tokens_out, cache_read}`,
+  按请求数降序。
 
 #### 修复
 

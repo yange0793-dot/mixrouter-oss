@@ -49,8 +49,8 @@
 | `random` | 随机 | 无特殊要求 |
 | `priority` | 永远取池序里第一个可用渠道,主渠道不可用才落到下一个 | 主备降级 |
 
-冷却/熔断中的成员不参与挑选;全池都不可用时退回全量候选(宁可再试也不死锁),
-但**熔断开路的渠道不会真的发起上游请求**(见第 5 节)。
+冷却中的成员不参与挑选;全池都不可用时退回全量候选(宁可再试也不死锁),请求照常发出。
+冷却只影响挑选顺序,**不会拒绝请求**(见第 5 节)。
 
 ### 渠道字段
 
@@ -108,7 +108,7 @@ Responses 型通道上 → Claude 组标 `responses`;网关只开 `/v1/chat/comp
 显式改绑与覆盖也会改变落点。
 
 相关变量:`MIXR_SESSION_TTL_MIN`(默认 720)、`MIXR_SESSION_MAX`(1000)、
-`MIXR_COOLDOWN_SEC`(60)、`MIXR_MAX_ATTEMPTS`(3)、`MIXR_SESSION_LABEL=0`。
+`MIXR_COOLDOWN_SEC`(60)、`MIXR_MAX_ATTEMPTS`(10)、`MIXR_SESSION_LABEL=0`。
 
 ### 手动钉定与解绑
 
@@ -275,7 +275,7 @@ curl -s -X POST http://127.0.0.1:8788/api/router/codex \
 
 ---
 
-## 5. 上游健康:超时、冷却、熔断
+## 5. 上游健康:超时、冷却、重试
 
 - **三段超时**,分别独立配置:
   `MIXR_FIRST_HEADER_TIMEOUT_MS`(发请求到收到响应头)、
@@ -283,25 +283,25 @@ curl -s -X POST http://127.0.0.1:8788/api/router/codex \
   `MIXR_NONSTREAM_TOTAL_TIMEOUT_MS`(非流式从头到 body 结束)。
   另有 `MIXR_TOTAL_DEADLINE_MS` 作端到端总预算。
 - **冷却**:429/5xx/连不上 → 打冷板凳 `MIXR_COOLDOWN_SEC`(默认 60 秒),冷却期内不被选中。
-- **熔断器**:连续 `MIXR_BREAKER_FAILURE_THRESHOLD`(默认 3)次失败 → `open`,时长与冷却一致;
-  期满进 `half-open`,放行**一个**探测请求,成功 `MIXR_BREAKER_RECOVERY_THRESHOLD`
-  (默认 1)次即闭合,失败立即重新 `open`。4xx 算 rejected:证明渠道连通,只进冷却、
-  不计熔断失败。
-- **开路期间该渠道零上游请求**:挑选阶段会优先绕开它;即使候选全不可用而退回全量兜底,
-  真正发请求前还有一道许可闸门,拿不到许可就跳过该候选,记 `circuit_open`。
-  也就是说"全池冷却"不等于必失败,但可能换成更慢的候选或明确报 502。
+  4xx 算 rejected:它证明渠道连通,只是这次请求有问题,处理和 5xx 一样——只进冷却。
+- **重试**:一次请求最多打 `MIXR_MAX_ATTEMPTS` 次上游(默认 10),每次重试前等待
+  `MIXR_RETRY_DELAY_MS`(默认 1000,范围 0–60000 毫秒)。同一个渠道也会被重复尝试,
+  `MIXR_MAX_ATTEMPTS` 封顶的是**上游调用次数**,不是候选渠道数。冷却中的渠道通常不参与挑选;
+  全池都不可用时退回全量候选,请求照常发出,不会因为冷却被拒绝。
+- **端到端总预算优先**:`MIXR_TOTAL_DEADLINE_MS` 用尽后不再重试,在途请求按超时收尾。
 - **错误分型** `err_class`:`authentication`(401/403)、`rate_limit`(429)、
   `upstream_server`(5xx)、`upstream_request`(其余 4xx)、`timeout`、网络错误码、
   `network_error`、`cancelled`(客户端主动断开)。转移成功的请求也带首次失败的
   `err_class` + `failover` 标记。
 - **客户端断开**(取消/进程退出):代理立刻掐掉在途的上游请求,落一条 `err_class: cancelled`
   的日志(状态 499),**不算**渠道失败。
-- **只读健康视图** `GET /api/health`:三段超时/重试/熔断配置,以及每个渠道的
-  enabled/state/failures/lastOutcome/冷却截止/当前是否可选。
+- **只读健康视图** `GET /api/health`:三段超时、重试与冷却配置,以及每个渠道的
+  `{provider, app, enabled, eligible, cooldown_until}`。`eligible` 是此刻是否可被挑选,
+  `cooldown_until` 是冷却截止时间,不在冷却时为 `0`。
 
 已知限制:流式响应被掐断时只结束连接,**不补发**协议内 error 事件,客户端看到的是截断的
-SSE。`MIXR_MAX_ATTEMPTS` 封顶的是池内候选渠道数;同渠道内的换 Key / 换 cache 代际重试
-由 `MIXR_CONV_RETRIES` 单独计。
+SSE。一次请求的上游调用总上界是 `MIXR_MAX_ATTEMPTS` + `MIXR_CONV_RETRIES`(默认 13);
+`MIXR_CONV_RETRIES` 计的是同渠道内的换 Key / 换 cache 代际重试。
 
 ---
 
@@ -365,7 +365,7 @@ echo '{"app":"claude","model":"m","context":{"bodyText":"…"}}' | ./mixctl expl
 - **只解释当前快照,不是承诺**。首选渠道是"此刻这条请求会落到哪",不保证上游成功,
   也不代表重试之后的落点。`random` 策略只给候选、不预测;`round_robin`/`weighted` 给的是
   当前游标下的下一位,预览不消耗它们。
-- **零副作用**。不写日志、不建会话、不动冷却或熔断计数、不发上游请求、不改槽位与游标;
+- **零副作用**。不写日志、不建会话、不动冷却表、不发上游请求、不改槽位与游标;
   已有会话粘性与 `least_used` 计数都在副本上重算。
 - **不回显敏感内容**。渠道字段走白名单(`id/name/model/models/wire_api/ua/enabled/slots`),
   `base_url`、`api_key`、`keys`、`active_key`、请求头原文一律不出现;`when.token`
@@ -466,16 +466,15 @@ MIXR_DATA_DIR=/absolute/path node scripts/diagnose-upstream.js --mode provider -
 - `by_slot` 按日志里明确记录的槽位累计请求、输入/输出 token 和缓存 token;
   空槽记 `none`,旧日志缺字段记 `unknown`,不拿模型名或会话类型猜槽位。
 - `GET /api/metrics` 是 Prometheus 文本端点(进程生命周期 counter + 内存窗口 gauge),
-  标签集固定,不按会话或对话标签展开。这是用量统计,不是价格换算或预算限流。
+  标签集固定,不按会话或对话标签展开。这是用量统计,不做金额折算,也不是预算限流。
 - `GET /api/usage?range=&app=&provider=&model=&from=&to=` 读磁盘日志(含轮转归档)并可补上
   内存环里更新的条目,按本地时区分桶补齐空桶。`range` 取 `today`(默认)/`24h`/`7d`/`30d`/`all`;
-  同时给 `from`/`to`(ISO)即自定义区间。返回 `scope`、`totals`(成本/token/缓存命中/速度/TTFB p50)、
-  `series`、`by_provider`、`by_model` 与 `pricing`(来源与未定价模型)。
+  同时给 `from`/`to`(ISO)即自定义区间。返回 `scope`、`totals`、`series`、`by_provider`
+  与 `by_model`。`totals` 为 `{reqs, ok_rate, tokens_in, tokens_out, cache_read, tokens_total,
+  cache_hit_rate, speed_tps, ttfb_p50_ms}`;`series` 每桶为 `{t, reqs, tokens_in, tokens_out,
+  cache_read}`;`by_provider` / `by_model` 每项为 `{provider, name | model, reqs, tokens_in,
+  tokens_out, cache_read}`,按请求数降序。
   `series[].t` 是本地时间:`bucket=hour` 为 `YYYY-MM-DDTHH:00`,`bucket=day` 为 `YYYY-MM-DD`。
-- `GET /api/pricing` 返回 `{pricing, custom, revision, source}`:`pricing` 是生效表(默认参考价与
-  自定义覆盖合并),`custom` 只含**自定义过的**键(控制台保存时原样写回,不会把默认表一起冻结进
-  磁盘)。`PUT /api/pricing` 整表覆盖写,可带 `expected_revision` 做乐观并发(冲突 409)。
-  价目表存 `<MIXR_DATA_DIR>/pricing.json`(0600)。默认价只是参考,以渠道实际计费为准。
 
 ### 返回归档(显式开启)
 
@@ -575,8 +574,8 @@ require 之后再改不生效。
 | `MIXR_NONSTREAM_TOTAL_TIMEOUT_MS` | 180000 | 非流式响应从头到 body 结束 |
 | `MIXR_SSE_KEEPALIVE_MS` | 15000 | 已提交给客户端的流补 SSE 注释的间隔;`0` 关掉 |
 | `MIXR_COOLDOWN_SEC` | 60 | 429/5xx 打冷板凳的时长 |
-| `MIXR_MAX_ATTEMPTS` / `MIXR_CONV_RETRIES` | 3 / 3 | 池内候选渠道数 / 同渠道内换 cache 代际重试次数 |
-| `MIXR_BREAKER_FAILURE_THRESHOLD` / `MIXR_BREAKER_RECOVERY_THRESHOLD` | 3 / 1 | 熔断器连败阈值 / 半开探测成功次数 |
+| `MIXR_MAX_ATTEMPTS` / `MIXR_CONV_RETRIES` | 10 / 3 | 一次请求最多打多少次上游(同一渠道也会被重复尝试)/ 同渠道内换 cache 代际重试次数 |
+| `MIXR_RETRY_DELAY_MS` | 1000 | 每次重试前的等待毫秒数(0–60000) |
 | `MIXR_SESSION_TTL_MIN` / `MIXR_SESSION_MAX` | 720 / 1000 | 会话绑定空闲失效时间(分钟)/ 会话表上限 |
 | `MIXR_SESSION_LABEL` | 开 | `0` 关掉会话标签采集 |
 | `MIXR_SESSION_CLI_TIMEOUT_MS` | 10000 | `mixctl sessions` 每次请求的有界超时 |

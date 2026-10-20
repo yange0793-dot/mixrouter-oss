@@ -231,8 +231,8 @@ async function harness(data = fixture()) {
       // ---- 设置页的三条只读端点。造的是"能读到"的常态;失败注入由用例自己覆写 fetch。
       if (url === '/api/health') {
         if (failHealth) throw new Error('simulated health failure');
-        return { ok: true, json: async () => ({ settings: { total_deadline_ms: 300000, first_header_timeout_ms: 180000, stream_idle_timeout_ms: 120000, max_attempts: 3, cooldown_ms: 60000, failure_threshold: 3, recovery_threshold: 1 },
-          providers: [{ provider: 'a1', app: 'claude', enabled: true, eligible: true, state: 'closed', cooldown_until: 0 }] }) };
+        return { ok: true, json: async () => ({ settings: { total_deadline_ms: 300000, first_header_timeout_ms: 180000, stream_idle_timeout_ms: 120000, max_attempts: 3, cooldown_ms: 60000, retry_delay_ms: 500 },
+          providers: [{ provider: 'a1', app: 'claude', enabled: true, eligible: true, cooldown_until: 0 }] }) };
       }
       if (url === '/api/backups') {
         if (failBackups) throw new Error('simulated backups failure');
@@ -1503,15 +1503,23 @@ test('渠道页:卡片标出失效 Key 的数量与标签,但不出现任何 Key
   assert.equal(grid.includes('sk-retired-secret'), false, '停用的 Key 同样不得出现明文');
 });
 
-test('渠道页:冷却中与熔断状态从 /api/health 与 /api/state 读出,健康端点失败也不拖垮整页', async () => {
+test('渠道页:冷却状态从 /api/health 与 /api/state 读出,健康端点失败也不拖垮整页', async () => {
   const data = fixture();
   data.cooldowns = [{ provider: 'a1', until: Date.UTC(2026, 0, 2, 3, 4, 5), name: 'Alpha' }];
   const h = await harness(data);
   h.run("view = 'providers'; renderProviders()");
   assert.match(h.get('prov-grid').innerHTML, /冷却至/, '冷却中的渠道要在卡片上标出');
   await h.run('loadHealth()');
-  assert.match(h.get('prov-grid').innerHTML, /熔断 closed/, '健康快照要进卡片徽标');   // 夹具 state=closed ⇒ 照样渲染出状态,便于核对
+  // 卡片只保留冷却与可用性:健康快照里的 eligible 仍要进徽标,但不再有状态徽标
+  assert.match(h.get('prov-grid').innerHTML, /冷却至/);
+  assert.doesNotMatch(h.get('prov-grid').innerHTML, /熔断/, '渠道卡片不再展示熔断状态');
   assert.match(h.get('health-status').textContent, /已读取/);
+  const healthBody = h.get('health-body').innerHTML;
+  assert.match(healthBody, /冷却至/, '健康表仍有冷却列');
+  assert.doesNotMatch(healthBody, /熔断/, '健康表不再有熔断列');
+  assert.doesNotMatch(healthBody, /阈值/, '健康事实里不再有熔断阈值/恢复阈值');
+  assert.match(healthBody, /重试间隔\(ms\)/, '重试间隔要跟着 /api/health 的 retry_delay_ms 显示');
+  assert.match(healthBody, /<dd>500<\/dd>/, 'retry_delay_ms 的值要渲染出来');
   // 健康端点挂掉:卡片照常渲染,只有那一句提示,且设置页/渠道页的草稿都不受影响
   const h2 = await harness(data);
   h2.fail({ health: true });

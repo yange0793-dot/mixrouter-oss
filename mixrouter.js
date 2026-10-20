@@ -50,8 +50,7 @@ const { createExplainer } = require('./lib/routing/explain');
 const { createSessionStore } = require('./lib/routing/sessions');
 const slotsLib = require('./lib/routing/slots');
 const { createRequestLog } = require('./lib/observability/request-log');
-// 用量统计(磁盘日志 + 内存环)与价目表(lib/usage/*):控制台 /api/usage 与 /api/pricing 的后端。
-const { createPricingStore } = require('./lib/usage/pricing');
+// 用量统计(磁盘日志 + 内存环,lib/usage/*):控制台 /api/usage 的后端。
 const { createUsageSummary } = require('./lib/usage/summary');
 // 备份池目标表**唯一**一份(见该模块文件头:/api/backups 与 mixctl 都从它取,谁都不许自己再列)。
 // LIVE_FILES 同时是本文件下面三个常量(DATA_DIR / CLAUDE_SETTINGS / CODEX_CONFIG)的真值来源 ——
@@ -185,15 +184,14 @@ const SLOTS_FILE = path.join(DATA_DIR, 'slots.json');
 // 会话绑定空闲多久后失效(默认 12h);同一对话中途换渠道会打断 prompt 缓存,故给足
 const SESSION_TTL_MS = Number(process.env.MIXR_SESSION_TTL_MIN || 720) * 60 * 1000;
 const SESSION_MAX = Number(process.env.MIXR_SESSION_MAX || 1000);
-// 上游 429/5xx/连不上时把该渠道打入冷却,冷却期内不再被会话选中
+// 上游 429/5xx/连不上时把该渠道打入冷却:冷却只是软偏好,全池都在冷却时仍会退回全量候选。
 const COOLDOWN_MS = envInt('MIXR_COOLDOWN_SEC', 60, 0, 2147483) * 1000;
 // MAX_ATTEMPTS also caps actual network attempts, including conversion retries.
-const MAX_ATTEMPTS = envInt('MIXR_MAX_ATTEMPTS', 3, 1, 100);
+// 候选表按它循环填满(见 lib/proxy/prepare.js):单渠道时同一个渠道也会被重试,不是一次就放弃。
+const MAX_ATTEMPTS = envInt('MIXR_MAX_ATTEMPTS', 10, 1, 100);
 const CONV_RETRIES = envInt('MIXR_CONV_RETRIES', 3, 0, 100);
-const FAILURE_THRESHOLD = envInt('MIXR_BREAKER_FAILURE_THRESHOLD', 3, 1, 100);
-const RECOVERY_THRESHOLD = envInt('MIXR_BREAKER_RECOVERY_THRESHOLD', 1, 1, 100);
-const health = require('./lib/upstream-health').createHealth({ cooldownMs: COOLDOWN_MS,
-  failureThreshold: FAILURE_THRESHOLD, recoveryThreshold: RECOVERY_THRESHOLD });
+// 每次重试前的固定间隔:秒级 ECONNRESET 往往自己就恢复了,立刻重打只会连撞同一个故障窗口。
+const RETRY_DELAY_MS = envInt('MIXR_RETRY_DELAY_MS', 1000, 0, 60000);
 
 // Responses 型的 Codex 通道会用 prompt_cache_key 做渠道亲和(TTL 1 小时),坏渠道
 // 一旦钉上就整小时失败。key 按会话稳定(拿得到上游 prompt cache),失败时 +1 代。
@@ -528,9 +526,9 @@ const sess = createSessionStore({
   onSaveError: e => console.error(`[sessions] 会话绑定落盘失败(本次改动会在下次落盘时重试): ${(e && e.message) || e}`),
 });
 
-// 渠道可用性:冷却表 + 上游健康。冷却表由 lib/routing/sessions.js 持有
+// 渠道可用性只看冷却表(由 lib/routing/sessions.js 持有):它不拒绝请求,只在挑首选时降权。
 const inCooldown = id => sess.inCooldown(id);
-const providerEligible = id => !inCooldown(id) && health.eligible(id);
+const providerEligible = id => !inCooldown(id);
 const markCooldown = (providerId, status) => sess.markCooldown(providerId);
 const pruneSessions = () => sess.prune();
 
@@ -585,9 +583,9 @@ function healthStatus() {
     // 一次请求真正允许的上游调用总数:候选渠道数 + 换 key 重试数。
     // 上界由实测得出(见 lib/proxy/context.js 的 maxUpstreamCalls),不是两个旋钮相乘
     max_upstream_calls: Math.max(1, MAX_ATTEMPTS) + Math.max(0, CONV_RETRIES),
-    cooldown_ms: COOLDOWN_MS, failure_threshold: FAILURE_THRESHOLD, recovery_threshold: RECOVERY_THRESHOLD, half_open_max_probes: 1 },
+    cooldown_ms: COOLDOWN_MS, retry_delay_ms: RETRY_DELAY_MS },
   providers: ['claude', 'codex'].flatMap(app => storeOf(app).map(p => ({ provider: p.id, app,
-    enabled: p.enabled !== false, ...health.view(p.id), cooldown_until: inCooldown(p.id) ? sess.cooldowns[p.id] : 0,
+    enabled: p.enabled !== false, cooldown_until: inCooldown(p.id) ? sess.cooldowns[p.id] : 0,
     eligible: p.enabled !== false && providerEligible(p.id) }))) };
 }
 
@@ -630,25 +628,10 @@ const requestLog = createRequestLog({
   onError: (error, ctx) => console.error(`[log] ${ctx.op} 落盘失败(${ctx.file}): ${error.message}`),
 });
 
-// ---- 用量统计与价目表 ------------------------------------------------------
-// 价目表落在数据目录(与 providers.json 同目录,0600):用户自定义价应跟着数据走,
-// 不跟着代码目录走,升级换版本时不会被覆盖。
-const PRICING_FILE = path.join(DATA_DIR, 'pricing.json');
-const pricingStore = createPricingStore({ file: PRICING_FILE });
-// 日志条目只存渠道**名字**(entry.provider = provider.name),而价目表的 provider 覆盖按 id 组织。
-// 这里把名字折回 id;查不到就返回空串,统计侧会退回用名字当键。
-const providerIdOf = name => {
-  for (const app of ['claude', 'codex']) {
-    const hit = store[app].find(p => p.name === name);
-    if (hit) return hit.id;
-  }
-  return '';
-};
+// ---- 用量统计 ------------------------------------------------------------------
 const usageSummary = createUsageSummary({
   file: LOG_FILE,                             // 磁盘:requests.jsonl 及其轮转归档
   memoryEntries: () => requestLog.list({ limit: Number.MAX_SAFE_INTEGER }).logs,
-  getPricing: () => pricingStore.read(),      // 每次现取:控制台刚保存的价目表要立刻生效
-  providerIdOf,
 });
 
 // 运行期日志清理:启动即清一次(处理停机期间攒下的旧日志),之后周期性再清。
@@ -706,7 +689,7 @@ const explainRoute = createExplainer({
     return Object.keys(slotMap[app] || {})
       .some(name => slotAliases(app, name).includes(raw));
   },
-  listPools: () => sess.pools, inCooldown, healthEligible: id => health.eligible(id),
+  listPools: () => sess.pools, inCooldown, healthEligible: () => true,
   sessionSnapshot: () => ({ bindings: sess.sessions, now: Date.now(), ttlMs: SESSION_TTL_MS, max: SESSION_MAX }),
   uiPort: UI_PORT,
 });
@@ -801,11 +784,11 @@ function modelList() {
 //   lib/proxy/prepare.js 身份/覆盖/内容规则/槽位/候选/Key 约束 → RequestPlan
 //   lib/proxy/context.js 请求级时间戳与预算、真实调用计数、取消器、唯一终态
 //   lib/proxy/attempts.js 请求级预算与重试决策(下一次尝试只在这里决定)
-//   lib/proxy/attempt.js 单次尝试(Key 重查、健康许可、出站构造、HTTP 调用)
+//   lib/proxy/attempt.js 单次尝试(Key 重查、出站构造、HTTP 调用)
 //   lib/proxy/response.js 响应分派(选已有转换器、usage/完整性/错误/是否已提交)
 //
 // 依赖方向:入口 → 编排 → routing/session/upstream/wire/observability → 纯工具。
-// **下层不 require 主入口**:活配置(store / routes / slotMap / health)一律以 getter
+// **下层不 require 主入口**:活配置(store / routes / slotMap)一律以 getter
 // 或函数注入,不在这里快照 —— 控制台刚保存的渠道、槽位、Key 必须对在途重试立刻生效。
 const proxyHttp = require('./lib/http/proxy');
 const { createPreparer } = require('./lib/proxy/prepare');
@@ -851,7 +834,7 @@ const { dispatchResponse } = createResponder({
 });
 
 const { runAttempt } = createAttempt({
-  http, https, health,
+  http, https,
   storeOf, slotMapOf: () => slotMap, sessionConfig, compactLib,
   wireOf, upstreamPathOf, joinUpstreamPath,
   buildUpstreamHeaders, buildOpenAiHeaders, applyModel, toolFilter,
@@ -867,7 +850,7 @@ const { runAttempt } = createAttempt({
   uiPort: UI_PORT, DEFAULT_UA_CODEX, dispatchResponse,
 });
 
-const { runAttempts } = createAttemptRunner({ runAttempt, convRetries: CONV_RETRIES });
+const { runAttempts } = createAttemptRunner({ runAttempt, convRetries: CONV_RETRIES, retryDelayMs: RETRY_DELAY_MS });
 
 const prepareRequest = createPreparer({
   UI_PORT, MAX_ATTEMPTS,
@@ -1219,7 +1202,7 @@ const apiHandler = createConsoleHandler({
   sessionList, sessionRecord, storeOf, findProvider, providerApp, ghostRefs,
   mutateSessions, saveRoutes, saveSlots, saveStore, requestLog, compactWindow,
   slotsPublic, validateSlotPut,
-  usageSummary, pricingStore,
+  usageSummary,
   switchClaude, switchCodex, switchZcode, switchRouter,
 });
 
@@ -1335,8 +1318,8 @@ module.exports = {
   normalizeChannelSlots, CLAUDE_SLOT_KEYS, claudeSplitPatch, configureClaudeSplit, altPorts,
   // v3.2 渠道池主备策略
   pickMember, markCooldown, inCooldown,
-  // v3.4 上游健康(熔断/冷却/超时)
-  health, healthStatus, errorClass, providerEligible,
+  // v3.4 上游健康(冷却/超时与重试配置)
+  healthStatus, errorClass, providerEligible,
   ROUTER_ID, ROUTER_URL, ROUTER_TOKEN, ROUTER_SECTION,
   _state: {
     get store() { return store; }, set store(v) { store = v; },
@@ -1356,7 +1339,6 @@ module.exports = {
     get bodyDrainAborts() { return bodyDrainAborts; },
     get bodyDrainTimeouts() { return bodyDrainTimeouts; },
     resetPools() { sess.resetPools(); },
-    resetHealth() { health.clear(); },
     bindSession(key, providerId, extra = {}) {
       sess.sessions.set(key, { providerId, model: '', ruleId: '', label: '', kind: 'header',
         created: Date.now(), lastUsed: Date.now(), reqs: 0, inTok: 0, outTok: 0, pinned: false, ...extra });

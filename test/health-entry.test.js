@@ -1,23 +1,28 @@
 'use strict';
-// 真实入口锁住健康许可、终态与计数;仅使用本地桩和测试入口提供的隔离环境。
+// 真实入口锁住终态判定与计数;仅使用本地桩和测试入口提供的隔离环境。
+//
+// 熔断器已删除:渠道可用性只由冷却表决定,而且冷却只是"优先挑选时的偏好",不是硬闸门。
+// 所以这里不再有"开路时零网络调用/半开探测名额"这类断言,改为钉住终态本身 ——
+// 一条响应到底算成功、失败还是取消,直接决定渠道会不会进冷却、日志里的 err_class 是什么。
 const { test, before, beforeEach, after } = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createHealth } = require('../lib/upstream-health');
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'mixr-terminal-'));
 process.env.MIXR_DATA_DIR = TMP;
 process.env.MIXR_CLAUDE_SETTINGS = path.join(TMP, 'settings.json');
 process.env.MIXR_CODEX_CONFIG = path.join(TMP, 'config.toml');
 process.env.MIXR_CONV_RETRIES = '0';
+// 这些用例量的是"单发请求的终态怎么判",不是重试策略;默认 10 次会把每条都放大成十发
+process.env.MIXR_MAX_ATTEMPTS = '1';
+process.env.MIXR_RETRY_DELAY_MS = '0';
 process.env.MIXR_SSE_KEEPALIVE_MS = '0';
 const mod = require('../mixrouter');
-const originalHealth = { ...mod.health };
 const frame = (type, data = { type }) => `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
-let upstream, proxy, ui, reply, hits, now, health;
+let upstream, proxy, ui, reply, hits;
 
 function request(server, endpoint, body, session = 'health-entry') {
   return new Promise((resolve, reject) => {
@@ -39,6 +44,7 @@ const ask = (session, extra = {}, endpoint = '/v1/messages') => request(proxy, e
   model: 'test-model', stream: true, max_tokens: 8, messages: [{ role: 'user', content: 'hi' }], ...extra,
 }, session);
 const logs = async () => JSON.parse((await request(ui, '/api/logs')).text).logs;
+const logFor = async () => (await logs())[0];
 
 function configure(wire = 'anthropic', app = 'claude') {
   const provider = { id: 'p', name: 'p', enabled: true, api_key: 'sk-fixture', wire_api: wire,
@@ -58,69 +64,43 @@ before(async () => {
   ui = await mod.listen(0, mod.apiHandler);
 });
 beforeEach(() => {
-  hits = 0; now = 0;
-  health = createHealth({ cooldownMs: 1000, failureThreshold: 2, recoveryThreshold: 1, now: () => now });
-  Object.assign(mod.health, health);
+  hits = 0;
   mod._state.sessions.clear();
   mod._state.cooldowns = {};
   mod._state.resetPools();
   configure();
 });
 after(async () => {
-  Object.assign(mod.health, originalHealth);
   await Promise.all([upstream, proxy, ui].map(server => new Promise((resolve, reject) => {
     server.close(error => error ? reject(error) : resolve());
     server.closeAllConnections();
   })));
 });
 
-function openCircuit() {
-  health.acquire('p')('failure', 'fixture', 500);
-  health.acquire('p')('failure', 'fixture', 500);
-  assert.equal(health.view('p').state, 'open');
-}
-
-test('全池开路和 pinned 请求均零网络调用、零 attempts', async () => {
-  openCircuit();
-  reply = () => assert.fail('开路渠道不得收到请求');
-  for (const session of ['closed-pool', 'pinned-pool']) {
-    if (session === 'pinned-pool') mod._state.bindSession(`cc:${session}`, 'p', { pinned: true });
-    const result = await ask(session);
-    assert.equal(result.status, 502);
-    assert.equal(hits, 0);
-    const log = (await logs())[0];
-    assert.equal(log.attempts, 0);
-    assert.equal(log.err_class, 'circuit_open');
-  }
+test('本地 count_tokens 零上游调用,也不动冷却表', async () => {
+  configure('responses');
+  const result = await ask('local-count', { stream: false }, '/v1/messages/count_tokens');
+  assert.equal(result.status, 200);
+  assert.ok(JSON.parse(result.text).input_tokens > 0);
+  assert.equal(hits, 0, '纯本地估算一个字节都不发上游');
+  const log = await logFor();
+  assert.equal(log.attempts, 0, '本地估算不消耗"真实上游调用"预算');
+  assert.deepEqual(mod._state.cooldowns, {}, '本地路径不该把渠道打进冷却');
 });
 
-test('200 头不关闭半开;并发探测被硬拦,合法终态才恢复', async () => {
-  openCircuit(); now = 1001;
-  let finish, started;
-  const ready = new Promise(resolve => { started = resolve; });
-  reply = (_req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-    res.write(frame('message_start'));
-    finish = () => res.end(frame('message_stop'));
-    started();
-  };
-  const first = ask('half-open-first');
-  await ready;
-  assert.equal(health.view('p').state, 'half-open');
-  assert.equal(health.view('p').probes, 1);
-  const second = await ask('half-open-second');
-  assert.equal(second.status, 502);
-  assert.equal(hits, 1);
-  assert.equal((await logs())[0].attempts, 0);
-  finish();
-  assert.equal((await first).status, 200);
-  assert.equal(health.view('p').state, 'closed');
-  assert.equal(health.view('p').lastOutcome, 'success');
-  assert.equal(health.view('p').probes, 0);
+test('坏 Key 发送前拒绝:不计 attempts、不进冷却', async () => {
+  configure().api_key = 'bad\nkey';
+  const result = await ask('bad-key');
+  assert.equal(result.status, 502);
+  assert.equal(hits, 0);
+  const log = await logFor();
+  assert.equal(log.attempts, 0);
+  assert.equal(log.err_class, 'bad_credential');
+  // 这是数据里的脏凭据,不是渠道坏了:进冷却会让用户改好 Key 之后还要干等一分钟
+  assert.deepEqual(mod._state.cooldowns, {});
 });
 
-test('200 后缺终态及正文引用终态名均不能清失败', async () => {
-  health.acquire('p')('failure', 'fixture', 500);
+test('200 后缺终态:记 stream_aborted,attempts 与真实调用一致', async () => {
   reply = (_req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
     res.end(frame('content_block_delta', { type: 'content_block_delta', delta: {
@@ -130,38 +110,29 @@ test('200 后缺终态及正文引用终态名均不能清失败', async () => {
   const beforeLogs = (await logs()).length;
   const result = await ask('no-terminal');
   assert.equal(result.status, 200, '已提交的响应不改写 HTTP 状态');
-  assert.equal(health.view('p').state, 'open');
-  assert.equal(health.view('p').lastOutcome, 'failure');
-  const log = (await logs())[0];
+  const log = await logFor();
+  // 正文里出现的终态名不能被当成真终态:检测看的是事件类型,不是文本内容
   assert.equal(log.err_class, 'stream_aborted');
-  assert.equal(log.attempts, hits);
+  assert.equal(log.attempts, hits, 'attempts 记真实上游调用数');
   assert.equal((await logs()).length, beforeLogs + 1);
 });
 
-test('本地 count_tokens 在开路时仍可估算,零调用且健康不变', async () => {
-  configure('responses'); openCircuit();
-  const before = health.view('p');
-  const result = await ask('local-count', { stream: false }, '/v1/messages/count_tokens');
-  assert.equal(result.status, 200);
-  assert.ok(JSON.parse(result.text).input_tokens > 0);
-  assert.equal(hits, 0);
-  assert.equal((await logs())[0].attempts, 0);
-  assert.deepEqual(health.view('p'), before);
+test('上游 5xx:原样透传状态码,并按失败把渠道打进冷却', async () => {
+  reply = (_req, res) => {
+    res.writeHead(503, { 'Content-Type': 'application/json' });
+    res.end('{"error":{"message":"fixture down"}}');
+  };
+  const result = await ask('upstream-5xx');
+  assert.equal(result.status, 503, '最后一次尝试的上游状态码原样给客户端');
+  const log = await logFor();
+  assert.equal(log.err_class, 'upstream_server');
+  assert.equal(log.status, 503);
+  assert.ok(mod._state.cooldowns.p > Date.now(), '失败后渠道应进冷却');
+  assert.equal(mod.providerEligible('p'), false);
 });
 
-test('坏 Key 发送前拒绝不计 attempts', async () => {
-  configure().api_key = 'bad\nkey';
-  const result = await ask('bad-key');
-  assert.equal(result.status, 502);
-  assert.equal(hits, 0);
-  const log = (await logs())[0];
-  assert.equal(log.attempts, 0);
-  assert.equal(log.err_class, 'bad_credential');
-});
-
-test('Responses 直通的 failed 终态是失败,不是健康成功', async () => {
+test('Responses 直通的 failed 终态是失败,不是成功', async () => {
   configure('responses', 'codex');
-  health.acquire('p')('failure', 'fixture', 500);
   reply = (_req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
     res.end(frame('response.failed', { type: 'response.failed', response: {
@@ -169,12 +140,11 @@ test('Responses 直通的 failed 终态是失败,不是健康成功', async () =
     } }));
   };
   await ask('failed-terminal', { input: 'hi' }, '/v1/responses');
-  assert.equal(health.view('p').lastOutcome, 'failure');
-  assert.equal(health.view('p').state, 'open');
+  const log = await logFor();
+  assert.match(log.err, /fixture upstream failure/, '上游给的原因要落进日志,不能只剩一个状态码');
 });
 
-test('客户端取消保持失败计数,不把在途 200 当成成功', async () => {
-  health.acquire('p')('failure', 'fixture', 500);
+test('客户端取消保持为取消:不把在途 200 当成成功,也不当成渠道失败', async () => {
   reply = (_req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
     res.write(frame('message_start'));
@@ -187,16 +157,19 @@ test('客户端取消保持失败计数,不把在途 200 当成成功', async ()
     req.on('error', error => { if (error.code !== 'ECONNRESET') reject(error); });
     req.end(JSON.stringify({ model: 'test-model', stream: true, messages: [{ role: 'user', content: 'hi' }] }));
   });
-  for (let i = 0; i < 50 && health.view('p').lastOutcome !== 'cancelled'; i++)
+  let log;
+  for (let i = 0; i < 50; i++) {
+    log = await logFor();
+    if (log.err_class === 'cancelled') break;
     await new Promise(resolve => setTimeout(resolve, 10));
-  assert.equal(health.view('p').lastOutcome, 'cancelled');
-  assert.equal(health.view('p').failures, 1);
-  assert.equal((await logs())[0].err_class, 'cancelled');
+  }
+  assert.equal(log.err_class, 'cancelled');
+  // 取消是客户端的决定,不是渠道坏了:把它记成冷却等于替用户惩罚一个健康渠道
+  assert.deepEqual(mod._state.cooldowns, {});
 });
 
-test('合法 token 上限终态可恢复健康', async () => {
+test('合法 token 上限终态算成功,不进冷却', async () => {
   configure('responses', 'codex');
-  health.acquire('p')('failure', 'fixture', 500);
   reply = (_req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
     res.end(frame('response.incomplete', { type: 'response.incomplete', response: {
@@ -204,26 +177,26 @@ test('合法 token 上限终态可恢复健康', async () => {
     } }));
   };
   await ask('token-limit', { input: 'hi' }, '/v1/responses');
-  assert.equal(health.view('p').lastOutcome, 'success');
-  assert.equal(health.view('p').failures, 0);
+  const log = await logFor();
+  assert.equal(log.err_class || '', '', '达到输出上限是合法终态,不该记错误');
+  assert.deepEqual(mod._state.cooldowns, {});
 });
 
-test('Codex→Chat 的 200 错误 JSON 不能清失败', async () => {
+test('Codex→Chat 的 200 错误 JSON 不能算成功', async () => {
   configure('chat', 'codex');
-  health.acquire('p')('failure', 'fixture', 500);
   reply = (_req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: { message: 'fixture error' } }));
   };
   const result = await ask('chat-error-json', { stream: false, input: 'hi' }, '/v1/responses');
   assert.equal(result.status, 502);
-  assert.equal(health.view('p').lastOutcome, 'failure');
-  assert.equal(health.view('p').state, 'open');
+  const log = await logFor();
+  assert.equal(log.err_class, 'protocol_error');
+  assert.equal(log.status, 502);
 });
 
 test('Codex→Chat 断流由桥接终态结算失败', async () => {
   configure('chat', 'codex');
-  health.acquire('p')('failure', 'fixture', 500);
   reply = (_req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
     res.end(`data: ${JSON.stringify({ choices: [{ delta: { content: 'partial' } }] })}\n\n`);
@@ -231,7 +204,5 @@ test('Codex→Chat 断流由桥接终态结算失败', async () => {
   const result = await ask('chat-incomplete', { stream: false, input: 'hi' }, '/v1/responses');
   assert.equal(result.status, 502);
   assert.equal(JSON.parse(result.text).status, 'failed');
-  assert.equal(health.view('p').state, 'open');
-  assert.equal(health.view('p').lastOutcome, 'failure');
-  assert.equal((await logs())[0].status, 502);
+  assert.equal((await logFor()).status, 502);
 });

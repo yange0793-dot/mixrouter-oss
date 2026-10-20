@@ -24,6 +24,7 @@ process.env.MIXR_FIRST_HEADER_TIMEOUT_MS = '8000';       // 会被总 deadline �
 process.env.MIXR_STREAM_FIRST_HEADER_TIMEOUT_MS = '8000'; // 同上:本文件要验的是总预算,不是首字节那一档
 process.env.MIXR_NONSTREAM_TOTAL_TIMEOUT_MS = '8000';
 process.env.MIXR_STREAM_IDLE_TIMEOUT_MS = '8000';
+process.env.MIXR_RETRY_DELAY_MS = '0'; // 重试间隔在测试里没有意义,只会让每个失败用例白等一秒
 process.env.MIXR_SSE_KEEPALIVE_MS = '0';
 process.env.MIXR_COOLDOWN_SEC = '60';
 process.env.MIXR_MAX_ATTEMPTS = '2';
@@ -546,7 +547,8 @@ test('上游 5xx 的原因必须落进请求日志,不能只留一个光秃秃�
   const saved = JSON.parse(fs.readFileSync(path.join(TMP, 'routes.json'), 'utf8'));
   mode = 'upstream500';
   try {
-    mod._state.resetHealth();
+    // 冷却期内的渠道不被优先挑选:把上几条测试留下的冷却清掉,这条量的才是 5xx 原因落日志
+    mod._state.cooldowns = {};
     await rawRequest(uiPort, 'PUT', '/api/routes', { body: { rules: [{ id: 'r500', match: 'claude-conv', provider: 'pconv', model: 'claude-conv' }], default: {} } });
     const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {
       body: { model: 'claude-conv', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] },
@@ -559,7 +561,7 @@ test('上游 5xx 的原因必须落进请求日志,不能只留一个光秃秃�
     assert.match(log.err, /trace_id=zzz/, '上游的追踪号也要留着');
   } finally {
     mode = 'json';
-    mod._state.resetHealth();
+    mod._state.cooldowns = {};
     await rawRequest(uiPort, 'PUT', '/api/routes', { body: saved });
   }
 });
@@ -795,7 +797,6 @@ test('R2-10 存量脏 Key(写入闸门之前存进去的):换后备渠道,并如
       { id: 'rconv', match: 'claude-conv', pool: [{ provider: 'pconv', model: 'claude-conv' }, { provider: 'pdir', model: 'claude-direct' }], strategy: 'priority', model: 'claude-conv' },
     ], default: { provider: 'pdir', model: 'claude-direct' } } });
     p.api_key = 'sk-c\nX-Injected: yes';
-    mod._state.resetHealth();
     // 清冷却与会话粘性:前面几条测试把 pdir 打进过冷却(它就成了首选,失败转移也就无从发生),
     // 会话粘性也会把 pconv 钉住。两个都得清,这条量的才是"脏 Key 渠道失败后换后备"。
     for (const k of Object.keys(mod._state.cooldowns)) delete mod._state.cooldowns[k];

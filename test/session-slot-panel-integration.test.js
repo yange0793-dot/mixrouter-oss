@@ -181,7 +181,6 @@ beforeEach(() => {
   mod._state.slotMap = globalSlotMap();
   mod._state.sessions.clear();
   mod._state.cooldowns = {};
-  mod._state.resetHealth();
   mod._state.resetPools();
   hits.length = 0;
   saveFixtureFiles();
