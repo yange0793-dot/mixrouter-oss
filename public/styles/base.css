@@ -1022,12 +1022,15 @@ body[data-connection=offline] .card.cur { border-color: var(--border); }
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
 }
 @media print {
-  :root {
+  :root, :root[data-theme="light"], :root[data-theme="dark"] {
     color-scheme: light;
     --bg: #ffffff; --sidebar: #ffffff; --surface: #ffffff; --surface-2: #ffffff;
     --surface-3: #ffffff; --panel: #ffffff; --input: #ffffff;
     --border: #b8c2d0; --border-soft: #d7dde6; --border-strong: #9aa5b5;
     --text: #111820; --dim: #445060;
+    --accent: #2a51b8; --accent-text: #2a51b8; --accent-soft: #eef2fa; --accent-line: #b9c6ea;
+    --ok-text: #166f43; --warn-text: #8a5a00; --err-text: #b02a21;
+    --chart-series: #315dcc; --chart-area: rgba(49, 93, 204, .14);
   }
   body { display: block; background: var(--surface); }
   .sidebar, .topbar, .actions, .layout-switch, .quick-nav-button, .theme-control,
