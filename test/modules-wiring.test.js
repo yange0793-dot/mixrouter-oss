@@ -36,6 +36,9 @@ process.env.MIXR_CLAUDE_SETTINGS = path.join(TMP, 'settings.json');
 process.env.MIXR_CODEX_CONFIG = path.join(TMP, 'config.toml');
 process.env.MIXROUTER_PORT = '0';
 process.env.MIXUI_PORT = '0';
+// 重试间隔默认 1s:本文件测的是接线(日志/错误体形状),不是重试节奏。
+// 打死端口和打 500 上游的用例都会被重试放大成十秒级的空等。
+process.env.MIXR_RETRY_DELAY_MS = '0';
 
 const bodyLib = require('../lib/http/body');
 const respondLib = require('../lib/http/respond');

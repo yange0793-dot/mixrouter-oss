@@ -22,6 +22,8 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'mixr-logwiring-'));
 process.env.MIXR_DATA_DIR = TMP;
 process.env.MIXR_CLAUDE_SETTINGS = path.join(TMP, 'settings.json');
 process.env.MIXR_CODEX_CONFIG = path.join(TMP, 'config.toml');
+// 打的是死端口:重试照打(要的就是 N 条失败日志),但间隔不必真等
+process.env.MIXR_RETRY_DELAY_MS = '0';
 
 const mock = createMockUpstream();
 // 渠道密钥 = 哨兵本身,而且**真的 seed 进 store**(下面的 providers.json)。这两件事缺一不可:

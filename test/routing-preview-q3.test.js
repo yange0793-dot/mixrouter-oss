@@ -23,6 +23,8 @@ process.env.MIXR_DATA_DIR = TMP;
 process.env.MIXR_CLAUDE_SETTINGS = path.join(TMP, 'claude', 'settings.json');
 process.env.MIXR_CODEX_CONFIG = path.join(TMP, 'codex', 'config.toml');
 process.env.MIXR_ZCODE_CONFIG = path.join(TMP, 'zcode', 'config.json');
+// 预览与实跑的对照里会真打一个死端口,间隔关掉免得整条用例耗在等待上
+process.env.MIXR_RETRY_DELAY_MS = '0';
 
 const mod = require('../mixrouter.js');
 const { createExplainer } = require('../lib/routing/explain.js');

@@ -17,6 +17,8 @@ process.env.MIXR_CLAUDE_SETTINGS = path.join(TMP, 'settings.json');
 process.env.MIXR_CODEX_CONFIG = path.join(TMP, 'config.toml');
 process.env.MIXR_COOLDOWN_SEC = '60';
 process.env.MIXR_MAX_ATTEMPTS = '3';
+// 重试间隔默认 1s:这里数的是 attempts,不是节奏;死端口/5xx 用例不该每发都白等一秒
+process.env.MIXR_RETRY_DELAY_MS = '0';
 
 const mod = require('../mixrouter.js');
 const {

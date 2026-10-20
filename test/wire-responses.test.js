@@ -471,6 +471,8 @@ process.env.MIXR_DATA_DIR = TMP;
 process.env.MIXR_CLAUDE_SETTINGS = path.join(TMP, 'settings.json');
 process.env.MIXR_CODEX_CONFIG = path.join(TMP, 'config.toml');
 process.env.MIXR_CONV_RETRIES = '2';
+// 换 key 重试的间隔默认 1s:这里数的是"重试了几次、换了哪一代 key",等一秒只会白等
+process.env.MIXR_RETRY_DELAY_MS = '0';
 
 const up = createResponsesUpstream();
 let mod, proxySrv, uiSrv, proxyPort, uiPort, upPort;
