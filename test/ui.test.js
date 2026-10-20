@@ -69,7 +69,7 @@ function fixture() {
   };
 }
 
-async function harness(data = fixture()) {
+async function harness(data = fixture(), opts = {}) {
   const elements = new Map();
   const listeners = new Map();
   let document;
@@ -175,7 +175,7 @@ async function harness(data = fixture()) {
   const fakeObjectUrl = 'blob:http://localhost/fake-object-url';
   const URLShim = new Proxy(URL, { get: (target, prop) => prop === 'createObjectURL' ? () => fakeObjectUrl : (prop === 'revokeObjectURL' ? () => {} : Reflect.get(target, prop)) });
   const context = vm.createContext({
-    document, window: { addEventListener(name, callback) { (windowListeners.get(name) || windowListeners.set(name, []).get(name)).push(callback); } }, console, URL: URLShim, URLSearchParams, AbortController, structuredClone,
+    document, window: { addEventListener(name, callback) { (windowListeners.get(name) || windowListeners.set(name, []).get(name)).push(callback); }, localStorage: opts.storage }, console, URL: URLShim, URLSearchParams, AbortController, structuredClone,
     // 导出用的最小实现:只要能把 Blob 存成对象 URL、并能造个 <a> 就够断言(不真的下载)。
     Blob: class Blob { constructor(parts, opts = {}) { this.parts = parts; this.type = opts.type || ''; } },
     setTimeout() { return 1; }, clearTimeout() {},
@@ -279,6 +279,16 @@ async function harness(data = fixture()) {
       if (metrics !== undefined) failMetrics = metrics;
     },
     async confirm(code) { const result = run(code); run('finishConfirm(true)'); await result; },
+  };
+}
+
+// 渠道布局偏好用的最小 localStorage。默认不给 window 装存储,顺带覆盖"读不到就退回默认"的分支。
+function memoryStorage(initial = {}) {
+  const store = new Map(Object.entries(initial));
+  return {
+    getItem: key => store.has(key) ? store.get(key) : null,
+    setItem: (key, value) => { store.set(key, String(value)); },
+    removeItem: key => { store.delete(key); },
   };
 }
 
@@ -1147,16 +1157,153 @@ test('provider overview resolves configured slots without claiming a live reques
   assert.match(h.get('liveinfo').innerHTML, /Chosen upstream/);
   assert.match(h.get('liveinfo').innerHTML, /chosen-model/);
   assert.match(h.get('liveinfo').innerHTML, /配置供应商/);
+  assert.equal(h.get('providers-title').textContent, '渠道与 Key', '标题对所有客户端同一口径');
   h.run("connectionExpanded.codex = true; renderProviders()");
   assert.match(h.get('liveinfo').innerHTML, /connection-details" open/);
   assert.match(html, /<div class="panel" id="slots-panel" hidden>/);
   h.run("setApp('claude')");
   assert.equal(h.run('document.body.dataset.client'), 'claude');
-  assert.equal(h.get('providers-title').textContent, '渠道管理');
+  assert.equal(h.get('providers-title').textContent, '渠道与 Key');
   assert.equal(h.get('providers-subtitle').hidden, false);
-  assert.doesNotMatch(h.get('liveinfo').innerHTML, /current-config|connection-details/);
+  // 摘要不再是 Codex 专属:Claude Code 也要有同一套字段与可展开的连接详情。
+  assert.match(h.get('liveinfo').innerHTML, /class="current-config"/);
+  assert.match(h.get('liveinfo').innerHTML, /connection-details/);
   assert.equal(h.get('slots-panel').hidden, false);
   assert.match(h.get('slots-rows').innerHTML, /setSlot\('claude','main'/);
+});
+
+test('当前配置摘要对三个客户端同构:字段一致、连接详情可展开、展开状态与离线口径都不走样', async () => {
+  const h = await harness();
+  h.run("view = 'providers'");
+  for (const app of ['claude', 'codex', 'zcode']) {
+    h.run(`connectionExpanded.${app} = false; setApp('${app}')`);
+    const info = h.get('liveinfo').innerHTML;
+    for (const field of ['配置供应商', '默认模型', '接入方式', 'connection-details', '连接配置']) assert.match(info, new RegExp(field));
+    assert.doesNotMatch(info, /connection-details" open/, `${app} 默认收起`);
+  }
+  // Codex 路由模式:供应商与模型取槽位,展开状态跨轮询保留且按客户端各记各的
+  h.data.live.codex = { router: true, model: 'mixr-main', base_url: 'http://127.0.0.1:8787/v1', match: true };
+  h.data.slots.codex = [{ name: 'main', alias: 'mixr-main', provider_name: 'Chosen upstream', model: 'chosen-model' }];
+  h.run("connectionExpanded.codex = true; setApp('codex')");
+  await h.run('refresh()');
+  assert.match(h.get('liveinfo').innerHTML, /Chosen upstream/);
+  assert.match(h.get('liveinfo').innerHTML, /chosen-model/);
+  assert.match(h.get('liveinfo').innerHTML, /connection-details" open/);
+  await h.run('refresh()');
+  assert.match(h.get('liveinfo').innerHTML, /connection-details" open/, '5 秒刷新不能把展开状态收回去');
+  assert.equal(h.run('connectionExpanded.claude'), false, '展开状态按客户端分开记');
+  // 离线:三个客户端一律降级成「待确认」,不许残留「已写入配置」
+  h.disconnect(); await h.run('refresh()');
+  for (const app of ['claude', 'codex', 'zcode']) {
+    h.run(`setApp('${app}')`);
+    const info = h.get('liveinfo').innerHTML;
+    assert.match(info, /待确认/);
+    assert.doesNotMatch(info, /已写入配置/);
+  }
+});
+
+test('渠道库布局:默认 list,可切 grid,记住偏好,aria-pressed 同步且缺少按钮也不报错', async () => {
+  const storage = memoryStorage();
+  const h = await harness(fixture(), { storage });
+  h.run("view = 'providers'; renderProviders()");
+  // 默认是高密度列表;外壳静态里写死的 grid aria-pressed 由 app.js 在首帧改回来
+  assert.equal(h.get('prov-grid').dataset.layout, 'list');
+  assert.equal(storage.getItem('mixr.provider.layout'), null, '没切换过就不写偏好');
+  const listBtn = h.get('provider-layout-list'), gridBtn = h.get('provider-layout-grid');
+  assert.equal(listBtn.getAttribute('aria-pressed'), 'true');
+  assert.equal(gridBtn.getAttribute('aria-pressed'), 'false');
+  h.run("setProviderLayout('grid')");
+  assert.equal(h.get('prov-grid').dataset.layout, 'grid');
+  assert.equal(storage.getItem('mixr.provider.layout'), 'grid');
+  assert.equal(listBtn.getAttribute('aria-pressed'), 'false');
+  assert.equal(gridBtn.getAttribute('aria-pressed'), 'true');
+  h.run("setProviderLayout('bogus')");
+  assert.equal(h.get('prov-grid').dataset.layout, 'list', '非法值回落到 list');
+  assert.equal(storage.getItem('mixr.provider.layout'), 'list');
+  // 老页面/老测试没有这两个按钮 id 时,切换布局不能抛错(拿不到按钮就只改 dataset)
+  h.run("globalThis.__getEl = document.getElementById; document.getElementById = id => (id === 'provider-layout-list' || id === 'provider-layout-grid') ? null : __getEl(id); setProviderLayout('grid'); document.getElementById = __getEl");
+  assert.equal(h.get('prov-grid').dataset.layout, 'grid');
+  // 新会话按记住的偏好恢复;存储读写抛错时退回可用默认,不让渠道页整页崩
+  const restored = await harness(fixture(), { storage: memoryStorage({ 'mixr.provider.layout': 'grid' }) });
+  restored.run("view = 'providers'; renderProviders()");
+  assert.equal(restored.get('prov-grid').dataset.layout, 'grid');
+  const denied = await harness(fixture(), { storage: { getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); } } });
+  denied.run("view = 'providers'; renderProviders(); setProviderLayout('grid')");
+  assert.equal(denied.get('prov-grid').dataset.layout, 'grid', '写偏好失败不影响本次切换');
+});
+
+test('渠道卡片轮询:正在操作的下拉不被重建,失焦后下一轮刷新补上状态', async () => {
+  const h = await harness();
+  h.run("view = 'providers'; renderProviders()");
+  const grid = h.get('prov-grid');
+  // 模拟用户展开卡片上的账号下拉(焦点在 select 上):此刻重建 DOM 会把菜单关掉
+  h.run("globalThis.__cardSelect = new document.body.constructor('f','select'); __cardSelect.dataset.provider = 'a1'; __cardSelect.dataset.action = 'key'; __cardSelect.parentElement = document.getElementById('prov-grid'); __cardSelect.focus()");
+  const select = h.run('__cardSelect');
+  assert.equal(h.document.activeElement, select);
+  const writes = grid.htmlWrites;
+  h.data.cooldowns = [{ provider: 'a1', until: Date.UTC(2026, 0, 2, 3, 4, 5), name: 'Alpha' }];
+  await h.run('refresh()');
+  assert.equal(grid.htmlWrites, writes, '焦点在卡片下拉上时不重建 DOM');
+  assert.equal(h.document.activeElement, select);
+  assert.doesNotMatch(grid.innerHTML, /冷却至/, '这一轮宁可晚一点画,也不打断操作');
+  h.element('outside-cards').focus();
+  await h.run('refresh()');
+  assert.ok(grid.htmlWrites > writes, '失焦后的下一轮恢复刷新');
+  assert.match(grid.innerHTML, /冷却至/);
+  // 删除渠道后原按钮随卡片消失:焦点要落到还存在的「新建渠道」,不能掉回 body
+  h.run("globalThis.__del = new document.body.constructor('del','button'); __del.dataset.provider = 'a2'; __del.dataset.action = 'delete'; __del.parentElement = document.getElementById('prov-grid'); __del.focus()");
+  h.data.providers.claude.splice(1, 1);
+  await h.run('refresh()');
+  assert.equal(h.document.activeElement, h.get('new-provider'));
+});
+
+test('视图/客户端切换通知可选 workspace 模块,模块缺席或抛错都不影响主页面', async () => {
+  const h = await harness();
+  h.run("globalThis.__views = []; globalThis.__apps = []; globalThis.workspaceViewChanged = name => __views.push(name); globalThis.workspaceAppChanged = app => __apps.push(app)");
+  h.run("showView('diagnostics')");
+  h.run("showView('routes')");
+  assert.equal(h.run('JSON.stringify(__views)'), '["diagnostics","routes"]');
+  h.run("setApp('codex')");
+  h.run("setApp('claude')");
+  assert.equal(h.run('JSON.stringify(__apps)'), '["codex","claude"]');
+  h.run("delete globalThis.workspaceViewChanged; delete globalThis.workspaceAppChanged; showView('providers'); setApp('zcode')");
+  assert.equal(h.run('view'), 'providers', '没有 workspace 模块时视图照常切换');
+  assert.equal(h.run('curApp'), 'zcode');
+  // 外壳模块抛错:主页面照常切换,错误只记一条 console.error(这里临时接住,免得绿色
+  // 测试输出里冒出看着像失败的堆栈)。
+  const reported = [];
+  const realError = console.error;
+  console.error = (...args) => reported.push(args);
+  try {
+    h.run("globalThis.workspaceViewChanged = () => { throw new Error('shell bug') }; showView('settings')");
+  } finally { console.error = realError; }
+  assert.equal(h.run('view'), 'settings', '外壳模块抛错不能卡住主页面');
+  assert.equal(reported.length, 1, '错误要留痕,但不能影响页面');
+  assert.match(String(reported[0][0]?.message || reported[0][0]), /shell bug/);
+});
+
+test('渠道卡片分区:身份/状态/内容/动作语义清晰,账号与动作契约原样保留', async () => {
+  const data = fixture();
+  data.providers.claude[0].note = '仅限团队 A 使用';
+  const h = await harness(data);
+  h.run("view = 'providers'; renderProviders()");
+  const grid = h.get('prov-grid').innerHTML;
+  for (const cls of ['provider-identity', 'provider-avatar', 'provider-info', 'provider-status', 'provider-content', 'provider-models', 'provider-meta', 'provider-actions']) {
+    assert.match(grid, new RegExp(cls));
+  }
+  assert.match(grid, /<header class="top provider-identity">/);
+  // ASCII 名称取前两位做头像;状态徽标在身份块里,内容块放地址与协议/模型
+  assert.match(grid, /<span class="provider-avatar" aria-hidden="true">AL<\/span>/);
+  assert.match(grid, /<div class="provider-info"><h3 class="name">Alpha<\/h3><div class="provider-status">/);
+  assert.match(grid, /<div class="foot provider-actions">/);
+  assert.match(grid, /<div class="provider-models tags">/);
+  assert.match(grid, /<div class="provider-meta mono keyrow">API key · /);
+  // 账号下拉、动作按钮与 data-* 契约不变;说明与告警不因重排被吞掉
+  assert.match(grid, /data-provider="a1" data-action="key"/);
+  assert.match(grid, /<option value="k1" selected>Account One · /);
+  assert.match(grid, /data-action="switch" data-provider="a1" onclick="switchProvider\(&quot;a1&quot;\)"/);
+  assert.match(grid, /data-action="delete" data-provider="a1"/);
+  assert.match(grid, /仅限团队 A 使用/);
 });
 
 test('live configuration mismatch never labels the stored provider as the actual direct upstream', async () => {

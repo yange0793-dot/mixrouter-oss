@@ -284,8 +284,12 @@ test('public 下的静态资源在清单内:app.js 与 base.css 是新增文件,
   assert.ok(html.includes('/styles/base.css'), 'index.html 应引用 /styles/base.css');
 });
 
-test('REQUIRED_ENTRIES 覆盖 mixrouter.js 与控制台三个入口', () => {
-  for (const rel of ['mixrouter.js', 'public/index.html', 'public/js/app.js', 'public/styles/base.css'])
+test('REQUIRED_ENTRIES 覆盖 mixrouter.js 与控制台全部脚本和样式', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'public/index.html'), 'utf8');
+  const assets = [...html.matchAll(/(?:src|href)="(\/(?:js|styles)\/[^"?#]+)"/g)].map(m => 'public' + m[1]);
+  assert.ok(assets.includes('public/js/workspace.js'));
+  assert.ok(assets.includes('public/js/usage.js'));
+  for (const rel of ['mixrouter.js', 'public/index.html', ...assets])
     assert.ok(REQUIRED_ENTRIES.includes(rel), `${rel} 应在关键入口列表里`);
   // 关键入口必须真的在清单内,否则 CI 会在解包后立刻红
   for (const rel of REQUIRED_ENTRIES) assert.equal(include(rel), true, `${rel} 是关键入口,必须在清单内`);

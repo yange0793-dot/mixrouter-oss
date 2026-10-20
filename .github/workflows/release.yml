@@ -130,7 +130,7 @@ jobs:
           不含任何运行数据。
 
           - 纳入:\`mixrouter.js\`、\`mixctl\`、\`package.json\`、\`LICENSE\`、\`README.md\`、
-            \`lib/\`、\`public/\`(含 \`js/app.js\`、\`styles/base.css\`)、\`app/\`、示例配置模板、
+            \`lib/\`、\`public/\`(含 \`js/app.js\`、\`js/workspace.js\`、\`js/usage.js\`、\`styles/base.css\`)、\`app/\`、示例配置模板、
             README 让用户直接运行的 \`scripts/\`,以及 \`CONTRIBUTING.md\` / \`SECURITY.md\` /
             \`CHANGELOG.md\`。零依赖,解压后 \`npm run local\` 直接跑,不需要 \`npm install\`。
           - **验证方式**:在解压目录里先跑只读的 \`npm run doctor -- --offline\`,再跑 \`npm run smoke\`(随包的 \`scripts/smoke-offline.js\`,

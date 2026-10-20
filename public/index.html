@@ -4,43 +4,77 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Mixrouter 控制台</title>
+<!-- 外壳脚本放在样式表之前:主题偏好要在首帧前落到 <html data-theme> 上,避免先闪一下深色。
+     它只读一个界面偏好,不发请求;DOM 监听等 DOMContentLoaded(app.js / usage.js 已就绪)再挂。 -->
+<script src="/js/workspace.js"></script>
 <link rel="stylesheet" href="/styles/base.css">
 </head>
 <body data-connection="connecting">
   <a class="skip-link" href="#main">跳至主要内容</a>
   <aside class="sidebar" id="sidebar" aria-label="控制台侧栏">
-    <div class="logo"><span class="swap" aria-hidden="true">⇄</span><div>Mixrouter<small>LOCAL AI GATEWAY</small></div></div>
-    <div class="nav-label">WORKSPACE</div>
-    <nav aria-label="主导航">
-      <a href="#overview" data-view="overview" class="active" aria-current="page"><span class="ic" aria-hidden="true">◎</span>概览<span class="nav-caption">01</span></a>
-      <a href="#usage" data-view="usage"><span class="ic" aria-hidden="true">▦</span>用量统计<span class="nav-caption">02</span></a>
-      <a href="#providers" data-view="providers"><span class="ic" aria-hidden="true">▤</span>渠道与 Key<span class="nav-caption">03</span></a>
-      <a href="#routes" data-view="routes"><span class="ic" aria-hidden="true">⑃</span>路由<span class="nav-caption">04</span></a>
-      <a href="#sessions" data-view="sessions"><span class="ic" aria-hidden="true">◈</span>会话<span class="nav-caption">05</span></a>
-      <a href="#diagnostics" data-view="diagnostics"><span class="ic" aria-hidden="true">≣</span>诊断<span class="nav-caption">06</span></a>
-      <a href="#settings" data-view="settings"><span class="ic" aria-hidden="true">⚙</span>设置与备份<span class="nav-caption">07</span></a>
+    <div class="logo">
+      <span class="brand-mark" aria-hidden="true">
+        <svg class="logo-mark" viewBox="0 0 32 32" focusable="false" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="7" cy="8" r="2.2"/><circle cx="7" cy="16" r="2.2"/><circle cx="7" cy="24" r="2.2"/>
+          <path d="M9.2 8h4.3c3 0 4 2.5 5.4 5.6l.6 1.2c1.2 2.6 2.4 3.2 4.5 3.2H27"/>
+          <path d="M9.2 24h4.3c3 0 4-2.5 5.4-5.6l.6-1.2c1.2-2.6 2.4-3.2 4.5-3.2H27"/>
+          <circle cx="27" cy="16" r="2.2"/>
+        </svg>
+      </span>
+      <div class="logo-text"><span class="logo-name">Mixrouter</span><small>本机 AI 网关</small></div>
+    </div>
+    <div class="nav-label">工作区</div>
+    <nav class="nav-group" aria-label="工作区">
+      <a href="#overview" data-view="overview" class="active" aria-current="page"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.5" y="2.5" width="5.2" height="5.2" rx="1.2"/><rect x="10.3" y="2.5" width="5.2" height="5.2" rx="1.2"/><rect x="2.5" y="10.3" width="5.2" height="5.2" rx="1.2"/><rect x="10.3" y="10.3" width="5.2" height="5.2" rx="1.2"/></svg><span>概览</span></a>
+      <a href="#providers" data-view="providers"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.5" y="3" width="13" height="5" rx="1.5"/><rect x="2.5" y="10" width="13" height="5" rx="1.5"/><path d="M5.5 5.5h.01M5.5 12.5h.01"/></svg><span>渠道与 Key</span></a>
+      <a href="#routes" data-view="routes"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="4" cy="9" r="1.8"/><circle cx="14" cy="4.5" r="1.8"/><circle cx="14" cy="13.5" r="1.8"/><path d="M5.8 9c2 0 3-4.5 6.4-4.5M5.8 9c2 0 3 4.5 6.4 4.5"/></svg><span>路由</span></a>
+      <a href="#sessions" data-view="sessions"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4h12v7.5H8L4.5 14v-2.5H3z"/><path d="M6 7h6"/></svg><span>会话</span></a>
     </nav>
-    <div class="status">
-      <div class="run" role="status"><span class="dot" aria-hidden="true"></span><span id="connection-label">正在连接</span></div>
-      <div class="row"><span>代理端口</span><b id="st-proxy">—</b></div>
-      <div class="row"><span>控制台端口</span><b id="st-ui">—</b></div>
-      <div class="row"><span>运行时长</span><b id="st-up">—</b></div>
-      <div class="row"><span>今日请求</span><b id="st-req">—</b></div>
-      <div class="row"><span>tokens 入 / 出</span><b id="st-tok">—</b></div>
+    <div class="nav-label">观测</div>
+    <nav class="nav-group" aria-label="观测">
+      <a href="#usage" data-view="usage"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.5 14.5h13"/><path d="M5 14V9M9 14V5M13 14v-3"/></svg><span>用量统计</span></a>
+      <a href="#diagnostics" data-view="diagnostics"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 9h3l2-4 3 8 2-4h4"/></svg><span>诊断</span></a>
+    </nav>
+    <nav class="nav-group nav-footer" aria-label="设置">
+      <a href="#settings" data-view="settings"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 5.5h12M3 12.5h12"/><circle cx="7" cy="5.5" r="1.6"/><circle cx="11.5" cy="12.5" r="1.6"/></svg><span>设置与备份</span></a>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="status">
+        <div class="run" role="status"><span class="dot" aria-hidden="true"></span><span id="connection-label">正在连接</span></div>
+        <div class="row"><span>代理端口</span><b id="st-proxy">—</b></div>
+        <div class="row"><span>控制台端口</span><b id="st-ui">—</b></div>
+        <div class="row"><span>运行时长</span><b id="st-up">—</b></div>
+        <div class="row"><span>今日请求</span><b id="st-req">—</b></div>
+        <div class="row"><span>tokens 入 / 出</span><b id="st-tok">—</b></div>
+      </div>
     </div>
   </aside>
+  <div class="sidebar-backdrop" id="sidebar-backdrop" hidden></div>
 
   <div class="workspace" id="workspace">
     <header class="topbar">
-      <div class="breadcrumb" aria-label="当前位置"><span>工作区</span><span aria-hidden="true">/</span><strong id="breadcrumb-view">概览</strong></div>
-      <div class="top-meta"><span class="local-tag">LOCAL</span><span>v<span id="ver">—</span></span><button class="small" id="refresh-btn" onclick="refresh()" aria-label="刷新控制台状态">刷新</button></div>
+      <button class="icon-button sidebar-toggle" id="sidebar-toggle" type="button" aria-label="打开导航" aria-expanded="false" aria-controls="sidebar">
+        <svg class="icon" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 4.5h12M3 9h12M3 13.5h12"/></svg>
+      </button>
+      <div class="breadcrumb" aria-label="当前位置"><span class="breadcrumb-base">工作区</span><span class="breadcrumb-sep" aria-hidden="true">/</span><strong id="breadcrumb-view">概览</strong></div>
+      <div class="top-meta">
+        <button class="quick-nav-button" id="quick-nav-open" type="button" aria-label="快速跳转" title="快速跳转" aria-haspopup="dialog" aria-keyshortcuts="Meta+K Control+K">
+          <svg class="icon" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="4.5"/><path d="M11.5 11.5 15 15"/></svg>
+          <span class="quick-nav-label" aria-hidden="true">跳转</span><kbd class="kbd" id="quick-nav-kbd" aria-hidden="true">⌘K</kbd>
+        </button>
+        <label class="theme-control" for="theme-select"><span aria-hidden="true">主题</span>
+          <select id="theme-select" aria-label="主题"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select>
+        </label>
+        <span>v<span id="ver">—</span></span>
+        <button class="small" id="refresh-btn" onclick="refresh()" aria-label="刷新控制台状态">刷新</button>
+      </div>
     </header>
     <main id="main" tabindex="-1">
       <div class="banner offline" id="connection-banner" role="status"><span id="connection-message"></span><button class="small" onclick="refresh()">重新连接</button></div>
-      <!-- 概览:只读页。这里刻意不放任何输入/选择/保存控件——规划要求"每项配置只有一个主要编辑入口",
-           概览要能一眼看出不是第二套编辑器。唯一的按钮是跳到真正管那件事的那一页。 -->
+      <!-- 概览只读:不放任何输入/选择/保存控件,每项配置只在管它的那一页编辑。
+           本页的按钮只有刷新与跳转,不发写请求。 -->
       <section id="view-overview" aria-labelledby="overview-title">
-        <div class="head"><div><div class="eyebrow">WORKSPACE / OVERVIEW</div><h1 id="overview-title">概览</h1><div class="sub">本页只读:服务与接入状态、需要你动手的事项。所有修改都去对应的页面做,这里不提供第二套编辑入口。</div></div></div>
+        <div class="head"><div><h1 id="overview-title">概览</h1><div class="sub">只读页：服务与接入状态、需要你动手的事项。修改都去对应的页面做。</div></div></div>
         <div class="metrics" aria-label="服务概览">
           <div class="metric"><span class="metric-label">服务版本</span><b id="ov-version">—</b><small id="ov-revision">源码修订读取中</small></div>
           <div class="metric"><span class="metric-label">运行时长</span><b id="ov-uptime">—</b><small id="ov-pid">进程读取中</small></div>
@@ -49,24 +83,26 @@
         </div>
         <div class="panel" aria-labelledby="overview-todo-title">
           <h2 id="overview-todo-title">需处理事项</h2>
-          <p class="hint">这里只列"要你动手"的状态,数据全部来自只读状态接口;没有事项时会明确写出来。</p>
+          <p class="hint">只列出需要你动手的状态，数据来自只读状态接口；没有事项时会明确写出来。</p>
           <div id="overview-todo" role="status"></div>
         </div>
-        <div class="panel" aria-labelledby="overview-client-title">
-          <h2 id="overview-client-title">客户端接入状态</h2>
-          <p class="hint">按磁盘上的客户端配置判断,不代表上游连通性,也不代表某个正在跑的会话已经切过来了。接入动作在「渠道与 Key」页。</p>
-          <div id="overview-clients"></div>
-        </div>
-        <div class="panel" aria-labelledby="overview-endpoint-title">
-          <h2 id="overview-endpoint-title">客户端接入地址</h2>
-          <p class="hint">把客户端指向本机时填这些地址。直连渠道不需要它们。</p>
-          <div id="overview-endpoints"></div>
+        <div class="overview-layout">
+          <div class="panel" aria-labelledby="overview-client-title">
+            <h2 id="overview-client-title">客户端接入状态</h2>
+            <p class="hint">按磁盘上的客户端配置判断，不代表上游连通性，也不代表某个正在跑的会话已经切过来了。接入动作在「渠道与 Key」页。</p>
+            <div id="overview-clients"></div>
+          </div>
+          <div class="panel" aria-labelledby="overview-endpoint-title">
+            <h2 id="overview-endpoint-title">客户端接入地址</h2>
+            <p class="hint">把客户端指向本机时填这些地址。直连渠道不需要它们。</p>
+            <div id="overview-endpoints"></div>
+          </div>
         </div>
       </section>
 
       <section id="view-usage" style="display:none" aria-labelledby="usage-title">
         <div class="head">
-          <div><div class="eyebrow">TRAFFIC / USAGE</div><h1 id="usage-title">用量统计</h1>
+          <div><h1 id="usage-title">用量统计</h1>
             <div class="sub">按时间、协议组、渠道与模型汇总真实消耗：请求数、tokens 与缓存命中，全部来自本机请求日志。</div></div>
           <div class="actions">
             <button class="small" id="usage-sync" onclick="loadUsage()">立即同步</button>
@@ -113,16 +149,9 @@
 
       <section id="view-providers" style="display:none" aria-labelledby="providers-title">
         <div class="head">
-          <div><div class="eyebrow" id="providers-eyebrow">PROVIDERS / INTEGRATIONS</div><h1 id="providers-title">渠道管理</h1><div class="sub" id="providers-subtitle">管理上游与客户端接入。从直连到会话路由，在一个工作区中配置。</div></div>
+          <div><h1 id="providers-title">渠道与 Key</h1><div class="sub" id="providers-subtitle">管理上游与客户端接入。直连上游或经本机路由，都在这一页配置。</div></div>
           <div class="actions"><button id="btn-router" onclick="switchRouterMode()" disabled>路由模式</button><button class="primary" id="new-provider" onclick="openProvider()" disabled>＋ 新建渠道</button></div>
         </div>
-        <div class="metrics" aria-label="工作区概览">
-          <div class="metric"><span class="metric-label">可用渠道配置</span><b id="metric-providers">—</b><small id="metric-providers-hint">等待状态 · 非连通性检测</small></div>
-          <div class="metric"><span class="metric-label">今日请求</span><b id="metric-requests">—</b><small>来自代理真实请求统计</small></div>
-          <div class="metric"><span class="metric-label">今日 tokens</span><b id="metric-tokens">—</b><small id="metric-tokens-hint">输入 / 输出合计</small></div>
-          <div class="metric"><span class="metric-label">会话绑定</span><b id="metric-sessions">—</b><small id="metric-sessions-hint">按协议组识别，不按客户端</small></div>
-        </div>
-        <div class="section-label">AGENT CLIENT</div>
         <div class="apptabs" role="tablist" aria-label="Agent 客户端">
           <button role="tab" aria-selected="true" aria-controls="agent-panel" id="tab-claude" class="active" onclick="setApp('claude')"><span class="appdot" aria-hidden="true"></span>Claude Code<span class="count" id="count-claude">—</span></button>
           <button role="tab" aria-selected="false" aria-controls="agent-panel" tabindex="-1" id="tab-codex" onclick="setApp('codex')"><span class="appdot" aria-hidden="true"></span>Codex<span class="count" id="count-codex">—</span></button>
@@ -140,25 +169,40 @@
             <div id="codex-config-details"></div>
             <div class="model-actions" id="codex-config-controls"></div>
           </div>
-          <div class="panel" id="slots-panel" hidden>
-            <h2>子代理槽位</h2>
-            <p class="hint" id="slots-hint"></p>
-            <div id="slots-rows"></div>
-            <div class="savebar"><button class="primary" id="slots-apply" onclick="applySlotsClaude()" disabled>应用槽位到客户端</button><span class="msg" id="slots-msg" role="status"></span></div>
-          </div>
           <div class="banner" id="drift-banner" role="status"><span id="drift-text"></span></div>
           <p class="hint" id="prov-health" hidden></p>
           <div class="channel-toolbar">
             <div><h2 id="channel-heading">渠道库</h2><p id="channel-count" aria-live="polite">等待状态数据</p></div>
-            <div class="filters"><label for="provider-search">搜索渠道<input type="search" id="provider-search" placeholder="名称、URL 或模型" oninput="renderProviders()"></label><label for="provider-filter">启用状态<select id="provider-filter" onchange="renderProviders()"><option value="all">全部渠道</option><option value="enabled">已启用</option><option value="disabled">已停用</option></select></label></div>
+            <div class="library-controls">
+              <div class="filters"><label for="provider-search">搜索渠道<input type="search" id="provider-search" placeholder="名称、URL 或模型" oninput="renderProviders()"></label><label for="provider-filter">启用状态<select id="provider-filter" onchange="renderProviders()"><option value="all">全部渠道</option><option value="enabled">已启用</option><option value="disabled">已停用</option></select></label></div>
+              <div class="layout-switch" role="group" aria-label="渠道布局">
+                <button type="button" id="provider-layout-list" onclick="setProviderLayout('list')" aria-pressed="true" aria-label="列表视图" title="列表视图"><svg class="icon" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4.5h12M3 9h12M3 13.5h12"/></svg></button>
+                <button type="button" id="provider-layout-grid" onclick="setProviderLayout('grid')" aria-pressed="false" aria-label="网格视图" title="网格视图"><svg class="icon" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.5" y="2.5" width="5" height="5" rx="1.1"/><rect x="10.5" y="2.5" width="5" height="5" rx="1.1"/><rect x="2.5" y="10.5" width="5" height="5" rx="1.1"/><rect x="10.5" y="10.5" width="5" height="5" rx="1.1"/></svg></button>
+              </div>
+            </div>
           </div>
           <div class="grid" id="prov-grid"></div>
           <div class="empty" id="prov-empty" hidden><b id="empty-title">还没有渠道</b><span id="empty-hint"></span><button id="empty-action" class="primary" onclick="openProvider()">新建渠道</button></div>
+          <details id="slots-details" class="advanced-slots">
+            <summary>模型槽位配置 <span>主模型与子代理</span></summary>
+            <div class="panel" id="slots-panel" hidden>
+              <h2>子代理槽位</h2>
+              <p class="hint" id="slots-hint"></p>
+              <div id="slots-rows"></div>
+              <div class="savebar"><button class="primary" id="slots-apply" onclick="applySlotsClaude()" disabled>应用槽位到客户端</button><span class="msg" id="slots-msg" role="status"></span></div>
+            </div>
+          </details>
+        </div>
+        <div class="metrics provider-summary" aria-label="渠道概览">
+          <div class="metric"><span class="metric-label">可用渠道配置</span><b id="metric-providers">—</b><small id="metric-providers-hint">等待状态 · 非连通性检测</small></div>
+          <div class="metric"><span class="metric-label">今日请求</span><b id="metric-requests">—</b><small>来自代理真实请求统计</small></div>
+          <div class="metric"><span class="metric-label">今日 tokens</span><b id="metric-tokens">—</b><small id="metric-tokens-hint">输入 / 输出合计</small></div>
+          <div class="metric"><span class="metric-label">会话绑定</span><b id="metric-sessions">—</b><small id="metric-sessions-hint">按协议组识别，不按客户端</small></div>
         </div>
       </section>
 
       <section id="view-routes" style="display:none" aria-labelledby="routes-title">
-        <div class="head"><div><div class="eyebrow">TRAFFIC / RULES</div><h1 id="routes-title">路由规则</h1><div class="sub">按模型名子串匹配，逗号分隔、大小写不敏感。优先级大的先匹配，同优先级按从上到下。</div></div><div class="actions"><button onclick="reloadRoutes()">重新载入</button><button class="primary" id="save-routes" onclick="saveRoutes()" disabled>保存路由</button></div></div>
+        <div class="head"><div><h1 id="routes-title">路由规则</h1><div class="sub">按模型名子串匹配，逗号分隔、大小写不敏感。优先级大的先匹配，同优先级按从上到下。</div></div><div class="actions"><button onclick="reloadRoutes()">重新载入</button><button class="primary" id="save-routes" onclick="saveRoutes()" disabled>保存路由</button></div></div>
         <div class="panel" id="compact-panel"><h2>压缩模型</h2>
           <div class="hint">单独选择 Claude Code 压缩请求的渠道、模型和 Key；只更新两条压缩规则，不改普通主模型、子代理槽位或渠道当前 Key。保存会替换现有压缩备池为单一渠道。</div>
           <div id="compact-current" class="hint" role="status">等待压缩路由配置</div>
@@ -190,7 +234,7 @@
       </section>
 
       <section id="view-sessions" style="display:none" aria-labelledby="sessions-title">
-        <div class="head"><div><div class="eyebrow">TRAFFIC / SESSIONS</div><h1 id="sessions-title">会话绑定</h1><div class="sub">点「配置 Key / 槽位」给单个会话配独立的渠道与模型；没配的槽位继承全局。</div></div><div class="actions"><label for="f-sess-app" class="sr-only">会话协议组</label><select id="f-sess-app" onchange="sessApp=this.value;renderSessions()" style="width:auto"><option value="">全部协议组</option><option value="claude">Claude / Anthropic</option><option value="codex">Codex / OpenAI</option></select><button class="danger" onclick="clearSessions()">清空全部绑定</button></div></div>
+        <div class="head"><div><h1 id="sessions-title">会话绑定</h1><div class="sub">点「配置 Key / 槽位」给单个会话配独立的渠道与模型；没配的槽位继承全局。</div></div><div class="actions"><label for="f-sess-app" class="sr-only">会话协议组</label><select id="f-sess-app" onchange="sessApp=this.value;renderSessions()" style="width:auto"><option value="">全部协议组</option><option value="claude">Claude / Anthropic</option><option value="codex">Codex / OpenAI</option></select><button class="danger" onclick="clearSessions()">清空全部绑定</button></div></div>
         <div class="logbar sessbar">
           <label>搜索会话<input type="search" id="sess-search" placeholder="会话短 id / 完整 id / 对话名 / 渠道名" oninput="setSessQuery(this.value)"></label>
           <button class="small" type="button" onclick="clearSessionFilters()">清除搜索与筛选</button>
@@ -202,7 +246,7 @@
       </section>
 
       <section id="view-diagnostics" style="display:none" aria-labelledby="logs-title">
-        <div class="head"><div><div class="eyebrow">OBSERVABILITY / REQUESTS</div><h1 id="logs-title">诊断</h1><div class="sub">请求日志与分槽用量。内存保留最近 500 条，落盘 logs/requests.jsonl（UTC按天/5MiB轮转，默认保留 30 天）；统计为内存窗口全量聚合。ZCode 请求按 Anthropic 或 OpenAI 协议归组。</div></div><label class="rc-mini"><input type="checkbox" id="logs-auto" checked>自动刷新（5 秒）</label></div>
+        <div class="head"><div><h1 id="logs-title">诊断</h1><div class="sub">请求日志与分槽用量。内存保留最近 500 条，落盘 logs/requests.jsonl（UTC按天/5MiB轮转，默认保留 30 天）；统计为内存窗口全量聚合。ZCode 请求按 Anthropic 或 OpenAI 协议归组。</div></div><label class="rc-mini"><input type="checkbox" id="logs-auto" checked>自动刷新（5 秒）</label></div>
         <div class="banner" id="logs-error" role="status"></div>
         <div class="chips" id="stat-chips"></div>
         <div class="panel" aria-labelledby="slot-stats-title">
@@ -220,26 +264,25 @@
         <div class="empty" id="logs-empty" style="display:none"><b>暂无请求</b>通过本地路由发起调用后，请求会显示在这里。</div>
       </section>
 
-      <!-- 设置与备份:把后端已有、前端此前零引用的四个只读端点接出来(/api/backups、
-           /api/health、/api/routing/preview、/api/metrics)。全部只读:没有"一键恢复"
-           ——真正的恢复写入不在本期,而且响应里不含任何配置正文或密钥,前端也不去请求正文。 -->
+      <!-- 设置与备份:接的是 /api/backups、/api/health、/api/routing/preview、/api/metrics 四个只读端点。
+           响应里不含任何配置正文或密钥,前端也不去请求正文;没有"一键恢复"——恢复写入需要单独设计。 -->
       <section id="view-settings" style="display:none" aria-labelledby="settings-title">
-        <div class="head"><div><div class="eyebrow">WORKSPACE / SETTINGS</div><h1 id="settings-title">设置与备份</h1><div class="sub">备份清点、运行健康、路由解释与脱敏导出。全部只读:这里没有恢复按钮,真正的恢复写入会在后续版本单独提供。</div></div><div class="actions"><button onclick="loadBackups()">重新清点备份</button><button onclick="loadHealth()">重新读取健康</button></div></div>
+        <div class="head"><div><h1 id="settings-title">设置与备份</h1><div class="sub">备份清点、运行健康、路由解释与脱敏导出。全部只读，这里没有恢复按钮；恢复写入不在当前版本提供。</div></div><div class="actions"><button onclick="loadBackups()">重新清点备份</button><button onclick="loadHealth()">重新读取健康</button></div></div>
         <div class="panel" aria-labelledby="settings-backup-title">
           <h2 id="settings-backup-title">备份清点</h2>
-          <p class="hint">只列文件名、大小、时间与摘要,不含任何配置正文或密钥。保留上限外的备份会在下一次写入时按名字顺序被删掉。</p>
+          <p class="hint">只列文件名、大小、时间与摘要，不含任何配置正文或密钥。保留上限外的备份会在下一次写入时按名字顺序被删掉。</p>
           <div id="backup-status" class="hint" role="status">正在清点备份…</div>
           <div id="backup-dirs"></div>
         </div>
         <div class="panel" aria-labelledby="settings-health-title">
           <h2 id="settings-health-title">运行健康</h2>
-          <p class="hint">渠道冷却状态与超时/重试配置,属只读视图,调整要改服务端启动参数。</p>
+          <p class="hint">渠道冷却状态与超时/重试配置，属只读视图，调整要改服务端启动参数。</p>
           <div id="health-status" class="hint" role="status">正在读取健康状态…</div>
           <div id="health-body"></div>
         </div>
         <div class="panel" aria-labelledby="settings-preview-title">
           <h2 id="settings-preview-title">路由解释</h2>
-          <p class="hint">按当前快照预测某个模型会落到哪个候选渠道。<strong>这是预测,不是实际落点</strong>:不消耗轮询游标,也不改任何绑定;真实落点看「会话」页的最近实际请求列。</p>
+          <p class="hint">按当前快照预测某个模型会落到哪个候选渠道。<strong>这是预测，不是实际落点</strong>：不消耗轮询游标，也不改任何绑定；真实落点看「会话」页的最近实际请求列。</p>
           <div class="rc-line"><label class="field">协议组<select id="preview-app" onchange="loadPreview()"><option value="claude">Claude / Anthropic</option><option value="codex">Codex / OpenAI</option></select></label>
             <label class="field">模型名<input type="text" id="preview-model" placeholder="如 claude-opus-4-8；留空会得到「暂无可用落点」" spellcheck="false" onkeydown="if(event.key==='Enter'){event.preventDefault();loadPreview()}"></label>
             <button class="small" onclick="loadPreview()">解释一次</button></div>
@@ -248,7 +291,7 @@
         </div>
         <div class="panel" aria-labelledby="settings-export-title">
           <h2 id="settings-export-title">脱敏诊断导出</h2>
-          <p class="hint">Prometheus 文本格式的运行指标(内存窗口,非累计)。标签集固定,不含会话、渠道、模型名或任何密钥,可直接交给别人排查。</p>
+          <p class="hint">Prometheus 文本格式的运行指标(内存窗口，非累计)。标签集固定，不含会话、渠道、模型名或任何密钥，可直接交给别人排查。</p>
           <div class="savebar"><button class="small" id="metrics-export" onclick="exportMetrics()">下载指标文本</button><span class="msg" id="metrics-msg" role="status"></span></div>
         </div>
       </section>
@@ -312,6 +355,17 @@
       </div>
     </div>
   </div>
+
+  <!-- 快速跳转用原生 <dialog>:showModal 自带焦点圈定与背景 inert,不参与 app.js 的 activeDialog 体系;
+       打开前仍会检查 activeDialog,别的弹窗开着时这个快捷键什么都不做。关闭时同时补 hidden,
+       因为样式表给 .quick-nav-dialog 设了 display:flex,单靠 [open] 的 UA 规则挡不住。 -->
+  <dialog id="quick-nav-mask" class="modal quick-nav-dialog" aria-labelledby="quick-nav-title" hidden>
+    <h2 id="quick-nav-title" class="sr-only">快速跳转</h2>
+    <input id="quick-nav-input" class="quick-nav-input" type="search" placeholder="搜索页面，回车跳转" aria-label="搜索页面" autocomplete="off" spellcheck="false" role="combobox" aria-expanded="true" aria-controls="quick-nav-list" aria-autocomplete="list">
+    <div id="quick-nav-list" class="quick-nav-list" role="listbox" aria-label="跳转目标"></div>
+    <p id="quick-nav-empty" class="hint quick-nav-empty" hidden>没有匹配的页面</p>
+    <div class="quick-nav-hint" aria-hidden="true"><span>↑↓ 选择</span><span>Enter 跳转</span><span>Esc 关闭</span></div>
+  </dialog>
   <div id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 
 <script src="/js/app.js"></script>

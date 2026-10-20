@@ -54,7 +54,7 @@ const INCLUDE_WHY = Object.freeze({
   'providers.example.json': 'providers.json 的模板(真文件含明文 Key,永不发布)',
   'routes.example.json': 'routes.json 的模板',
   'lib': '全部运行模块(路由 / 协议 / 备份 / 会话 / HTTP / 日志……),产品源码区',
-  'public': '控制台页面与静态资源:index.html、js/app.js、styles/base.css',
+  'public': '控制台页面与静态资源:index.html、js/app.js、js/workspace.js、js/usage.js、styles/base.css',
   'app': 'WKWebView 外壳源码(Swift + 图标 + 旧启动脚本)',
   'scripts': '用户可跑的脚本(安装 / 诊断 / 导入 / 离线验收);注意 scripts/run-tests.js 还是**运行期依赖**(lib/diagnostics/run.js 直接 require 它取 testEnv),所以它在包里,但运行包里 `npm test` 会明确报"没有开发测试套件"。上线/回退运维用的 deploy-live.sh 与 preflight-live-data.js 由 EXCLUDE 单独减掉',
   'docs': '用户文档(quick-start 等)',
@@ -92,9 +92,11 @@ const EXCLUDE = [
 const RUNTIME_DATA_FILES = ['providers.json', 'routes.json', 'sessions.json', 'slots.json'];
 const RUNTIME_DATA_DIRS = ['logs', 'backups', '.run'];
 
-// CI 只认这四个"关键入口"必须在制品里。public/js/app.js 与 public/styles/base.css 是
-// 控制台拆分的**新增文件**——旧习惯(整包 archive / 旧清单)里没有它们,最容易漏。
-const REQUIRED_ENTRIES = ['mixrouter.js', 'public/index.html', 'public/js/app.js', 'public/styles/base.css'];
+// 控制台的每个脚本都必须随运行包交付,避免页面能打开但主题、导航或用量页失效。
+const REQUIRED_ENTRIES = [
+  'mixrouter.js', 'public/index.html', 'public/js/app.js',
+  'public/js/workspace.js', 'public/js/usage.js', 'public/styles/base.css',
+];
 
 // 运行包的维护条目:解压后能验、能读、能报告问题。**不含 test/** —— 整套开发测试只在
 // GitHub 源码仓库跑(不少用例依赖 .github / .gitignore 这些不进包的文件)。

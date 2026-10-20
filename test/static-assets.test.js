@@ -152,6 +152,18 @@ test('GET /js/app.js → 200 + javascript', async t => {
   assert.match(r.headers['content-type'], /^(text|application)\/javascript\b/);
 });
 
+test('页面引用的脚本和样式均可由真实静态路由读取', async () => {
+  const html = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
+  const assets = [...html.matchAll(/(?:src|href)="(\/(?:js|styles)\/[^"?#]+)"/g)].map(m => m[1]);
+  assert.ok(assets.includes('/js/workspace.js'), '工作区脚本必须由页面加载');
+  for (const asset of assets) {
+    const r = await request(asset);
+    assert.equal(r.status, 200, asset);
+    assert.ok(r.body.equals(fs.readFileSync(path.join(PUBLIC_DIR, asset.slice(1)))), asset);
+    assert.match(r.headers['content-type'], asset.endsWith('.css') ? /^text\/css\b/ : /^(text|application)\/javascript\b/);
+  }
+});
+
 test('目录请求不列目录:GET /js/ 不是 200', async () => {
   const r = await rawRequest('/js/');
   assert.notEqual(r.status, 200, '目录请求不许回 200(那意味着目录列表或某个隐式文件被送出去了)');
