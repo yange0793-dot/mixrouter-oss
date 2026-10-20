@@ -811,7 +811,17 @@ input.quick-nav-input {
 .usage-chart-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 8px; color: var(--dim); font-size: 12px; }
 .usage-chart-head .usage-tabs { margin-bottom: 0; }
 .usage-chart svg { display: block; width: 100%; height: 260px; overflow: visible; }
+.usage-chart svg:empty { height: 260px; }
 .chart-holder { position: relative; min-width: 0; }
+/* 首帧还没有数据时居中给一句提示。状态由 usage.js 写在 holder 上:
+   loading 读取中、error 读取失败 —— 失败不会一直挂着"正在读取"。 */
+.chart-holder[data-chart="loading"]::before,
+.chart-holder[data-chart="error"]::before {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  font-size: 12px; color: var(--dim); pointer-events: none;
+}
+.chart-holder[data-chart="loading"]::before { content: "正在读取用量…"; }
+.chart-holder[data-chart="error"]::before { content: "用量读取失败，可点「立即同步」重试"; color: var(--err-text); }
 .chart-axis { font: 11px var(--sans); fill: var(--dim); font-variant-numeric: tabular-nums; }
 .chart-axis text { fill: inherit; }
 .chart-axis line, .chart-grid line { stroke: var(--chart-grid); stroke-width: 1; }

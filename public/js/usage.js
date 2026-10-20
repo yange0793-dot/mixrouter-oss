@@ -98,6 +98,13 @@ function usageSetStatus(text, cls = '') {
 
 // 读一次。seq 保证只有"最后一次发起"的响应能落地;AbortController 让被取代的请求
 // 在网络上真正取消(否则轮询间隔短于响应时间时,旧请求会排队并逐个覆盖新结果)。
+// 图表还没画出来时,空白区域由样式表按这个状态给一句提示。只用三个状态:
+// loading 首次读取中、ready 已渲染、error 读取失败 —— 失败必须显示成失败,
+// 不能一直挂着"正在读取"骗人。
+function usageChartState(state) {
+  const holder = $('usage-chart-holder');
+  if (holder && holder.dataset) holder.dataset.chart = state;
+}
 async function loadUsage() {
   if (!usageState.inited) usageInitControls();
   const seq = ++usageState.seq;
@@ -106,6 +113,7 @@ async function loadUsage() {
   usageState.controller = controller;
   const timer = setTimeout(() => controller.abort(), 20000);
   usageSyncButton(true);
+  if (!usageState.data) usageChartState('loading');
   try {
     const response = await fetch('/api/usage?' + usageQuery(), {
       signal: controller.signal, cache: 'no-store', headers: { Accept: 'application/json' },
@@ -117,11 +125,14 @@ async function loadUsage() {
     usageState.data = body;
     usageState.lastSync = Date.now();
     usageRender(body);
+    usageChartState('ready');
     const source = body.scope?.source === 'memory' ? '仅内存窗口(还没落盘日志)' : '磁盘日志 + 内存窗口';
     usageSetStatus(`区间内 ${usageInt(body.totals?.reqs)} 次请求 · ${source} · 最近同步 ${usageClock(usageState.lastSync)}`);
   } catch (e) {
     if (e.name === 'AbortError' || seq !== usageState.seq) return;
     usageSetStatus('用量读取失败:' + e.message, 'err');
+    // 已经有上一份数据就保留图表,只是这次刷新失败;一次都没成功过才把空图标成失败。
+    if (!usageState.data) usageChartState('error');
   } finally {
     clearTimeout(timer);
     if (seq === usageState.seq) { usageSyncButton(false); usageState.controller = null; }
