@@ -34,12 +34,13 @@
 - 上游健康里的断路器整体移除:不再有闭/开/半开状态、失败阈值、恢复阈值与半开探测名额,
   也没有 `circuit_open` 错误类。渠道失败后只进冷却:在 `MIXR_COOLDOWN_SEC`(默认 60 秒)内
   不参与挑选,全池都不可用时退回全量候选,请求照常发出,不会被拒绝。
-  两个阈值环境变量随之删除;设置里的 `failure_threshold` / `recovery_threshold` /
+  `MIXR_BREAKER_FAILURE_THRESHOLD` 与 `MIXR_BREAKER_RECOVERY_THRESHOLD` 随之删除(启动参数里
+  还留着不会报错,但已无作用);设置里的 `failure_threshold` / `recovery_threshold` /
   `half_open_max_probes` 一并移除,新增 `retry_delay_ms`。`GET /api/health` 的 providers 每项为
   `{provider, app, enabled, eligible, cooldown_until}`;控制台渠道卡片不再显示断路器徽标,
   设置页健康表不再有这一列。
-- 用量统计不再折算金额:移除价格表文件及其读写接口、控制台价格表弹窗、金额指标卡、
-  金额图表 tab 与明细表的金额列。`GET /api/usage` 的 `totals` 为
+- 用量统计不再折算金额:移除价格表 `pricing.json` 与 `GET/PUT /api/pricing`(现在返回 404)、
+  控制台价格表弹窗、金额指标卡、金额图表 tab 与明细表的金额列。`GET /api/usage` 的 `totals` 为
   `{reqs, ok_rate, tokens_in, tokens_out, cache_read, tokens_total, cache_hit_rate, speed_tps, ttfb_p50_ms}`,
   `series` 每桶 `{t, reqs, tokens_in, tokens_out, cache_read}`,
   `by_provider` / `by_model` 每项 `{provider, name | model, reqs, tokens_in, tokens_out, cache_read}`,
