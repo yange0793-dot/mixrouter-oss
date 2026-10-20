@@ -953,3 +953,96 @@ test('草稿里改了又改回来、或只有无效条目时,不谎报"与上次
   assert.equal(h.run('routingDirty'), false, '改回原样不该算未保存');
   assert.match(h.get('routing-msg').textContent, /无效引用/, '但无效引用还在,要接着说');
 });
+
+test('当前绑定以每槽渠道和模型为入口,独立配置面板槽位在 Key 设置之前', async () => {
+  const data = fixture();
+  data.slots.claude.forEach(slot => Object.assign(slot, { provider: 'a1', provider_name: 'Alpha', model: 'claude-alt' }));
+  const h = await harness(data);
+  h.run("view = 'sessions'; renderSessions()");
+  const row = rowOf(h, 'alpha001');
+  assert.match(row, /class="session-binding"/);
+  assert.match(row, /class="session-slot-item overridden"[^>]*><span>subagent<\/span><b>Alpha @ claude-special/);
+  assert.match(row, /<span>main<\/span><b>Alpha @ claude-alt/);
+  assert.match(row, /普通请求渠道/);
+  assert.equal((row.match(/openRouting\(/g) || []).length, 1, '当前绑定只留一个编辑入口');
+  await h.open('alpha001');
+  const body = h.get('routing-body').innerHTML;
+  assert.ok(body.indexOf('会话模型槽位') < body.indexOf('渠道 Key 设置'));
+  for (const name of ['main', 'opus', 'sonnet', 'haiku', 'subagent']) {
+    assert.match(body, new RegExp(`data-routing-slot="${name}"`));
+    assert.match(body, new RegExp(`mixr-${name}`));
+  }
+  assert.match(body, /继承全局：Alpha @ claude-alt/);
+  assert.match(body, /自定义模型…/);
+});
+
+test('槽位实际请求对照该槽配置,不因主链与子代理渠道不同而标成绑定异常', async () => {
+  const data = fixture();
+  data.sessions[0].routing.slots.subagent = { provider: 'a3', model: 'claude-ghost' };
+  data.sessions[0].actual = { ...data.sessions[0].actual, slot: 'subagent', provider: 'a3', provider_name: 'Ghost Host', model: 'claude-ghost' };
+  const h = await harness(data);
+  h.run("view = 'sessions'; renderSessions()");
+  assert.equal(/与当前绑定不同/.test(rowOf(h, 'alpha001')), false);
+  assert.match(h.get('sess-chips').innerHTML, /实际 ≠ 绑定<b>0<\/b>/);
+  h.data.sessions[0].actual.provider = 'a1';
+  await h.run('refresh()');
+  h.run('renderSessions()');
+  assert.match(rowOf(h, 'alpha001'), /与当前绑定不同/);
+  assert.match(h.get('sess-chips').innerHTML, /实际 ≠ 绑定<b>1<\/b>/);
+});
+
+test('复制全局槽位只填未覆盖的渠道与模型,不改全局或已有配置,保存前不发写请求', async () => {
+  const data = fixture();
+  data.slots.claude.forEach(slot => Object.assign(slot, { provider: 'a1', model: 'claude-alt', pool: [{ provider: 'a3' }] }));
+  const h = await harness(data);
+  const globalBefore = JSON.stringify(data.slots), otherBefore = JSON.stringify(data.sessions[1]);
+  await h.open('alpha001');
+  h.run('routingCopyGlobalSlots()');
+  assert.equal(h.run('routingDirty'), true);
+  assert.equal(routingRequests(h).some(r => r.method === 'PUT'), false);
+  assert.equal(h.run('routingDraft.slots.main.model'), 'claude-alt');
+  assert.equal(h.run('routingDraft.slots.subagent.model'), 'claude-special', '已有覆盖不可被复制覆盖');
+  assert.equal(h.run('routingDraft.slots.subagent.key_id'), 'k1');
+  assert.equal(h.run('routingDraft.slots.main.pool'), undefined);
+  assert.match(h.get('toast').textContent, /不含后备池/);
+  await h.run('saveRouting()');
+  const sent = routingRequests(h).find(r => r.method === 'PUT').body.routing;
+  assert.equal(Object.keys(sent.slots).length, 5);
+  assert.equal(JSON.stringify(data.slots), globalBefore);
+  assert.equal(JSON.stringify(data.sessions[1]), otherBefore);
+  assert.equal(data.providers.claude[0].active_key, 'k1');
+});
+
+test('会话自定义模型可输入并保存,Escape 只取消该模型编辑,不关闭会话面板', async () => {
+  const h = await harness();
+  await h.open('alpha001');
+  h.run("routingPickSlotModel('subagent', SLOT_MODEL_CUSTOM)");
+  assert.equal(h.run('routingDirty'), false, '切入输入框不算修改');
+  assert.match(h.get('routing-body').innerHTML, /<input id="rt-slot-subagent-model"/);
+  h.run("routingSetSlotModel('subagent','unlisted-model[1M]')");
+  await h.run('saveRouting()');
+  assert.equal(routingRequests(h).find(r => r.method === 'PUT').body.routing.slots.subagent.model, 'unlisted-model[1M]');
+  h.run("routingPickSlotModel('subagent', SLOT_MODEL_CUSTOM)");
+  h.run("routingSetSlotModel('subagent','discard-me')");
+  h.run("routingModelKey({key:'Escape',preventDefault(){},stopPropagation(){}}, 'subagent')");
+  assert.equal(h.run('routingDraft.slots.subagent.model'), 'unlisted-model[1M]');
+  assert.equal(h.run('activeDialog.id'), 'routing-mask');
+  assert.equal(h.run('routingModelEdit'), null);
+});
+
+test('会话自定义模型回车收尾并去空白,换渠道清模型和 Key,恢复继承不动其他槽', async () => {
+  const h = await harness();
+  await h.open('alpha001');
+  h.run("routingPickSlotModel('subagent', SLOT_MODEL_CUSTOM)");
+  h.run("routingSetSlotModel('subagent','  private-model  ')");
+  h.run("routingModelKey({key:'Enter',target:{value:'  private-model  '},preventDefault(){}}, 'subagent')");
+  assert.equal(h.run('routingDraft.slots.subagent.model'), 'private-model');
+  assert.equal(h.run('routingModelEdit'), null);
+  h.run("routingSetSlotProvider('main','a1')");
+  h.run("routingSetSlotProvider('subagent','a3')");
+  assert.equal(h.run('routingDraft.slots.subagent.model'), undefined);
+  assert.equal(h.run('routingDraft.slots.subagent.key_id'), undefined);
+  h.run("routingRemoveSlot('subagent')");
+  assert.equal(h.run('routingDraft.slots.subagent'), undefined);
+  assert.equal(h.run('routingDraft.slots.main.provider'), 'a1');
+});

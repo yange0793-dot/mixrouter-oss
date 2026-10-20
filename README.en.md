@@ -54,7 +54,8 @@ Not a good fit:
   not a hard guarantee: cooldowns, circuit breaking, rebinding after failure, failover, manual
   pinning, and session overrides can all change the target.
 - **Slot routing.** Bind a provider and model to a `mixr-<slot>` alias so the main chain and
-  subagents can use separate accounts.
+  subagents can use separate accounts. The session console lets each conversation use its own
+  provider and model per slot; slots without an override inherit the global configuration.
 - **Local console.** `127.0.0.1:8788` manages providers, routes, sessions, slots, logs, and
   backups.
 
