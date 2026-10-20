@@ -1443,7 +1443,6 @@ function renderSessions() {
       <td><span class="badge ${app === 'codex' ? 'info' : 'on'}">${app === 'codex' ? 'OpenAI' : 'Anthropic'}</span></td>
       <td style="font-family:inherit"><span class="lbl" title="${esc(s.label || '')}">${esc(s.label || '-')}</span></td>
       <td class="session-binding">
-          ${sessionSlotsCell(s)}
           <button class="small" onclick="openRouting(${handlerArg(s.key)})" ${online ? '' : 'disabled'} aria-label="配置会话 ${esc(s.short)} 的 Key 与槽位">配置 Key / 槽位</button>
           <details class="session-pin"><summary>普通请求渠道 · ${esc(b.provider_name || b.provider || '未绑定')}</summary>
             <label class="field" for="session-${esc(s.short)}">仅用于非槽位、非内容分流请求<select id="session-${esc(s.short)}" class="pin-sel" onchange="pinSession(${handlerArg(s.key)}, this.value)" ${!online ? 'disabled' : ''}>
@@ -1751,25 +1750,9 @@ function routingKeyRows() {
   }
   return rows.join('') || '<div class="rt-note">该协议组还没有渠道。</div>';
 }
-// 同一份全局落点同时用于列表摘要和编辑器的继承提示,不把继承值写入会话覆盖。
+// 同一份全局落点同时用于「实际 ≠ 绑定」的对照和编辑器的继承提示,不把继承值写入会话覆盖。
 function globalSessionSlot(group, name) {
   return (slotsOf()[group] || []).find(s => s.name === name) || null;
-}
-function sessionSlotsCell(s) {
-  const group = groupOfSession(s), overrides = s.routing?.slots || {};
-  const names = group === 'claude' ? SESSION_SLOT_NAMES : [...new Set([
-    ...(slotsOf().codex || []).map(slot => slot.name), ...Object.keys(overrides),
-  ])];
-  const count = Object.keys(overrides).length;
-  return `<div class="session-slot-summary"><span class="rt-note">${count ? `${count} 个独立槽位` : '继承全局槽位'}</span>
-    ${names.map(name => {
-      const overridden = Object.hasOwn(overrides, name);
-      const slot = overridden ? overrides[name] : globalSessionSlot(group, name);
-      const p = slot?.provider ? routingProviderOf(group, slot.provider) : null;
-      const model = slot?.model || (group === 'codex' ? p?.model : p?.models?.[0]) || '';
-      const target = slot?.provider ? `${p?.name || '渠道已删除'}${model ? ' @ ' + model : ''}` : '未配置';
-      return `<div class="session-slot-item${overridden ? ' overridden' : ''}" title="${esc((overridden ? '本会话：' : '继承全局：') + target)}"><span>${esc(name)}</span><b>${esc(target)}</b></div>`;
-    }).join('')}</div>`;
 }
 function routingSlotRow(name, keyOnly = false) {
   const group = routingGroup();

@@ -142,14 +142,14 @@
       </section>
 
       <section id="view-sessions" style="display:none" aria-labelledby="sessions-title">
-        <div class="head"><div><div class="eyebrow">TRAFFIC / SESSIONS</div><h1 id="sessions-title">会话绑定</h1><div class="sub">给不同会话配置不同的模型槽位：主模型与子代理可分别选择渠道和模型。未配置的槽位继承全局；ZCode 流量归入所选协议组。</div></div><div class="actions"><label for="f-sess-app" class="sr-only">会话协议组</label><select id="f-sess-app" onchange="sessApp=this.value;renderSessions()" style="width:auto"><option value="">全部协议组</option><option value="claude">Claude / Anthropic</option><option value="codex">Codex / OpenAI</option></select><button class="danger" onclick="clearSessions()">清空全部绑定</button></div></div>
+        <div class="head"><div><div class="eyebrow">TRAFFIC / SESSIONS</div><h1 id="sessions-title">会话绑定</h1><div class="sub">点「配置 Key / 槽位」给单个会话配独立的渠道与模型；没配的槽位继承全局。</div></div><div class="actions"><label for="f-sess-app" class="sr-only">会话协议组</label><select id="f-sess-app" onchange="sessApp=this.value;renderSessions()" style="width:auto"><option value="">全部协议组</option><option value="claude">Claude / Anthropic</option><option value="codex">Codex / OpenAI</option></select><button class="danger" onclick="clearSessions()">清空全部绑定</button></div></div>
         <div class="logbar sessbar">
           <label>搜索会话<input type="search" id="sess-search" placeholder="会话短 id / 完整 id / 对话名 / 渠道名" oninput="setSessQuery(this.value)"></label>
           <button class="small" type="button" onclick="clearSessionFilters()">清除搜索与筛选</button>
         </div>
         <div class="chips" id="sess-chips"></div>
-        <p class="sess-intro">在「当前绑定」点「配置 Key / 槽位」，逐槽选择渠道与落点模型，或复制全局槽位后单独修改。保存只影响该会话后续新请求，不改全局槽位、客户端配置或渠道当前 Key；请求需使用槽位别名，内容分流（含压缩）仍优先。取 Key 的顺序是「该槽位指定 → 本会话该渠道 Key → 渠道当前 Key」，指定 Key 失效时不会换账号。普通请求渠道钉定在该列展开设置；清空或解绑会删除会话配置。</p>
-        <div class="table-wrap" tabindex="0" role="region" aria-label="会话绑定表，可横向滚动"><table><caption class="sr-only">按协议分组的会话绑定</caption><thead><tr><th scope="col">会话</th><th scope="col">协议组</th><th scope="col">对话</th><th scope="col">当前绑定（可改）</th><th scope="col">最近实际请求</th><th scope="col">模型</th><th scope="col">命中规则</th><th scope="col">请求</th><th scope="col">tokens 入 / 出</th><th scope="col">最近活跃</th><th scope="col">Key / 槽位（用户要求）</th><th scope="col">操作</th></tr></thead><tbody id="sess-body"></tbody></table></div>
+        <p class="sess-intro">保存只影响该会话后续新请求，不改全局槽位与客户端配置；请求需使用槽位别名，内容分流（含压缩）仍优先。Key 顺序：该槽位指定 → 本会话该渠道 Key → 渠道当前 Key。普通请求的渠道钉定在「当前绑定」里展开设置。</p>
+        <div class="table-wrap" tabindex="0" role="region" aria-label="会话绑定表，可横向滚动"><table><caption class="sr-only">按协议分组的会话绑定</caption><thead><tr><th scope="col">会话</th><th scope="col">协议组</th><th scope="col">对话</th><th scope="col">当前绑定（可改）</th><th scope="col">最近实际请求</th><th scope="col">模型</th><th scope="col">命中规则</th><th scope="col">请求</th><th scope="col">tokens 入 / 出</th><th scope="col">最近活跃</th><th scope="col">Key / 槽位</th><th scope="col">操作</th></tr></thead><tbody id="sess-body"></tbody></table></div>
         <div class="empty" id="sess-empty" style="display:none"><b id="sess-empty-title">还没有匹配的会话</b><span id="sess-empty-hint">通过本地路由发起对话后，会话绑定会出现在所属协议组；也可以调整分组筛选。</span><code id="sess-empty-why" hidden></code><button id="sess-empty-action" class="primary" hidden onclick="clearSessionFilters()">显示全部协议组</button></div>
       </section>
 

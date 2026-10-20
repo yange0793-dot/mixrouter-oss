@@ -954,15 +954,16 @@ test('草稿里改了又改回来、或只有无效条目时,不谎报"与上次
   assert.match(h.get('routing-msg').textContent, /无效引用/, '但无效引用还在,要接着说');
 });
 
-test('当前绑定以每槽渠道和模型为入口,独立配置面板槽位在 Key 设置之前', async () => {
+test('当前绑定只留一个入口,点开就是整组槽位配置', async () => {
   const data = fixture();
   data.slots.claude.forEach(slot => Object.assign(slot, { provider: 'a1', provider_name: 'Alpha', model: 'claude-alt' }));
   const h = await harness(data);
   h.run("view = 'sessions'; renderSessions()");
   const row = rowOf(h, 'alpha001');
   assert.match(row, /class="session-binding"/);
-  assert.match(row, /class="session-slot-item overridden"[^>]*><span>subagent<\/span><b>Alpha @ claude-special/);
-  assert.match(row, /<span>main<\/span><b>Alpha @ claude-alt/);
+  // 列表里不再逐槽铺开:五槽摘要会把每行撑到十来行,编辑入口只要一个。
+  assert.doesNotMatch(row, /session-slot-item|session-slot-summary/, '列表不铺逐槽摘要');
+  assert.doesNotMatch(row, /<b>Alpha @ claude-alt/, '列表不回显槽位落点');
   assert.match(row, /普通请求渠道/);
   assert.equal((row.match(/openRouting\(/g) || []).length, 1, '当前绑定只留一个编辑入口');
   await h.open('alpha001');
