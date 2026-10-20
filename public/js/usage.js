@@ -224,6 +224,18 @@ function usageRender(data) {
   const totals = data.totals || {};
   const set = (id, text) => { const el = $(id); if (el) el.textContent = text; };
   set('usage-cost', usageMoney(totals.cost));
+  // 成本只覆盖价目表里有的模型:未定价的模型按 0 计。不把覆盖率说清楚,「总成本 $3.93」
+  // 会被读成「这个区间只花了 3.93 美元」——实际大头可能是还没定价的那些。
+  const missing = new Set(data.pricing?.missing || []);
+  if (missing.size) {
+    const models = data.by_model || [];
+    const all = models.reduce((sum, row) => sum + (Number(row.reqs) || 0), 0);
+    const unpriced = models.reduce((sum, row) => sum + (missing.has(row.model) ? (Number(row.reqs) || 0) : 0), 0);
+    const share = all ? Math.round(unpriced * 100 / all) : 0;
+    set('usage-cost-hint', `按价目表折算 · ${missing.size} 个模型未定价${share ? `(占 ${share}% 请求)` : ''}，成本只含已定价部分`);
+  } else {
+    set('usage-cost-hint', '按价目表折算，非账单');
+  }
   set('usage-reqs', usageInt(totals.reqs));
   set('usage-ok-rate', totals.ok_rate === null || totals.ok_rate === undefined
     ? '暂无成功率样本' : `成功率 ${Number(totals.ok_rate).toFixed(1)}%`);
@@ -294,9 +306,16 @@ function usageMetricOf(bucket, metric) {
   if (metric === 'cost') return Number(bucket.cost) || 0;
   return (Number(bucket.tokens_in) || 0) + (Number(bucket.tokens_out) || 0) + (Number(bucket.cache_read) || 0);
 }
+// 刻度文字要短:usageTok 给的是 2 位小数(750.00M),四个字符的宽度会把左边距撑爆、
+// 被 SVG 边界裁掉。刻度只需要量级可读,统一压到 0–1 位小数。
 function usageAxisLabel(value, metric) {
-  if (metric === 'cost') return value >= 1000 ? '$' + Math.round(value) : value >= 1 ? '$' + value.toFixed(2) : '$' + value.toFixed(2);
-  return usageTok(value);
+  if (metric === 'cost') return value >= 100 ? '$' + Math.round(value) : '$' + value.toFixed(2);
+  const n = Number(value) || 0;
+  const abs = Math.abs(n);
+  if (abs >= 1e9) return (n / 1e9).toFixed(abs >= 1e10 ? 0 : 1) + 'B';
+  if (abs >= 1e6) return Math.round(n / 1e6) + 'M';
+  if (abs >= 1e3) return Math.round(n / 1e3) + 'k';
+  return String(Math.round(n));
 }
 // Y 轴上界取"好看的数":1/2/5 × 10^n 里第一个 ≥ max 的值,避免刻度出现 3.87M 这种。
 function usageNiceMax(max) {
@@ -316,7 +335,11 @@ function usageRenderChart(data) {
   const series = Array.isArray(data.series) ? data.series : [];
   const width = Math.max(320, Math.round(holder.clientWidth || svg.clientWidth || 900));
   const height = Math.round(svg.getBoundingClientRect().height) || 260;
-  const padLeft = 52, padRight = 14, padTop = 12, padBottom = 26;
+  // 左边距由最长刻度文字决定:写死 52px 时「750M」这类标签会越过 viewBox 左边界被裁掉。
+  const widest = series.length
+    ? Math.max(...[0, 0.25, 0.5, 0.75, 1].map(ratio => usageAxisLabel(usageNiceMax(Math.max(...series.map(bucket => usageMetricOf(bucket, usageState.metric)), 0)) * (1 - ratio), usageState.metric).length))
+    : 4;
+  const padLeft = Math.min(96, Math.max(44, Math.round(widest * 6.8) + 10)), padRight = 14, padTop = 12, padBottom = 26;
   const plotW = Math.max(10, width - padLeft - padRight);
   const plotH = Math.max(10, height - padTop - padBottom);
 
@@ -353,7 +376,11 @@ function usageRenderChart(data) {
   // X 轴刻度:最多 7 个,首尾必显。小时桶显示 HH:00,天桶显示 MM-DD。
   const ticks = Math.min(7, series.length);
   const xLabels = Array.from({ length: ticks }, (_, i) => {
-    const index = ticks === 1 ? 0 : Math.round((i * (series.length - 1)) / (ticks - 1));
+    // floor 而不是 round:round 在桶数只比刻度多 1 时会把相邻两个刻度算成同一个、再跳掉一格;
+    // 首尾单独钉住,保证两端时间一定标出来。
+    const index = ticks === 1 ? 0
+      : i === ticks - 1 ? series.length - 1
+      : Math.floor((i * (series.length - 1)) / (ticks - 1));
     const t = String(series[index].t || '');
     const text = t.includes('T') ? t.slice(11, 16) : t.slice(5);
     const anchor = i === 0 ? 'start' : i === ticks - 1 ? 'end' : 'middle';

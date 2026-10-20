@@ -52,7 +52,7 @@ function harness(options = {}) {
   const get = id => elements.get(id) || null;
   for (const id of ['usage-strengths-unused']) get(id); // no-op, keeps shape obvious
   for (const id of ['usage-cost', 'usage-reqs', 'usage-ok-rate', 'usage-tokens', 'usage-token-split', 'usage-cache',
-    'usage-cache-hint', 'usage-status', 'usage-missing', 'usage-rows', 'usage-count', 'usage-range-label',
+    'usage-cache-hint', 'usage-cost-hint', 'usage-status', 'usage-missing', 'usage-rows', 'usage-count', 'usage-range-label',
     'usage-svg', 'usage-chart-holder', 'usage-pricing-mask', 'usage-pricing-body', 'usage-pricing-msg',
     'usage-pricing-save', 'usage-sync', 'usage-app', 'usage-provider', 'usage-model', 'usage-interval',
     'usage-range-tabs']) elements.set(id, new Element(id));
@@ -278,4 +278,34 @@ test('价目表:打开时读接口、负数单价被拦下、409 提示重新载
   h2.context.document.querySelectorAll = selector => selector === '#usage-pricing-rows tr' ? putRows : [];
   await h2.run('saveUsagePricing()');
   assert.match(h2.get('usage-pricing-msg').textContent, /已被其他请求修改|正在重新载入/);
+});
+
+test('成本卡片在存在未定价模型时说明覆盖率,不让人误读「总成本」', async () => {
+  const h = harness();
+  await h.run('loadUsage()');
+  // 2 个模型里 1 个未定价(12 / 42 次请求)
+  assert.match(h.get('usage-cost-hint').textContent, /1 个模型未定价/);
+  assert.match(h.get('usage-cost-hint').textContent, /29% 请求/, '12/42 → 28.6% 取整 29%');
+  assert.match(h.get('usage-cost-hint').textContent, /只含已定价部分/);
+
+  h.setResponse({ ...usageFixture(), pricing: { source: 'default', missing: [] } });
+  await h.run('loadUsage()');
+  assert.equal(h.get('usage-cost-hint').textContent, '按价目表折算，非账单');
+});
+
+test('刻度文字要短、X 轴刻度不跳号', async () => {
+  const h = harness();
+  // 8 个桶画 7 个刻度:以前 round 会把相邻两格算成同一个索引,导致少标一个日期
+  const series = Array.from({ length: 8 }, (_, i) => ({ t: `2026-10-${String(13 + i).padStart(2, '0')}`, cost: 0, reqs: 1, tokens_in: 1000, tokens_out: 0, cache_read: 0 }));
+  h.setResponse({ ...usageFixture(), series });
+  await h.run('loadUsage()');
+  const svg = h.get('usage-svg').innerHTML;
+  const labels = [...svg.matchAll(/text-anchor="(?:start|middle|end)">([^<]+)</g)].map(m => m[1]);
+  const dates = labels.filter(t => t.startsWith('10-'));
+  assert.equal(dates.length, 7, '7 个刻度都要画出来');
+  assert.equal(new Set(dates).size, 7, '刻度不能重复/跳号');
+  assert.equal(dates[0], '10-13');
+  assert.equal(dates.at(-1), '10-20');
+  // Y 轴不出现两位小数的 M(750.00M 这种会把左边距撑爆)
+  assert.doesNotMatch(svg, /\d\.\d\dM</, '刻度文字只保留 0–1 位小数');
 });

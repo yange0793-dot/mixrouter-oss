@@ -87,7 +87,7 @@
           <select id="usage-model" aria-label="模型" onchange="setUsageFilter('model', this.value)"><option value="">全部模型</option></select>
         </div>
         <div class="usage-grid">
-          <div class="metric"><span class="metric-label">总成本</span><b id="usage-cost">—</b><small>按价目表折算，非账单</small></div>
+          <div class="metric"><span class="metric-label">总成本</span><b id="usage-cost">—</b><small id="usage-cost-hint">按价目表折算，非账单</small></div>
           <div class="metric"><span class="metric-label">总请求数</span><b id="usage-reqs">—</b><small id="usage-ok-rate">成功率读取中</small></div>
           <div class="metric"><span class="metric-label">真实消耗 Tokens</span><b id="usage-tokens">—</b><small id="usage-token-split">输入 / 输出 / 缓存</small></div>
           <div class="metric"><span class="metric-label">缓存命中率</span><b id="usage-cache">—</b><small id="usage-cache-hint">缓存读 / (新增输入 + 缓存读)</small></div>
