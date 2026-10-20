@@ -122,7 +122,7 @@ test('白名单与代理源码的 entry 字段实际集合双向相等', () => {
   const extra = LOG_FIELDS.filter(f => !used.has(f)).sort();
   assert.deepEqual(missing, [], `白名单漏了源码里实际使用的字段: ${missing.join(', ')}`);
   assert.deepEqual(extra, [], `白名单里有源码根本没用的字段: ${extra.join(', ')}`);
-  assert.equal(LOG_FIELDS.length, 30);
+  assert.equal(LOG_FIELDS.length, 31);
   // 先建后挂的三个字段只能靠赋值扫出来(不在字面量里),这里单独钉住扫描有效性
   for (const f of ['think', 'reasoning', 'tools_dropped', 'effort']) {
     assert.ok(assigned.has(f), `${f} 应由赋值扫描命中(它是先建后挂的)`);
@@ -140,6 +140,15 @@ test('think / reasoning / tools_dropped 确实会出现在落盘原文里', t =>
   assert.equal(written.reasoning, 3, 'reasoning 必须落盘');
   assert.equal(written.tools_dropped, 2, 'tools_dropped 必须落盘');
   assert.equal(readAll(file).includes('"think":7'), true);
+});
+
+test('bytes_in(请求体字节数)确实会落在日志里', t => {
+  const root = tmpDir();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, 'logs', 'requests.jsonl');
+  createRequestLog({ file }).append(entry({ bytes_in: 14680064 }));
+  const written = JSON.parse(readAll(file).trim());
+  assert.equal(written.bytes_in, 14680064, '请求体大小必须落盘:首字延迟主要由它决定,上游面板看不见这一段');
 });
 
 test('容量:超过 capacity 从头部淘汰,list 只见窗口内的条目', t => {

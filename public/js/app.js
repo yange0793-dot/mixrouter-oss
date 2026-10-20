@@ -59,6 +59,7 @@ function toastWithBackupWarnings(okMsg, res) {
   else toast(okMsg, 'ok');
 }
 const fmtTok = n => n == null ? '—' : n >= 1000000 ? (n / 1000000).toFixed(1) + 'm' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
+const fmtBytes = n => !n ? '-' : n >= 1048576 ? (n / 1048576).toFixed(1) + 'MB' : n >= 1024 ? Math.round(n / 1024) + 'KB' : n + 'B';
 const fmtUp = s => s == null ? '—' : s >= 3600 ? (s/3600).toFixed(1) + 'h' : s >= 60 ? Math.floor(s/60) + 'm' + Math.floor(s%60) + 's' : s + 's';
 
 // Dialogs share Escape, focus containment and restoration, including destructive confirmations.
@@ -2195,7 +2196,7 @@ async function loadLogs() {
       return `<tr><td>${esc(l.ts.slice(5, 19))}</td><td>${sess}</td>
         <td style="font-family:inherit">${appTag}${esc(l.provider || '-')}${fo}${tr}</td>
         <td>${esc(l.model_in)}${l.model_out && l.model_out !== l.model_in ? ' → ' + esc(l.model_out) : ''}</td>
-        <td>${l.in || '-'}</td><td>${l.out || '-'}</td><td>${l.cache_read || '-'}</td>
+        <td>${l.in || '-'}</td><td>${l.out || '-'}</td><td>${l.cache_read || '-'}</td><td>${fmtBytes(l.bytes_in)}</td>
         <td>${l.ms ? l.ms + 'ms' : '-'}</td><td class="${cls}">${l.status || '-'}</td>
         <td style="color:var(--err)">${esc(l.err || '')}${l.err_class ? ` <span class="cool" title="失败分类 err_class">${esc(l.err_class)}</span>` : ''}</td></tr>`;
     }).join('');

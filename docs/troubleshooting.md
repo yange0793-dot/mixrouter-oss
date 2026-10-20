@@ -296,7 +296,7 @@ lsof -nP -iTCP:8788 -sTCP:LISTEN
 
 | 文件 | 内容 | 谁在管 |
 | --- | --- | --- |
-| `<MIXR_DATA_DIR>/logs/requests.jsonl` | 每条请求一行 JSON,30 个白名单字段 | 按 UTC 日界 + 5MiB 轮转 |
+| `<MIXR_DATA_DIR>/logs/requests.jsonl` | 每条请求一行 JSON,31 个白名单字段 | 按 UTC 日界 + 5MiB 轮转 |
 | `<MIXR_DATA_DIR>/logs/requests.jsonl.old` | 更早的遗留轮转文件 | **只读、不清理、不压缩** |
 | `<MIXR_DATA_DIR>/logs/responses/<id>/` | 返回正文归档(**默认关闭**) | `lib/log-retention.js`,默认保留 2 天 |
 | `<代码目录>/logs/launchd.log` | launchd 把 stdout/stderr 重定向到这里 | `lib/log-retention.js`,默认保留 2 天 |
@@ -313,6 +313,7 @@ lsof -nP -iTCP:8788 -sTCP:LISTEN
 | `key_id` / `key_source` | 用的是哪把 Key(**非明文**的来源标记) |
 | `effort` | **真的发上去的那一档**思考强度(转换层报回来的),不是客户端想要的那档 |
 | `model_in` / `model_out` | 客户端说的模型 / 实际发给上游的模型 |
+| `bytes_in` | 客户端请求体字节数。首字慢但输出很快时先看这一栏:带截图的历史会让请求体涨到十几 MB,而这段时间上游面板里看不见 |
 | `think` / `reasoning` / `tools_dropped` | 排查上游 400 的关键证据 |
 
 ### 用 `mixctl logs` 查(需服务运行)
