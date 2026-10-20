@@ -57,7 +57,8 @@ Not a good fit:
   subagents can use separate accounts. The session console lets each conversation use its own
   provider and model per slot; slots without an override inherit the global configuration.
 - **Local console.** `127.0.0.1:8788` manages providers, routes, sessions, slots, logs, and
-  backups.
+  backups. The usage page aggregates requests, tokens, cache hits, throughput, and
+  time-to-first-byte over a time range, and estimates cost from an editable price table.
 
 ## Quick start
 

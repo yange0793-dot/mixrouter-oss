@@ -422,7 +422,7 @@ MIXR_DATA_DIR=/absolute/path node scripts/diagnose-upstream.js --mode provider -
 
 ### 请求日志
 
-`<MIXR_DATA_DIR>/logs/requests.jsonl`,每条一行,31 个白名单字段。按 **UTC 跨日 + 5MiB**
+`<MIXR_DATA_DIR>/logs/requests.jsonl`,每条一行,32 个白名单字段。按 **UTC 跨日 + 5MiB**
 轮转,使用不覆盖的唯一归档名,默认保留 30 天;gzip 默认关闭,`MIXR_LOG_COMPRESS=on` 启用。
 旧 `requests.jsonl.old` 可查但不覆盖、不压缩、不自动清理。
 
@@ -433,6 +433,7 @@ MIXR_DATA_DIR=/absolute/path node scripts/diagnose-upstream.js --mode provider -
 | `attempts` / `failover` | 实际网络尝试次数 / 是否发生过失败转移 |
 | `err` / `err_class` | 终态错误文本 / 错误分型 |
 | `bytes_in` | 客户端请求体字节数(不是 token)。大上下文/带截图时可达十几 MB,而首字延迟主要由它决定 —— 上游面板只从收完请求体开始计时 |
+| `ttfb_ms` | 请求开始 → 上游首个响应头到达的毫秒数(多次尝试取最终给出响应的那一发;全部失败记到收尾)。`0` 表示没测到(如本地估算的 count_tokens) |
 | `slot` | 命中的槽位;空槽记 `none`,缺字段的旧日志记 `unknown` |
 | `sticky` / `strategy` / `rule` | 是否走了会话粘性 / 策略 / 命中的规则 id |
 | `key_id` / `key_source` | 用哪把 Key(**非明文**的来源标记) |
@@ -466,6 +467,15 @@ MIXR_DATA_DIR=/absolute/path node scripts/diagnose-upstream.js --mode provider -
   空槽记 `none`,旧日志缺字段记 `unknown`,不拿模型名或会话类型猜槽位。
 - `GET /api/metrics` 是 Prometheus 文本端点(进程生命周期 counter + 内存窗口 gauge),
   标签集固定,不按会话或对话标签展开。这是用量统计,不是价格换算或预算限流。
+- `GET /api/usage?range=&app=&provider=&model=&from=&to=` 读磁盘日志(含轮转归档)并可补上
+  内存环里更新的条目,按本地时区分桶补齐空桶。`range` 取 `today`(默认)/`24h`/`7d`/`30d`/`all`;
+  同时给 `from`/`to`(ISO)即自定义区间。返回 `scope`、`totals`(成本/token/缓存命中/速度/TTFB p50)、
+  `series`、`by_provider`、`by_model` 与 `pricing`(来源与未定价模型)。
+  `series[].t` 是本地时间:`bucket=hour` 为 `YYYY-MM-DDTHH:00`,`bucket=day` 为 `YYYY-MM-DD`。
+- `GET /api/pricing` 返回 `{pricing, custom, revision, source}`:`pricing` 是生效表(默认参考价与
+  自定义覆盖合并),`custom` 只含**自定义过的**键(控制台保存时原样写回,不会把默认表一起冻结进
+  磁盘)。`PUT /api/pricing` 整表覆盖写,可带 `expected_revision` 做乐观并发(冲突 409)。
+  价目表存 `<MIXR_DATA_DIR>/pricing.json`(0600)。默认价只是参考,以渠道实际计费为准。
 
 ### 返回归档(显式开启)
 

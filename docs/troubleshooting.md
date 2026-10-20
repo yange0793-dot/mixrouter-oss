@@ -296,7 +296,7 @@ lsof -nP -iTCP:8788 -sTCP:LISTEN
 
 | 文件 | 内容 | 谁在管 |
 | --- | --- | --- |
-| `<MIXR_DATA_DIR>/logs/requests.jsonl` | 每条请求一行 JSON,31 个白名单字段 | 按 UTC 日界 + 5MiB 轮转 |
+| `<MIXR_DATA_DIR>/logs/requests.jsonl` | 每条请求一行 JSON,32 个白名单字段 | 按 UTC 日界 + 5MiB 轮转 |
 | `<MIXR_DATA_DIR>/logs/requests.jsonl.old` | 更早的遗留轮转文件 | **只读、不清理、不压缩** |
 | `<MIXR_DATA_DIR>/logs/responses/<id>/` | 返回正文归档(**默认关闭**) | `lib/log-retention.js`,默认保留 2 天 |
 | `<代码目录>/logs/launchd.log` | launchd 把 stdout/stderr 重定向到这里 | `lib/log-retention.js`,默认保留 2 天 |

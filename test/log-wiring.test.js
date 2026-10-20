@@ -57,7 +57,7 @@ const ask = (model, extra = {}) => raw(proxyPort, 'POST', '/v1/messages',
 // 下面"白名单外字段会被静默丢弃"那条源码级断言才是它们的主场。
 const RUNTIME_FIELDS = ['app', 'attempts', 'bytes_in', 'cache_read', 'effort', 'err', 'err_class', 'failover', 'in', 'key_id', 'key_source', 'kind', 'model_in',
   'model_out', 'ms', 'out', 'pool', 'provider', 'rule', 'session', 'session_kind', 'slot', 'status', 'sticky',
-  'strategy', 'stream', 'ts', 'wire'].sort();
+  'strategy', 'stream', 'ts', 'ttfb_ms', 'wire'].sort();
 const keysOf = o => Object.keys(o).sort();
 
 test('setup:mock 上游 + 两个服务;渠道没有任何可用目标', async () => {

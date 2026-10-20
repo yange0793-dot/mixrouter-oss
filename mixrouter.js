@@ -50,6 +50,9 @@ const { createExplainer } = require('./lib/routing/explain');
 const { createSessionStore } = require('./lib/routing/sessions');
 const slotsLib = require('./lib/routing/slots');
 const { createRequestLog } = require('./lib/observability/request-log');
+// 用量统计(磁盘日志 + 内存环)与价目表(lib/usage/*):控制台 /api/usage 与 /api/pricing 的后端。
+const { createPricingStore } = require('./lib/usage/pricing');
+const { createUsageSummary } = require('./lib/usage/summary');
 // 备份池目标表**唯一**一份(见该模块文件头:/api/backups 与 mixctl 都从它取,谁都不许自己再列)。
 // LIVE_FILES 同时是本文件下面三个常量(DATA_DIR / CLAUDE_SETTINGS / CODEX_CONFIG)的真值来源 ——
 // 同一条路径规则存两份,失败模式不是当场出错,是**很久以后在别处出错**(实测过:默认值写错时
@@ -627,6 +630,27 @@ const requestLog = createRequestLog({
   onError: (error, ctx) => console.error(`[log] ${ctx.op} 落盘失败(${ctx.file}): ${error.message}`),
 });
 
+// ---- 用量统计与价目表 ------------------------------------------------------
+// 价目表落在数据目录(与 providers.json 同目录,0600):用户自定义价应跟着数据走,
+// 不跟着代码目录走,升级换版本时不会被覆盖。
+const PRICING_FILE = path.join(DATA_DIR, 'pricing.json');
+const pricingStore = createPricingStore({ file: PRICING_FILE });
+// 日志条目只存渠道**名字**(entry.provider = provider.name),而价目表的 provider 覆盖按 id 组织。
+// 这里把名字折回 id;查不到就返回空串,统计侧会退回用名字当键。
+const providerIdOf = name => {
+  for (const app of ['claude', 'codex']) {
+    const hit = store[app].find(p => p.name === name);
+    if (hit) return hit.id;
+  }
+  return '';
+};
+const usageSummary = createUsageSummary({
+  file: LOG_FILE,                             // 磁盘:requests.jsonl 及其轮转归档
+  memoryEntries: () => requestLog.list({ limit: Number.MAX_SAFE_INTEGER }).logs,
+  getPricing: () => pricingStore.read(),      // 每次现取:控制台刚保存的价目表要立刻生效
+  providerIdOf,
+});
+
 // 运行期日志清理:启动即清一次(处理停机期间攒下的旧日志),之后周期性再清。
 // 清理逻辑全在 lib/log-retention.js(带锁,可与 `mixctl gc` 并发而不互撞);这里只负责调度。
 // 失败一律吞掉并告警一次:清理是后台维护,不该让一条清不掉的旧日志影响转发。
@@ -1195,6 +1219,7 @@ const apiHandler = createConsoleHandler({
   sessionList, sessionRecord, storeOf, findProvider, providerApp, ghostRefs,
   mutateSessions, saveRoutes, saveSlots, saveStore, requestLog, compactWindow,
   slotsPublic, validateSlotPut,
+  usageSummary, pricingStore,
   switchClaude, switchCodex, switchZcode, switchRouter,
 });
 

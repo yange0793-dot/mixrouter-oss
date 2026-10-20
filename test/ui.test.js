@@ -130,9 +130,9 @@ async function harness(data = fixture()) {
   }
   const get = id => { assert.ok(elements.has(id), 'Unknown DOM id: ' + id); return elements.get(id); };
   const body = new Element('body', 'body');
-  // 导航视图列表必须与 public/index.html 的六个 data-view 一致:少一项,按 data-view 查元素
+  // 导航视图列表必须与 public/index.html 的七个 data-view 一致:少一项,按 data-view 查元素
   // 就查不到(null),点击断言会在离真因很远的地方红。
-  const nav = ['overview', 'providers', 'routes', 'sessions', 'diagnostics', 'settings'].map(view => { const el = new Element('nav-' + view, 'a'); el.dataset.view = view; return el; });
+  const nav = ['overview', 'usage', 'providers', 'routes', 'sessions', 'diagnostics', 'settings'].map(view => { const el = new Element('nav-' + view, 'a'); el.dataset.view = view; return el; });
   const tabs = new Element('tabs');
   // 导出下载:记录被点过的 <a download>,不真的落盘。
   const downloads = [];
@@ -1387,26 +1387,26 @@ test('「应用槽位到客户端」带回备份轮换:并进同一条提示,且
 });
 
 // ---------------------------------------------------------------- 第三期任务 4/6/8:概览、渠道、路由、压缩分账、设置与备份
-// 这一组用例盯的是六个视图重组之后**每一页新加的内容**,以及三条硬要求:
+// 这一组用例盯的是七个视图重组之后**每一页新加的内容**,以及三条硬要求:
 //   · 概览只读(不放第二套编辑器)
 //   · 最近实际落点只认会话的 actual,没有就写「暂无」,绝不拿路由预览冒充
 //   · 设置页只读那四个端点,且不请求任何配置正文
 
-test('概览:六个视图里最靠前的一页,只读,且不放任何可写控件', async () => {
+test('概览:七个视图里最靠前的一页,只读,且不放任何可写控件', async () => {
   const h = await harness();
   assert.equal(h.run('view'), 'overview', '默认视图是概览');
-  assert.equal(h.run('VIEWS.length'), 6);
-  assert.deepEqual(Array.from(h.run('VIEWS')), ['overview', 'providers', 'routes', 'sessions', 'diagnostics', 'settings']);
+  assert.equal(h.run('VIEWS.length'), 7);
+  assert.deepEqual(Array.from(h.run('VIEWS')), ['overview', 'usage', 'providers', 'routes', 'sessions', 'diagnostics', 'settings']);
   assert.equal(h.run("VIEW_LABELS.diagnostics"), '诊断');
   assert.equal(h.run("VIEW_LABELS.settings"), '设置与备份');
-  // 六个视图节默认都藏起来,由 showView 统一开关
-  for (const v of ['overview', 'providers', 'routes', 'sessions', 'diagnostics', 'settings']) {
+  // 七个视图节默认都藏起来,由 showView 统一开关
+  for (const v of ['overview', 'usage', 'providers', 'routes', 'sessions', 'diagnostics', 'settings']) {
     const el = h.get('view-' + v);
     assert.ok(el, `视图节 view-${v} 必须存在`);
     if (v !== 'overview') assert.equal(el.style.display, 'none', `view-${v} 默认必须是 display:none`);
   }
   // 概览节里不许有可写控件:input/select/textarea 一个都不行,button 只能是跳转。
-  const overviewHtml = html.slice(html.indexOf('<section id="view-overview"'), html.indexOf('<section id="view-providers"'));
+  const overviewHtml = html.slice(html.indexOf('<section id="view-overview"'), html.indexOf('<section id="view-usage"'));
   assert.doesNotMatch(overviewHtml, /<input\b/, '概览节不许有 input');
   assert.doesNotMatch(overviewHtml, /<select\b/, '概览节不许有 select');
   assert.doesNotMatch(overviewHtml, /<textarea\b/, '概览节不许有 textarea');
@@ -1775,13 +1775,13 @@ test('视图切换:gotoLogs 走 showView,视图改名后会话页的「日志」
   assert.equal(h.run('logsTimer'), null, '离开诊断页要停掉自动刷新');
 });
 
-test('视图切换:六个视图各切一次,视图节显隐与面包屑都对得上', async () => {
+test('视图切换:七个视图各切一次,视图节显隐与面包屑都对得上', async () => {
   const h = await harness();
-  for (const [v, label] of [['overview', '概览'], ['providers', '渠道与 Key'], ['routes', '路由'], ['sessions', '会话'], ['diagnostics', '诊断'], ['settings', '设置与备份']]) {
+  for (const [v, label] of [['overview', '概览'], ['usage', '用量统计'], ['providers', '渠道与 Key'], ['routes', '路由'], ['sessions', '会话'], ['diagnostics', '诊断'], ['settings', '设置与备份']]) {
     h.run(`showView(${JSON.stringify(v)})`);
     assert.equal(h.run('view'), v);
     assert.equal(h.get('breadcrumb-view').textContent, label, `${v} 的面包屑`);
-    for (const other of ['overview', 'providers', 'routes', 'sessions', 'diagnostics', 'settings']) {
+    for (const other of ['overview', 'usage', 'providers', 'routes', 'sessions', 'diagnostics', 'settings']) {
       const display = h.get('view-' + other).style.display;
       if (other === v) assert.notEqual(display, 'none', `${v} 自己要显示`);
       else assert.equal(display, 'none', `${other} 在 ${v} 时应当隐藏`);

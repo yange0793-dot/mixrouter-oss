@@ -60,6 +60,21 @@ function toastWithBackupWarnings(okMsg, res) {
 }
 const fmtTok = n => n == null ? '—' : n >= 1000000 ? (n / 1000000).toFixed(1) + 'm' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
 const fmtBytes = n => !n ? '-' : n >= 1048576 ? (n / 1048576).toFixed(1) + 'MB' : n >= 1024 ? Math.round(n / 1024) + 'KB' : n + 'B';
+// 单条请求的派生指标。分母为 0 / 没测到一律显示「—」,不拿 0 冒充「极快」或「没命中」。
+const fmtRate = l => {
+  const out = Number(l.out), ms = Number(l.ms);
+  if (!Number.isFinite(out) || !Number.isFinite(ms) || ms <= 0 || !out) return '—';
+  const tps = out * 1000 / ms;
+  return (tps >= 100 ? Math.round(tps) : tps.toFixed(1)) + ' tok/s';
+};
+// 首字延迟:上游第一个字节到达的耗时(流式与非流式都记)。
+const fmtTtfb = ms => Number(ms) > 0 ? (ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : Math.round(ms) + 'ms') : '—';
+const cacheHitText = l => {
+  const read = Number(l.cache_read) || 0, input = Number(l.in) || 0;
+  if (!read && !input) return '—';
+  const pct = read * 100 / (read + input);
+  return `${l.cache_read || '-'}${input || read ? ' · ' + pct.toFixed(1) + '%' : ''}`;
+};
 const fmtUp = s => s == null ? '—' : s >= 3600 ? (s/3600).toFixed(1) + 'h' : s >= 60 ? Math.floor(s/60) + 'm' + Math.floor(s%60) + 's' : s + 's';
 
 // Dialogs share Escape, focus containment and restoration, including destructive confirmations.
@@ -172,8 +187,8 @@ setInterval(refresh, 5000);
 window.addEventListener('offline', () => { setConnection(false, '网络连接已断开'); renderProviders(); });
 window.addEventListener('online', refresh);
 
-const VIEWS = ['overview', 'providers', 'routes', 'sessions', 'diagnostics', 'settings'];
-const VIEW_LABELS = { overview: '概览', providers: '渠道与 Key', routes: '路由', sessions: '会话', diagnostics: '诊断', settings: '设置与备份' };
+const VIEWS = ['overview', 'usage', 'providers', 'routes', 'sessions', 'diagnostics', 'settings'];
+const VIEW_LABELS = { overview: '概览', usage: '用量统计', providers: '渠道与 Key', routes: '路由', sessions: '会话', diagnostics: '诊断', settings: '设置与备份' };
 // 切视图只有这一条路径。原先 nav 的 onclick 里写着全部逻辑,gotoLogs() 只能去"点"那个 <a>
 // ——视图一改名,选择器返回 null,.click() 就当场抛 TypeError(会话页的「日志」按钮变成死按钮,
 // 而且没有任何提示)。抽成函数后,程序化切换不再依赖导航项是否存在。
@@ -189,6 +204,9 @@ function showView(name) {
   for (const v of VIEWS) { const el = $('view-' + v); if (el) el.style.display = v === view ? '' : 'none'; }
   $('breadcrumb-view').textContent = VIEW_LABELS[view];
   if (view === 'diagnostics') { loadLogs(); loadStats(); restartLogsTimer(); } else { clearInterval(logsTimer); logsTimer = null; }
+  // 用量页自己管轮询与在途请求:离开时停表,回来时立刻拉一次(切页不重复初始化筛选)。
+  if (typeof usageSetVisible === 'function') usageSetVisible(view === 'usage');
+  if (view === 'usage' && typeof renderUsage === 'function') renderUsage();
   if (view === 'providers') { renderProviders(); ensureHealth(); }
   if (view === 'sessions') renderSessions();
   if (view === 'routes' && !windowSnapshot && !windowLoadTask) loadCompactWindow();
@@ -2287,7 +2305,8 @@ async function loadLogs() {
       return `<tr><td>${esc(l.ts.slice(5, 19))}</td><td>${sess}</td>
         <td style="font-family:inherit">${appTag}${esc(l.provider || '-')}${fo}${tr}</td>
         <td>${esc(l.model_in)}${l.model_out && l.model_out !== l.model_in ? ' → ' + esc(l.model_out) : ''}</td>
-        <td>${l.in || '-'}</td><td>${l.out || '-'}</td><td>${l.cache_read || '-'}</td><td>${fmtBytes(l.bytes_in)}</td>
+        <td>${l.in || '-'}</td><td>${l.out || '-'}</td><td>${l.cache_read || '-'}</td><td>${cacheHitText(l)}</td>
+        <td>${fmtRate(l)}</td><td>${fmtTtfb(l.ttfb_ms)}</td><td>${fmtBytes(l.bytes_in)}</td>
         <td>${l.ms ? l.ms + 'ms' : '-'}</td><td class="${cls}">${l.status || '-'}</td>
         <td style="color:var(--err)">${esc(l.err || '')}${l.err_class ? ` <span class="cool" title="失败分类 err_class">${esc(l.err_class)}</span>` : ''}</td></tr>`;
     }).join('');
