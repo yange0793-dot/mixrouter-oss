@@ -309,3 +309,17 @@ test('刻度文字要短、X 轴刻度不跳号', async () => {
   // Y 轴不出现两位小数的 M(750.00M 这种会把左边距撑爆)
   assert.doesNotMatch(svg, /\d\.\d\dM</, '刻度文字只保留 0–1 位小数');
 });
+
+test('轮询不重建没变化的筛选下拉,避免下拉自己收起/滚回顶部', async () => {
+  const h = harness();
+  await h.run('loadUsage()');
+  const provider = h.get('usage-provider');
+  const before = provider._html;
+  await h.run('loadUsage()');
+  assert.equal(provider._html, before, '选项没变时不该重新写 innerHTML');
+  // 选项真的变了(换了区间,模型列表变化)才重建
+  h.setResponse({ ...usageFixture(), by_model: [{ model: 'only-model', reqs: 1, tokens_in: 1, tokens_out: 1, cache_read: 0, cost: 0 }] });
+  await h.run('loadUsage()');
+  assert.equal(provider._html, before, '供应商清单没变,仍然不重建');
+  assert.match(h.get('usage-model')._html, /only-model/, '模型清单变了才重建');
+});

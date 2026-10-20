@@ -258,7 +258,10 @@ function usageRenderFilters(data) {
     const values = new Set(items.map(valueOf));
     const options = ['<option value="">' + (id === 'usage-provider' ? '全部供应商' : '全部模型') + '</option>']
       .concat(items.map(item => `<option value="${esc(valueOf(item))}">${esc(labelOf(item))}</option>`));
-    el.innerHTML = options.join('');
+    // 只在选项真的变了才重建。默认 60 秒轮询下每次都 innerHTML 一遍,会让正打开着的下拉
+    // 收起来、列表滚到顶 —— 看着像面板自己在动。清单没变就只同步选中值。
+    const html = options.join('');
+    if (el._mixrOptions !== html) { el.innerHTML = html; el._mixrOptions = html; }
     // 当前值不在清单里(例如换了区间后该模型没有请求了)就退回「全部」,并把状态同步回去,
     // 不然会出现"下拉显示全部、请求还带着旧筛选"的错位。
     if (current && values.has(current)) el.value = current;
