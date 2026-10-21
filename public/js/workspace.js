@@ -21,6 +21,8 @@
     diagnostics: '诊断',
     settings: '设置与备份',
   };
+  // 渠道页的标题按客户端写:侧栏的三个客户端入口都落在同一个视图上,标题必须能说明现在看的是谁。
+  const CLIENTS = { claude: 'Claude Code', codex: 'Codex', zcode: 'ZCode' };
   const KEYS = { view: 'mixr.ui.view', app: 'mixr.ui.app', theme: 'mixr.ui.theme' };
   const THEMES = ['system', 'light', 'dark'];
   const DEFAULT_THEME = 'system';
@@ -172,16 +174,141 @@
     const main = el('main');
     if (main && typeof main.focus === 'function') main.focus();
   }
-  function setTitle(viewName) {
-    try { document.title = `${LABELS[viewName] || LABELS.overview} · Mixrouter`; } catch {}
+  function hasClass(node, name) {
+    if (!node) return false;
+    if (node.classList && typeof node.classList.contains === 'function') {
+      if (node.classList.contains(name)) return true;
+    }
+    return String(node.className || '').split(/\s+/).includes(name);
   }
-  function setNavState(viewName) {
+  function childNodes(node) {
+    return node && node.children ? Array.prototype.slice.call(node.children) : [];
+  }
+  function viewTitle(viewName, appName) {
+    if (viewName === 'providers') {
+      const app = APPS.includes(appName) ? appName : DEFAULT_APP;
+      return `${CLIENTS[app]} 渠道`;
+    }
+    return LABELS[viewName] || LABELS.overview;
+  }
+  function setTitle(viewName, appName) {
+    const title = viewTitle(viewName, appName);
+    // #breadcrumb-view 就是顶栏那个大标题。app.js 在 showView 里先写通用名,这里再按客户端收口:
+    // 它一定跑在钩子之后,所以最终显示以这里为准。
+    const node = el('breadcrumb-view');
+    if (node) node.textContent = title;
+    try { document.title = `${title} · Mixrouter`; } catch {}
+  }
+  // 客户端入口与普通页面入口共用一套 active:一个 data-app 链接只有在“渠道页 + 这个客户端”时亮,
+  // 普通链接只看视图名。两者互斥,页面上永远只有一个 aria-current。
+  function setNavState(viewName, appName) {
+    const app = APPS.includes(appName) ? appName : state.app;
     for (const link of all('nav a')) {
-      const on = link.dataset && link.dataset.view === viewName;
+      const data = link.dataset || {};
+      const on = data.app
+        ? (viewName === 'providers' && data.view === 'providers' && data.app === app)
+        : (data.view === viewName && !data.app);
       link.classList.toggle('active', on);
       if (on) link.setAttribute('aria-current', 'page');
       else link.removeAttribute('aria-current');
     }
+  }
+
+  // ---------------------------------------------------------------- 顶栏外壳
+
+  // 每个视图的 .head > .actions 原样搬进顶栏,切页时再放回它自己的 head。
+  // 记下原父节点与它后面的兄弟,回来时才能保持原有顺序(而不是一律追加到末尾)。
+  let actionsRecord = null;
+  function restorePageActions() {
+    const record = actionsRecord;
+    actionsRecord = null;
+    if (!record || !record.node || !record.parent) return;
+    try {
+      if (record.next && record.next.parentElement === record.parent) record.parent.insertBefore(record.node, record.next);
+      else record.parent.appendChild(record.node);
+    } catch {
+      try { record.parent.appendChild(record.node); } catch {}
+    }
+  }
+  function adoptPageActions(viewName) {
+    const tray = el('topbar-page-actions');
+    if (!tray) return;
+    restorePageActions();
+    const section = el('view-' + viewName);
+    if (!section) return;
+    let head = null;
+    for (const child of childNodes(section)) if (hasClass(child, 'head')) { head = child; break; }
+    if (!head) return;
+    let actions = null;
+    for (const child of childNodes(head)) if (hasClass(child, 'actions')) { actions = child; break; }
+    if (!actions) return;
+    const parent = actions.parentElement || head;
+    const siblings = childNodes(parent);
+    const index = siblings.indexOf(actions);
+    actionsRecord = { node: actions, parent, next: index >= 0 ? siblings[index + 1] || null : null };
+    try { tray.appendChild(actions); } catch { actionsRecord = null; }
+  }
+
+  // 顶栏图标只是当前页的注脚:渠道页按客户端区分,其余按视图。字符串全是本文件里的常量。
+  const ICONS = {
+    overview: '<rect x="2.5" y="2.5" width="5.2" height="5.2" rx="1.2"/><rect x="10.3" y="2.5" width="5.2" height="5.2" rx="1.2"/><rect x="2.5" y="10.3" width="5.2" height="5.2" rx="1.2"/><rect x="10.3" y="10.3" width="5.2" height="5.2" rx="1.2"/>',
+    routes: '<circle cx="4" cy="9" r="1.8"/><circle cx="14" cy="4.5" r="1.8"/><circle cx="14" cy="13.5" r="1.8"/><path d="M5.8 9c2 0 3-4.5 6.4-4.5M5.8 9c2 0 3 4.5 6.4 4.5"/>',
+    sessions: '<path d="M3 4h12v7.5H8L4.5 14v-2.5H3z"/><path d="M6 7h6"/>',
+    usage: '<path d="M2.5 14.5h13"/><path d="M5 14V9M9 14V5M13 14v-3"/>',
+    diagnostics: '<path d="M2 9h3l2-4 3 8 2-4h4"/>',
+    settings: '<path d="M3 5.5h12M3 12.5h12"/><circle cx="7" cy="5.5" r="1.6"/><circle cx="11.5" cy="12.5" r="1.6"/>',
+    claude: '<rect x="2.5" y="3" width="13" height="5" rx="1.5"/><rect x="2.5" y="10" width="13" height="5" rx="1.5"/><path d="M5.5 5.5h.01M5.5 12.5h.01"/>',
+    codex: '<path d="M3 5.5 9 3l6 2.5v7L9 15l-6-2.5z"/><path d="M3 5.5 9 8l6-2.5M9 8v7"/>',
+    zcode: '<path d="M4 4h10l-10 10h10"/>',
+  };
+  function setViewIcon(viewName, appName) {
+    const icon = el('topbar-view-icon');
+    if (!icon) return;
+    const key = viewName === 'providers'
+      ? (APPS.includes(appName) ? appName : DEFAULT_APP)
+      : viewName;
+    const parts = ICONS[key] || ICONS.overview;
+    try {
+      icon.innerHTML = '<svg viewBox="0 0 18 18" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' + parts + '</svg>';
+    } catch { /* 没有 innerHTML 的环境(测试替身)只跳过图标 */ }
+  }
+
+  function syncBodyState(viewName, appName) {
+    const body = document.body;
+    if (!body) return;
+    try { body.setAttribute('data-view', viewName); } catch {}
+    try { body.setAttribute('data-app', APPS.includes(appName) ? appName : DEFAULT_APP); } catch {}
+  }
+  // 用量页有自己的「立即同步」,顶栏的全局刷新在那里只会让人以为数据没刷新;其余页保留。
+  function syncRefresh(viewName) {
+    const button = el('refresh-btn');
+    if (button) button.hidden = viewName === 'usage';
+  }
+  function eachH1(node, fn) {
+    for (const child of childNodes(node)) {
+      if (String(child.tagName || '').toUpperCase() === 'H1') fn(child);
+      eachH1(child, fn);
+    }
+  }
+  // shell-ready 之后顶栏已经给出页标题,章节里的 h1 只留语义:视觉上藏起来,读屏照常读。
+  // 样式表按 body.shell-ready 处理;这里同时补 sr-only,脚本单独也能保证不出现两个大标题。
+  function markShellReady() {
+    const body = document.body;
+    if (!body) return;
+    try { body.classList.add('shell-ready'); } catch {}
+    for (const name of VIEWS) {
+      eachH1(el('view-' + name), h1 => {
+        if (h1 && h1.classList && typeof h1.classList.add === 'function') h1.classList.add('sr-only');
+      });
+    }
+  }
+  function syncChrome(viewName, appName) {
+    setNavState(viewName, appName);
+    setViewIcon(viewName, appName);
+    adoptPageActions(viewName);
+    syncRefresh(viewName);
+    syncBodyState(viewName, appName);
+    setTitle(viewName, appName);
   }
 
   // 内层导航:先确定目标状态,再调用 app.js。两个 hook 里读到的 state 已经是新值,
@@ -191,11 +318,12 @@
     const nextApp = APPS.includes(appName) ? appName : state.app;
     state.view = viewName;
     state.app = nextApp;
-    setNavState(viewName);
+    // 先落外壳(导航、标题、顶栏动作),再让 app.js 切视图:钩子回来时状态已经是新的,
+    // 不会先闪一下旧标题或旧动作。
+    syncChrome(viewName, nextApp);
     if (hasGlobalFunction('setApp')) { try { window.setApp(nextApp); } catch (e) { console.error(e); } }
     if (hasGlobalFunction('showView')) { try { window.showView(viewName); } catch (e) { console.error(e); } }
     syncHash();
-    setTitle(viewName);
   }
 
   function onRouteChange() {
@@ -559,7 +687,8 @@
     closeDrawer({ restoreFocus: false });
     if (wasDrawer) focusMain();
     syncHash();
-    setTitle(name);
+    // 钩子里的标题必须按当前客户端收口:切到渠道页时 URL 里带的是 app,不是视图名。
+    syncChrome(state.view, state.app);
     syncSidebarInert();
   }
   function workspaceAppChanged(app) {
@@ -567,12 +696,15 @@
     state.app = app;
     writePref(KEYS.app, app);
     syncHash();
+    syncChrome(state.view, state.app);
     syncSidebarInert();
   }
 
   try {
     window.workspaceViewChanged = workspaceViewChanged;
     window.workspaceAppChanged = workspaceAppChanged;
+    // 侧栏链接点击走这里:一次性给出视图与客户端,只写一条 URL 历史(app.js 的 onclick 会用)。
+    window.workspaceNavigate = navigateTo;
   } catch {}
 
   // ---------------------------------------------------------------- 初始化
@@ -608,7 +740,9 @@
     navigateTo(initialView, initialApp);
     initialized = true;
     rewriteHash();
-    setTitle(state.view);
+    setTitle(state.view, state.app);
+    // 外壳接管标题之后再加这个类:没有 JS 时章节 h1 仍是页面上唯一的标题。
+    markShellReady();
     watchSidebarInert();
     syncSidebarInert();
   }

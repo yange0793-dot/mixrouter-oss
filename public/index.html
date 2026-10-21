@@ -23,29 +23,45 @@
       </span>
       <div class="logo-text"><span class="logo-name">Mixrouter</span><small>本机 AI 网关</small></div>
     </div>
+    <!-- 客户端就是渠道页的三个入口:点它直接落到 #providers?app=…,只有当前客户端亮起。
+         data-view 仍写 providers,app.js 的 data-view 逻辑不会失配。 -->
+    <div class="nav-label">客户端</div>
+    <nav class="nav-group nav-clients" aria-label="客户端">
+      <a href="#providers" data-view="providers" data-app="claude" aria-label="Claude Code 渠道"><span class="appdot" aria-hidden="true"></span><span>Claude</span></a>
+      <a href="#providers?app=codex" data-view="providers" data-app="codex" aria-label="Codex 渠道"><span class="appdot" aria-hidden="true"></span><span>Codex</span></a>
+      <a href="#providers?app=zcode" data-view="providers" data-app="zcode" aria-label="ZCode 渠道"><span class="appdot" aria-hidden="true"></span><span>ZCode</span></a>
+    </nav>
     <div class="nav-label">工作区</div>
     <nav class="nav-group" aria-label="工作区">
       <a href="#overview" data-view="overview" class="active" aria-current="page"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.5" y="2.5" width="5.2" height="5.2" rx="1.2"/><rect x="10.3" y="2.5" width="5.2" height="5.2" rx="1.2"/><rect x="2.5" y="10.3" width="5.2" height="5.2" rx="1.2"/><rect x="10.3" y="10.3" width="5.2" height="5.2" rx="1.2"/></svg><span>概览</span></a>
-      <a href="#providers" data-view="providers"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.5" y="3" width="13" height="5" rx="1.5"/><rect x="2.5" y="10" width="13" height="5" rx="1.5"/><path d="M5.5 5.5h.01M5.5 12.5h.01"/></svg><span>渠道与 Key</span></a>
       <a href="#routes" data-view="routes"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="4" cy="9" r="1.8"/><circle cx="14" cy="4.5" r="1.8"/><circle cx="14" cy="13.5" r="1.8"/><path d="M5.8 9c2 0 3-4.5 6.4-4.5M5.8 9c2 0 3 4.5 6.4 4.5"/></svg><span>路由</span></a>
-      <a href="#sessions" data-view="sessions"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4h12v7.5H8L4.5 14v-2.5H3z"/><path d="M6 7h6"/></svg><span>会话</span></a>
     </nav>
     <div class="nav-label">观测</div>
     <nav class="nav-group" aria-label="观测">
+      <a href="#sessions" data-view="sessions"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4h12v7.5H8L4.5 14v-2.5H3z"/><path d="M6 7h6"/></svg><span>会话</span></a>
       <a href="#usage" data-view="usage"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.5 14.5h13"/><path d="M5 14V9M9 14V5M13 14v-3"/></svg><span>用量统计</span></a>
-      <a href="#diagnostics" data-view="diagnostics"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 9h3l2-4 3 8 2-4h4"/></svg><span>诊断</span></a>
     </nav>
-    <nav class="nav-group nav-footer" aria-label="设置">
+    <nav class="nav-group nav-footer" aria-label="系统">
+      <a href="#diagnostics" data-view="diagnostics"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 9h3l2-4 3 8 2-4h4"/></svg><span>诊断</span></a>
       <a href="#settings" data-view="settings"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 5.5h12M3 12.5h12"/><circle cx="7" cy="5.5" r="1.6"/><circle cx="11.5" cy="12.5" r="1.6"/></svg><span>设置与备份</span></a>
     </nav>
     <div class="sidebar-footer">
-      <div class="status">
-        <div class="run" role="status"><span class="dot" aria-hidden="true"></span><span id="connection-label">正在连接</span></div>
-        <div class="row"><span>代理端口</span><b id="st-proxy">—</b></div>
-        <div class="row"><span>控制台端口</span><b id="st-ui">—</b></div>
-        <div class="row"><span>运行时长</span><b id="st-up">—</b></div>
-        <div class="row"><span>今日请求</span><b id="st-req">—</b></div>
-        <div class="row"><span>tokens 入 / 出</span><b id="st-tok">—</b></div>
+      <!-- 连接状态默认只露一行;端口、时长与今日用量收进 <details>,st-* ID 一个不少。 -->
+      <details class="sidebar-status">
+        <summary><span class="run" role="status"><span class="dot" aria-hidden="true"></span><span id="connection-label">正在连接</span></span></summary>
+        <div class="status">
+          <div class="row"><span>代理端口</span><b id="st-proxy">—</b></div>
+          <div class="row"><span>控制台端口</span><b id="st-ui">—</b></div>
+          <div class="row"><span>运行时长</span><b id="st-up">—</b></div>
+          <div class="row"><span>今日请求</span><b id="st-req">—</b></div>
+          <div class="row"><span>tokens 入 / 出</span><b id="st-tok">—</b></div>
+        </div>
+      </details>
+      <div class="sidebar-tools">
+        <label class="theme-control" for="theme-select"><span>主题</span>
+          <select id="theme-select" aria-label="主题"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select>
+        </label>
+        <span class="version">v<span id="ver">—</span></span>
       </div>
     </div>
   </aside>
@@ -56,17 +72,21 @@
       <button class="icon-button sidebar-toggle" id="sidebar-toggle" type="button" aria-label="打开导航" aria-expanded="false" aria-controls="sidebar">
         <svg class="icon" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 4.5h12M3 9h12M3 13.5h12"/></svg>
       </button>
-      <div class="breadcrumb" aria-label="当前位置"><span class="breadcrumb-base">工作区</span><span class="breadcrumb-sep" aria-hidden="true">/</span><strong id="breadcrumb-view">概览</strong></div>
-      <div class="top-meta">
-        <button class="quick-nav-button" id="quick-nav-open" type="button" aria-label="快速跳转" title="快速跳转" aria-haspopup="dialog" aria-keyshortcuts="Meta+K Control+K">
-          <svg class="icon" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="4.5"/><path d="M11.5 11.5 15 15"/></svg>
-          <span class="quick-nav-label" aria-hidden="true">跳转</span><kbd class="kbd" id="quick-nav-kbd" aria-hidden="true">⌘K</kbd>
-        </button>
-        <label class="theme-control" for="theme-select"><span aria-hidden="true">主题</span>
-          <select id="theme-select" aria-label="主题"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select>
-        </label>
-        <span>v<span id="ver">—</span></span>
-        <button class="small" id="refresh-btn" onclick="refresh()" aria-label="刷新控制台状态">刷新</button>
+      <!-- 顶栏标题就是当前页标题:章节里的 h1 在 shell-ready 后只留给读屏,不再出现第二个大标题。 -->
+      <div class="topbar-heading">
+        <span class="topbar-view-icon" id="topbar-view-icon" aria-hidden="true"></span>
+        <span class="topbar-title" id="breadcrumb-view">概览</span>
+      </div>
+      <div class="topbar-actions">
+        <!-- 当前页 .head > .actions 由 workspace.js 原样搬进来(同一批 DOM 节点),切页时再放回原处。 -->
+        <div class="topbar-page-actions" id="topbar-page-actions"></div>
+        <div class="topbar-quiet">
+          <button class="quick-nav-button" id="quick-nav-open" type="button" aria-label="快速跳转" title="快速跳转" aria-haspopup="dialog" aria-keyshortcuts="Meta+K Control+K">
+            <svg class="icon" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="4.5"/><path d="M11.5 11.5 15 15"/></svg>
+            <span class="quick-nav-label" aria-hidden="true">跳转</span><kbd class="kbd" id="quick-nav-kbd" aria-hidden="true">⌘K</kbd>
+          </button>
+          <button class="small quiet" id="refresh-btn" onclick="refresh()" aria-label="刷新控制台状态">刷新</button>
+        </div>
       </div>
     </header>
     <main id="main" tabindex="-1">
@@ -102,47 +122,114 @@
 
       <section id="view-usage" style="display:none" aria-labelledby="usage-title">
         <div class="head">
-          <div><h1 id="usage-title">用量统计</h1>
-            <div class="sub">按时间、协议组、渠道与模型汇总真实消耗：请求数、tokens 与缓存命中，全部来自本机请求日志。</div></div>
+          <div><h1 id="usage-title">用量统计</h1></div>
           <div class="actions">
             <button class="small" id="usage-sync" onclick="loadUsage()">立即同步</button>
             <label class="rc-mini" for="usage-interval">同步<select id="usage-interval" onchange="setUsageInterval(this.value)"><option value="30">每 30 秒</option><option value="60" selected>每 60 秒</option><option value="300">每 5 分钟</option><option value="0">关闭</option></select></label>
+            <span class="usage-last-sync" id="usage-last-sync" role="status">尚未同步</span>
+            <button class="small" type="button" id="usage-source-toggle" onclick="toggleUsageSource()" aria-expanded="false" aria-controls="usage-source">数据来源</button>
           </div>
+        </div>
+        <!-- 一句话说明数据来自哪里、筛选作用于哪些区域:不点开「数据来源」也知道在看什么。 -->
+        <p class="hint usage-intro" id="usage-intro">数字来自本机请求日志与尚未落盘的内存窗口；区间、协议组与筛选同时作用于下面的卡片、热力图和所有表格。</p>
+        <!-- 统计口径不占首屏:默认收起,由「数据来源」按钮展开;开合记在浏览器偏好里。 -->
+        <div class="panel usage-source" id="usage-source" hidden>
+          <h2>数据来源与统计口径</h2>
+          <div class="hint" id="usage-source-detail">请求数、tokens 与缓存命中全部来自本机请求日志（内存中最近的请求加上 logs/requests.jsonl）。「全部」指本机当前可用的日志范围，不是账号历史总量，也不读取任何上游账单。tokens 取上游回报的真实用量；缓存命中率 = 缓存读 /（新增输入 + 缓存读）。成功率按请求最终状态统计，断流与客户端取消即使 HTTP 状态是 200 也计为失败。</div>
         </div>
         <div class="usage-bar">
-          <div class="usage-range" role="group" aria-label="统计区间">
-            <button class="seg" data-range="today" onclick="setUsageRange('today')">今天</button>
-            <button class="seg" data-range="24h" onclick="setUsageRange('24h')">近 24 小时</button>
-            <button class="seg" data-range="7d" onclick="setUsageRange('7d')">近 7 天</button>
-            <button class="seg" data-range="30d" onclick="setUsageRange('30d')">近 30 天</button>
-            <button class="seg" data-range="all" onclick="setUsageRange('all')">全部</button>
+          <!-- 协议组按协议标注,不按客户端推断:ZCode 走哪种协议就归到哪一组。 -->
+          <div class="usage-apps" role="group" aria-label="协议组">
+            <button class="seg" type="button" data-usage-app="" onclick="setUsageFilter('app', '')" aria-pressed="true" aria-label="全部协议组">全部</button>
+            <button class="seg" type="button" data-usage-app="claude" onclick="setUsageFilter('app', 'claude')" aria-pressed="false" aria-label="Anthropic Messages 协议">Anthropic</button>
+            <button class="seg" type="button" data-usage-app="codex" onclick="setUsageFilter('app', 'codex')" aria-pressed="false" aria-label="OpenAI Responses 与 Chat Completions 协议">OpenAI</button>
           </div>
-          <select id="usage-app" aria-label="协议组" onchange="setUsageFilter('app', this.value)"><option value="">全部协议组</option><option value="claude">Claude / Anthropic</option><option value="codex">Codex / OpenAI</option></select>
-          <select id="usage-provider" aria-label="供应商" onchange="setUsageFilter('provider', this.value)"><option value="">全部供应商</option></select>
-          <select id="usage-model" aria-label="模型" onchange="setUsageFilter('model', this.value)"><option value="">全部模型</option></select>
+          <div class="usage-filters">
+            <label class="usage-filter" for="usage-range-select"><span>区间</span>
+              <select id="usage-range-select" onchange="setUsageRange(this.value)"><option value="today">今天</option><option value="24h">近 24 小时</option><option value="7d">近 7 天</option><option value="30d">近 30 天</option><option value="all" selected>全部</option></select></label>
+            <label class="usage-filter" for="usage-provider"><span>供应商</span>
+              <select id="usage-provider" onchange="setUsageFilter('provider', this.value)"><option value="">全部供应商</option></select></label>
+            <label class="usage-filter" for="usage-model"><span>模型</span>
+              <select id="usage-model" onchange="setUsageFilter('model', this.value)"><option value="">全部模型</option></select></label>
+            <label class="usage-filter" for="usage-status-filter"><span>状态</span><span class="sr-only">（筛选本页全部卡片、热力图与表格）</span>
+              <select id="usage-status-filter" onchange="setUsageStatus(this.value)"><option value="">全部状态</option><option value="ok">仅成功</option><option value="err">仅失败</option></select></label>
+            <button class="small" type="button" id="usage-clear-filters" onclick="clearUsageFilters()">清除筛选</button>
+          </div>
+          <!-- 旧版协议组下拉保留为兼容层:隐藏但仍在 DOM 里,老脚本读到空值不会报错。 -->
+          <select id="usage-app" aria-label="协议组" hidden onchange="setUsageFilter('app', this.value)"><option value="">全部协议组</option><option value="claude">Claude / Anthropic</option><option value="codex">Codex / OpenAI</option></select>
         </div>
-        <div class="usage-grid">
-          <div class="metric"><span class="metric-label">总请求数</span><b id="usage-reqs">—</b><small id="usage-ok-rate">成功率读取中</small></div>
-          <div class="metric"><span class="metric-label">真实消耗 Tokens</span><b id="usage-tokens">—</b><small id="usage-token-split">输入 / 输出 / 缓存</small></div>
-          <div class="metric"><span class="metric-label">缓存命中率</span><b id="usage-cache">—</b><small id="usage-cache-hint">缓存读 / (新增输入 + 缓存读)</small></div>
-        </div>
-        <div class="usage-chart">
-          <div class="usage-chart-head"><span id="usage-range-label">使用趋势</span>
-            <div class="usage-tabs" role="group" aria-label="图表指标">
-              <button class="seg" data-metric="tokens" onclick="setUsageMetric('tokens')">Tokens</button>
-              <button class="seg" data-metric="reqs" onclick="setUsageMetric('reqs')">请求</button>
+        <div id="usage-data-frame">
+          <div class="usage-grid">
+            <div class="metric"><span class="metric-label">总请求数</span><b id="usage-reqs">—</b><small id="usage-request-hint">含成功与失败</small></div>
+            <div class="metric"><span class="metric-label">真实消耗 Tokens</span><b id="usage-tokens">—</b><small id="usage-token-split">输入 / 输出 / 缓存</small></div>
+            <div class="metric"><span class="metric-label">缓存命中率</span><b id="usage-cache">—</b><small id="usage-cache-hint">缓存读 / (新增输入 + 缓存读)</small></div>
+            <div class="metric"><span class="metric-label">成功率</span><b id="usage-success">—</b><small id="usage-ok-rate">按请求最终状态</small></div>
+          </div>
+          <details class="usage-more-metrics" id="usage-more-metrics">
+            <summary>更多指标</summary>
+            <div class="usage-more-grid">
+              <div><span>输出速度</span><b id="usage-speed">—</b></div>
+              <!-- ttfb_ms 记的是上游响应头到达,不是首个内容 token:标签不能写成「首字」。 -->
+              <div><span title="请求发出到上游响应头到达的 P50，不是首个内容 token 的时间">首响应 P50</span><b id="usage-ttfb">—</b></div>
+            </div>
+          </details>
+          <div class="usage-chart">
+            <div class="usage-chart-head">
+              <div class="usage-chart-title"><h2 id="usage-heatmap-title">用量热力图</h2><p class="hint" id="usage-range-label">最近 53 周</p></div>
+              <div class="usage-tabs" role="group" aria-label="热力图指标">
+                <button class="seg" type="button" data-metric="tokens" onclick="setUsageMetric('tokens')">Tokens</button>
+                <button class="seg" type="button" data-metric="reqs" onclick="setUsageMetric('reqs')">请求</button>
+              </div>
+            </div>
+            <div class="chart-holder" id="usage-chart-holder">
+              <!-- 几何由 usage.js 生成:月份/星期标签、7 行日历格子与键盘焦点都在 #usage-heatmap 里。
+                   容器用 group 而不是 img:格子里有可聚焦的日期,role=img 会把它们从无障碍树里摘掉。 -->
+              <div class="heatmap" id="usage-heatmap" role="group" aria-label="日历用量热力图"></div>
+              <p class="hint" id="usage-chart-empty" role="status">尚未读取用量。</p>
+              <div class="chart-tip" id="usage-chart-tooltip" role="tooltip" hidden></div>
+            </div>
+            <div class="usage-chart-foot">
+              <p class="hint" id="usage-calendar-summary">—</p>
+              <!-- 色阶由外壳给出,usage.js 只往里面补与当前数据相关的说明(0 与未覆盖永远是两种状态)。 -->
+              <div class="heatmap-legend" aria-label="热力图图例">
+                <span class="heatmap-legend-swatch" data-level="0" title="0:区间内确实没有请求" aria-label="0 次请求"></span>
+                <span class="heatmap-legend-label">0 请求</span>
+                <span class="heatmap-legend-label">少</span>
+                <span class="heatmap-legend-swatch" data-level="1" aria-hidden="true"></span>
+                <span class="heatmap-legend-swatch" data-level="2" aria-hidden="true"></span>
+                <span class="heatmap-legend-swatch" data-level="3" aria-hidden="true"></span>
+                <span class="heatmap-legend-swatch" data-level="4" aria-hidden="true"></span>
+                <span class="heatmap-legend-label">多</span>
+                <span class="heatmap-legend-swatch heatmap-legend-outside" data-coverage="outside" aria-hidden="true"></span>
+                <span class="heatmap-legend-label">未覆盖</span>
+              </div>
+              <button class="small" type="button" id="usage-calendar-expand" onclick="expandUsageCalendar()" hidden>查看更早的 53 周</button>
             </div>
           </div>
-          <div class="chart-holder" id="usage-chart-holder"><svg id="usage-svg" role="img" aria-label="用量趋势图"></svg></div>
-        </div>
-        <p class="usage-note" id="usage-status" role="status">尚未读取用量。</p>
-        <div class="panel">
-          <h2>按模型汇总</h2>
-          <p class="hint" id="usage-count">当前区间内的模型明细，按请求数降序。</p>
-          <div class="table-wrap usage-table" tabindex="0" role="region" aria-label="用量明细表，可横向滚动">
-            <table><caption class="sr-only">按模型汇总的用量</caption>
-              <thead><tr><th scope="col">模型</th><th scope="col">请求</th><th scope="col">新增输入</th><th scope="col">输出</th><th scope="col">缓存命中</th><th scope="col">命中率</th></tr></thead>
+          <p class="usage-note" id="usage-status" role="status">尚未读取用量。</p>
+          <details class="usage-trend-table" id="usage-daily-details">
+            <summary>按日查看数据</summary>
+            <div class="table-wrap"><table><caption class="sr-only">按日用量</caption>
+              <thead><tr><th scope="col">日期</th><th scope="col">请求</th><th scope="col">新增输入</th><th scope="col">输出</th><th scope="col">缓存命中</th><th scope="col">合计</th></tr></thead>
+              <tbody id="usage-daily-rows"></tbody></table></div>
+          </details>
+          <div class="usage-detail-head">
+            <div class="usage-detail-tabs" role="tablist" aria-label="用量明细">
+              <button class="seg" type="button" role="tab" id="usage-tab-requests" data-usage-tab="requests" aria-controls="usage-detail-panel" aria-selected="true" onclick="setUsageTab('requests')">请求日志</button>
+              <button class="seg" type="button" role="tab" id="usage-tab-providers" data-usage-tab="providers" aria-controls="usage-detail-panel" aria-selected="false" tabindex="-1" onclick="setUsageTab('providers')">供应商</button>
+              <button class="seg" type="button" role="tab" id="usage-tab-models" data-usage-tab="models" aria-controls="usage-detail-panel" aria-selected="false" tabindex="-1" onclick="setUsageTab('models')">模型</button>
+            </div>
+            <p class="hint" id="usage-count">等待读取明细。</p>
+          </div>
+          <div class="table-wrap usage-table" id="usage-detail-panel" role="tabpanel" aria-labelledby="usage-tab-requests" tabindex="0">
+            <table id="usage-detail-table"><caption class="sr-only">用量明细</caption>
+              <thead id="usage-table-head"><tr><th scope="col">时间</th><th scope="col">协议组</th><th scope="col">供应商</th><th scope="col">模型</th><th scope="col">新增输入</th><th scope="col">输出</th><th scope="col">缓存命中</th><th scope="col">状态</th><th scope="col">速度</th><th scope="col">首响应</th></tr></thead>
               <tbody id="usage-rows"></tbody></table>
+          </div>
+          <div class="usage-pagination">
+            <button class="small" type="button" id="usage-prev" onclick="usagePage(-1)">上一页</button>
+            <span id="usage-page-label" role="status">第 1 页</span>
+            <button class="small" type="button" id="usage-next" onclick="usagePage(1)">下一页</button>
           </div>
         </div>
       </section>
@@ -246,7 +333,7 @@
       </section>
 
       <section id="view-diagnostics" style="display:none" aria-labelledby="logs-title">
-        <div class="head"><div><h1 id="logs-title">诊断</h1><div class="sub">请求日志与分槽用量。内存保留最近 500 条，落盘 logs/requests.jsonl（UTC按天/5MiB轮转，默认保留 30 天）；统计为内存窗口全量聚合。ZCode 请求按 Anthropic 或 OpenAI 协议归组。</div></div><label class="rc-mini"><input type="checkbox" id="logs-auto" checked>自动刷新（5 秒）</label></div>
+        <div class="head"><div><h1 id="logs-title">诊断</h1><div class="sub">请求日志与分槽用量。内存保留最近 500 条，落盘 logs/requests.jsonl（UTC按天/5MiB轮转，默认保留 30 天）；统计为内存窗口全量聚合。ZCode 请求按 Anthropic 或 OpenAI 协议归组。</div></div><div class="actions"><label class="rc-mini"><input type="checkbox" id="logs-auto" checked>自动刷新（5 秒）</label></div></div>
         <div class="banner" id="logs-error" role="status"></div>
         <div class="chips" id="stat-chips"></div>
         <div class="panel" aria-labelledby="slot-stats-title">

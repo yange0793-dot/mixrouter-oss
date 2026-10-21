@@ -130,9 +130,14 @@ async function harness(data = fixture(), opts = {}) {
   }
   const get = id => { assert.ok(elements.has(id), 'Unknown DOM id: ' + id); return elements.get(id); };
   const body = new Element('body', 'body');
-  // 导航视图列表必须与 public/index.html 的七个 data-view 一致:少一项,按 data-view 查元素
-  // 就查不到(null),点击断言会在离真因很远的地方红。
-  const nav = ['overview', 'usage', 'providers', 'routes', 'sessions', 'diagnostics', 'settings'].map(view => { const el = new Element('nav-' + view, 'a'); el.dataset.view = view; return el; });
+  // 从真实导航读视图与客户端:三个客户端共享 providers,不能只按 view 假造一个链接。
+  const nav = Array.from(html.matchAll(/<a\b[^>]*\bdata-view="([^"]+)"[^>]*>/g), match => {
+    const el = new Element('nav-' + match[1], 'a');
+    el.dataset.view = match[1];
+    const app = match[0].match(/\bdata-app="([^"]+)"/);
+    if (app) el.dataset.app = app[1];
+    return el;
+  });
   const tabs = new Element('tabs');
   // 导出下载:记录被点过的 <a download>,不真的落盘。
   const downloads = [];
@@ -1282,6 +1287,27 @@ test('视图/客户端切换通知可选 workspace 模块,模块缺席或抛错�
   assert.match(String(reported[0][0]?.message || reported[0][0]), /shell bug/);
 });
 
+test('客户端侧栏:直达正确渠道库且只高亮一个客户端,不依赖外壳模块', async () => {
+  const h = await harness();
+  for (const app of ['codex', 'zcode', 'claude']) {
+    h.run(`document.querySelectorAll('nav a').find(a => a.dataset.app === '${app}').click()`);
+    assert.equal(h.run('view'), 'providers');
+    assert.equal(h.run('curApp'), app);
+    assert.equal(h.run("document.querySelectorAll('nav a').filter(a => a.classList.contains('active')).length"), 1);
+    assert.equal(h.run("document.querySelectorAll('nav a').find(a => a.classList.contains('active')).dataset.app"), app);
+  }
+  h.run("showView('usage'); setApp('codex')");
+  assert.equal(h.run("document.querySelectorAll('nav a').find(a => a.classList.contains('active')).dataset.view"), 'usage');
+});
+
+test('客户端侧栏:外壳存在时一次点击只传一对视图与客户端', async () => {
+  const h = await harness();
+  h.run("globalThis.__navigation = []; window.workspaceNavigate = (name, app) => __navigation.push([name, app])");
+  h.run("document.querySelectorAll('nav a').find(a => a.dataset.app === 'codex').click()");
+  assert.equal(h.run('JSON.stringify(__navigation)'), '[["providers","codex"]]');
+  assert.equal(h.run('curApp'), 'claude', '接管后不能再走单独 setApp,避免中间历史记录');
+});
+
 test('渠道卡片分区:身份/状态/内容/动作语义清晰,账号与动作契约原样保留', async () => {
   const data = fixture();
   data.providers.claude[0].note = '仅限团队 A 使用';
@@ -1932,6 +1958,8 @@ test('视图切换:gotoLogs 走 showView,视图改名后会话页的「日志」
 
 test('视图切换:七个视图各切一次,视图节显隐与面包屑都对得上', async () => {
   const h = await harness();
+  // 这里只跑 app.js,外壳(workspace.js)不在虚拟 DOM 里,所以标题是 showView 写的通用名。
+  // 真实页面上外壳在此之后把渠道页改写成「<客户端> 渠道」,那条由 workspace-ui.test.js 覆盖。
   for (const [v, label] of [['overview', '概览'], ['usage', '用量统计'], ['providers', '渠道与 Key'], ['routes', '路由'], ['sessions', '会话'], ['diagnostics', '诊断'], ['settings', '设置与备份']]) {
     h.run(`showView(${JSON.stringify(v)})`);
     assert.equal(h.run('view'), v);
