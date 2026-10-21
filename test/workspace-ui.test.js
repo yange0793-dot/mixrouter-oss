@@ -15,6 +15,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const SOURCE = fs.readFileSync(path.join(__dirname, '../public/js/workspace.js'), 'utf8');
+const INDEX = fs.readFileSync(path.join(__dirname, '../public/index.html'), 'utf8');
 
 class ClassList {
   constructor() { this.items = new Set(); }
@@ -63,7 +64,20 @@ class Element {
     delete this.attributes[name];
     if (name === 'class') this.className = '';
   }
-  appendChild(child) { child.parentElement = this; this.children.push(child); return child; }
+  appendChild(child) {
+    if (child.parentElement) child.parentElement.removeChild(child);
+    child.parentElement = this;
+    this.children.push(child);
+    return child;
+  }
+  insertBefore(child, reference) {
+    if (child.parentElement) child.parentElement.removeChild(child);
+    const index = reference ? this.children.indexOf(reference) : -1;
+    if (index >= 0) this.children.splice(index, 0, child);
+    else this.children.push(child);
+    child.parentElement = this;
+    return child;
+  }
   removeChild(child) {
     const index = this.children.indexOf(child);
     if (index >= 0) this.children.splice(index, 1);
@@ -119,8 +133,16 @@ function storageFrom(seed = {}) {
 
 function setup(options = {}) {
   const elements = new Map();
-  const navLinks = ['overview', 'providers', 'routes', 'sessions', 'usage', 'diagnostics', 'settings']
+  const VIEW_NAMES = ['overview', 'providers', 'routes', 'sessions', 'usage', 'diagnostics', 'settings'];
+  // 侧栏真实结构:六个普通视图入口 + 三个客户端入口(都指向 providers,靠 data-app 区分)。
+  const navLinks = VIEW_NAMES.filter(view => view !== 'providers')
     .map(view => { const link = new Element('a'); link.dataset.view = view; return link; });
+  for (const app of ['claude', 'codex', 'zcode']) {
+    const link = new Element('a');
+    link.dataset.view = 'providers';
+    link.dataset.app = app;
+    navLinks.push(link);
+  }
 
   const doc = {
     readyState: 'loading',
@@ -173,6 +195,30 @@ function setup(options = {}) {
   add('quick-nav-list', 'div');
   add('quick-nav-empty', 'p', { hidden: true });
   add('theme-select', 'select', { value: 'system' });
+  add('breadcrumb-view', 'span');
+  add('topbar-page-actions', 'div');
+  add('topbar-view-icon', 'span');
+  add('refresh-btn', 'button');
+
+  // 每个视图一个 <section>;除概览外都带 .head > .actions,用来验证顶栏搬运与归位。
+  const sections = new Map();
+  for (const view of VIEW_NAMES) {
+    const section = add('view-' + view, 'section');
+    const head = new Element('div');
+    head.classList.add('head');
+    section.appendChild(head);
+    const title = new Element('div');
+    head.appendChild(title);
+    const h1 = new Element('h1');
+    title.appendChild(h1);
+    let actions = null;
+    if (view !== 'overview') {
+      actions = new Element('div');
+      actions.classList.add('actions');
+      head.appendChild(actions);
+    }
+    sections.set(view, { section, head, title, h1, actions });
+  }
 
   const storage = options.denyStorage ? null : storageFrom(options.storage);
 
@@ -269,7 +315,7 @@ function setup(options = {}) {
     return harness;
   };
   const harness = {
-    doc, window, context, elements, navLinks, showCalls, appCalls, storage,
+    doc, window, context, elements, navLinks, showCalls, appCalls, storage, sections,
     get: id => elements.get(id),
     boot,
     hash: () => location.hash,
@@ -296,7 +342,7 @@ test('初始优先级:URL hash 胜过保存的视图,保存值胜过概览;主�
   assert.deepEqual(fromHash.appCalls, ['zcode'], 'URL 里的 app 覆盖保存值');
   assert.deepEqual(fromHash.showCalls, ['providers'], 'URL 里的视图覆盖保存值');
   assert.equal(fromHash.hash(), '#providers?app=zcode', '规范化后不应改写有效深链');
-  assert.equal(fromHash.doc.title, '渠道与 Key · Mixrouter');
+  assert.equal(fromHash.doc.title, 'ZCode 渠道 · Mixrouter', '标题要说明当前客户端');
 
   const fromStore = setup({ storage: { 'mixr.ui.view': 'routes', 'mixr.ui.app': 'codex', 'mixr.ui.theme': 'light' } });
   assert.equal(fromStore.doc.documentElement.getAttribute('data-theme'), 'light', '样式表加载前就要带上主题');
@@ -672,4 +718,131 @@ test('外壳不做任何业务请求:没有 fetch,也不碰业务数据', () => 
   h.window.workspaceViewChanged('usage');
   h.get('quick-nav-open').click();
   assert.equal(typeof h.context.fetch, 'undefined', '源码不应引用 fetch');
+});
+
+// ---------------------------------------------------------------- 外壳结构(CC Switch 版式)
+
+test('客户端导航:只有当前客户端亮起,标题与 body 状态跟着 app 走', () => {
+  const h = setup({ hash: '#providers?app=codex' });
+  h.boot();
+
+  const active = h.navLinks.filter(link => link.classList.contains('active'));
+  assert.equal(active.length, 1, '三个客户端入口不能一起亮');
+  assert.equal(active[0].dataset.app, 'codex');
+  assert.equal(active[0].getAttribute('aria-current'), 'page');
+  assert.equal(h.get('breadcrumb-view').textContent, 'Codex 渠道', '标题必须说明当前客户端');
+  assert.equal(h.doc.body.getAttribute('data-view'), 'providers');
+  assert.equal(h.doc.body.getAttribute('data-app'), 'codex');
+
+  h.window.workspaceAppChanged('zcode');
+  const next = h.navLinks.filter(link => link.classList.contains('active'));
+  assert.equal(next.length, 1);
+  assert.equal(next[0].dataset.app, 'zcode');
+  assert.equal(h.get('breadcrumb-view').textContent, 'ZCode 渠道');
+  assert.equal(h.hash(), '#providers?app=zcode', '客户端切换要进 URL');
+
+  h.setHash('#usage');
+  const usageActive = h.navLinks.filter(link => link.classList.contains('active'));
+  assert.equal(usageActive.length, 1);
+  assert.equal(usageActive[0].dataset.view, 'usage');
+  assert.equal(usageActive[0].dataset.app, undefined, '普通页面不能点亮客户端入口');
+  assert.equal(h.get('breadcrumb-view').textContent, '用量统计');
+});
+
+test('顶栏搬运:当前页 .head > .actions 原样进顶栏,切页时放回自己的 head', () => {
+  const h = setup({ hash: '#routes' });
+  h.boot();
+  const tray = h.get('topbar-page-actions');
+  const routes = h.sections.get('routes');
+  assert.equal(routes.actions.parentElement, tray, '当前页动作进顶栏');
+  assert.deepEqual(tray.children, [routes.actions], '顶栏只放当前页那一组');
+
+  h.setHash('#usage');
+  const usage = h.sections.get('usage');
+  assert.equal(usage.actions.parentElement, tray);
+  assert.deepEqual(tray.children, [usage.actions]);
+  assert.equal(routes.actions.parentElement, routes.head, '离开的页把动作放回原处');
+  assert.equal(routes.head.children.at(-1), routes.actions, '回到 head 里原来的位置');
+
+  h.setHash('#overview');
+  assert.equal(tray.children.length, 0, '概览没有动作,顶栏留空');
+  assert.equal(usage.actions.parentElement, usage.head);
+});
+
+test('用量页隐藏全局刷新,外壳就绪后章节 h1 只留给读屏', () => {
+  const h = setup({ hash: '#usage' });
+  h.boot();
+  assert.equal(h.get('refresh-btn').hidden, true, '用量页用「立即同步」,不留两个刷新');
+  assert.equal(h.doc.body.classList.contains('shell-ready'), true);
+  for (const view of ['overview', 'usage', 'providers']) {
+    assert.equal(h.sections.get(view).h1.classList.contains('sr-only'), true, `${view} 的 h1 不能视觉重复`);
+  }
+
+  h.setHash('#settings');
+  assert.equal(h.get('refresh-btn').hidden, false, '其他页保留全局刷新');
+});
+
+test('index.html:侧栏直接给出三个客户端入口,顶栏接收页面动作', () => {
+  const links = [...INDEX.matchAll(/<a\b[^>]*data-view="providers"[^>]*>/g)].map(match => match[0]);
+  assert.equal(links.length, 3, '渠道页入口就是三个客户端,不再另设一条「渠道与 Key」');
+  for (const [app, href] of [['claude', '#providers'], ['codex', '#providers?app=codex'], ['zcode', '#providers?app=zcode']]) {
+    const link = links.find(tag => tag.includes(`data-app="${app}"`));
+    assert.ok(link, `缺少 ${app} 入口`);
+    assert.ok(link.includes(`href="${href}"`), `${app} 的深链必须是 ${href}`);
+  }
+  assert.ok(INDEX.includes('id="topbar-page-actions"'), '顶栏必须有动作容器');
+  assert.ok(INDEX.includes('id="breadcrumb-view"'), '顶栏标题沿用 #breadcrumb-view');
+  assert.ok(!INDEX.includes('breadcrumb-base'), '不再保留「工作区 /」面包屑');
+  assert.ok(INDEX.includes('id="refresh-btn"'), 'app.js 依赖 #refresh-btn');
+  for (const view of ['overview', 'usage', 'providers', 'routes', 'sessions', 'diagnostics', 'settings']) {
+    assert.ok(INDEX.includes(`id="view-${view}"`), `缺少视图 ${view}`);
+  }
+  assert.ok(INDEX.indexOf('id="theme-select"') > INDEX.indexOf('class="sidebar-footer"'), '主题控件收进侧栏底部');
+});
+
+test('index.html:用量页 DOM 契约完整,且不再有面积图与费用', () => {
+  const start = INDEX.indexOf('id="view-usage"');
+  const end = INDEX.indexOf('id="view-providers"');
+  assert.ok(start > 0 && end > start, '用量页必须是独立 section');
+  const usage = INDEX.slice(start, end);
+  const ids = [
+    'usage-title', 'usage-sync', 'usage-interval', 'usage-last-sync', 'usage-source-toggle',
+    'usage-source', 'usage-source-detail', 'usage-app', 'usage-provider', 'usage-model',
+    'usage-range-select', 'usage-status-filter', 'usage-clear-filters',
+    'usage-reqs', 'usage-request-hint', 'usage-tokens', 'usage-token-split',
+    'usage-cache', 'usage-cache-hint', 'usage-success', 'usage-ok-rate', 'usage-speed', 'usage-ttfb',
+    'usage-range-label', 'usage-chart-holder', 'usage-heatmap', 'usage-chart-empty', 'usage-chart-tooltip',
+    'usage-calendar-summary', 'usage-calendar-expand', 'usage-status',
+    'usage-daily-details', 'usage-daily-rows',
+    'usage-tab-requests', 'usage-tab-providers', 'usage-tab-models',
+    'usage-detail-panel', 'usage-detail-table', 'usage-table-head', 'usage-rows', 'usage-count',
+    'usage-prev', 'usage-next', 'usage-page-label', 'usage-intro',
+  ];
+  for (const id of ids) assert.ok(usage.includes(`id="${id}"`), `用量页缺 #${id}`);
+  for (const cls of ['usage-bar', 'usage-apps', 'usage-filters', 'usage-grid', 'usage-chart', 'usage-chart-head',
+    'usage-detail-head', 'usage-detail-tabs', 'usage-pagination', 'usage-trend-table', 'metric']) {
+    assert.ok(new RegExp(`class="[^"]*\\b${cls}\\b`).test(usage), `用量页缺 .${cls}`);
+  }
+  // 图例色阶由外壳给出(usage.js 只往里补当前数据的说明),0 与未覆盖必须各有自己的色块。
+  const legend = usage.slice(usage.indexOf('class="heatmap-legend"'));
+  assert.ok(legend.length > 0, '外壳要给出一份 .heatmap-legend');
+  for (const level of ['0', '1', '2', '3', '4']) {
+    assert.ok(legend.includes(`data-level="${level}"`), `图例缺 ${level} 级色块`);
+  }
+  assert.ok(legend.includes('data-coverage="outside"'), '未覆盖必须是独立色块,不是第 0 级');
+  assert.ok(legend.includes('未覆盖'), '未覆盖要有文字标签');
+  // 三个协议组按钮:全部 / Anthropic / OpenAI,标签是协议不是客户端。
+  for (const app of ['', 'claude', 'codex']) {
+    assert.ok(usage.includes(`data-usage-app="${app}"`), `缺少协议组按钮 ${app || '(全部)'}`);
+  }
+  assert.ok(usage.includes('id="usage-source" hidden'), '来源说明默认收起,首屏留给指标卡');
+  assert.ok(usage.includes('id="usage-calendar-expand" onclick="expandUsageCalendar()" hidden'), '更早历史按钮默认隐藏');
+  assert.ok(!usage.includes('id="usage-svg"'), '面积图不再渲染');
+  assert.ok(!/费用|成本|pricing|cost/i.test(usage), '用量页不展示费用');
+  // ttfb_ms 是上游响应头到达时间,不是首个内容 token:文案不能写成「首字」。
+  // 只看可见文案:注释里说明这件事不算违规。
+  const visible = usage.replace(/<!--[\s\S]*?-->/g, '');
+  assert.ok(!/首字/.test(visible), '延迟指标要写「首响应」并给出解释');
+  assert.match(visible, /首响应/, '补充指标标签用「首响应」');
+  assert.match(visible, /不是首个内容 token/, '「首响应」要带 title 解释它测的是什么');
 });

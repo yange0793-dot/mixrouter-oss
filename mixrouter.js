@@ -86,7 +86,7 @@ const { testProvider } = require('./lib/provider-test');
 // 见下面 writeCodexConfig / liveState 的说明。
 const codexConfig = require('./lib/codex-config');
 
-const VERSION = '3.8.0';
+const VERSION = '3.9.0';
 const ROOT = __dirname;
 const CODE_REVISION = codeRevision(ROOT);
 // 运行时数据(providers/routes/logs)目录可整体重定向(MIXR_DATA_DIR),测试用,避免碰真实配置

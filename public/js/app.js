@@ -194,14 +194,17 @@ const VIEW_LABELS = { overview: '概览', usage: '用量统计', providers: '渠
 // 切视图只有这一条路径。原先 nav 的 onclick 里写着全部逻辑,gotoLogs() 只能去"点"那个 <a>
 // ——视图一改名,选择器返回 null,.click() 就当场抛 TypeError(会话页的「日志」按钮变成死按钮,
 // 而且没有任何提示)。抽成函数后,程序化切换不再依赖导航项是否存在。
-function showView(name) {
-  if (!VIEWS.includes(name)) return;
-  view = name;
+function syncViewNav() {
   document.querySelectorAll('nav a').forEach(x => {
-    const on = x.dataset.view === name;
+    const on = x.dataset.view === view && (!x.dataset.app || x.dataset.app === curApp);
     x.classList.toggle('active', on);
     if (on) x.setAttribute('aria-current', 'page'); else x.removeAttribute('aria-current');
   });
+}
+function showView(name) {
+  if (!VIEWS.includes(name)) return;
+  view = name;
+  syncViewNav();
   // 少一个视图节不该把整个切换炸掉(拿不到就跳过),但它必须是"看得见的少",不是静默错位。
   for (const v of VIEWS) { const el = $('view-' + v); if (el) el.style.display = v === view ? '' : 'none'; }
   $('breadcrumb-view').textContent = VIEW_LABELS[view];
@@ -236,10 +239,19 @@ function ensureHealth() {
   healthTask = Promise.resolve(loadHealth()).finally(() => { healthTask = null; });
   return healthTask;
 }
-document.querySelectorAll('nav a').forEach(a => a.onclick = e => { e.preventDefault(); showView(a.dataset.view); });
+document.querySelectorAll('nav a').forEach(a => a.onclick = e => {
+  e.preventDefault();
+  // 外壳一次性更新视图与客户端,避免一次点击写入两条中间 URL 历史。
+  if (typeof window.workspaceNavigate === 'function') {
+    try { window.workspaceNavigate(a.dataset.view, a.dataset.app); return; } catch (err) { console.error(err); }
+  }
+  if (a.dataset.app) setApp(a.dataset.app);
+  showView(a.dataset.view);
+});
 function setApp(app) {
   if (!APPS[app]) return;
   curApp = app;
+  syncViewNav();
   for (const key of Object.keys(APPS)) { const tab = $('tab-' + key); tab.classList.toggle('active', key === app); tab.setAttribute('aria-selected', String(key === app)); tab.tabIndex = key === app ? 0 : -1; }
   $('agent-panel').setAttribute('aria-labelledby', 'tab-' + app);
   $('zcode-protocol').hidden = app !== 'zcode'; renderProviders(); renderSlots();

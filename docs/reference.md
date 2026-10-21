@@ -475,6 +475,20 @@ MIXR_DATA_DIR=/absolute/path node scripts/diagnose-upstream.js --mode provider -
   cache_read}`;`by_provider` / `by_model` 每项为 `{provider, name | model, reqs, tokens_in,
   tokens_out, cache_read}`,按请求数降序。
   `series[].t` 是本地时间:`bucket=hour` 为 `YYYY-MM-DDTHH:00`,`bucket=day` 为 `YYYY-MM-DD`。
+- 控制台使用 `GET /api/usage?dashboard=1`。这是显式扩展;不带它的旧调用保持原字段与子串筛选。
+  扩展模式下 `provider` 精确匹配日志供应商名,`model` 精确匹配实际模型(`model_out || model_in`),
+  `status=ok|err` 筛选请求结果;带错误信息的 200 也算失败。时间、协议组、供应商、模型与状态
+  同时约束指标、日历与三类明细,不把磁盘累计和内存日志窗口混在一起。
+  原响应额外包含 `dashboard`:
+  - `daily`:按本地日期汇总的 `{t, reqs, tokens_in, tokens_out, cache_read}`。
+  - `records`: `{rows, total, offset, limit, has_more}`。`rows` 只含日志白名单字段,
+    按时间倒序;`offset` 默认 0,`limit` 默认 50、最多 200(超出按上限截断)。每次同步为当前快照,
+    翻页不是永久游标。`offset` / `limit` 非非负整数、或 `status` 不是 `ok|err` 时返回 400,
+    错误码分别是 `USAGE_PAGINATION_INVALID` 与 `USAGE_STATUS_INVALID`。
+  - `facets.providers` / `facets.models`: `{value, label}` 选项。按时间、协议组与状态生成,
+    不被当前供应商/模型选择截成单一选项;选择没有结果时不会静默清空筛选。
+  - `coverage`: `{first_ts, last_ts}` 是当前可用日志的观测边界(筛选前),不是连续完整保留的承诺;
+    无日志时为 `null`。默认保留 30 天,不为画满一年的格子而改保留设置。
 
 ### 返回归档(显式开启)
 

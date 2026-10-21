@@ -57,13 +57,16 @@ Not a good fit:
   subagents can use separate accounts. The session console lets each conversation use its own
   provider and model per slot; slots without an override inherit the global configuration.
 - **Local console.** `127.0.0.1:8788` manages providers, routes, sessions, slots, logs, and
-  backups. Choose list or card views for providers and expand model slots when needed.
-  System/light/dark themes, `⌘K` / `Ctrl+K` quick navigation, and page deep links are supported.
-  The usage page aggregates requests, tokens, cache hits, throughput, and
-  time-to-first-byte over a time range. It reports measured usage only and never converts it
-  into money.
+  backups. Open Claude Code, Codex, or ZCode directly from the sidebar, choose list or card
+  views for providers, and expand model slots when needed. System/light/dark themes,
+  `⌘K` / `Ctrl+K` quick navigation, and page deep links are supported.
+  The usage page shares one set of filters across request/token totals, cache and success rates,
+  a calendar heatmap, and request/provider/model table tabs. It counts currently available logs
+  and never converts usage into money.
 
-![Local console, Providers & keys page: provider rows, enablement and connection status, account switching, and layout switch](docs/images/console-providers.jpg)
+![Local console, Claude Code providers page: client entries in the sidebar, provider rows, enablement and connection status, account switching, and layout switch](docs/images/console-providers.jpg)
+
+![Local console, Usage page: four metric cards, a calendar heatmap, and request/provider/model tables sharing one filter set](docs/images/console-usage.jpg)
 
 *Demo data; no real providers or credentials.*
 
@@ -92,8 +95,8 @@ curl --fail http://127.0.0.1:8787/healthz
 open http://127.0.0.1:8788/     # macOS; open the same address in a browser elsewhere
 ```
 
-Add a provider and model on the console's **渠道与 Key** (Providers & keys) page, then select
-the Claude Code / Codex / ZCode tab to connect that client. You can start the console and run the offline acceptance checks
+Select Claude Code, Codex, or ZCode in the console sidebar, add a provider and model,
+then connect that client to the local router. You can start the console and run the offline acceptance checks
 without any provider key; only real forwarding needs one.
 
 Connect a client (the existing config is backed up before it is rewritten):
