@@ -398,6 +398,19 @@
           <button type="button" class="small" onclick="addKeyDraft()">＋ 添加账号</button>
           <p class="muted">切换在渠道卡片的「API key」下拉里选；当前生效的那把就是写入客户端、跑请求用的那把。</p>
         </div>
+        <div class="md-panel" id="m-discovery" aria-labelledby="m-discovery-title">
+          <div class="md-head"><b id="m-discovery-title">从上游获取模型</b><span class="hint" id="m-model-fetch-status" role="status">填好 Base URL 与 API Key 后可拉取上游模型列表；不需要先填名称或模型。</span></div>
+          <div class="md-controls">
+            <button type="button" class="small" id="m-fetch-models" onclick="fetchProviderModels()">获取模型列表</button>
+            <div id="m-fetch-key-wrap" style="display:none">
+              <label for="m-fetch-key">拉取用的 Key</label>
+              <select id="m-fetch-key" onchange="selectFetchKey(this.value)"></select>
+            </div>
+            <label class="md-search" for="m-model-search">搜索<input type="search" id="m-model-search" placeholder="按模型名筛选" autocomplete="off" oninput="setDiscoveryQuery(this.value)"></label>
+          </div>
+          <div class="md-results" id="m-model-discovery"><p class="muted">还没有获取到模型。填好 Base URL 与 Key 后点「获取模型列表」。</p></div>
+          <div class="md-apply"><button type="button" class="small" id="m-model-add-selected" onclick="applyDiscoverySelection()" disabled>加入模型列表</button><span class="muted" id="m-discovery-hint">Claude 渠道会把勾选的模型追加到模型列表末尾，第一项（主模型）和已填的行都不动。</span></div>
+        </div>
         <div id="m-claude-fields">
           <label>模型列表（一行一个；第一项作为主模型；支持 [1M] 后缀）</label>
           <div id="m-models-list"></div>

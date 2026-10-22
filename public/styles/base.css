@@ -840,6 +840,29 @@ td .pin-sel { min-width: 135px; padding: 4px 6px; font-size: 13px; }
 .modal .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
 .modal fieldset { border: 0; margin-top: 14px; }
 .modal legend { font-size: 13px; color: var(--dim); }
+/* ---- 渠道弹窗:从上游获取模型 ------------------------------------------------ */
+.md-panel { margin-top: 14px; border: 1px solid var(--border-soft); border-radius: var(--radius); background: var(--panel); padding: 12px 13px; }
+.md-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin-bottom: 9px; }
+.md-head b { font-size: 13px; }
+.md-head .hint { font-size: 13px; line-height: 1.6; margin: 0; }
+.md-head .hint.ok { color: var(--ok-text); }
+.md-head .hint.err { color: var(--err-text); }
+.md-head .hint.busy { color: var(--accent-text); }
+.md-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 10px; }
+.modal .md-search { display: flex; flex-direction: column; gap: 4px; margin: 0; font-size: 12.5px; color: var(--dim); flex: 1 1 180px; min-width: 0; }
+#m-fetch-key-wrap { display: flex; flex-direction: column; gap: 4px; flex: 1 1 180px; min-width: 0; }
+#m-fetch-key-wrap label { margin: 0; font-size: 12.5px; color: var(--dim); }
+.md-results { margin-top: 10px; }
+/* 结果可能上百条:只滚这一块,弹窗本身不跟着长高。 */
+.md-results:has(.md-list) { max-height: 220px; overflow: auto; overscroll-behavior: contain; border: 1px solid var(--border-soft); border-radius: var(--radius); background: var(--surface); padding: 3px 0; }
+.md-results > .muted { margin: 0; font-size: 13px; line-height: 1.6; }
+.md-list { display: flex; flex-direction: column; }
+.modal .md-item { display: flex; align-items: center; gap: 8px; margin: 0; padding: 5px 10px; font-size: 13px; line-height: 1.5; cursor: pointer; }
+.modal .md-item:hover { background: var(--surface-2); }
+.md-item input { margin: 0; flex: none; }
+.md-item .mono { overflow-wrap: anywhere; }
+.md-apply { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 10px; }
+.md-apply .muted { font-size: 12.5px; line-height: 1.6; }
 #confirm-text { white-space: pre-line; overflow-wrap: anywhere; color: var(--dim); font-size: 14px; margin-top: 16px; }
 #toast {
   position: fixed; right: 20px; bottom: 20px; background: var(--surface);
@@ -1308,6 +1331,10 @@ body[data-connection=offline] .card.cur { border-color: var(--border); }
   .search-mask .modal { max-height: 80vh; }
   .heatmap-weekdays { width: 22px; font-size: 11px; }
   .heatmap-cell { border-radius: 1.5px; }
+  /* 模型发现:窄屏下按钮、Key 选择、搜索各占一整行,勾选列表仍只在自身滚动。 */
+  .md-controls > *, .md-apply > * { flex: 1 1 100%; }
+  .md-controls > button, .md-apply > button { width: 100%; }
+  .md-results:has(.md-list) { max-height: 44vh; }
 }
 
 /* ---- Accessibility & output modes ----------------------------------------- */

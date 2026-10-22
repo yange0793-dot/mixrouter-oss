@@ -114,6 +114,10 @@ document.addEventListener('keydown', e => {
 document.addEventListener('focusin', e => {
   if (activeDialog && !activeDialog.contains(e.target)) activeDialog.querySelector('.modal').focus();
 });
+// 模型发现的请求入口(地址/Key/协议/直连)一变:在途响应作废,已取到的候选也清掉,需重新获取。
+for (const id of ['m-base', 'm-key', 'm-wire', 'm-wire-claude', 'm-direct']) {
+  for (const event of ['input', 'change']) $(id)?.addEventListener(event, () => invalidateDiscovery());
+}
 
 function setConnection(connected, error = '') {
   online = connected; document.body.dataset.connection = connected ? 'online' : 'offline';
@@ -559,20 +563,22 @@ function openProvider(id) {
   $('m-wire-claude').value = editing?.wire_api === 'responses' ? 'responses' : editing?.wire_api === 'chat' ? 'chat' : 'anthropic';
   $('m-note').value = editing?.note || ''; $('m-enabled').checked = editing ? !!editing.enabled : true;
   $('m-direct').checked = !!editing?.direct;
+  resetModelDiscovery(); renderFetchKeySelect();
   showDialog('mask', 'm-name');
 }
-function closeModal() { if (savingProvider) return toast('正在保存，请稍候'); hideDialog(); $('m-key').value = ''; keyDraft = []; modelDraft = []; }
+function closeModal() { if (savingProvider) return toast('正在保存，请稍候'); hideDialog(); $('m-key').value = ''; keyDraft = []; modelDraft = []; resetModelDiscovery(); }
 
 // 多 Key(同渠道多账号):弹窗里维护清单,卡片下拉里切当前生效那把
 function renderKeyDraft() {
   $('m-keys').innerHTML = keyDraft.length ? keyDraft.map((k, i) => `<div class="rc-line">
     <label class="field" style="flex:1">名称<input type="text" value="${esc(k.label)}" oninput="keyDraft[${i}].label=this.value" placeholder="账号${i + 1}" autocomplete="off"></label>
-    <label class="field" style="flex:2">API Key<input type="password" value="${esc(k.key)}" oninput="keyDraft[${i}].key=this.value" placeholder="${k.id ? '留空=不改（' + esc(k.masked || '') + '）' : 'sk-…'}" autocomplete="new-password" spellcheck="false"></label>
+    <label class="field" style="flex:2">API Key<input type="password" value="${esc(k.key)}" oninput="keyDraft[${i}].key=this.value;invalidateDiscovery('Key 已改动，请重新获取模型列表');renderFetchKeySelect()" placeholder="${k.id ? '留空=不改（' + esc(k.masked || '') + '）' : 'sk-…'}" autocomplete="new-password" spellcheck="false"></label>
     <button type="button" class="iconbtn" aria-label="删除这个 Key" onclick="removeKeyDraft(${i})">×</button></div>`).join('')
     : '<p class="muted">还没有多 Key。点「＋ 添加账号」加第二把；只留一把时用上面的 API Key 就行。</p>';
+  renderFetchKeySelect();
 }
 function addKeyDraft() { keyDraft.push({ id: '', label: '', key: '', masked: '' }); renderKeyDraft(); }
-function removeKeyDraft(i) { keyDraft.splice(i, 1); renderKeyDraft(); }
+function removeKeyDraft(i) { keyDraft.splice(i, 1); invalidateDiscovery('Key 清单已改动，请重新获取模型列表'); renderKeyDraft(); }
 async function setActiveKey(id, keyId) {
   if (!online) return toast('控制台离线，未保存切换', 'err');
   try {
@@ -585,6 +591,193 @@ async function setActiveKey(id, keyId) {
 // 要写没登记的就选「自定义模型…」把这一行切成输入框——不用 datalist,它在字段已有值时只弹匹配的那一项
 let modelDraft = [], modelCandidates = [];
 const MODEL_CUSTOM = '__custom__';
+// 上游模型发现:只改弹窗草稿,从不自己保存。请求结果带序号与输入指纹,输入一变(或弹窗关了、
+// 又开了另一条渠道)旧响应就作废——否则慢请求回来时会把 A 渠道的模型填进 B 渠道的表单。
+const DISCOVERY_DEFAULT_STATUS = '填好 Base URL 与 API Key 后可拉取上游模型列表；不需要先填名称或模型。';
+// 这条请求**不走** api():它的默认超时 12 秒比后端整轮 15 秒还短,会在自己超时前把
+// 一个正当的上游慢响应掐掉。后端 fetchProviderModels 的 deadline 覆盖分页的整轮 15 秒,
+// 这里给 20 秒余量(网络 + 读响应体),其他接口的 12 秒行为不受影响。
+const DISCOVERY_TIMEOUT_MS = 20000;
+let discoveryState = { models: [], selected: [], query: '', seq: 0, controller: null, loading: false, fetchKeyId: '' };
+
+function setDiscoveryStatus(text, kind = '') {
+  const el = $('m-model-fetch-status'); if (!el) return;
+  el.textContent = text;
+  el.classList.remove('ok', 'err', 'busy');
+  if (kind) el.classList.add(kind);
+}
+function updateFetchButton(loading) {
+  const b = $('m-fetch-models'); if (!b) return;
+  b.disabled = !!loading; b.textContent = loading ? '获取中…' : '获取模型列表';
+}
+function renderFetchKeySelect() {
+  const wrap = $('m-fetch-key-wrap'), sel = $('m-fetch-key');
+  if (!wrap || !sel) return;
+  // 只有已保存渠道才需要挑「用哪把 Key 去问」;新渠道直接用上面的 API Key。
+  // 已保存行可以选(值=key id);本次手填了 Key 的新增行也可以选(值=draft:i),绝不下发 *** 掩码。
+  const choices = keyDraft.map((k, i) => ({ value: k.id || 'draft:' + i, label: k.label.trim() || k.masked || ('账号' + (i + 1)), saved: !!k.id, typed: !!String(k.key || '').trim() }))
+    .filter(c => c.saved || c.typed);
+  const show = !!editing && choices.length > 0;
+  wrap.style.display = show ? '' : 'none';
+  if (!show) { sel.innerHTML = ''; discoveryState.fetchKeyId = ''; return; }
+  if (!choices.some(c => c.value === discoveryState.fetchKeyId)) discoveryState.fetchKeyId = '';
+  const current = discoveryState.fetchKeyId;
+  sel.innerHTML = '<option value="">当前生效 Key（默认）</option>' + choices.map(c => `<option value="${esc(c.value)}"${c.value === current ? ' selected' : ''}>${esc(c.label)}${c.saved ? '' : '（未保存）'}${c.typed && c.saved ? '（本次改动）' : ''}</option>`).join('');
+  sel.value = current; // 与当前选择同步
+}
+// 返回要拿哪把 Key 去问上游:id 为已保存 Key 的 id,key 为本次手填的非空明文。
+// 默认(选择框停在「当前生效 Key」)也要落到草稿里那一行——编辑时用户可能刚给生效账号
+// 换了新 Key,此时必须用草稿值;只传 provider_id 会让后端读回旧的已保存 Key。
+function selectedFetchKey() {
+  const value = discoveryState.fetchKeyId;
+  if (value.startsWith('draft:')) { const k = keyDraft[Number(value.slice(6))]; return k ? { id: '', key: String(k.key || '').trim() } : null; }
+  if (value) { const k = keyDraft.find(x => x.id === value); return k ? { id: k.id, key: String(k.key || '').trim() } : null; }
+  const active = keyDraft.find(k => k.id && k.id === editing?.active_key);
+  return active ? { id: active.id, key: String(active.key || '').trim() } : null;
+}
+function discoverySignature() {
+  return JSON.stringify({
+    app: editingGroup, id: editing?.id || '', base: $('m-base').value.trim(), key: $('m-key').value,
+    wire: editingGroup === 'codex' ? $('m-wire').value : $('m-wire-claude').value,
+    direct: $('m-direct').checked, fetchKey: discoveryState.fetchKeyId,
+    keys: keyDraft.map(k => [k.id, String(k.key || '').trim()]),
+  });
+}
+function clearDiscoveryCandidates() {
+  const had = discoveryState.models.length > 0 || discoveryState.selected.length > 0 || !!discoveryState.query;
+  discoveryState.models = []; discoveryState.selected = []; discoveryState.query = '';
+  const search = $('m-model-search'); if (search) search.value = '';
+  if (had) renderModelDiscovery();
+  return had;
+}
+// 请求入口(地址/Key/协议/直连/用哪把 Key)一变:在途请求作废,已经取到的候选也一起清掉。
+// 只 abort 在途请求是不够的——旧地址的模型一旦留在列表里,下一次请求失败时用户还能把它们
+// 「加入模型列表」,等于把另一条渠道的模型名混进当前渠道。modelDraft 不动,用户已填的行不受影响。
+function invalidateDiscovery(reason = '输入已变化，请重新获取模型列表') {
+  const wasLoading = discoveryState.loading;
+  if (wasLoading) {
+    discoveryState.seq++;
+    if (discoveryState.controller) { try { discoveryState.controller.abort(); } catch {} }
+    discoveryState.controller = null; discoveryState.loading = false;
+    updateFetchButton(false);
+  }
+  const cleared = clearDiscoveryCandidates();
+  if ((wasLoading || cleared) && reason) setDiscoveryStatus(reason, '');
+}
+function resetModelDiscovery() {
+  invalidateDiscovery('');
+  discoveryState.seq++;
+  discoveryState.models = []; discoveryState.selected = []; discoveryState.query = '';
+  discoveryState.controller = null; discoveryState.loading = false; discoveryState.fetchKeyId = '';
+  const search = $('m-model-search'); if (search) search.value = '';
+  if ($('m-discovery-hint')) $('m-discovery-hint').textContent = editingGroup === 'codex'
+    ? 'Codex 渠道只把所选模型填进下方「模型」字段；获取列表本身不会覆盖它，保存仍需手动点「保存渠道」。'
+    : 'Claude 渠道会把勾选的模型追加到模型列表末尾，第一项（主模型）和已填的行都不动；保存仍需手动点「保存渠道」。';
+  updateFetchButton(false);
+  setDiscoveryStatus(DISCOVERY_DEFAULT_STATUS);
+  renderModelDiscovery();
+}
+function setDiscoveryQuery(value) { discoveryState.query = String(value || ''); renderModelDiscovery(); }
+function selectFetchKey(value) { discoveryState.fetchKeyId = String(value || ''); invalidateDiscovery('拉取用的 Key 已切换，请重新获取'); }
+function discoveryVisibleModels() {
+  const q = discoveryState.query.trim().toLowerCase();
+  return discoveryState.models.map((m, i) => ({ m, i })).filter(row => !q || row.m.toLowerCase().includes(q));
+}
+function updateDiscoveryApplyButton() {
+  const add = $('m-model-add-selected'); if (!add) return;
+  const n = discoveryState.selected.length;
+  add.disabled = !n || discoveryState.loading;
+  add.textContent = (editingGroup === 'codex' ? '填入所选模型' : '加入模型列表') + (n ? `（${n}）` : '');
+}
+// 勾选只同步已有复选框与按钮,整块重绘会把键盘焦点从刚按下的那一行甩掉。
+function syncDiscoverySelectionDom() {
+  const boxes = typeof document.querySelectorAll === 'function' ? [...document.querySelectorAll('#m-model-discovery input[data-model-index]')] : [];
+  for (const box of boxes) {
+    const index = Number(box.dataset?.modelIndex);
+    box.checked = discoveryState.selected.includes(discoveryState.models[index]);
+  }
+  updateDiscoveryApplyButton();
+}
+function renderModelDiscovery() {
+  const box = $('m-model-discovery'); if (!box) return;
+  const total = discoveryState.models.length, rows = discoveryVisibleModels();
+  const selected = discoveryState.selected;
+  updateDiscoveryApplyButton();
+  if (!total) { box.innerHTML = '<p class="muted">还没有获取到模型。填好 Base URL 与 Key 后点「获取模型列表」。</p>'; return; }
+  if (!rows.length) { box.innerHTML = `<p class="muted">没有匹配「${esc(discoveryState.query)}」的模型，共 ${total} 个候选。</p>`; return; }
+  // 模型名来自上游,一律转义后再拼 HTML;勾选按模型名(不是渲染下标),搜索过滤后仍指向同一个候选。
+  box.innerHTML = '<div class="md-list">' + rows.map(({ m, i }) => `<label class="md-item" for="m-model-opt-${i}"><input type="checkbox" id="m-model-opt-${i}" data-model-index="${i}"${selected.includes(m) ? ' checked' : ''} onchange="toggleDiscoveryModel(${i},this.checked)"><span class="mono">${esc(m)}</span></label>`).join('') + '</div>';
+}
+function toggleDiscoveryModel(index, checked) {
+  const model = discoveryState.models[index];
+  if (typeof model !== 'string') return;
+  const chosen = new Set(discoveryState.selected);
+  if (checked) {
+    if (editingGroup === 'codex') chosen.clear(); // Codex 只有一个模型字段:单选
+    chosen.add(model);
+  } else chosen.delete(model);
+  discoveryState.selected = discoveryState.models.filter(m => chosen.has(m));
+  syncDiscoverySelectionDom();
+}
+function applyDiscoverySelection() {
+  const picked = discoveryState.models.filter(m => discoveryState.selected.includes(m));
+  if (!picked.length) return setDiscoveryStatus('先勾选要使用的模型', 'err');
+  if (editingGroup === 'codex') {
+    if (!$('m-model')) return;
+    $('m-model').value = picked[0];
+    setDiscoveryStatus(`已把 ${picked[0]} 填进「模型」字段；保存渠道后才会写进渠道库`, 'ok');
+    return;
+  }
+  // 追加而不是替换:第一项是主模型,手填的行也可能还没保存,都不能被一次拉取冲掉。
+  const existing = new Set(modelDraft.map(r => String(r.value || '').trim()).filter(Boolean));
+  let added = 0;
+  for (const m of picked) if (!existing.has(m)) { modelDraft.push({ value: m, editing: false }); existing.add(m); added++; }
+  if (added) renderModelDraft();
+  setDiscoveryStatus(added ? `已追加 ${added} 个模型到模型列表（未保存）` : '所选模型都已在模型列表里，未重复添加', added ? 'ok' : '');
+}
+async function fetchProviderModels() {
+  if (!online) return setDiscoveryStatus('控制台离线，无法请求上游模型列表', 'err');
+  if (discoveryState.loading) return;
+  const base = $('m-base').value.trim();
+  if (!base) { $('m-base').focus(); return setDiscoveryStatus('请先填写 Base URL 再获取模型列表', 'err'); }
+  const pick = editing ? selectedFetchKey() : null;
+  let apiKey = '', keyId = '';
+  if (pick && pick.key) { apiKey = pick.key; keyId = pick.id; }
+  else if (pick && pick.id) keyId = pick.id;
+  else if (!editing || !keyDraft.length) apiKey = $('m-key').value.trim();
+  if (!editing && !apiKey) { $('m-key').focus(); return setDiscoveryStatus('新建渠道请先填 API Key；已保存的渠道可以留空,用当前生效 Key', 'err'); }
+  // 保存过的渠道:不传 api_key 时服务端按 key_id 或当前生效 Key 取;只有手填的非空 Key 才覆盖。
+  const body = { base_url: base, wire_api: editingGroup === 'codex' ? ($('m-wire').value || 'responses') : ($('m-wire-claude').value || 'anthropic'), direct: $('m-direct').checked };
+  if (editing) body.provider_id = editing.id;
+  if (apiKey) body.api_key = apiKey;
+  if (keyId) body.key_id = keyId;
+  const seq = ++discoveryState.seq, signature = discoverySignature();
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = setTimeout(() => { try { controller?.abort(); } catch {} }, DISCOVERY_TIMEOUT_MS);
+  discoveryState.controller = controller; discoveryState.loading = true;
+  updateFetchButton(true); renderModelDiscovery();
+  setDiscoveryStatus('正在向上游获取模型列表…', 'busy');
+  try {
+    const r = await fetch('/api/providers/models', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: controller?.signal, cache: 'no-store' });
+    let payload = null;
+    try { payload = await r.json(); } catch {}
+    // 入口变了(输入/关窗/换渠道)就整条丢弃:既不写状态也不动候选。
+    if (seq !== discoveryState.seq || signature !== discoverySignature() || activeDialog?.id !== 'mask') return;
+    if (!r.ok) return setDiscoveryStatus('获取失败：' + (payload?.error || `HTTP ${r.status ?? '?'}`), 'err');
+    if (!Array.isArray(payload?.models)) return setDiscoveryStatus('获取失败：响应缺少 models 列表', 'err');
+    const models = [...new Set(payload.models.filter(m => typeof m === 'string').map(m => m.trim()).filter(Boolean))];
+    discoveryState.models = models; discoveryState.selected = []; discoveryState.query = '';
+    if ($('m-model-search')) $('m-model-search').value = '';
+    renderModelDiscovery();
+    setDiscoveryStatus(models.length ? `已获取 ${models.length} 个模型，勾选后${editingGroup === 'codex' ? '填入模型' : '加入模型列表'}` : '上游返回了空的模型列表', models.length ? 'ok' : '');
+  } catch (e) {
+    if (seq !== discoveryState.seq || signature !== discoverySignature() || activeDialog?.id !== 'mask') return;
+    setDiscoveryStatus(e?.name === 'AbortError' ? '请求超时，请稍后重试' : '获取失败：' + (e?.message || '网络错误'), 'err');
+  } finally {
+    clearTimeout(timer);
+    if (seq === discoveryState.seq) { discoveryState.loading = false; discoveryState.controller = null; updateFetchButton(false); renderModelDiscovery(); }
+  }
+}
 function modelSelectOptions(row) {
   const known = [...new Set([...modelCandidates, row.value].filter(Boolean))];
   const label = m => esc(m) + (modelCandidates.includes(m) ? '' : '（自定义）');
