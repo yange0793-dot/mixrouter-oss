@@ -58,7 +58,9 @@ Not a good fit:
   provider and model per slot; slots without an override inherit the global configuration.
 - **Local console.** `127.0.0.1:8788` manages providers, routes, sessions, slots, logs, and
   backups. Open Claude Code, Codex, or ZCode directly from the sidebar, choose list or card
-  views for providers, and expand model slots when needed. System/light/dark themes,
+  views for providers, and expand model slots when needed. Fetch upstream models using a Base URL
+  and API key while creating or editing a provider, then search and select models to add; manual entry remains available.
+  System/light/dark themes,
   `⌘K` / `Ctrl+K` quick navigation, and page deep links are supported.
   The usage page shares one set of filters across request/token totals, cache and success rates,
   a calendar heatmap, and request/provider/model table tabs. It counts currently available logs
