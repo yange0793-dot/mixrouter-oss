@@ -216,6 +216,10 @@
       path: binRaw.path || binRaw.command || binRaw.bin || '',
       version: binRaw.version || binRaw.release || '',
       error: binRaw.error || '',
+      // 服务常驻在 launchd / systemd 下时 PATH 往往是最小集合,客户端装在 ~/.local/bin
+      // 这类固定目录里。服务端会在 PATH 之外再查这些目录,并把来源标出来;界面据此
+      // 说明"是从固定目录找到的",不假装它就在服务进程的 PATH 里。
+      source: binRaw.source || '',
     };
     else if (typeof raw.installed === 'boolean') binary = { found: raw.installed, path: '', version: '' };
     if (binary && binary.found === undefined) binary.found = binary.path ? true : undefined;
@@ -301,9 +305,12 @@
       ? `<p class="hint readiness-path">可执行文件存在但没有执行权限${info.binary.error ? '（' + rEsc(info.binary.error) + '）' : ''}：修正权限后重新检查，不要按「未安装」重装。</p>`
       : '';
     const fallback = info.binary && info.binary.found === false ? readinessFallbackHtml() : '';
+    const offPath = info.binary?.source === 'known-dir'
+      ? `<p class="hint readiness-path">这个客户端不在服务进程的 PATH 里，是从固定安装目录找到的（${rEsc(info.binary.path || '')}）。写入配置不受影响；只是别把它当成"没装"。</p>`
+      : '';
     return `<div class="readiness-badges">${bits}${retry}</div>
       ${pathLine ? `<p class="hint mono readiness-path">${pathLine}</p>` : ''}
-      ${pending}${denied}
+      ${pending}${denied}${offPath}
       ${banner}${fallback}`;
   }
 

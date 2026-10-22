@@ -162,6 +162,27 @@ test('inspect 区分 missing / invalid / error(EACCES 不算 missing),安装检�
   }
 });
 
+// 服务常驻在 launchd / systemd 下时 PATH 往往只有 /usr/bin:/bin:/usr/sbin:/sbin,
+// 而 Claude Code 官方安装器把可执行文件放在 ~/.local/bin。只查 PATH 会把"已经装好、
+// 正在用"的客户端报成未安装,用户被引导去重装。这里钉住两件事:PATH 之外能找到;
+// 并且要如实标出来源,不能假装它就在服务的 PATH 里。
+test('PATH 里没有客户端时,仍能从常见安装目录找到并标出来源', t => {
+  const ws = workspace(t);
+  fs.mkdirSync(path.join(ws.home, '.local', 'bin'), { recursive: true });
+  fs.writeFileSync(path.join(ws.home, '.local', 'bin', 'zcode'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  const onboarding = factory(ws, { applyRouter() {} });
+
+  const state = onboarding.inspect('zcode');
+  assert.equal(state.binary.found, true);
+  assert.equal(state.binary.executable, true);
+  assert.equal(state.binary.source, 'known-dir');
+  assert.equal(state.binary.path, path.join(ws.home, '.local', 'bin', 'zcode'));
+
+  // PATH 里能找到时来源如实写 path,不谎称来自固定目录。
+  binary(ws, 'claude');
+  assert.equal(onboarding.inspect('claude').binary.source, 'path');
+});
+
 // ---------------------------------------------------------------- Claude
 
 test('Claude 接入:预览脱敏、令牌确认、账本 0600、只撤销受管字段', t => {
