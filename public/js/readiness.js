@@ -1171,7 +1171,7 @@
       const res = await readinessCall(`/api/onboarding/${encodeURIComponent(readinessState.app)}/apply`, {
         method: 'POST',
         body: JSON.stringify({ token, confirm: true }),
-      }, R_COMPAT_TIMEOUT_MS);
+      }, 65000);
       readinessState.applyResult = rIsObj(res) ? res : { changes: [] };
       readinessState.applyWarnings = rList(readinessState.applyResult.warnings);
       readinessState.preview = null;
@@ -1228,7 +1228,7 @@
       const res = await readinessCall(`/api/onboarding/${encodeURIComponent(readinessState.app)}/undo`, {
         method: 'POST',
         body: JSON.stringify({ token, confirm: true }),
-      }, R_COMPAT_TIMEOUT_MS);
+      }, 65000);
       readinessState.undoResult = rIsObj(res) ? res : {};
       readinessState.undo = null;
       readinessState.busy = '';
