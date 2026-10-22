@@ -5,6 +5,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const zlib = require('node:zlib');
 const { execFileSync } = require('node:child_process');
 
 const REPO = path.join(__dirname, '..');
@@ -57,4 +58,58 @@ function makeArchive(base, release, { extraFiles = [] } = {}) {
   return { archive, sha256: hash, info, sidecar: `${archive}.sha256` };
 }
 
-module.exports = { makeRelease, makeArchive, sha256, write };
+// ---------------------------------------------------------------- 手工 tar
+// 造**恶意**包不能用系统 tar:它自己就会做安全检查。GNU tar(Linux)在打包时把 `../`
+// 直接剥掉,于是 `tar -czf x.tar.gz -C root ../evil.txt` 产出的成员名是 `evil.txt`,
+// 包里根本没有穿越路径 —— 在 Linux 上这个用例会静默变成"正常包解包成功",
+// 断言抛错就失败;而 macOS 的 bsdtar 保留 `../`,本机一直通过。测试要验证的是
+// "解包器拒绝穿越",不是"某个 tar 版本会不会剥",所以这里自己按 ustar 格式写字节。
+function octal(value, length) {
+  // tar 头里的数值字段是**八进制**数字串 + NUL。写成十进制不会报错,只会让 tar 报
+  // "Unrecognized archive format" —— 整条用例会以错误的方式失败。
+  return Math.trunc(Number(value) || 0).toString(8).padStart(length - 1, '0') + '\0';
+}
+
+function header({ name, size = 0, mode = 0o644, type = '0', linkname = '', mtime = 0 }) {
+  if (Buffer.byteLength(name) > 100) throw new Error(`夹具只支持 100 字节以内的成员名:${name}`);
+  const buf = Buffer.alloc(512, 0);
+  buf.write(name, 0, 100, 'utf8');
+  buf.write(octal(mode, 8), 100);
+  buf.write(octal(0, 8), 108);
+  buf.write(octal(0, 8), 116);
+  buf.write(octal(size, 12), 124);
+  buf.write(octal(mtime, 12), 136);
+  buf.write('        ', 148); // 校验和先按空格算
+  buf.write(type, 156, 1, 'utf8');
+  buf.write(linkname, 157, 100, 'utf8');
+  buf.write('ustar\0', 257, 6, 'binary');
+  buf.write('00', 263, 2, 'binary');
+  let sum = 0;
+  for (const byte of buf) sum += byte;
+  buf.write(octal(sum, 7) + ' ', 148);
+  return buf;
+}
+
+// entries: [{ name, content }] 普通文件;{ name, type: 'symlink', linkname } 链接。
+// 名字原样写进包头,不做任何规范化 —— 这正是造 `../` 与绝对路径用例需要的行为。
+function makeRawArchive(file, entries) {
+  const blocks = [];
+  for (const entry of entries) {
+    const body = entry.type === 'symlink' ? Buffer.alloc(0) : Buffer.from(entry.content ?? '', 'utf8');
+    blocks.push(header({
+      name: entry.name, size: body.length, type: entry.type === 'symlink' ? '2' : '0',
+      linkname: entry.linkname || '', mode: entry.mode ?? 0o644,
+    }));
+    if (body.length) {
+      blocks.push(body);
+      const pad = (512 - (body.length % 512)) % 512;
+      if (pad) blocks.push(Buffer.alloc(pad, 0));
+    }
+  }
+  blocks.push(Buffer.alloc(1024, 0)); // 两个全零块结束
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, zlib.gzipSync(Buffer.concat(blocks)));
+  return file;
+}
+
+module.exports = { makeRelease, makeArchive, makeRawArchive, sha256, write };

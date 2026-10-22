@@ -191,13 +191,25 @@ test('extractArchive:正常包解出后没有链接,文件齐全', async t => {
 
 test('extractArchive:拒绝路径穿越', async t => {
   const base = tempDir(t);
-  fs.mkdirSync(path.join(base, 'root'), { recursive: true });
-  fs.writeFileSync(path.join(base, 'evil.txt'), 'outside');
-  const archive = path.join(base, 'evil.tar.gz');
-  execFileSync('tar', ['-czf', archive, '-C', path.join(base, 'root'), '../evil.txt']);
+  // 手工造包:系统 tar 打包时会把 `../` 剥掉(Linux 的 GNU tar 尤其如此),
+  // 用 `tar -czf x -C root ../evil.txt` 造出来的其实是正常包,这条用例在 CI 上会假绿。
+  const archive = fixture.makeRawArchive(path.join(base, 'evil.tar.gz'), [
+    { name: '../evil.txt', content: 'outside' },
+  ]);
   assert.throws(() => ru.extractArchive({ archive, dest: path.join(base, 'out') }),
     error => error.code === 'unsafe_archive' && /路径穿越/.test(error.message));
   assert.ok(!fs.existsSync(path.join(base, 'out', 'evil.txt')));
+  // 也不能把文件写到 dest 的父目录里。
+  assert.ok(!fs.existsSync(path.join(base, 'evil.txt')));
+});
+
+test('extractArchive:拒绝绝对路径成员', async t => {
+  const base = tempDir(t);
+  const archive = fixture.makeRawArchive(path.join(base, 'abs.tar.gz'), [
+    { name: '/tmp/mixrouter-escape.txt', content: 'outside' },
+  ]);
+  assert.throws(() => ru.extractArchive({ archive, dest: path.join(base, 'out') }),
+    error => error.code === 'unsafe_archive' && /绝对路径/.test(error.message));
 });
 
 test('extractArchive:拒绝符号链接与硬链接成员', async t => {
