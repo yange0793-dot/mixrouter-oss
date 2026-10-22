@@ -205,11 +205,15 @@ test('extractArchive:拒绝路径穿越', async t => {
 
 test('extractArchive:拒绝绝对路径成员', async t => {
   const base = tempDir(t);
+  // Windows 盘符形式:GNU tar 与 bsdtar 都原样列出,所以这条能直接断言我们自己的拒绝。
+  // POSIX 形式(`/etc/x`)不在这里断言:两种 tar 都会先削掉前导 `/` 再列成员,削掉之后
+  // 本来也逃不出 dest —— 把"谁先拦"当契约写进测试,只会让它依赖打包端实现。
   const archive = fixture.makeRawArchive(path.join(base, 'abs.tar.gz'), [
-    { name: '/tmp/mixrouter-escape.txt', content: 'outside' },
+    { name: 'C:/evil.txt', content: 'outside' },
   ]);
   assert.throws(() => ru.extractArchive({ archive, dest: path.join(base, 'out') }),
     error => error.code === 'unsafe_archive' && /绝对路径/.test(error.message));
+  assert.ok(!fs.existsSync(path.join(base, 'out', 'evil.txt')));
 });
 
 test('extractArchive:拒绝符号链接与硬链接成员', async t => {
