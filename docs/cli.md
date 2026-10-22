@@ -133,9 +133,10 @@
 「应用槽位到客户端」写入 `model` / `review_model`;命令行没有 `route codex --slots`
 这个入口,接口是 `POST /api/router/codex {"slots":true}`。
 
-槽位可以配备池(`pool`)和 `strategy`:槽位请求按槽位自己的池策略选择,**不复用**对话的
-粘性或手动钉定,也不改写对话绑定。控制台槽位面板会显示已有备池,但只能编辑渠道与落点模型;
-备池通过 `PUT /api/slots` 或 `slots.json` 维护,面板保存时不会抹掉它。
+Claude 槽位可在控制台「后备渠道」编辑备池(`pool`)的顺序与成员模型，也可通过
+`PUT /api/slots` 维护。槽位请求按槽位自己的策略选择，**不复用**对话的粘性或手动钉定，
+不改写对话绑定。保存主渠道或模型仍保留未带出的 `pool` / `strategy` / `dropTools`；
+清空备池必须明确传 `pool: []`。Codex 槽位界面暂不提供后备池。
 
 **会话级 Key 与槽位覆盖**:控制台「会话 → 当前绑定 → 配置 Key / 槽位」逐槽编辑渠道、模型与 Key,
 也可复制未覆盖的全局渠道/模型到草稿(不含备池),保存只影响该会话。普通请求的渠道钉定
@@ -237,8 +238,10 @@ MIXR_DATA_DIR=/absolute/path node scripts/diagnose-upstream.js --mode provider -
 `scripts/install-macos.sh` 与 `app/MixrouterApp.swift` 桌面外壳是**可选、实验性**的:
 安装脚本只把源码复制到一个不可变发布目录并生成建议 plist,不装载服务、不写
 `~/Library/LaunchAgents`、不改客户端配置;桌面外壳需要 macOS + CommandLineTools。
-当前**没有**可用的「切 `current` 符号链接即完成升级」流程,详见
-[升级与回退](upgrade-and-rollback.md)。
+新入口 `npm run service` 管理可选 macOS 登录服务，`npm run update` 明确检查官方更新，
+`npm run upgrade` 校验运行包并执行受控切换与失败回退。服务安装、升级默认预览，
+只有明确 `--apply` 才写入；不接管其它部署。仅切 `current` 不能代表进程已加载新代码，
+完整参数与边界见[安装说明](installation.md)和[升级与回退](upgrade-and-rollback.md)。
 
 ## 9. 本机自检
 

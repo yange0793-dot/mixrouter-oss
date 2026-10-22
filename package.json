@@ -18,6 +18,9 @@
     "start": "node mixrouter.js",
     "local": "node scripts/start-local.js",
     "doctor": "node scripts/doctor.js",
+    "service": "node scripts/service.js",
+    "update": "node scripts/check-update.js",
+    "upgrade": "node scripts/upgrade-release.js",
     "verify:release": "node scripts/verify-release.js",
     "test": "node scripts/run-tests.js",
     "smoke": "node scripts/smoke-offline.js"

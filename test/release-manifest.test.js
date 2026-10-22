@@ -310,8 +310,8 @@ test('维护条目在清单内:验证入口与三份维护文档缺一不可', (
 });
 
 // ---------------------------------------------------------------- 运行数据基线
-test('运行数据基线本身不含模板文件,且四项都在排除清单里', () => {
-  assert.deepEqual(RUNTIME_DATA_FILES, ['providers.json', 'routes.json', 'sessions.json', 'slots.json']);
+test('运行数据基线本身不含模板文件,且全部都在排除清单里', () => {
+  assert.deepEqual(RUNTIME_DATA_FILES, ['providers.json', 'routes.json', 'sessions.json', 'slots.json', 'client-managed.json']);
   assert.deepEqual(RUNTIME_DATA_DIRS, ['logs', 'backups', '.run']);
   // 基线里的每一项都被 include() 拒绝(注意:它们不在基底里,靠的是 isRuntimeData 兜底)
   for (const rel of [...RUNTIME_DATA_FILES, ...RUNTIME_DATA_DIRS.map(d => `${d}/x`)])

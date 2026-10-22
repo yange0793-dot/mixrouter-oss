@@ -1,0 +1,105 @@
+/* 诊断页「实时尝试过程」面板。
+   只加新类,不改 base.css 里既有选择器:面板本身复用 .panel / .hint / .mono / .badge,
+   这里只管列表、卡片与详情。颜色一律走既有 token(自动跟随明暗主题),不引入新色值。 */
+
+.attempt-flow-status {
+  font-size: 13.5px; color: var(--dim); line-height: 1.6;
+  margin: -6px 0 14px; overflow-wrap: anywhere;
+}
+.attempt-flow-status.err { color: var(--err-text); }
+
+.attempt-flow-list { display: grid; gap: 8px; }
+.attempt-flow-empty { margin: 2px 0 6px; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .attempt-card.live .attempt-dot { animation: attempt-pulse 1.6s ease-in-out infinite; }
+}
+
+/* 进行中的请求:一行一个,不换行挤掉信息 —— 模型名可以很长,超出的部分省略。 */
+.attempt-card {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--panel); padding: 10px 12px; min-width: 0;
+}
+.attempt-card.live { border-color: var(--accent-line); background: var(--accent-soft); }
+.attempt-card > header {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: 13.5px; color: var(--text); min-width: 0;
+}
+.attempt-card > header > b { font-weight: 600; }
+.attempt-card > header .mono {
+  font-family: var(--mono); font-size: 12.5px; color: var(--dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  min-width: 0; flex: 1 1 200px;
+}
+.attempt-time {
+  margin-left: auto; font: 12.5px var(--mono); color: var(--dim);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.attempt-now { margin: 4px 0 0; font-size: 13px; }
+
+.attempt-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent); flex-shrink: 0;
+}
+.attempt-card.done .attempt-dot { background: var(--border-strong); }
+
+@keyframes attempt-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: .35; transform: scale(.8); }
+}
+
+/* 已结束:折叠在 <details> 里,默认不展开。 */
+.attempt-flow-done { margin-top: 16px; }
+.attempt-flow-done > summary {
+  cursor: pointer; color: var(--dim); font-size: 13.5px;
+  padding: 4px 0; user-select: none;
+}
+.attempt-flow-done > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.attempt-flow-done[hidden] { display: none; }
+.attempt-flow-done > .attempt-flow-list { margin-top: 10px; }
+
+.attempt-toggle {
+  background: transparent; border: 1px solid transparent; color: var(--dim);
+  padding: 0 5px; min-width: 24px; font-size: 15px; line-height: 1.4; cursor: pointer;
+}
+.attempt-toggle:hover { color: var(--text); border-color: var(--border); background: var(--surface-2); }
+.attempt-toggle:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.attempt-truncated { margin: 6px 0 0; font-size: 12.5px; }
+
+.attempt-detail { margin-top: 10px; border-top: 1px solid var(--border-soft); padding-top: 10px; }
+.attempt-detail > .mono { display: block; font-size: 12.5px; color: var(--dim); overflow-wrap: anywhere; }
+
+.attempt-events {
+  list-style: none; margin: 8px 0 10px; padding: 0;
+  display: grid; gap: 4px; font-size: 13px;
+}
+.attempt-events li { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
+.attempt-events time { font: 12.5px var(--mono); color: var(--dim); font-variant-numeric: tabular-nums; }
+.attempt-events b { font-weight: 600; color: var(--text); }
+.attempt-events .mono {
+  font-family: var(--mono); font-size: 12.5px; color: var(--dim);
+  overflow-wrap: anywhere; min-width: 0;
+}
+
+.attempt-flow-guide {
+  border: 1px solid var(--border-soft); border-radius: var(--radius);
+  background: var(--surface); padding: 10px 12px;
+}
+.attempt-flow-guide-title {
+  font-size: 13.5px; font-weight: 600; color: var(--text);
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px;
+}
+.attempt-flow-guide .hint { margin: 0 0 4px; font-size: 13px; }
+.attempt-flow-guide .hint:last-child { margin-bottom: 0; }
+.attempt-flow-guide .hint b { color: var(--text); font-weight: 600; margin-right: 6px; }
+.attempt-flow-guide a { color: var(--accent-text); margin-left: 6px; }
+
+@media (max-width: 720px) {
+  .attempt-card > header .mono { flex-basis: 100%; white-space: normal; }
+  .attempt-time { margin-left: 0; }
+}
+
+@media print {
+  .attempt-flow-done { display: block; }
+  .attempt-card { break-inside: avoid; }
+}

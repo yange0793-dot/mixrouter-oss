@@ -1,0 +1,93 @@
+/* 多 Key 自动备用面板。独立样式文件:不覆盖 app.js 的渠道卡片与弹窗,
+   只用 base.css 的既有 token,浅色 / 深色随系统与 <html data-theme> 走。 */
+
+.kf-panel {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.kf-panel[hidden] { display: none; }
+
+.kf-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px 18px;
+}
+.kf-intro { flex: 1 1 320px; min-width: 0; }
+.kf-intro h2 { margin: 0 0 4px; font-size: 15px; letter-spacing: -.1px; }
+.kf-intro .hint { margin: 0; }
+
+.kf-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+}
+.kf-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--dim);
+}
+.kf-field select { min-width: 210px; max-width: 320px; min-height: 30px; font-size: 13px; }
+.kf-toggle { white-space: nowrap; }
+.kf-toggle.on {
+  color: var(--accent-text);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+.kf-status { font-size: 13px; color: var(--dim); overflow-wrap: anywhere; }
+.kf-status:empty { display: none; }
+
+.kf-detail { margin: 0; }
+
+.kf-health-body {
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+}
+.kf-health-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.kf-health-head h3 { margin: 0; font-size: 13.5px; }
+
+.kf-rows {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.kf-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 7px 0;
+  border-top: 1px solid var(--border-soft);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.kf-row:first-child { border-top: 0; }
+.kf-who { min-width: 0; overflow-wrap: anywhere; }
+.kf-scope, .kf-when { color: var(--dim); }
+
+@media (max-width: 720px) {
+  .kf-panel { padding: 12px; }
+  .kf-controls { width: 100%; align-items: stretch; }
+  .kf-field { flex: 1 1 100%; }
+  .kf-field select { min-width: 0; width: 100%; max-width: none; }
+  .kf-row { align-items: flex-start; }
+}

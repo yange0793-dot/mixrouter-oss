@@ -36,7 +36,8 @@ Not a good fit:
   authentication.
 - Hosted secret management, audit compliance, or centralized quotas. Keys live in plaintext
   in a local data directory.
-- A ready-made Windows installer, Docker image, or automatic updates. None are provided.
+- A ready-made Windows installer, Docker image, or a background auto-updater. None are provided;
+  upgrades are manual and explicitly confirmed.
 - Getting API accounts, free quota, or an upstream quality guarantee from this project.
   Providers, billing, and service quality are between you and your provider.
 
@@ -53,9 +54,31 @@ Not a good fit:
   on different providers, while a conversation is kept on one provider when possible. This is
   not a hard guarantee: cooldowns, rebinding after failure, failover, manual pinning, and
   session overrides can all change the target.
-- **Slot routing.** Bind a provider and model to a `mixr-<slot>` alias so the main chain and
-  subagents can use separate accounts. The session console lets each conversation use its own
-  provider and model per slot; slots without an override inherit the global configuration.
+- **Slot routing and backup pools.** Bind a provider and model to a `mixr-<slot>` alias so the
+  main chain and subagents can use separate accounts. The session console lets each conversation
+  use its own provider and model per slot; slots without an override inherit the global
+  configuration. Each Claude slot row can edit its backup pool in place: the primary provider
+  always stays first, backup members are tried in order, and saving does not rewrite an existing
+  pool strategy. Codex slots show an explanatory note instead, because the Codex client config
+  they write is single-provider.
+- **First-run onboarding.** The providers page walks through checking the client, picking or
+  importing a provider, choosing a model and protocol, optionally running a compatibility test,
+  then previewing and confirming the write. Only managed fields are shown, the client file is
+  untouched until you confirm, and the same entry can undo the write by restoring only fields
+  that still hold the values it wrote. Import accepts mixrouter `providers.json` and cc-switch
+  exports: preview first, additive only, keys masked.
+- **Compatibility test.** Uses the real forwarding path to report an authentication verdict,
+  non-streaming generation, stream termination, and tool-call shape separately. It sends no
+  generation request without explicit confirmation, makes at most three upstream calls, and
+  reports the time and scope of that single run.
+- **Error guidance and attempt traces.** Proxy-generated error codes, 401/402/403/429/5xx,
+  timeouts, and network failures are explained as conclusion, impact, next step, and the console
+  page to open. The diagnostics page shows bounded retries and failover targets; the log field
+  `request_id` links a request to its trace. A 403 is never reported as a dead key.
+- **Optional multi-key fallback.** Enabled per provider. Normal requests stay on one account;
+  401/402 (account-level) and 403/404/429 (model-level) are the only failures that may switch
+  keys. Pinned session keys and compact-only keys never switch, and `active_key` is never
+  rewritten.
 - **Local console.** `127.0.0.1:8788` manages providers, routes, sessions, slots, logs, and
   backups. Open Claude Code, Codex, or ZCode directly from the sidebar, choose list or card
   views for providers, and expand model slots when needed. Fetch upstream models using a Base URL
@@ -98,10 +121,15 @@ open http://127.0.0.1:8788/     # macOS; open the same address in a browser else
 ```
 
 Select Claude Code, Codex, or ZCode in the console sidebar, add a provider and model,
-then connect that client to the local router. You can start the console and run the offline acceptance checks
+then connect that client to the local router. For a fresh install, prefer the onboarding wizard
+(「接入向导」) at the top of the **Providers** page: check the client, add or import a provider,
+choose a model, optionally run one compatibility test, then preview and confirm the write.
+Nothing in the client configuration changes before you confirm.
+You can start the console and run the offline acceptance checks
 without any provider key; only real forwarding needs one.
 
-Connect a client (the existing config is backed up before it is rewritten):
+You can also connect a client from the command line (the existing config is backed up before it
+is rewritten):
 
 ```bash
 ./mixctl route claude --slots   # Claude Code, also writes slot aliases
@@ -142,6 +170,18 @@ do not use them as real configuration.
   internal material.
 - **npm.** This project does not provide an official npm package. Do not use an unrelated
   same-name package. `package.json` is `private: true`; run it from the source directory.
+- **Background service (optional, macOS).** `npm run service -- install` writes a LaunchAgent that
+  belongs to this tool only; it previews by default and writes with `--apply --yes` (npm needs
+  the `--` before script flags). It never
+  overwrites a hand-written plist with the same label, and `start` / `stop` / `restart` only act
+  on this tool's own label through launchctl. When the upgrader stops an old instance, it only
+  signals processes whose command line proves they run from the target release directory.
+  Closing the console page does not stop the service.
+- **Update check and upgrade.** `npm run update` is local and offline by default; `--check`
+  queries the official Releases. `npm run upgrade` previews by default and executes only with
+  `--apply --yes`. A package must pass `.sha256`, archive path checks, three-way version
+  agreement, and the release manifest. The data directory is read-only to the upgrader, and a
+  failed switch rolls back to the previous `current`. There is no silent background updater.
 - **Upgrade and rollback.** Keep the data directory separate from the code directory and do not
   swap data together with code. See [Upgrade and rollback](docs/upgrade-and-rollback.md)
   (Chinese).
@@ -154,14 +194,17 @@ do not use them as real configuration.
 | CI | Linux (`ubuntu-latest`) with Node 18 / 22 / 24, running `npm test` and `npm run smoke` |
 | Artifact check | `npm run smoke` inside the unpacked package; run by Linux CI, with a matching macOS Node 24 check in the workflow |
 | Local verification | macOS with Node 24, full test suite and offline acceptance |
+| Onboarding / compatibility test / undo / service and upgrade / multi-key fallback | Tested locally only on **macOS with Node 24, using offline fixtures**; **no real upstream generation requests were made**; other platforms untested |
 | Windows | The core service uses Node built-ins only, but there is **no Windows CI coverage** and no installer |
-| macOS shell | LaunchAgent and desktop shell are optional; the **desktop shell is experimental** and not a supported install path |
+| macOS shell | The LaunchAgent is generated by `npm run service` and is optional; the **desktop shell is experimental** and not a supported install path |
 | Deployment | Local foreground process or local service; no Docker image, hosted VPS setup, or multi-user deployment |
 
 CI results are authoritative on [Actions](https://github.com/yange0793-dot/mixrouter-oss/actions).
 Local verification records live in
 [Offline run and acceptance](docs/offline-run-and-acceptance.md) (Chinese). A combination that has
-not actually been run on a platform is not described as supported.
+not actually been run on a platform is not described as supported. The new entries above have no
+corresponding passing CI result yet; the existence of a workflow is not evidence that this
+revision has passed it.
 
 ## Documentation
 
@@ -171,9 +214,10 @@ The linked pages are in Chinese; the table says what each one covers.
 | --- | --- |
 | [Install, run, and uninstall](docs/installation.md) | Choosing a start entry, downloading and verifying a release, data directory and ports, uninstall boundaries |
 | [Quick start](docs/quick-start.md) | Where to change what: start the service, add providers, configure routes, connect clients, run tests |
+| [First-run and self-service recovery](docs/user-readiness.md) | Onboarding wizard, provider import, compatibility test, slot backup pools, error guidance and attempt traces, undo, diagnostic report, multi-key fallback, service and upgrade entries |
 | [CLI and runtime boundaries](docs/cli.md) | Every `mixctl` subcommand, ports and data directory, slots and sessions, logs and archives, backup/restore, read-only diagnostics, local self-check |
 | [Routing and sessions](docs/routing-and-sessions.md) | Match order, session identity, slots, pool strategies, session overrides, protocol translation |
-| [Troubleshooting](docs/troubleshooting.md) | Symptom-oriented: 503 classes, cooldowns and retries, invalid keys, affinity anomalies, log locations |
+| [Troubleshooting](docs/troubleshooting.md) | Symptom-oriented: 503 classes, cooldowns and retries, invalid keys, affinity anomalies, log locations, onboarding/compatibility/upgrade failures, multi-key fallback |
 | [Reference](docs/reference.md) | Full mechanisms and fields, all environment variables, diagnostic limits |
 | [Upgrade and rollback](docs/upgrade-and-rollback.md) | Source upgrades and rollbacks, data directory, client config recovery, install-script boundaries |
 | [Offline run and acceptance](docs/offline-run-and-acceptance.md) | Keyless, network-free acceptance flow and what has actually been verified |
@@ -191,8 +235,16 @@ The linked pages are in Chinese; the table says what each one covers.
   They are **not authentication** and do not protect against other programs running under your
   account.
 - **Plaintext credentials.** `providers.json` and the backup directories contain plaintext
-  provider keys; `sessions.json` contains conversation labels. Do not sync the data directory to
-  a public location or commit it to git. Remove keys and session content before sharing logs.
+  provider keys; `sessions.json` contains conversation labels; the onboarding undo ledger
+  `client-managed.json` (`0600`) stores the pre-write values of managed client fields so they can
+  be restored, and may therefore contain a token or key you had before onboarding. Do not sync
+  the data directory to a public location or commit it to git. Remove keys and session content
+  before sharing logs, and never post that ledger.
+- **The compatibility test spends quota.** It sends up to three real generation requests
+  (non-streaming, streaming, and tool call) to the selected provider; nothing is sent without
+  explicit confirmation. The console's redacted diagnostic report contains no keys, config
+  bodies, raw logs, prompts, session titles, usernames, or private paths, but review it before
+  sharing.
 - **Response archiving is off by default.** Upstream response bodies are stored only when
   `MIXR_RESPONSE_ARCHIVE=on` is set explicitly. Size limits and sensitive-content boundaries are
   in [CLI and runtime boundaries](docs/cli.md#5-压缩日志与归档) (Chinese).

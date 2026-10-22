@@ -5,7 +5,9 @@
 原则是给路径、给字段名、给能直接敲的命令。命令里的 `./mixctl` 都指仓库根的
 `mixctl`(可执行);Node 推荐 22 / 24,最低 `>= 18`(见 `package.json` 的 `engines.node`)。
 
-本页只讲"在哪里改什么";机制说明在[参考手册](reference.md),按症状排查在[故障排查](troubleshooting.md)。
+本页只讲"在哪里改什么";机制说明在[参考手册](reference.md),按症状排查在
+[故障排查](troubleshooting.md);首次接入向导、兼容测试、撤销与诊断报告的界面说明在
+[首次接入与自助恢复](user-readiness.md)。
 
 ---
 
@@ -79,6 +81,23 @@ open http://127.0.0.1:8788/                   # macOS;其他系统浏览器打�
 > 完整清单见 [`offline-run-and-acceptance.md`](offline-run-and-acceptance.md) §2,
 > 以及 [`reference.md`](reference.md#10-环境变量) 的完整变量表。
 
+从 Release 运行包长期运行时,另有三个**可选**入口(默认只读或只预览,不联网):
+
+```bash
+npm run service status    # 只读:发布目录、current、真正在跑的实例、登录服务
+npm run service -- install --apply --yes   # 生成 macOS LaunchAgent(不加 flag 只预览)
+npm run update            # 默认只读本机
+npm run update -- --check # 显式查询官方 Releases
+npm run upgrade           # 默认只预览
+npm run upgrade -- --version vX.Y.Z --download --apply --yes   # 显式执行
+```
+
+`service install` 只写带 `mixrouter-managed` 标记的 plist,不覆盖同 label 的手写文件;
+`start/stop/restart` 只通过 launchctl 操作本工具自己的 label。升级停旧实例时只对命令行
+确认属于目标发布目录的进程发信号;数据目录只读,失败会切回旧 `current`。完整步骤见
+[安装、运行与卸载](installation.md)与[升级与回退](upgrade-and-rollback.md),
+边界速查见[首次接入与自助恢复](user-readiness.md)§8。
+
 ---
 
 ## 1. 加一个渠道(在哪改)
@@ -143,6 +162,11 @@ open http://127.0.0.1:8788/                   # macOS;其他系统浏览器打�
 「API key」是一颗下拉,点一下即切账号,不用重启。老式只有 `api_key` 的渠道会被显示成一条
 「账号1」(固定 id `klegacy`);加第二把时它按原 Key 解析,不会丢。
 
+想让一把 Key 失效时**自动换到同渠道的另一把**,在「渠道与 Key」页渠道网格下方的
+「多 Key 自动备用」面板里按渠道开启(`key_fallback`,默认关闭)。它只影响这一条请求用哪把 Key,
+不改 `active_key`、不改模型、不删 Key;会话固定 Key 与压缩专用 Key 永不换号。
+语义见[路由与会话](routing-and-sessions.md)§5。
+
 ---
 
 ## 2. 配路由规则与默认路由(在哪改)
@@ -187,6 +211,13 @@ open http://127.0.0.1:8788/                   # macOS;其他系统浏览器打�
 ---
 
 ## 3. 接入客户端(客户端 base_url 填什么)
+
+**首选:控制台「渠道与 Key」页顶部的「接入向导」**。它按「检查客户端 → 选/导入渠道 →
+选模型与协议 → 可选兼容测试 → 预览并确认写入」走完,不需要手写 JSON,写入前能看到
+将要改动的受管字段,写入后可以从同一入口撤销。没确认之前不改任何客户端文件。
+字段含义、失败步骤与撤销冲突的处置见[首次接入与自助恢复](user-readiness.md)§1。
+
+下面的命令与手改值仍然有效,适合脚本化或想自己控制每一步的部署。
 
 ### Claude Code(Anthropic 协议)
 

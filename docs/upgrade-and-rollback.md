@@ -5,16 +5,118 @@
 
 **先说清三件没有的东西**:
 
-1. **没有自动回退保护。** 升级与回退都是人手动执行。
+1. **没有后台自动更新。** `scripts/upgrade-release.js` 只在人显式运行时做一次升级,
+   失败时会尝试回退 `current` 并恢复旧服务;它不是常驻监控,也不能阻止外部改动。
 2. **持久格式没有"拒绝读取"的版本闸门。** `providers.json` / `routes.json` / `slots.json` /
    `sessions.json` 里写着 `version` 字段,但读取侧只做形状归一化,不校验它。
    没有自动机制能阻止旧版读新版写出的数据;回退前必须人工核对兼容性。
-3. **没有自动更新、签名/公证或 Windows/Linux 安装制品。** `scripts/install-macos.sh`
-   是 macOS 上的源码复制工具,`app/MixrouterApp.swift` 是实验性桌面外壳。
+3. **没有签名/公证或 Windows/Linux 安装制品。** 新工具会核对官方 Release 的 SHA-256、
+   解包路径与制品清单,但校验和不等于代码签名。`scripts/install-macos.sh` 是 macOS 上的
+   源码复制工具,`app/MixrouterApp.swift` 是实验性桌面外壳。
 
 ---
 
-## 新入口的下载包升级
+## 受控工具:check-update / upgrade-release / service
+
+三个脚本都随运行包发布,只用 Node 内置模块与系统 `tar`。**默认都是预览**:
+`check-update.js` 默认不联网,`upgrade-release.js` 默认不联网、不写文件,
+`service.js` 默认只读状态。
+
+### 1. 看本机状态(不联网)
+
+```bash
+node scripts/check-update.js
+node scripts/service.js status
+```
+
+前者报告 `current`、版本、源码指纹与发布目录数量;后者额外列出运行中的 pid
+(只在命令行确认属于该发布目录时才标为"属于")和登录服务指向的目录。
+两者都不写文件。
+
+### 2. 预览升级
+
+离线归档(校验和必须与包同目录,或显式 `--sha256`):
+
+```bash
+node scripts/upgrade-release.js --archive /path/mixrouter-3.9.1.tar.gz --version 3.9.1
+```
+
+在线获取(必须显式 `--download`;仓库固定为 `yange0793-dot/mixrouter-oss`):
+
+```bash
+node scripts/check-update.js --check
+node scripts/upgrade-release.js --version 3.9.1 --download
+```
+
+预览会打印:当前版本 → 目标版本、归档来源与校验和、制品文件数、现算的
+`code_revision`、数据目录(只读检查结果)、运行中的实例、登录服务处理方式与回退策略。
+**预览不写安装根、不碰数据目录、不启动或停止服务。**
+
+### 3. 执行
+
+```bash
+node scripts/upgrade-release.js --archive /path/mixrouter-3.9.1.tar.gz --version 3.9.1 --apply --yes
+# 或
+node scripts/upgrade-release.js --version 3.9.1 --download --apply --yes
+```
+
+非交互环境 `--apply` 必须同时给 `--yes`,否则当场中止。
+
+执行顺序与判据:
+
+1. **校验来源**:SHA-256(在线时还核对 GitHub `digest` 与 `.sha256` 附件)、解包成员
+   不允许绝对路径/`..`/符号链接/硬链接、制品清单、`package.json` 与入口 `VERSION`
+   与 `RELEASE-INFO.json` 三处版本一致、包内现算的源码指纹与声明值一致。
+2. **预检**:拒绝降级与同版本安装(除非 `--allow-same`)、拒绝 Node 低于目标
+   `engines`、拒绝任何不属于当前 `current` 的运行实例、拒绝会指向旧代码的登录服务。
+   数据目录只读解析 `providers.json` / `routes.json` / `slots.json` / `sessions.json`;
+   解析失败直接中止:本工具不改写数据,也不提供跳过该检查的开关,先人工处理再升级。
+3. **停止**:先观察 `active_requests`,**等到归零**才发 SIGTERM。持续有新请求时计数不会
+   归零 —— 排空在 `--drain-timeout`(默认 30s)内没结束就**中止升级**:不停止服务、
+   不切换代码、不打断任何在途请求。工具没有"杀掉在途请求再宣布成功"的开关。
+   只停归属可确认的 pid(命令行、pid 文件与进程启动时间、或服务自报的 pid + 指纹);
+   退出超时同样中止,不自动 SIGKILL。
+4. **安装**:解包已校验的目录复制到 `releases/<版本>-<指纹>`,写 `RELEASE.json`,
+   再原子切换 `releases/current`。发布目录不可变,已存在同名目录直接拒绝。
+5. **启动与核对**:有托管登录服务时重写 plist 并重新 bootstrap;否则直接派生
+   `node <新发布目录>/mixrouter.js`(不经过 `mixctl start`,避免它去 kickstart
+   一个不确定的 LaunchAgent label)。随后轮询 `/api/state`,必须返回目标
+   `code_revision`;只看到 `/healthz` 200 不算成功。
+6. **失败回退**:切回旧 `current`,重新启动旧版本并核对旧指纹。回退成功、回退切换失败、
+   回退后旧服务仍不可用,会分别报告并给出新旧目录路径;不会删除任何发布目录。
+
+### 4. 停止或卸载登录服务
+
+```bash
+node scripts/service.js stop        # launchctl bootout 当前托管 label
+node scripts/service.js restart
+node scripts/service.js uninstall   # 预览;--apply --yes --unload 才删除并卸载
+```
+
+`service.js` 只认带 `mixrouter-managed` 标记、且 label 落在 `com.<用户名>.mixrouter.managed`
+命名空间的 plist。install-macos.sh / 旧 mixctl 的 `com.<用户名>.mixrouter` 与任何手写配置
+都不会被覆盖、删除或接管;升级工具在它指向当前目录时会拒绝继续,并要求先按原方式停用它。
+
+### 5. 显式回退到某个发布目录
+
+```bash
+node scripts/upgrade-release.js --rollback-to /path/to/releases/3.9.0-abcdef12
+node scripts/upgrade-release.js --rollback-to /path/to/releases/3.9.0-abcdef12 --apply --yes
+```
+
+同样先停服务、切 `current`、启动并核对目标目录的 `code_revision`;失败会尽量恢复到
+回退前的 `current` 并如实报告。**它不检查数据格式兼容性** —— 下面第 3 节的人工核对
+仍然适用。
+
+### 数据目录
+
+工具只读取数据目录做检查,**不写、不迁移、不备份**。需要备份时请自己在执行前完成
+(第 7 节清单)。固定数据目录的优先级:`--data-dir` > 托管登录服务 plist >
+当前发布目录的 `RELEASE.json` > `MIXR_DATA_DIR` > `~/.local/share/mixrouter/data`。
+
+---
+
+## 新入口的下载包升级(手工路径)
 
 `npm run local` 默认采用固定数据目录 `~/.local/share/mixrouter/data`。
 升级时将新版包解压到**新的空目录**,先在新版目录执行 `npm run doctor -- --offline` 与
@@ -217,6 +319,8 @@ scripts/install-macos.sh --apply --yes   # 真正写入
   桌面外壳(`app/MixrouterApp.swift`)会读 `releases/current`,那是它自己的定位方式。
 - 重复运行不会覆盖已存在的发布目录:内容一致就跳过,不一致直接拒绝。
 - 装完之后服务仍然要你自己启动,数据目录仍然要你自己用 `MIXR_DATA_DIR` 固定。
+- 需要常驻时另用 `node scripts/service.js install --apply --yes` 写入**带标记的**托管
+  LaunchAgent;它不会接管 install-macos.sh 只放在 `launchd/` 下的建议文件。
 - 它不校验升级后的数据结构兼容性,也不提供回退。
 
 ### 桌面外壳(可选,实验性)
@@ -261,6 +365,8 @@ node scripts/release-manifest.js release-info --version <v> --revision <40位sha
 ./mixctl ls                           # 渠道、规则、当前生效、配置漂移
 node -v                               # 22 / 24 推荐,最低 18
 curl --fail http://127.0.0.1:8787/healthz
+node scripts/check-update.js           # 本机 current 与版本(不联网)
+node scripts/service.js status        # 运行实例、登录服务与固定数据目录
 ```
 
 - [ ] 数据目录已用 `MIXR_DATA_DIR` 固定,不跟着代码目录走。
@@ -269,6 +375,8 @@ curl --fail http://127.0.0.1:8787/healthz
 - [ ] 旧进程完全退出,`./mixctl status` 显示「未运行」。
 - [ ] 新旧代码不会同时写同一个数据目录。
 - [ ] 升级/回退后 `./mixctl status` 的「代码」行与预期的 `code_revision` 一致。
+- [ ] 使用 `scripts/upgrade-release.js` 时先把预览输出核对一遍;联网只加 `--download`,
+      离线归档带 `.sha256`(`--archive`)。
 - [ ] 客户端配置要动时,先 `./mixctl backups` 核对,再 `--diff` 预览。
 
 演练请在**独立 HOME、数据目录、端口**下做,不要把在线实例当演练环境,

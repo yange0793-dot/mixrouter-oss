@@ -30,6 +30,10 @@ slots.json.bak*
 # 归档的历史备份(内含明文 key 与渠道配置;只在本地留存,绝不入库)
 /backups/
 
+# 受管客户端字段的撤销账本(可能含写入前的凭据)
+client-managed.json
+client-managed.json.*
+
 # 运行时产物
 logs/
 .run/

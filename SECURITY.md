@@ -18,6 +18,9 @@
 
 - **渠道 API Key**(`providers.json` 里的 `api_key`,或任何 `sk-…` 形态的串);
 - 完整 `providers.json` / `routes.json` / `slots.json` / `sessions.json`(`sessions.json` 含对话标签);
+- `<MIXR_DATA_DIR>/client-managed.json`:接入向导的撤销账本,为了能还原,**保存受管字段的写前值**
+  (客户端配置里的 base URL、令牌/Key 字段等),可能包含你原来的凭据。它只有 `0600` 权限,
+  不要贴出、不要同步到公开位置;
 - `logs/requests.jsonl` 的原文:它是**请求元数据**(渠道、模型、状态、耗时、错误摘要等),
   不是完整请求体,但**错误片段可能带上游返回的敏感内容**;
 - `logs/responses/` 下的响应正文归档(仅在显式开启 `MIXR_RESPONSE_ARCHIVE` 时产生,
@@ -25,6 +28,28 @@
 - 能直接利用的 PoC 细节(先走私密通道)。
 
 贴状态请用 `key_masked` / `has_key` 形态(控制台与 `/api/state` 已经这么返回),或手动把值替换成 `<redacted>`。
+
+**可以分享、但仍建议先看一眼**的是诊断页的「脱敏诊断报告」(`GET /api/diagnostics/report`):
+它是服务端按白名单重建的对象,不含 Key、配置正文、日志原文、prompt、会话标题、用户名或私有路径,
+只含版本、运行时、客户端配置状态枚举、渠道计数、超时/重试设置和按组聚合的计数。它不会被自动上传。
+
+## 这些操作会把数据发到哪里
+
+- **兼容测试**(接入向导第 4 步 / `POST /api/providers/:id/compatibility`)会向**你选中的渠道**
+  发最多 3 次真实生成请求(非流、流式、工具调用各一次),内容是本项目固定的短探针 prompt。
+  未显式给 `confirm_run: true` 时不发。它会消耗该渠道额度;上游服务商能读到请求内容,
+  与普通转发相同。工具探针只让模型回显参数,不执行文件或命令。
+- **检查更新与升级**(`npm run update -- --check`、`npm run upgrade -- --download`)会在显式参数下
+  访问固定的 GitHub 仓库与发布附件主机,发送的是普通 HTTPS 请求,不上传本机配置。
+  下载内容必须同时通过 `.sha256`、解包路径检查、版本三处一致与制品清单才会安装。
+- **接入向导与撤销**只读写本机客户端配置文件与数据目录;不会上传配置,也不会访问上游。
+
+## 其它本机写入
+
+- `npm run service -- install --apply --yes` 会写 `~/Library/LaunchAgents/<label>.plist`(只写带
+  `mixrouter-managed` 标记的那一份,覆盖前留 `.bak`)。plist 里有数据目录与端口,没有 Key。
+- 接入账本 `client-managed.json` 与所有配置备份都应按凭据文件对待:放在只有你能读的位置,
+  不要提交进 git。
 
 ## 这个项目默认的威胁模型
 
