@@ -89,13 +89,15 @@ const EXCLUDE = [
 
 // 运行数据基线:全仓唯一一处定义"什么算绝不发布的运行数据"。
 // 制品检查(CI)与单测都从这里取,不各自再抄一份。
-const RUNTIME_DATA_FILES = ['providers.json', 'routes.json', 'sessions.json', 'slots.json'];
+const RUNTIME_DATA_FILES = ['providers.json', 'routes.json', 'sessions.json', 'slots.json', 'client-managed.json'];
 const RUNTIME_DATA_DIRS = ['logs', 'backups', '.run'];
 
 // 控制台的每个脚本都必须随运行包交付,避免页面能打开但主题、导航或用量页失效。
 const REQUIRED_ENTRIES = [
   'mixrouter.js', 'public/index.html', 'public/js/app.js',
   'public/js/workspace.js', 'public/js/usage.js', 'public/styles/base.css',
+  'public/js/readiness.js', 'public/js/attempt-flow.js', 'public/js/key-fallback.js',
+  'public/styles/readiness.css', 'public/styles/attempt-flow.css', 'public/styles/key-fallback.css',
 ];
 
 // 运行包的维护条目:解压后能验、能读、能报告问题。**不含 test/** —— 整套开发测试只在

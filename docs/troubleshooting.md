@@ -21,6 +21,10 @@
 纯 JSON 输出用 `npm run --silent doctor -- --json`,分享前检查其中的本机路径。
 v3.6.1 发布包尚不含这个命令,使用下方旧入口诊断。
 
+从 Release 运行包安装、由登录服务托管的部署,用 `npm run service status` 看发布目录、
+`current` 与**真正在跑的实例**;它只读、不连端口。本工具只认带 `mixrouter-managed`
+标记的 plist,不会去猜别的服务。
+
 `npm run local` / `npm start` 的前台进程不写 `mixctl` PID 文件。对它们请看运行终端与
 `doctor` 的回环服务结果,不要因 `mixctl status` 的“进程:未运行”就再启动一个服务。
 以下 PID 判据仅适用于通过 `mixctl` 或 launchd 启动的部署:
@@ -297,7 +301,7 @@ lsof -nP -iTCP:8788 -sTCP:LISTEN
 
 | 文件 | 内容 | 谁在管 |
 | --- | --- | --- |
-| `<MIXR_DATA_DIR>/logs/requests.jsonl` | 每条请求一行 JSON,32 个白名单字段 | 按 UTC 日界 + 5MiB 轮转 |
+| `<MIXR_DATA_DIR>/logs/requests.jsonl` | 每条请求一行 JSON,只写白名单字段(名单是 `lib/observability/request-log.js` 里的 `LOG_FIELDS`,不在名单内的字段一律不落盘) | 按 UTC 日界 + 5MiB 轮转 |
 | `<MIXR_DATA_DIR>/logs/requests.jsonl.old` | 更早的遗留轮转文件 | **只读、不清理、不压缩** |
 | `<MIXR_DATA_DIR>/logs/responses/<id>/` | 返回正文归档(**默认关闭**) | `lib/log-retention.js`,默认保留 2 天 |
 | `<代码目录>/logs/launchd.log` | launchd 把 stdout/stderr 重定向到这里 | `lib/log-retention.js`,默认保留 2 天 |
@@ -311,7 +315,8 @@ lsof -nP -iTCP:8788 -sTCP:LISTEN
 | `err` / `err_class` | 终态错误文本 / 错误分型(`authentication`、`rate_limit`、`upstream_server`、`timeout`、`cancelled`…) |
 | `slot` | 命中的槽位;空槽记 `none`,缺字段的旧日志记 `unknown` |
 | `sticky` / `strategy` / `rule` | 是否走了会话粘性 / 用的策略 / 命中的规则 id |
-| `key_id` / `key_source` | 用的是哪把 Key(**非明文**的来源标记) |
+| `key_id` / `key_source` | 用的是哪把 Key(**非明文**的来源标记);多 Key 自动备用换号记为 `key_fallback` |
+| `request_id` | 本进程内尝试过程的 id,对应诊断页「实时尝试过程」与 `GET /api/attempts` |
 | `effort` | **真的发上去的那一档**思考强度(转换层报回来的),不是客户端想要的那档 |
 | `model_in` / `model_out` | 客户端说的模型 / 实际发给上游的模型 |
 | `bytes_in` | 客户端请求体字节数。首字慢但输出很快时先看这一栏:带截图的历史会让请求体涨到十几 MB,而这段时间上游面板里看不见 |
@@ -394,7 +399,140 @@ ZCode 的备份暂未纳入。备份保留上限 5 份,轮换在**删除发生�
 
 ---
 
-## 10. 兜底:先跑这三条
+## 10. 接入向导失败、撤销被拒
+
+接入向导的入口与字段语义见[首次接入与自助恢复](user-readiness.md)§1;这里按报错查。
+
+**先看检查结果,再看写入**:
+
+- `config.status = invalid`:**配置文件存在但解析不了**(JSON 语法、`env` 不是对象、
+  TOML 超出支持子集、ZCode 结构不对)。这不是"尚未配置";先修文件或从备份还原。
+  向导不会覆盖它。
+- `config.status = error`:没有读权限(`EACCES`,预览/写入回 403)或路径不是普通文件
+  (`ENOTFILE`,回 500)。两种情况都拒绝写入。检查文件属主、权限与路径,不要为了通过而改
+  `MIXR_CLAUDE_SETTINGS` 等路径指向别处。
+- `config.status = missing`:文件不存在。可以按新接入处理。
+- `binary.found = true` 但 `executable = false`:PATH 里有这个名字但没有可执行位。
+  这与"没装"不同,给客户端补上执行权限即可。
+
+常见拒绝:
+
+| 报错 | 原因 | 处置 |
+| --- | --- | --- |
+| `当前选择了 Codex profile…` | `config.toml` 里有 `profile` | 先人工确认 profile 配置,向导不做猜测 |
+| `配置在预览后被修改,接入已中止`(409) | 预览之后文件被别的程序或你改过 | 重新预览,不要复用旧令牌 |
+| `接入前需要显式确认` / `缺少预览令牌` | 没有 `confirm: true` 或令牌已用/过期 | 重新预览;令牌 5 分钟一次性 |
+| `ZCode provider ID mixrouter-managed 已被非本集成占用` | 这个 id 里有别人写的内容 | 确认后手工改名或清理,向导不会覆盖 |
+| `Codex main 槽位须绑定已启用、有模型名和 API Key 的渠道` | 这次写入要带槽位,但 main / reviewer 不完整(未绑定、停用、缺模型或缺 Key) | 先补槽位,或让它只写路由地址与令牌 |
+
+**写入成功但客户端还连旧地址**:先重启客户端(或新建会话),再用
+`GET /api/onboarding/<app>` 看 `routed` 是否为 true。仍为 false 时检查是不是有更高优先级的
+环境变量、托管策略或 `--settings` 覆盖了客户端配置——向导只改磁盘配置,清不掉这些覆盖。
+
+**撤销被拒(409 或冲突列表)**:说明受管字段在接入后被改过。冲突项会列出
+`field` / `current` / `expected` / `restore`。撤销**不会**为了成功而覆盖这些字段:
+
+- 只想恢复某一项:按 `restore` 的值手动改回去,再重新预览撤销;
+- 想整体回到接入前:用接入时自动留下的客户端配置备份(见 §9 `mixctl backups` / `restore`);
+- 新增的其它设置不在受管字段里,撤销本来就不会碰它们。
+
+接入账本在 `<MIXR_DATA_DIR>/client-managed.json`(`0600`),**含受管字段的写前值,可能有令牌**;
+不要贴到 issue 或截图里。
+
+---
+
+## 11. 兼容测试与尝试过程
+
+**测试没跑起来**:
+
+- `confirmation_required`:没有 `confirm_run: true`(界面上是「我知道这会消耗额度」)。
+- `key_unavailable`:指定的 Key 被删、停用、重复或不可用。测试**不会**悄悄改用渠道当前 Key
+  ——那样测的就不是你选的账号。
+- `wire_api_mismatch`:Codex 的 chat 客户端落到了非 chat 渠道。换协议或换渠道。
+- `time_limit` / `output_limit`:到上限被中止,不是"通过";按上游异常或无响应处理。
+
+**怎么看结果**:
+
+- `authentication` 是**派生项**,由三项实际生成检查反推;三项都 skipped 时它也会 skipped。
+- **401 与 403 不同**:401 是凭据被拒;403 只说明这次请求没权限(模型、区域、风控),
+  不能据此判定 Key 失效。用同渠道其它模型再试一次来区分。
+- 一次通过只代表那一时刻、那个模型 / Key / 协议;不代表持续健康,也不覆盖图片与思考回放。
+- 兼容测试**不写会话绑定、不触发渠道冷却**,所以测试通过后真实请求仍可能失败;
+  真实请求的结果去诊断页看。
+
+**尝试过程为空或对不上**:
+
+- `GET /api/attempts` 只有**本进程内存**里的数据:最多 100 条、15 分钟未更新过期、重启清空。
+  查更早的请求用 §8 的 `requests.jsonl`(按 `request_id` 关联)。
+- 页面只在「诊断」页可见时每 2 秒轮询;切到别的页就不刷新,不是卡住。
+- 一条 trace 里的事件是白名单字段;看不到 prompt、Key 或上游 URL 是设计如此。
+
+**错误解释给出的结论是 `unknown`**:说明没有足够信息归类。按 `action` 里的指引去诊断页
+按 `request_id` 看真实尝试,不要据此改 Key。`uncertain: true` 表示"可能是另一种原因",
+403 与 4xx 请求错误默认都会这样标。
+
+---
+
+## 12. 服务安装、检查更新与升级失败
+
+```bash
+npm run service status
+npm run update                 # 不联网
+npm run update -- --check      # 显式联网
+npm run upgrade -- --help
+```
+
+| 报错 / 现象 | 原因 | 处置 |
+| --- | --- | --- |
+| `foreign_plist` | 同 label 的 plist 存在但没有 `mixrouter-managed` 标记 | 工具不会覆盖或删除它;改 `--label`,或先人工确认那份文件 |
+| `legacy_label` | 指定了 `com.<用户名>.mixrouter`(旧安装脚本的 label) | 本工具只写 `com.<用户名>.mixrouter.managed`;旧服务用原来的方式停用或更新 |
+| `not_owned` | 无法证明目标 pid 属于该发布目录:命令行不是「`node` + 该目录的 `mixrouter.js`」,pid 文件与进程启动时间不吻合,`/api/state` 自报的 pid 与源码指纹也对不上 | 可能是 PID 复用或别的服务;先用 `service status` 核对。没有强制开关,`--force-kill` 已移除 |
+| `current_not_symlink` | `releases/current` 是普通目录 | 有人手工建过;人工处理后重试,工具不会删目录 |
+| `downgrade_refused` | 目标版本低于当前 | 回退用 `--rollback-to <旧发布目录>`,不要降级安装 |
+| `same_version` | 目标版本与当前相同 | 确实要重装再加 `--allow-same` |
+| `sha256_mismatch` / `checksum_mismatch` / `checksum_name_mismatch` | 包内容与校验和不符 | 重新下载;不要跳过校验 |
+| `checksum_required` | 本地包旁边没有 `.sha256`,也没给 `--sha256` | 补上校验和;这一项不能跳过 |
+| `unsafe_archive` | 包里有绝对路径、`..`、链接或特殊文件 | 拒绝使用这份包 |
+| `version_mismatch` / `code_revision_mismatch` | `package.json`、入口 `VERSION`、RELEASE-INFO 对不上 | 包不是这一版,重新获取 |
+| `data_dir_invalid` | 数据目录里的 JSON 解析失败(或不是普通文件) | 先备份并修复数据再重试;没有跳过开关(`--force` 已移除) |
+| `release_exists` | 已存在同名发布目录 | 发布目录不可变;换 `--release-name` 或人工确认 |
+
+升级默认**只预览**;没有 `--apply --yes` 不会写文件、不动服务。升级工具只读数据目录,
+不迁移、不备份;恢复失败会明确报告,并尽量切回旧 `current`。完整流程见
+[升级与回退](upgrade-and-rollback.md)。
+
+**退出控制台页面不会停服务**:控制台是浏览器页面;服务是否在跑看 `service status` 或
+`curl --fail http://127.0.0.1:8787/healthz`,不要因为关掉标签页就重启。
+
+---
+
+## 13. 多 Key 自动备用没生效
+
+```bash
+curl -s http://127.0.0.1:8788/api/keys/health | python3 -m json.tool
+```
+
+- **开关默认关闭**,且按渠道单独开启。渠道只有 1 把可用 Key 时**选号结果与关闭时相同**,
+  但仍会记录失败并在 `/api/keys/health` 里显示冷却中;429 带 `Retry-After` 时仍可能在总预算内
+  等待后重试同一渠道。
+- **控制台切换生效 Key 不会迁移已在粘性中的会话**:它们继续用上次成功那把,直到那把失败
+  (或粘性记录被容量上限淘汰)才重新按"生效 Key 优先"挑选。想立刻换号,用会话覆盖里的固定 Key。
+  全部 Key 都在冷却时请求照常发出,用的是本会话原本那把(标记 `all_cooling`),模块本身不会
+  拒绝普通请求。
+- **固定 Key 永不换**:会话级固定 Key、压缩专用 Key 属于显式配置,失败时直接报错,
+  不会自动换号。看到"明明有备用 Key 却没用",先确认这条请求是不是固定了 Key。
+- **5xx 与网络错误不换号**:它们与账号无关,渠道冷却由池状态负责。只有 401/402(账号级)
+  与 403/404/429(模型级)会归因到 Key,完整表格见
+  [首次接入与自助恢复](user-readiness.md)§7。
+- **粘定的 Key 被删除/停用**:返回 503 `provider_key_unavailable_error`,不会静默改号。
+  到「渠道与 Key」页修 Key 清单。
+- **状态只在内存**:重启服务后健康视图清空,属正常。`/api/keys/health` 只显示渠道与 Key ID、
+  状态、范围、状态码与时间(接口里另有失败次数),没有 Key 明文。
+- 换号来源在日志里是 `key_source: "key_fallback"`;不修改渠道的 `active_key`,也不删任何 Key。
+
+---
+
+## 14. 兜底:先跑这三条
 
 环境是不是好的、问题在代码还是在环境,按这个顺序过一遍就够:
 

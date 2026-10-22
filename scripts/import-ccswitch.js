@@ -1,94 +1,165 @@
 #!/usr/bin/env node
-// 从 cc-switch 备份库导入渠道到 providers.json(v2.1 分组格式)
-// 用法: node import-ccswitch.js <cc-switch.db> [输出文件]
-// 依赖系统 sqlite3 命令读取数据库
+// 从 cc-switch 的 SQLite 备份库导入渠道,合并进 providers.json(v2 分组格式)。
+//
+// 用法:
+//   node scripts/import-ccswitch.js [cc-switch.db] [providers.json] [--out <file>] [--apply]
+//
+// 默认是**预演**:只读数据库和目标库,打印将要新增/跳过的渠道(Key 一律掩码),不写任何文件。
+// 确认无误后再加 --apply:
+//   · 先给现有 providers.json 备份一份(backupFile 的 .bak-mixui-* 命名);
+//   · 与现有渠道合并后**原子替换**(临时文件 + fsync + rename);
+//   · 任何一步失败(数据库读不出、目标不是合法 JSON、合并校验失败)都保持旧库原样。
+//
+// 这里不再内置任何个人渠道或"已知失效"判据:停用/追加哪一家是用户的选择,不是脚本常量。
 'use strict';
-const { execFileSync } = require('child_process');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
 
-// 默认取家目录下最近一次 cc-switch 备份;也可以直接把 db 路径当第一个参数传进来
-function defaultDb() {
-  const home = os.homedir();
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { execFileSync } = require('node:child_process');
+const { previewProviderImport, mergeProviderImport, maskKey } = require('../lib/provider-import');
+const { backupFile } = require('../lib/config-backup');
+const { writeJsonAtomic } = require('../lib/atomic-write');
+
+const QUERY = 'SELECT id, app_type, name, settings_config, notes FROM providers;';
+const DEFAULT_OUT = path.join(__dirname, '..', 'providers.json');
+
+function usage() {
+  return [
+    '用法: node scripts/import-ccswitch.js [cc-switch.db] [providers.json] [--out <file>] [--apply]',
+    '',
+    '  cc-switch.db   默认取家目录下最近的 cc-switch-backup-*/cc-switch.db',
+    '  providers.json 默认是本仓库的 providers.json;也可用 --out 指定',
+    '  --apply        真正写入。默认只预演,不写任何文件。',
+    '  写入前会自动备份;合并只新增,不覆盖已有渠道、Key、current 或 id。',
+  ].join('\n');
+}
+
+// 默认取家目录下最近一次 cc-switch 备份;库路径也可以直接当第一个参数传进来。
+function defaultDb(home = os.homedir()) {
   try {
-    const cands = fs.readdirSync(home)
-      .filter(f => /^cc-switch-backup-/.test(f))
-      .map(f => path.join(home, f, 'cc-switch.db'))
-      .filter(p => fs.existsSync(p))
+    const candidates = fs.readdirSync(home)
+      .filter(name => /^cc-switch-backup-/.test(name))
+      .map(name => path.join(home, name, 'cc-switch.db'))
+      .filter(file => fs.existsSync(file))
       .sort();
-    if (cands.length) return cands[cands.length - 1];
+    if (candidates.length) return candidates[candidates.length - 1];
   } catch {}
   return path.join(home, 'cc-switch-backup', 'cc-switch.db');
 }
-const db = process.argv[2] || defaultDb();
-const out = process.argv[3] || path.join(__dirname, '..', 'providers.json');
 
-const rows = JSON.parse(execFileSync('sqlite3', ['-json', db,
-  "SELECT id, app_type, name, settings_config, notes FROM providers;"], { maxBuffer: 64 * 1024 * 1024 }));
+function parseArgs(argv) {
+  const args = { db: '', out: '', apply: false, help: false };
+  const positional = [];
+  for (let index = 0; index < argv.length; index++) {
+    const value = argv[index];
+    if (value === '--apply') args.apply = true;
+    else if (value === '--help' || value === '-h') args.help = true;
+    else if (value === '--out') {
+      if (index + 1 >= argv.length) throw new Error('--out 需要一个文件路径');
+      args.out = argv[++index];
+    } else if (value.startsWith('-')) throw new Error(`未知参数: ${value}`);
+    else positional.push(value);
+  }
+  if (positional.length > 2) throw new Error('参数过多');
+  args.db = positional[0] || '';
+  args.out = args.out || positional[1] || DEFAULT_OUT;
+  return args;
+}
 
-// 已知停用原因(来自旧记忆 agentrouter-ua-check:2026-08-01 实测令牌在 anyrouter.top 无效)
-const knownDead = base => /anyrouter\.top/.test(base);
+function loadStore(file) {
+  let text;
+  try { text = fs.readFileSync(file, 'utf8'); }
+  catch (error) {
+    if (error.code === 'ENOENT') return { version: 2, current: { claude: null, codex: null }, claude: [], codex: [] };
+    throw new Error(`无法读取目标渠道库 ${file}: ${error.code || error.message}`);
+  }
+  let value;
+  try { value = JSON.parse(text); }
+  catch { throw new Error(`目标渠道库 ${file} 不是合法 JSON;为免覆盖,导入已中止`); }
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      !Array.isArray(value.claude) || !Array.isArray(value.codex)) {
+    throw new Error(`目标渠道库 ${file} 格式无效（需要 claude/codex 数组）;导入已中止`);
+  }
+  return value;
+}
 
-const seen = new Set();
-const store = { version: 2, current: { claude: null, codex: null }, claude: [], codex: [] };
-let n = 0;
-for (const r of rows) {
-  let sc = {};
-  try { sc = JSON.parse(r.settings_config); } catch {}
-  const env = sc.env || {};
+function readRows(db, exec = execFileSync) {
+  let raw;
+  try { raw = exec('sqlite3', ['-json', db, QUERY], { maxBuffer: 64 * 1024 * 1024 }); }
+  catch (error) {
+    const hint = error.code === 'ENOENT' ? '未找到 sqlite3 命令' : (error.message || '读取失败');
+    throw new Error(`读取 cc-switch 数据库失败: ${hint}`);
+  }
+  let rows;
+  try { rows = JSON.parse(raw || '[]'); }
+  catch { throw new Error('cc-switch 数据库返回的不是 JSON;导入已中止'); }
+  if (!Array.isArray(rows)) throw new Error('cc-switch 数据库返回格式无效;导入已中止');
+  return rows;
+}
 
-  if (r.app_type === 'claude' || r.app_type === 'claude-desktop') {
-    const base = env.ANTHROPIC_BASE_URL || '';
-    const key = env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY || '';
-    // 客户端自引用(mixrouter 自己)或无 key 的空壳不作为上游导入
-    if (!base || base.includes('127.0.0.1:8787') || !key) continue;
-    const fp = base + '|' + key;
-    if (seen.has(fp)) continue;
-    seen.add(fp);
-    store.claude.push({
-      id: 'p' + (++n), name: r.name, base_url: base.replace(/\/+$/, ''), api_key: key,
-      models: [...new Set([env.ANTHROPIC_MODEL, env.ANTHROPIC_DEFAULT_OPUS_MODEL,
-        env.ANTHROPIC_DEFAULT_SONNET_MODEL,
-        env.ANTHROPIC_DEFAULT_HAIKU_MODEL, env.CLAUDE_CODE_SUBAGENT_MODEL].filter(Boolean))],
-      slots: { opus: env.ANTHROPIC_DEFAULT_OPUS_MODEL || '', sonnet: env.ANTHROPIC_DEFAULT_SONNET_MODEL || '', haiku: env.ANTHROPIC_DEFAULT_HAIKU_MODEL || '', subagent: env.CLAUDE_CODE_SUBAGENT_MODEL || '' },
-      enabled: !knownDead(base),
-      note: (r.notes || '').trim() || (knownDead(base) ? '2026-08-01 实测令牌无效,导入时默认停用' : ''),
-      created_at: new Date().toISOString(),
-    });
-  } else if (r.app_type === 'codex') {
-    // cc-switch 的 codex 条目:{auth:{OPENAI_API_KEY}, config:"TOML 字符串"}
-    const key = (sc.auth && sc.auth.OPENAI_API_KEY) || '';
-    const toml = sc.config || '';
-    const model = (toml.match(/^model\s*=\s*"([^"]+)"/m) || [])[1] || '';
-    const mprov = (toml.match(/^model_provider\s*=\s*"([^"]+)"/m) || [])[1] || '';
-    const sec = mprov && toml.match(new RegExp(`\\[model_providers\\.${mprov.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\][^\\[]*`));
-    const base = sec ? ((sec[0].match(/base_url\s*=\s*"([^"]*)"/) || [])[1] || '') : '';
-    const wire = sec ? ((sec[0].match(/wire_api\s*=\s*"([^"]*)"/) || [])[1] || 'responses') : 'responses';
-    if (!base || !key || !model) continue;
-    const fp = base + '|' + key;
-    if (seen.has(fp)) continue;
-    seen.add(fp);
-    store.codex.push({
-      id: 'c' + (++n), name: r.name, base_url: base.replace(/\/+$/, ''), api_key: key,
-      model, wire_api: wire === 'chat' ? 'chat' : 'responses', enabled: !knownDead(base),
-      note: (r.notes || '').trim(), created_at: new Date().toISOString(),
-    });
+function printPreview(preview, log) {
+  const total = preview.draft.entries.length;
+  log(`识别 ${preview.summary.input} 条:新增 claude ${preview.summary.new.claude} / codex ${preview.summary.new.codex},` +
+    ` 已存在 claude ${preview.summary.duplicate_existing.claude} / codex ${preview.summary.duplicate_existing.codex},` +
+    ` 批内重复 ${preview.summary.duplicate_input.claude + preview.summary.duplicate_input.codex},` +
+    ` 跳过 ${preview.summary.skipped}, 无效 ${preview.summary.rejected}`);
+  if (!total) log('没有可新增的渠道。');
+  for (const entry of preview.draft.entries) {
+    const provider = entry.provider;
+    const detail = entry.app === 'claude'
+      ? `${(provider.models || []).join(', ') || '(未配模型)'}`
+      : `${provider.model} (${provider.wire_api})`;
+    log(`  [${entry.app}][启用] ${provider.name}  ${provider.base_url}  key=${maskKey(provider.api_key)}  ${detail}`);
   }
 }
 
-// 追加 DeepSeek 官方 Anthropic 兼容端点(key 取自 cc-switch 库 opencode 条目)
-try {
-  const dkey = JSON.parse(execFileSync('sqlite3', ['-json', db,
-    "SELECT settings_config FROM providers WHERE app_type='opencode' AND name='DeepSeek' LIMIT 1;"]))[0];
-  const k = (JSON.parse(dkey.settings_config).options || {}).apiKey;
-  if (k) store.claude.push({ id: 'p' + (++n), name: 'DeepSeek 官方', base_url: 'https://api.deepseek.com/anthropic',
-    api_key: k, models: ['deepseek-chat', 'deepseek-reasoner'], slots: { opus: '', sonnet: '', haiku: '' },
-    enabled: true, note: 'Anthropic 兼容端点', created_at: new Date().toISOString() });
-} catch {}
+function main(argv = process.argv.slice(2), io = {}) {
+  const log = io.log || console.log;
+  const error = io.error || console.error;
+  const exec = io.execFileSync || execFileSync;
+  let args;
+  try { args = parseArgs(argv); }
+  catch (failure) { error(failure.message); error(usage()); return 2; }
+  if (args.help) { log(usage()); return 0; }
 
-fs.writeFileSync(out, JSON.stringify(store, null, 2), { mode: 0o600 });
-fs.chmodSync(out, 0o600);
-console.log(`导入 claude ${store.claude.length} 个 / codex ${store.codex.length} 个 -> ${out}`);
-for (const p of store.claude) console.log(`  [claude][${p.enabled ? '启用' : '停用'}] ${p.name}  ${p.base_url}  ${p.models.join(', ') || '(未配模型)'}`);
-for (const p of store.codex) console.log(`  [codex ][${p.enabled ? '启用' : '停用'}] ${p.name}  ${p.base_url}  ${p.model} (${p.wire_api})`);
+  const out = path.resolve(args.out);
+  try {
+    const db = args.db || defaultDb(io.home);
+    const rows = readRows(db, exec);
+    const store = loadStore(out);
+    const preview = previewProviderImport(store, { providers: rows });
+    for (const failure of preview.errors) {
+      error(`[无效] ${failure.where || '#' + (failure.index + 1)} ${failure.name ? `「${failure.name}」` : ''}: ${failure.message}`);
+    }
+    printPreview(preview, log);
+    if (preview.errors.length) {
+      error(`发现 ${preview.errors.length} 条无效条目,本次不写入任何内容;请先修正来源或改用合法导出。`);
+      return 1;
+    }
+    if (!args.apply) {
+      log('预演模式:未写入任何文件。确认无误后重新运行并加 --apply。');
+      return 0;
+    }
+    if (!preview.draft.entries.length) {
+      log('没有新增渠道,未写入。');
+      return 0;
+    }
+    let backup = null;
+    try { backup = backupFile(out); }
+    catch (failure) { error(`备份目标渠道库失败,未写入: ${failure.message}`); return 1; }
+    if (backup) log(`已备份原渠道库: ${backup}`);
+    const merged = mergeProviderImport(store, preview.draft);
+    try { writeJsonAtomic(out, merged, { mode: 0o600 }); }
+    catch (failure) { error(`写入渠道库失败,旧库保持原样: ${failure.message}`); return 1; }
+    log(`已导入 claude ${preview.summary.new.claude} / codex ${preview.summary.new.codex} -> ${out}`);
+    return 0;
+  } catch (failure) {
+    error(`${failure.message}；未写入任何内容。`);
+    return 1;
+  }
+}
+
+if (require.main === module) process.exitCode = main();
+
+module.exports = { main, parseArgs, defaultDb, loadStore, readRows, usage };

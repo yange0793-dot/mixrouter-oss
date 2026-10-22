@@ -57,8 +57,10 @@ const ask = (model, extra = {}) => raw(proxyPort, 'POST', '/v1/messages',
 // think / reasoning / tools_dropped 是**条件写入**(mixrouter.js 的 `if (dropped)` 与 `if (conv)`),
 // 本文件的用例都不触发那两个分支,所以它们不在**运行时**出现 —— 但它们是**活字段**,
 // 下面"白名单外字段会被静默丢弃"那条源码级断言才是它们的主场。
+// request_id 也是运行时字段:它由入口写进字面量(没接 trace store 时是空串),
+// 所以无论 /api/attempts 有没有接线,日志键集都是同一套。
 const RUNTIME_FIELDS = ['app', 'attempts', 'bytes_in', 'cache_read', 'effort', 'err', 'err_class', 'failover', 'in', 'key_id', 'key_source', 'kind', 'model_in',
-  'model_out', 'ms', 'out', 'pool', 'provider', 'rule', 'session', 'session_kind', 'slot', 'status', 'sticky',
+  'model_out', 'ms', 'out', 'pool', 'provider', 'request_id', 'rule', 'session', 'session_kind', 'slot', 'status', 'sticky',
   'strategy', 'stream', 'ts', 'ttfb_ms', 'wire'].sort();
 const keysOf = o => Object.keys(o).sort();
 

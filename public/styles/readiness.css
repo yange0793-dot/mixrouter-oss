@@ -1,0 +1,281 @@
+/* Mixrouter 接入向导 / 槽位后备池 / 诊断报告预览。
+ *
+ * 只使用 base.css 的主题变量,不新增颜色体系;所有选择器都以 readiness- 开头或限定在
+ * #readiness-dialog 内,避免和已有的 .panel / .rc-line / .card 规则互相抵消。
+ */
+
+/* ---- 渠道页 / 概览页入口 --------------------------------------------------- */
+.readiness-overview-jump { margin-top: 0; }
+.readiness-entry { border-color: var(--border); }
+.readiness-entry-row {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 20px; flex-wrap: wrap;
+}
+.readiness-entry-copy { min-width: 0; flex: 1 1 420px; }
+.readiness-entry-copy h2 { font-size: 16px; margin-bottom: 6px; }
+.readiness-entry-copy .hint { margin-bottom: 0; max-width: 720px; }
+.readiness-entry-actions { display: flex; gap: 8px; flex-wrap: wrap; flex-shrink: 0; }
+#readiness-entry-status { margin: 12px 0 0; }
+
+/* ---- 向导弹窗 -------------------------------------------------------------- */
+.readiness-dialog {
+  width: min(940px, calc(100vw - 32px));
+  max-height: min(90vh, 980px);
+  margin: auto;
+  padding: 22px 24px 20px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-overlay);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.readiness-dialog::backdrop { background: var(--overlay); }
+.readiness-dialog[open] { display: block; }
+.readiness-dialog-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 18px;
+  position: sticky; top: -22px; z-index: 2;
+  margin: -22px -24px 14px; padding: 16px 24px 12px;
+  background: var(--surface); border-bottom: 1px solid var(--border-soft);
+}
+.readiness-dialog-head h2 { font-size: 18px; margin-bottom: 4px; }
+.readiness-dialog-head .hint { margin: 0; max-width: 680px; }
+.readiness-clients { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 16px; }
+
+/* 步骤是一条真实顺序流程,所以用序号;序号只做结构提示,不参与朗读。 */
+.readiness-step {
+  border-top: 1px solid var(--border-soft);
+  padding: 16px 0 18px;
+  margin: 0;
+}
+.readiness-step:first-of-type { border-top: 0; padding-top: 4px; }
+.readiness-step h3 {
+  display: flex; align-items: center; gap: 9px;
+  font-size: 15px; font-weight: 650; margin: 0 0 8px;
+}
+.readiness-step-no {
+  display: inline-grid; place-items: center;
+  width: 22px; height: 22px; border-radius: 50%;
+  border: 1px solid var(--accent-line); background: var(--accent-soft); color: var(--accent-text);
+  font: 600 12.5px/1 var(--sans); flex-shrink: 0;
+}
+.readiness-step > .hint { margin: 0 0 10px; }
+.readiness-body { min-width: 0; }
+.readiness-status { margin: 6px 0 0; font-size: 13.5px; color: var(--dim); min-height: 1.4em; }
+
+.readiness-badges { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.readiness-badges > button { margin-left: auto; }
+.readiness-path { margin: 10px 0 0; font-size: 12.5px; line-height: 1.7; }
+.readiness-dialog .banner { margin: 12px 0; }
+.readiness-dialog .banner.offline { border-color: var(--err-line); background: var(--err-soft); color: var(--err-text); }
+
+.readiness-row {
+  display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap;
+  margin: 8px 0 0;
+}
+.readiness-row > .field { flex: 0 1 220px; min-width: 150px; }
+.readiness-row > .readiness-grow { flex: 1 1 260px; }
+.readiness-inline-check {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13.5px; color: var(--dim); margin: 10px 0;
+}
+.readiness-inline-check input { flex-shrink: 0; }
+.readiness-dialog .savebar { margin-top: 10px; }
+.readiness-dialog .msg.err { color: var(--err-text); }
+.readiness-dialog .msg.ok { color: var(--ok-text); }
+
+/* ---- 导入 ------------------------------------------------------------------ */
+.readiness-import {
+  margin-top: 14px; padding: 14px 16px;
+  border: 1px solid var(--border-soft); border-radius: var(--radius);
+  background: var(--panel);
+}
+.readiness-import textarea {
+  width: 100%; min-height: 120px; resize: vertical;
+  color: var(--text); background: var(--input);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 8px 10px; font: 13px/1.6 var(--mono);
+  overflow-wrap: anywhere;
+}
+.readiness-import textarea:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; border-color: var(--accent); }
+.readiness-import-list { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 8px; }
+.readiness-import-item {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 9px 11px; border: 1px solid var(--border-soft); border-radius: var(--radius);
+  background: var(--surface);
+}
+.readiness-import-item .hint { margin: 0; }
+
+/* ---- 预览结果 / 差异 / 检查项 --------------------------------------------- */
+.readiness-result {
+  margin: 12px 0 0; padding: 12px 14px;
+  border: 1px solid var(--border-soft); border-radius: var(--radius);
+  background: var(--panel);
+}
+.readiness-result-title {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin: 0 0 8px; font-size: 13.5px; font-weight: 600; color: var(--text);
+}
+.readiness-result-title .hint { margin: 0; font-weight: 400; }
+.readiness-facts {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+  gap: 8px 18px; margin: 8px 0 0;
+}
+.readiness-facts dt { color: var(--dim); font-size: 12.5px; }
+.readiness-facts dd { margin: 2px 0 0; font-size: 13.5px; overflow-wrap: anywhere; }
+
+.readiness-changes { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+.readiness-changes li {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  padding: 6px 9px; border-radius: 6px; background: var(--surface-2);
+  font-size: 13px;
+}
+.readiness-change-field { font-weight: 600; min-width: 120px; overflow-wrap: anywhere; }
+.readiness-change-before { color: var(--dim); text-decoration: line-through; text-decoration-color: var(--border-strong); }
+.readiness-change-arrow { color: var(--dim); }
+.readiness-change-after { color: var(--text); font-weight: 600; }
+
+.readiness-warnings { margin: 8px 0 0; padding-left: 18px; color: var(--warn-text); font-size: 13px; line-height: 1.7; }
+.readiness-warnings.err { color: var(--err-text); }
+.readiness-warnings li { overflow-wrap: anywhere; }
+.readiness-section-label { margin: 10px 0 0; font-size: 12.5px; color: var(--dim); font-weight: 600; }
+
+.readiness-checks { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+.readiness-check {
+  display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
+  padding: 6px 9px; border-radius: 6px; background: var(--surface-2); font-size: 13px;
+}
+.readiness-check-id { color: var(--dim); }
+.readiness-check-msg { flex: 1 1 240px; overflow-wrap: anywhere; }
+.readiness-check-ms { margin-left: auto; color: var(--dim); }
+
+/* ---- 无客户端时的接入参数 -------------------------------------------------- */
+.readiness-fallback {
+  margin-top: 12px; padding: 11px 14px;
+  border: 1px dashed var(--border-strong); border-radius: var(--radius);
+  background: var(--panel);
+}
+.readiness-fallback summary { cursor: pointer; font-size: 13.5px; color: var(--text); }
+.readiness-copy {
+  margin: 10px 0 0; padding: 10px 12px;
+  border: 1px solid var(--border-soft); border-radius: var(--radius);
+  background: var(--surface-2); color: var(--text);
+  font: 12.5px/1.65 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+
+/* ---- 客户端协议固定值 / 槽位设置 ------------------------------------------- */
+.readiness-fixed {
+  display: flex; align-items: center; min-height: 34px;
+  font-size: 13.5px; font-weight: 600; color: var(--text);
+  border: 1px dashed var(--border-strong); border-radius: var(--radius);
+  padding: 6px 10px; background: var(--surface-2);
+}
+.readiness-slots { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border-soft); }
+.readiness-slots > .hint { margin: 0 0 4px; }
+.readiness-slot-list { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 6px; }
+.readiness-slot-row {
+  display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+  padding: 6px 9px; border-radius: 6px; background: var(--surface-2); font-size: 13px;
+}
+.readiness-slot-name { font-weight: 600; min-width: 120px; }
+.readiness-slot-target { color: var(--dim); overflow-wrap: anywhere; }
+
+/* ---- 槽位后备池 ------------------------------------------------------------ */
+.readiness-slot-pools { margin-top: 18px; border-top: 1px solid var(--border-soft); padding-top: 14px; }
+.readiness-slot-pools h3 { font-size: 14px; font-weight: 650; margin: 0 0 6px; }
+.readiness-slot-pools > .hint { margin: 0 0 12px; }
+.readiness-pool-row {
+  border: 1px solid var(--border-soft); border-radius: var(--radius);
+  background: var(--panel); padding: 10px 12px; margin-bottom: 8px;
+}
+.readiness-pool-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.readiness-pool-ident { flex: 0 0 200px; min-width: 0; font-size: 13.5px; }
+.readiness-pool-ident .mono { display: block; font-size: 12px; margin-top: 2px; overflow-wrap: anywhere; }
+.readiness-pool-summary { display: flex; gap: 6px; flex-wrap: wrap; flex: 1 1 auto; }
+.readiness-pool-head > button { margin-left: auto; }
+.readiness-pool-row > .msg { margin: 8px 0 0; }
+
+.readiness-pool-editor { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border-soft); }
+.readiness-pool-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.readiness-pool-member {
+  display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap;
+  padding: 8px 10px; border: 1px solid var(--border-soft); border-radius: var(--radius);
+  background: var(--surface);
+}
+.readiness-pool-primary { align-items: center; border-color: var(--accent-line); background: var(--accent-soft); }
+.readiness-pool-order {
+  display: inline-grid; place-items: center; width: 20px; height: 20px;
+  border-radius: 50%; background: var(--surface-2); color: var(--dim);
+  font: 600 12px/1 var(--sans); align-self: center; flex-shrink: 0;
+}
+.readiness-pool-provider { flex: 0 1 210px; min-width: 150px; }
+.readiness-pool-model { flex: 1 1 220px; }
+.readiness-pool-primary .readiness-pool-provider,
+.readiness-pool-primary .readiness-pool-model { font-size: 13.5px; }
+.readiness-pool-buttons { display: flex; gap: 4px; align-self: center; }
+.readiness-pool-buttons .iconbtn { min-width: 34px; }
+.readiness-pool-add-row { margin-top: 10px; align-items: flex-end; }
+.readiness-pool-add-row > button { flex-shrink: 0; }
+.readiness-pool-strategy { margin: 10px 0 0; }
+.readiness-pool-editor > .hint { margin: 10px 0 0; }
+.readiness-pool-editor > .savebar { margin-top: 12px; }
+
+/* ---- 诊断报告 -------------------------------------------------------------- */
+.readiness-report-panel .hint { margin-bottom: 10px; }
+.readiness-report-output {
+  margin: 12px 0 0; padding: 12px 14px; max-height: 420px; overflow: auto;
+  border: 1px solid var(--border-soft); border-radius: var(--radius);
+  background: var(--surface-2); color: var(--text);
+  font: 12.5px/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+
+/* ---- 窄屏 ------------------------------------------------------------------ */
+@media (max-width: 720px) {
+  .readiness-dialog {
+    width: calc(100vw - 16px);
+    max-height: 94vh;
+    padding: 16px 14px 16px;
+  }
+  /* 窄屏标题区不换行:关闭按钮始终在右上角,副标题自己折行。 */
+  .readiness-dialog-head {
+    top: -16px; margin: -16px -14px 12px; padding: 13px 14px 10px;
+    flex-wrap: nowrap; align-items: flex-start; gap: 12px;
+  }
+  .readiness-dialog-head > div { flex: 1 1 auto; min-width: 0; }
+  .readiness-dialog-head > button { flex-shrink: 0; }
+  .readiness-entry-row { gap: 12px; }
+  .readiness-entry-actions { width: 100%; }
+  .readiness-entry-actions > button { flex: 1 1 auto; }
+  .readiness-row { align-items: stretch; }
+  .readiness-row > .field,
+  .readiness-row > .readiness-grow { flex: 1 1 100%; }
+  .readiness-pool-head { align-items: flex-start; }
+  .readiness-pool-ident { flex: 1 1 100%; }
+  .readiness-pool-head > button { margin-left: 0; }
+  .readiness-pool-provider,
+  .readiness-pool-model { flex: 1 1 100%; }
+  .readiness-pool-buttons { width: 100%; justify-content: flex-end; }
+  .readiness-pool-add-row > button { width: 100%; }
+  .readiness-change-field { min-width: 0; }
+  .readiness-check-ms { margin-left: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .readiness-dialog { scroll-behavior: auto; }
+}
+
+@media (forced-colors: active) {
+  .readiness-dialog,
+  .readiness-pool-row,
+  .readiness-pool-member,
+  .readiness-result,
+  .readiness-fallback,
+  .readiness-import { border: 1px solid CanvasText; }
+  .readiness-step-no { border: 1px solid CanvasText; forced-color-adjust: none; }
+}
+
+@media print {
+  .readiness-dialog, .readiness-entry, .readiness-slot-pools, .readiness-report-panel { break-inside: avoid; }
+  .readiness-dialog { position: static; max-height: none; box-shadow: none; }
+}

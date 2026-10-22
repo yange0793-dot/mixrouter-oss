@@ -80,6 +80,13 @@ const { applyModel } = require('./lib/model-suffix');
 const { backupFile } = require('./lib/config-backup');
 // 渠道连通性测试:先探隧道再探上游(拆成三个模块,这里只接总入口)
 const { testProvider } = require('./lib/provider-test');
+const { createCompatibilityTester } = require('./lib/compatibility-probe');
+const { createClientOnboarding } = require('./lib/client-onboarding');
+const { previewProviderImport, mergeProviderImport } = require('./lib/provider-import');
+const { createReadinessApi } = require('./lib/http/readiness-api');
+const { createAttemptTraceStore } = require('./lib/observability/attempt-trace');
+const { explainError } = require('./lib/observability/error-guidance');
+const { createKeyFallback } = require('./lib/routing/key-fallback');
 // Codex 配置的读写引擎:解析/校验/外科手术式改写 + 能力目录同步。
 // **这是全树唯一的 TOML 实现**(第二期合并完成):lib/toml.js 与 lib/codex-toml.js 现在只是
 // 它的薄适配(名字转发,没有自己的算法)。旧名字保留是为了既有导出面与测试,
@@ -833,7 +840,14 @@ const { dispatchResponse } = createResponder({
   wireChat, wireResponses, wireOpenai,
 });
 
-const { runAttempt } = createAttempt({
+const attemptTraces = createAttemptTraceStore();
+const keyFallback = createKeyFallback();
+let activeRequestCount = 0;
+const activeRequests = {
+  start() { activeRequestCount++; },
+  finish() { activeRequestCount = Math.max(0, activeRequestCount - 1); },
+};
+const attemptDeps = {
   http, https,
   storeOf, slotMapOf: () => slotMap, sessionConfig, compactLib,
   wireOf, upstreamPathOf, joinUpstreamPath,
@@ -847,8 +861,10 @@ const { runAttempt } = createAttempt({
   firstHeaderTimeoutFor, streamIdleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
   nonstreamTotalTimeoutMs: NONSTREAM_TOTAL_TIMEOUT_MS,
   responseArchiveOn: RESPONSE_ARCHIVE_ON, responseArchiveDir: RESPONSE_ARCHIVE_DIR,
-  uiPort: UI_PORT, DEFAULT_UA_CODEX, dispatchResponse,
-});
+  uiPort: UI_PORT, DEFAULT_UA_CODEX, dispatchResponse, keyFallback,
+};
+const { runAttempt } = createAttempt(attemptDeps);
+const compatibility = createCompatibilityTester({ attemptDeps });
 
 const { runAttempts } = createAttemptRunner({ runAttempt, convRetries: CONV_RETRIES, retryDelayMs: RETRY_DELAY_MS });
 
@@ -863,7 +879,7 @@ const prepareRequest = createPreparer({
 const proxyHandler = proxyHttp.createProxyHandler({
   VERSION, BODY_LIMIT, BODY_DRAIN_EXTRA, BODY_DRAIN_MS,
   TOTAL_DEADLINE_MS, MAX_ATTEMPTS, CONV_RETRIES, SSE_KEEPALIVE_MS,
-  RESPONSE_ARCHIVE_ON,
+  RESPONSE_ARCHIVE_ON, attemptTraces, activeRequests,
   onBodyDrainAbort: () => { bodyDrainAborts++; },
   onBodyDrainTimeout: () => { bodyDrainTimeouts++; },
   randomUUID: () => crypto.randomUUID(),
@@ -901,10 +917,18 @@ function clientToken(req) {
 function readClientConfig(file) {
   let text;
   try { text = fs.readFileSync(file, 'utf8'); }
-  catch (e) { return { missing: true, cfg: {} }; }        // 文件不存在:从零建,正常
+  catch (e) {
+    if (e.code === 'ENOENT') return { missing: true, cfg: {} };
+    throw Object.assign(new Error('Claude 配置读取失败，请检查文件权限；未改写配置'), { statusCode: 400 });
+  }
   const stripped = text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text;
   if (!stripped.trim()) return { cfg: {} };               // 空文件/纯空白:同上
-  try { return { cfg: JSON.parse(stripped) }; }
+  try {
+    const cfg = JSON.parse(stripped);
+    if (!zcodeConfig.isObject(cfg) || (cfg.env !== undefined && !zcodeConfig.isObject(cfg.env)))
+      throw new Error('配置及 env 必须是 JSON 对象');
+    return { cfg };
+  }
   catch (e) {
     throw Object.assign(new Error(
       `${file} 解析失败(${e.message}),为避免把它整个覆盖掉,本次写入已中止。` +
@@ -1144,13 +1168,15 @@ function liveState() {
   const live = {};
   // 只读:解析不了就当没有(读不出配置只影响"漂移"提示,不该让整个控制台报错)。
   // 写入路径走 readClientConfig,那里是"解析不了就拒绝写",两边的取舍不同是有意的。
-  let cfg = {};
-  try { cfg = readClientConfig(CLAUDE_SETTINGS).cfg; } catch {}
+  let cfg = {}, claudeReadError = '';
+  try { cfg = readClientConfig(CLAUDE_SETTINGS).cfg; }
+  catch { claudeReadError = 'Claude 配置读取或解析失败，请检查 JSON 格式与文件权限'; }
   const env = cfg.env || {};
   const claudeBase = env.ANTHROPIC_BASE_URL || '';
   const curClaude = current.claude && current.claude !== ROUTER_ID ? findProvider(current.claude) : null;
   const claudeRouter = trimSlash(claudeBase) === ROUTER_URL;
   live.claude = { base_url: claudeBase, model: env.ANTHROPIC_MODEL || '', router: claudeRouter,
+    ...(claudeReadError ? { error: claudeReadError } : {}),
     // 槽位 env 现值(控制台对比槽位表,提示漂移):别名 = 已托管,其他值 = 用户手设
     slots: Object.fromEntries(CLAUDE_SLOTS.map(n => [n, env[CLAUDE_SLOT_ENV[n]] || ''])),
     match: claudeRouter
@@ -1185,6 +1211,22 @@ function maskKey(k) {
 // 活状态以 getter/setter 注入(不是快照)——每个写分支都是 `await readObject()` 之后才取现值,
 // 用请求开始时的快照会让慢请求覆盖掉这期间刚保存的配置。
 const createConsoleHandler = require('./lib/http/console').createConsoleHandler;
+const onboarding = createClientOnboarding({
+  env: process.env, home: os.homedir(), root: ROOT, routerURL: ROUTER_URL, routerToken: ROUTER_TOKEN,
+  getStore: () => store, getSlots: slotsPublic,
+  applyRouter: (app, options) => applyClientSwitch(app, () => switchRouter(app, options), ROUTER_ID),
+});
+const readinessApi = createReadinessApi({
+  onboarding, compatibility, attemptTraces, keyFallback, explainError,
+  previewProviderImport, mergeProviderImport, getStore: () => store,
+  applyImport: merged => withStoreRollback(() => { store.claude = merged.claude; store.codex = merged.codex; }),
+  publicProvider: provider => {
+    const { api_key, keys, ...rest } = provider;
+    return { ...rest, has_key: !!api_key, key_masked: maskKey(api_key),
+      keys: ringOf(provider).map(k => ({ id: k.id, label: k.label, enabled: k.enabled !== false, key_masked: maskKey(k.key) })) };
+  },
+  version: VERSION, healthStatus, liveState, requestLog,
+});
 const apiHandler = createConsoleHandler({
   // 常量
   VERSION, PROXY_PORT, UI_PORT, CODE_REVISION, ROUTER_ID, ROUTER_URL, ROUTER_TOKEN,
@@ -1202,7 +1244,7 @@ const apiHandler = createConsoleHandler({
   sessionList, sessionRecord, storeOf, findProvider, providerApp, ghostRefs,
   mutateSessions, saveRoutes, saveSlots, saveStore, requestLog, compactWindow,
   slotsPublic, validateSlotPut,
-  usageSummary,
+  usageSummary, readinessApi, activeRequests: () => activeRequestCount,
   switchClaude, switchCodex, switchZcode, switchRouter,
 });
 

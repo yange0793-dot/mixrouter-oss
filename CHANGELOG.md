@@ -13,6 +13,67 @@
 - 新增 `POST /api/providers/models`,兼容 Anthropic / OpenAI 模型列表与 Anthropic 分页,
   沿用渠道出站代理和直连配置。限制请求时长、响应大小与页数,不跟随重定向,
   不回显上游错误正文或凭据;上游不支持列表时仍可手填模型。
+- 控制台新增**首次接入向导**(渠道与 Key 页):检查客户端安装与配置、选/导入渠道、选模型与
+  协议、可选兼容测试,最后预览受管字段并确认写入。预览令牌一次性、默认 5 分钟;
+  预览后配置文件被外部修改则拒绝写入(409)。支持 Claude Code、Codex、ZCode;
+  读配置区分 `missing` / `invalid` / `error`,不把"读不到"当作"未配置"。
+- 接入后可**撤销本次写入**:账本 `client-managed.json`(`0600`)记录受管字段的写前/写后值,
+  撤销只还原"当前值仍等于写后值"的字段;任何受管字段被改过就整体拒绝并列出冲突,
+  不覆盖后来新增的其它设置,也不还原接入时被清理的其它 `mixr-*` 段。
+- 控制台新增**渠道粘贴导入**:识别 mixrouter `providers.json` 与 cc-switch 导出(含
+  `settings_config` / `settingsConfig` 里的 Claude env 与 Codex TOML)。先预览后确认,
+  只取白名单字段,按 app + base_url + api_key 去重,只增不改,不覆盖已有 id、Key 与 `current`。
+- 新增**编程兼容测试**:经真实转发链路分别检查认证(派生)、非流生成、流终态与工具调用形状;
+  未显式 `confirm_run` 不发请求,一次最多 3 次上游调用,有总时限、单项时限、输出与结果大小上限。
+  测试使用隔离依赖:不写会话绑定、不触发渠道冷却、不写响应归档、不读真实渠道库。
+- 控制台 Claude 槽位行新增**后备池编辑器**:主渠道固定第一,后备成员可选渠道与落点模型、可排序;
+  保存是对 `pool` / `strategy` / `dropTools` 的部分更新,不把非 `priority` 策略改成 `priority`;
+  保存空列表即清空后备池。
+- 新增**错误解释**与**尝试过程**:`GET /api/errors/guidance` 把代理错误码、401/402/403/429/5xx、
+  超时与网络错误翻译成分类、影响、下一步与内部控制台目标页;403 标不确定,不判成 Key 失效。
+  诊断页新增有界的实时尝试过程(最多 100 条、每条 40 个事件、15 分钟过期、仅内存),
+  日志新增 `request_id` 与之关联;两者都不含 prompt、会话标签、Key 或上游 URL。
+- 新增**脱敏诊断报告**:`GET /api/diagnostics/report` 只按白名单重建版本、运行时、
+  客户端配置状态枚举、渠道计数、超时/重试设置与按组聚合计数;不含 Key、配置正文、
+  日志原文、prompt、会话标题、用户名或私有路径,不自动上传。
+- 新增**可选多 Key 自动备用**(按渠道,字段 `key_fallback`,默认关闭):正常请求保持账号粘性,
+  仅 401/402(账号级)与 403/404/429(模型级)失败才换号;网络错误与 5xx 不换号。
+  不写渠道库、不改 `active_key`、不删 Key;会话固定 Key 与压缩固定 Key 永不换,
+  粘定 Key 被删/停用时返回 503 `provider_key_unavailable_error`。状态只在内存、有上限、无定时器。
+- 新增可选的后台服务、检查更新与受控升级入口:`npm run service`
+  (`status` / `install` / `uninstall` / `start` / `stop` / `restart`,默认预览)、
+  `npm run update`(默认不联网,`--check` 才查询)、`npm run upgrade`
+  (默认只预览,`--apply --yes` 才执行,支持本地包、`--download`、`--rollback-to`)。
+  登录服务只写带 `mixrouter-managed` 标记的 LaunchAgent,不覆盖同 label 的手写 plist,
+  `start/stop/restart` 只通过 launchctl 操作自己的 label;升级停旧实例时只停命令行确认从
+  目标发布目录启动的进程;升级包校验 `.sha256`、解包路径、版本三处一致与制品清单,
+  数据目录只读,失败切回旧 `current`。
+
+#### 接口
+
+- 新增 `GET /api/onboarding/<claude|codex|zcode>`、
+  `POST /api/onboarding/<app>/{preview,apply,undo-preview,undo}`。
+- 新增 `POST /api/providers/import/{preview,apply}`、`POST /api/providers/<id>/compatibility`、
+  `GET /api/attempts`、`GET /api/keys/health`、`GET /api/errors/guidance`、
+  `GET /api/diagnostics/report`。
+- `PUT /api/providers/:id` 接受布尔 `key_fallback`;为 `true` 时写入,为 `false` 时删除该字段。
+- 请求日志白名单新增 `request_id`;`key_source` 在多 Key 备用换号时记为 `key_fallback`。
+- 默认重试策略不变(`MIXR_MAX_ATTEMPTS` 10 次 × `MIXR_RETRY_DELAY_MS` 1000 毫秒);
+  没有恢复熔断器,也没有加入 Retry-After 驱动的默认等待。
+
+#### 安全
+
+- 导入拒绝 `__proto__` / `constructor` / `prototype` 字段并按白名单重建对象;预览只返回掩码 Key。
+- 诊断报告按白名单重建,不含私有路径、用户名、会话标题与凭据。
+- 接入账本与客户端配置备份按凭据文件对待(`0600`);`SECURITY.md` 与 `SUPPORT.md`
+  明确禁止公开贴出。
+- 升级只信任固定官方仓库与 HTTPS 主机,每一跳重定向都重新校验;拒绝含绝对路径、`..`、
+  链接或特殊文件的压缩包。
+
+#### 未验证范围
+
+- 接入向导、兼容测试、撤销、服务与升级、多 Key 备用只在 **macOS + Node 24** 上跑过测试与
+  离线 fixture;**没有对真实上游发起生成请求**;其他平台未实跑,也没有对应的 CI 通过结论。
 
 ## [3.9.0] - 2026-10-21
 

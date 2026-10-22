@@ -67,6 +67,7 @@
 | `direct` | `true` = 这个渠道跳过 `MIXR_UPSTREAM_PROXY` 隧道 |
 | `enabled` | 默认启用 |
 | `keys` / `active_key` | 多 Key 清单 `[{id,label,key}]` 与当前生效 Key |
+| `key_fallback` | 布尔值，默认关闭；明确开启后才在账号故障时尝试同渠道备用 Key，不改 `active_key` 或模型 |
 
 `wire_api` 怎么选:渠道直接吃 Anthropic `/v1/messages` → 留空;模型只挂在
 Responses 型通道上 → Claude 组标 `responses`;网关只开 `/v1/chat/completions` → 标 `chat`。
@@ -245,9 +246,10 @@ curl -s -X POST http://127.0.0.1:8788/api/router/codex \
 - 渠道停用/删除得到明确的 `provider_disabled_error` / `no_route_error`。
 - 落点模型:Claude 槽绑定时选定(空 = 渠道 `models[0]`);Codex 槽用渠道自带模型名。
 
-**备池只能通过接口或文件维护**:控制台槽位面板会显示已有备池,但只提供渠道与落点模型
-两个编辑项;`PUT /api/slots` 保存时对 `pool` / `strategy` / `dropTools` 是**部分更新**
-(没带就保留),所以面板保存不会抹掉备池。
+**Claude 槽位备池可在控制台编辑**:展开「后备渠道」选择顺序和每个成员的模型，确认后保存。
+主渠道不变；不同模型需明确确认降级，界面不推断图片或工具能力。已有其它策略保留，
+不是把轮转池静默改成主备池。`PUT /api/slots` 对 `pool` / `strategy` / `dropTools` 保持
+**部分更新**(没带就保留，`pool: []` 才清空)。Codex 槽位编辑目前不提供后备池。
 
 **主链 + 子代理双路**:`mixctl split` 把 `main` / `opus` / `sonnet` / `haiku` 四槽统一
 绑到同一「渠道 @ 模型」,`subagent` 单独绑一个——任一副槽漏配都不会悄悄回落到主链模型。
@@ -451,7 +453,7 @@ MIXR_DATA_DIR=/absolute/path node scripts/diagnose-upstream.js --mode provider -
 
 ### 请求日志
 
-`<MIXR_DATA_DIR>/logs/requests.jsonl`,每条一行,32 个白名单字段。按 **UTC 跨日 + 5MiB**
+`<MIXR_DATA_DIR>/logs/requests.jsonl`,每条一行,字段以 `LOG_FIELDS` 白名单为准。按 **UTC 跨日 + 5MiB**
 轮转,使用不覆盖的唯一归档名,默认保留 30 天;gzip 默认关闭,`MIXR_LOG_COMPRESS=on` 启用。
 旧 `requests.jsonl.old` 可查但不覆盖、不压缩、不自动清理。
 
@@ -460,6 +462,7 @@ MIXR_DATA_DIR=/absolute/path node scripts/diagnose-upstream.js --mode provider -
 | 字段 | 含义 |
 | --- | --- |
 | `attempts` / `failover` | 实际网络尝试次数 / 是否发生过失败转移 |
+| `request_id` | 本进程请求 ID，可关联有界内存尝试过程；旧日志没有此字段，过程过期不补造 |
 | `err` / `err_class` | 终态错误文本 / 错误分型 |
 | `bytes_in` | 客户端请求体字节数(不是 token)。大上下文/带截图时可达十几 MB,而首字延迟主要由它决定 —— 上游面板只从收完请求体开始计时 |
 | `ttfb_ms` | 请求开始 → 上游首个响应头到达的毫秒数(多次尝试取最终给出响应的那一发;全部失败记到收尾)。`0` 表示没测到(如本地估算的 count_tokens) |
