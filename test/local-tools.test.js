@@ -142,8 +142,13 @@ test('local 真实启动与停止,默认固定数据目录,客户端配置不动
   assert.ok(![8787, 8788].includes(proxy) && ![8787, 8788].includes(ui));
   fs.mkdirSync(path.dirname(env.MIXR_CLAUDE_SETTINGS), { recursive: true });
   fs.writeFileSync(env.MIXR_CLAUDE_SETTINGS, '{"sentinel":true}');
-  const child = spawn(process.execPath, [path.join(ROOT, 'scripts/start-local.js'), '--port', String(proxy), '--ui-port', String(ui)],
-    { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  // 模拟干净安装包,不能让源码仓库里正在使用的真实数据触发旧安装保护。
+  const appRoot = path.join(root, 'app');
+  fs.mkdirSync(appRoot);
+  for (const item of require('../lib/paths').RELEASE_ITEMS)
+    fs.cpSync(path.join(ROOT, item), path.join(appRoot, item), { recursive: true });
+  const child = spawn(process.execPath, [path.join(appRoot, 'scripts/start-local.js'), '--port', String(proxy), '--ui-port', String(ui)],
+    { env, cwd: appRoot, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = '';
   child.stdout.on('data', b => { output += b; }); child.stderr.on('data', b => { output += b; });
   const exit = new Promise(resolve => child.once('exit', (code, signal) => resolve({ code, signal })));

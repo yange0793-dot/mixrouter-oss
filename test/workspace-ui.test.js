@@ -438,7 +438,7 @@ test('快速跳转:按钮打开、过滤、方向键+回车跳转,关闭后焦�
   assert.equal(dialog.open, true, '用原生 showModal');
   assert.equal(dialog.hidden, false, '关闭态的 hidden 兜底要放开');
   assert.equal(h.doc.activeElement, input, '打开后焦点在搜索框');
-  assert.equal(h.get('quick-nav-list').children.length, 10, '七个页面 + 三个客户端入口');
+  assert.equal(h.get('quick-nav-list').children.length, 11, '八个页面 + 三个客户端入口');
 
   input.value = 'codex';
   input.emit('input');

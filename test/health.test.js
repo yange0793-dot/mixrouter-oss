@@ -273,7 +273,7 @@ test('首字节超时:上游装死时换下一个渠道,不把请求打回客户
   assert.strictEqual(r.headers['x-mixrouter-provider'], 'provA', '装死渠道超时后应转移到 pa');
   const log = await lastLog();
   assert.strictEqual(log.failover, true, '真的换了渠道才算故障转移');
-  assert.strictEqual(log.err_class, 'timeout', '转移原因留在 err_class(err 字段只记终态失败)');
+  assert.strictEqual(log.err_class, '', '本次已成功恢复,旧超时归因只留在 attempt trace');
   assert.strictEqual(log.err, '', '转移成功不算失败记录');
 });
 

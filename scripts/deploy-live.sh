@@ -133,7 +133,7 @@ step "3/8 备份数据与现场"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_DIR="$LIVE_DIR/backups/deploy-$STAMP"
 mkdir -p "$BACKUP_DIR"
-for f in providers.json routes.json slots.json sessions.json; do
+for f in providers.json routes.json slots.json dsh.json sessions.json; do
   [ -f "$LIVE_DIR/$f" ] && cp -p "$LIVE_DIR/$f" "$BACKUP_DIR/$f"
 done
 # 未跟踪文件(会被 checkout 拦住或被 clean 删掉的)先搬到备份区,不丢
