@@ -49,6 +49,7 @@ function harness(initialView = 'overview', data = fixture()) {
         child.inlineInput = match[0].match(/\boninput="([^"]*)"/)?.[1];
         child.inlineChange = match[0].match(/\bonchange="([^"]*)"/)?.[1];
         child.inlineClick = match[0].match(/\bonclick="([^"]*)"/)?.[1];
+        child.open = /\bopen\b/.test(match[0]);
         this.children.push(child); this._owned.push(child.id); elements.set(child.id, child);
       }
     }
@@ -205,13 +206,18 @@ test('other errors do not claim unsupported; version conflict keeps draft and re
   assert.match(h.get('dsh-status').textContent, /版本冲突/);
 });
 
-test('channel options exclude Messages and disable configured but stopped channels', async () => {
+test('main stays visible while subagent slots start collapsed and remain expandable', async () => {
   const h = harness(); await h.load();
   const rows = h.get('dsh-slots').innerHTML;
-  assert.doesNotMatch(rows, /Messages only|not-for-dsh/);
-  assert.match(rows, /value="off1" disabled/);
+  assert.match(rows, /^<div class="dsh-slot">[\s\S]*主模型 · main[\s\S]*<\/div><details class="dsh-subslots" id="dsh-subslots"><summary>其余 1 个槽位<\/summary>/);
   assert.match(rows, /<datalist id="dsh-slot-0-models"><option value="deepseek-main"/);
   assert.match(rows, /<datalist id="dsh-slot-1-models"><option value="deepseek-worker"/);
+  assert.doesNotMatch(rows, /<details[^>]*\bopen\b/);
+  assert.match(rows, /value="off1" disabled/);
+  assert.doesNotMatch(rows, /Messages only|not-for-dsh/);
+  h.get('dsh-new-name').value = 'reviewer';
+  assert.equal(h.run('dshAddSlot()'), true);
+  assert.equal(h.get('dsh-subslots').open, true, 'new slot opens the collapsed list for immediate editing');
   h.run("dshSetSlot('main','provider','anthropic1'); dshSetSlot('main','provider','off1')");
   assert.equal(h.ui().draft.slots.main.provider, 'chat1');
 });

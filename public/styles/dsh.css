@@ -3,6 +3,11 @@
 .dsh-status.err { color: var(--err-text); }
 .dsh-status.warn { color: var(--warn-text); }
 .dsh-slots { display: grid; gap: 0; }
+.dsh-subslots { border-top: 1px solid var(--border-soft); padding-top: 4px; }
+.dsh-subslots > summary { cursor: pointer; padding: 10px 0; font-weight: 600; }
+.dsh-subslots > summary:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+.dsh-subslot-list { display: grid; }
+.dsh-subslot-list > .dsh-slot:first-child { border-top: 1px solid var(--border-soft); padding-top: 16px; }
 .dsh-slot {
   display: grid; grid-template-columns: 190px minmax(150px, 1fr) minmax(180px, 1.4fr) minmax(130px, .8fr) auto;
   gap: 12px 16px; align-items: end; padding: 16px 0; border-top: 1px solid var(--border-soft);

@@ -154,21 +154,24 @@
       if (list && list.innerHTML !== models) list.innerHTML = models;
     });
   }
+  function renderSlot(name, index) {
+    const slot = draft.slots[name];
+    const id = 'dsh-slot-' + index;
+    const arg = escape(JSON.stringify(name));
+    const choices = providerOptions(slot);
+    return `<div class="dsh-slot">
+      <div class="dsh-slot-ident"><h3>${name === 'main' ? '主模型 · main' : escape(name)}</h3><span class="mono">mixr-dsh-${escape(name)}</span></div>
+      <label class="field" for="${id}-provider">渠道<select id="${id}-provider" onchange="dshSetSlot(${arg},'provider',this.value)">${choices}</select></label>
+      <label class="field" for="${id}-model">模型<input type="text" id="${id}-model" list="${id}-models" value="${escape(slot.model)}" placeholder="可填写自定义模型名" spellcheck="false" oninput="dshSetSlot(${arg},'model',this.value)"><datalist id="${id}-models">${modelOptions(slot)}</datalist></label>
+      <label class="field" for="${id}-stream">上游请求<select id="${id}-stream" onchange="dshSetSlot(${arg},'upstream_stream',this.value)"><option value="inherit">继承默认</option><option value="true">流式</option><option value="false">非流式</option></select></label>
+      ${name === 'main' ? '<span class="dsh-slot-fixed">主槽不可删除</span>' : `<button type="button" class="small danger dsh-slot-action" onclick="dshDeleteSlot(${arg})">删除子槽</button>`}
+    </div>`;
+  }
   function renderSlots() {
     const names = ['main', ...Object.keys(draft.slots).filter(name => name !== 'main')];
-    $d('dsh-slots').innerHTML = names.map((name, index) => {
-      const slot = draft.slots[name];
-      const id = 'dsh-slot-' + index;
-      const arg = escape(JSON.stringify(name));
-      const choices = providerOptions(slot);
-      return `<div class="dsh-slot">
-        <div class="dsh-slot-ident"><h3>${name === 'main' ? '主模型 · main' : escape(name)}</h3><span class="mono">mixr-dsh-${escape(name)}</span></div>
-        <label class="field" for="${id}-provider">渠道<select id="${id}-provider" onchange="dshSetSlot(${arg},'provider',this.value)">${choices}</select></label>
-        <label class="field" for="${id}-model">模型<input type="text" id="${id}-model" list="${id}-models" value="${escape(slot.model)}" placeholder="可填写自定义模型名" spellcheck="false" oninput="dshSetSlot(${arg},'model',this.value)"><datalist id="${id}-models">${modelOptions(slot)}</datalist></label>
-        <label class="field" for="${id}-stream">上游请求<select id="${id}-stream" onchange="dshSetSlot(${arg},'upstream_stream',this.value)"><option value="inherit">继承默认</option><option value="true">流式</option><option value="false">非流式</option></select></label>
-        ${name === 'main' ? '<span class="dsh-slot-fixed">主槽不可删除</span>' : `<button type="button" class="small danger dsh-slot-action" onclick="dshDeleteSlot(${arg})">删除子槽</button>`}
-      </div>`;
-    }).join('');
+    const subslots = names.slice(1);
+    const rest = subslots.length ? `<details class="dsh-subslots" id="dsh-subslots"><summary>其余 ${subslots.length} 个槽位</summary><div class="dsh-subslot-list">${subslots.map((name, index) => renderSlot(name, index + 1)).join('')}</div></details>` : '';
+    $d('dsh-slots').innerHTML = renderSlot('main', 0) + rest;
     names.forEach((name, index) => {
       const slot = draft.slots[name];
       $d(`dsh-slot-${index}-provider`).value = slot.provider;
@@ -216,6 +219,8 @@
     draft.slots[name] = { provider: '', model: '' };
     input.value = '';
     touched(); renderSlots();
+    const subslots = $d('dsh-subslots');
+    if (subslots) subslots.open = true;
     const index = ['main', ...Object.keys(draft.slots).filter(n => n !== 'main')].indexOf(name);
     $d(`dsh-slot-${index}-provider`)?.focus();
     return true;
