@@ -3,7 +3,8 @@
 这份文档讲的是「一条请求最后落到哪个渠道的哪把 Key」这件事。规则怎么配的字段清单见
 [`quick-start.md`](quick-start.md) §2,这里讲判定顺序、会话身份、覆盖语义与压缩分流。
 
-一句话前提:**匹配顺序是固定的四段,槽位别名与显式配置都优先于自动推断**。
+一句话前提:**Claude Code / Codex 普通入口的匹配顺序是固定的四段,槽位别名与显式配置都优先于自动推断**。
+DeepSeek Harness 的 `/dsh/v1/*` 入口单独按 `dsh.json` 解析,见 §2 的 Harness 小节。
 
 ---
 
@@ -28,7 +29,7 @@
 
 ## 2. 槽位路由(把某个槽钉到某个渠道 @ 模型)
 
-槽位表全局只有一份,存在 `<MIXR_DATA_DIR>/slots.json`(`{ version: 1, claude, codex }`,
+Claude Code / Codex 的全局槽位表存在 `<MIXR_DATA_DIR>/slots.json`(`{ version: 1, claude, codex }`,
 `mixrouter.js` 的 `saveSlots`)。别名由 `lib/routing/slots.js` 的 `slotAlias()` 生成:
 `mixr-` + 槽名。
 
@@ -87,6 +88,31 @@
   不带 `--apply` 时只落 `slots.json`,**不碰客户端配置**。
 - 两路各用各的 Key:转发时按命中渠道取上游凭据,客户端送来的 token 顶不掉它。
 - 重启不回放旧快照:客户端 env 只在 `--apply` 时写一次,进程启动只读 `slots.json`。
+
+### DeepSeek Harness 独立槽位
+
+Harness 的主槽 `main` 与自由命名子槽保存在 `<MIXR_DATA_DIR>/dsh.json`,别名为
+`mixr-dsh-<槽名>`。总计最多 32 槽(含 `main`),槽名为 1–24 位小写字母、数字或连字符,
+首位不能是连字符。
+它引用现有渠道库中显式标了 `wire_api: chat` / `responses` 的渠道,不复制 Key,
+也不写 Claude / Codex 的 `slots.json` 或客户端配置。
+
+- 只有 `/dsh/v1/responses` 与 `/dsh/v1/chat/completions` 进入这条路径;
+  `/dsh/v1/models` 返回已配置槽位的别名,包含 `main`。
+- 模型名按 `mixr-dsh-<槽名>` **精确匹配**独立槽位,每槽是单一「渠道 @ 模型」;
+  不走普通规则兜底、普通会话粘性或手动渠道钉定,不提供独立后备池。
+  把同名别名发到普通 `/v1/*` 入口并不等于选中了 Harness 槽位。
+- 默认子模型须选已配置的非 `main` 槽位;它是 Harness 的客户端默认值,
+  不是按请求内容自动判断主链/子代理。模型选择清单仍包括主槽与所有子槽。
+- `upstream_stream` 在槽位上控制**上游传输**:省略继承现有行为,`true` 强制上游流式,
+  `false` 强制完整 JSON。客户端请求的响应形状独立,请求 SSE 时可由 mixrouter 在
+  JSON 收齐后转成 SSE,这不是逐 token 实时流式。
+- 「保存草稿」只更新路由;另行确认「同步到 Harness」才写 desktop profile 的托管区,
+  保留已有 provider 和其他 patch,写前备份;托管区被改或同步期间文件变化时拒绝覆盖。
+  需重启 Harness 后新建会话,不会自动切换正在运行的会话。
+
+控制台入口为 `#dsh`,推荐客户端使用 Responses;Chat 上游可翻译为 Responses。
+配置 API、上限与客户端文件路径见[参考手册](reference.md#deepseek-harness-独立槽位)。
 
 ---
 

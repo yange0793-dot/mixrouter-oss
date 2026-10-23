@@ -17,7 +17,7 @@
 
 适合:
 
-- 在自己的机器上同时用 Claude Code、Codex 与 ZCode,希望把它们指到自建或第三方渠道;
+- 在自己的机器上用 Claude Code、Codex、ZCode 或 DeepSeek Harness,希望把它们指到自建或第三方渠道;
 - 有多个渠道、多把 Key,需要按模型、会话、子代理槽位分流,并在控制台里看清落点;
 - 想在不改客户端的前提下,让只提供 OpenAI 型接口的模型也能被 Claude Code 使用。
 
@@ -52,8 +52,12 @@
   日志里的 `request_id` 与之对应。403 不会被判成"Key 坏了"。
 - **可选多 Key 自动备用**:按渠道显式开启。正常请求保持账号粘性,401/402 与 403/404/429
   按账号级 / 模型级归因后才换号;固定 Key 与压缩专用 Key 永不换,也不改 `active_key`。
+- **DeepSeek Harness 独立槽位**:复用已有 Chat / Responses 渠道的模型与 Key,配置单独存到
+  `dsh.json`,主模型与自由命名子槽使用 `mixr-dsh-<槽名>` 别名。保存路由与同步客户端分开,
+  不改 Claude Code / Codex / ZCode 的配置;用法见下方接入说明。
 - **本地控制台**:`127.0.0.1:8788` 管理渠道、路由、会话、槽位、日志与备份;
-  左侧直接进入 Claude Code、Codex 或 ZCode 的渠道库,支持列表/卡片视图与按需展开的模型槽位。
+  左侧直接进入 Claude Code、Codex 或 ZCode 的渠道库,以及 DeepSeek Harness 独立页,
+  支持列表/卡片视图与按需展开的模型槽位。
   新建或编辑渠道时,可根据 Base URL 与 Key 获取上游模型列表,搜索并选择要添加的模型,也可继续手填。
   支持系统/浅色/深色主题、`⌘K` / `Ctrl+K` 快速跳转与页面链接定位。
   「用量统计」在同一筛选范围内显示请求、tokens、缓存命中率、成功率、日历热力图,
@@ -101,7 +105,26 @@ open http://127.0.0.1:8788/     # macOS;其他系统在浏览器打开同一地�
 ./mixctl route zcode            # ZCode,默认 Anthropic 协议
 ```
 
-自检:
+### DeepSeek Harness 接入
+
+1. 已安装 Harness 后,打开控制台左侧 **DeepSeek Harness**
+   (`http://127.0.0.1:8788/#dsh`)。渠道与 Key 仍在现有渠道库维护;此页只选择
+   `wire_api: chat` 或 `responses` 的已启用渠道,不另存真实 Key。
+2. 配置主槽 `main`,按需添加自由命名子槽,为各槽选择渠道、模型与上游流式行为,
+   再选一个非 `main` 槽作为默认子模型。点击「保存草稿」只更新 `dsh.json`。
+3. 另点「同步到 Harness」并确认,写入本机
+   `~/.dsh/profiles/desktop/cordis.patch.yml` 的托管区。已有 provider 和其他 patch 保留,
+   写前备份;托管区被改或同步期间文件变化时拒绝覆盖。同步后**重启 Harness 后新建会话**,
+   不会自动热切换会话。
+
+Harness 使用虚拟 mixrouter provider,Base URL 为 `http://127.0.0.1:8787/dsh/v1`,
+主模型为 `mixr-dsh-main`,模型选择清单包含主槽与所有子槽;不需要再填真实渠道 Key。
+推荐 Responses 接入,mixrouter 可翻译 Chat 上游。每槽的「非流式」是上游完整 JSON
+返回后再转为客户端 SSE,**不是实时逐 token 输出**;「继承默认」保留现有行为。
+这是独立接入口,不修改 Claude Code / Codex / ZCode 的路由与客户端设置。
+接口与命名限制见[参考手册](docs/reference.md#deepseek-harness-独立槽位)。
+
+### 本机自检
 
 ```bash
 npm run doctor                       # 本地只读检查:不调上游、不改配置、不输出 Key 或会话内容

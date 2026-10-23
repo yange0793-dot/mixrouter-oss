@@ -11,6 +11,7 @@
 <link rel="stylesheet" href="/styles/readiness.css">
 <link rel="stylesheet" href="/styles/attempt-flow.css">
 <link rel="stylesheet" href="/styles/key-fallback.css">
+<link rel="stylesheet" href="/styles/dsh.css">
 </head>
 <body data-connection="connecting">
   <a class="skip-link" href="#main">跳至主要内容</a>
@@ -33,6 +34,7 @@
       <a href="#providers" data-view="providers" data-app="claude" aria-label="Claude Code 渠道"><span class="appdot" aria-hidden="true"></span><span>Claude</span></a>
       <a href="#providers?app=codex" data-view="providers" data-app="codex" aria-label="Codex 渠道"><span class="appdot" aria-hidden="true"></span><span>Codex</span></a>
       <a href="#providers?app=zcode" data-view="providers" data-app="zcode" aria-label="ZCode 渠道"><span class="appdot" aria-hidden="true"></span><span>ZCode</span></a>
+      <a href="#dsh" data-view="dsh" id="dsh" aria-label="DeepSeek Harness"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.5" y="3" width="13" height="12" rx="2"/><path d="m5 6 3 3-3 3M10 12h3"/></svg><span>DeepSeek Harness</span></a>
     </nav>
     <div class="nav-label">工作区</div>
     <nav class="nav-group" aria-label="工作区">
@@ -291,6 +293,39 @@
         </div>
       </section>
 
+      <section id="view-dsh" style="display:none" aria-labelledby="dsh-title">
+        <div class="head">
+          <div><h1 id="dsh-title">DeepSeek Harness</h1><div class="sub">独立配置主模型与子智能体。保存路由草稿不会安装、重启或改写客户端；同步后请重启 Harness 后新建会话。</div></div>
+          <div class="actions"><button type="button" id="dsh-reload" onclick="dshReload()">重新载入</button><button type="button" class="primary" id="dsh-save" onclick="dshSave()" disabled>保存草稿</button><button type="button" id="dsh-sync" onclick="dshSync()" disabled>同步到 Harness</button></div>
+        </div>
+        <p class="hint dsh-status" id="dsh-status" role="status" aria-live="polite">进入此页后读取 DeepSeek Harness 配置。</p>
+        <div id="dsh-unsupported" class="empty" hidden><b>当前后端不支持 DeepSeek Harness</b>此页需要 /api/dsh；请更新服务端。不会改用其他客户端的配置接口。</div>
+        <div class="panel" aria-labelledby="dsh-client-title">
+          <h2 id="dsh-client-title">客户端配置状态</h2>
+          <p class="hint">按磁盘配置判断，不代表上游连通性，也不代表正在运行的会话已经切换。这里只同步自有 profile 的模型与白名单字段。</p>
+          <div id="dsh-client" class="dsh-client"><p class="hint">尚未读取。</p></div>
+          <p class="hint dsh-outcome" id="dsh-outcome" role="status" hidden></p>
+        </div>
+        <div id="dsh-editor" hidden>
+          <div class="panel" aria-labelledby="dsh-slots-title">
+            <h2 id="dsh-slots-title">模型槽位</h2>
+            <p class="hint">渠道仅来自已配置的 Chat Completions / Responses 渠道，模型可自由填写。上游模式只控制向渠道发出的请求，不改变 Harness 客户端的响应方式。</p>
+            <div id="dsh-slots" class="dsh-slots"></div>
+            <form class="dsh-add" id="dsh-add-form" onsubmit="event.preventDefault();dshAddSlot()">
+              <label class="field" for="dsh-new-name">新增子智能体名称<input id="dsh-new-name" type="text" placeholder="如 reviewer" pattern="[a-z0-9][a-z0-9-]{0,23}" maxlength="24" autocomplete="off" spellcheck="false" aria-describedby="dsh-name-hint"></label>
+              <button type="submit" id="dsh-add" disabled>添加子智能体</button>
+              <p class="hint" id="dsh-name-hint">1–24 位小写字母、数字或连字符，首位不可为连字符；main、constructor、prototype 等为保留名称。最多 32 槽（含 main）。</p>
+            </form>
+          </div>
+          <div class="panel" aria-labelledby="dsh-default-title">
+            <h2 id="dsh-default-title">默认子智能体</h2>
+            <p class="hint">未指定子槽时使用此项；留空跟随主模型，或选择已配置渠道和模型的非 main 槽位。</p>
+            <label class="field dsh-default" for="dsh-default-subagent">默认槽位<select id="dsh-default-subagent" onchange="dshSetDefault(this.value)"></select></label>
+            <p class="hint dsh-draft-note" id="dsh-draft-note">自动刷新不会覆盖编辑草稿。同步前请先保存。</p>
+          </div>
+        </div>
+      </section>
+
       <section id="view-routes" style="display:none" aria-labelledby="routes-title">
         <div class="head"><div><h1 id="routes-title">路由规则</h1><div class="sub">按模型名子串匹配，逗号分隔、大小写不敏感。优先级大的先匹配，同优先级按从上到下。</div></div><div class="actions"><button onclick="reloadRoutes()">重新载入</button><button class="primary" id="save-routes" onclick="saveRoutes()" disabled>保存路由</button></div></div>
         <div class="panel" id="compact-panel"><h2>压缩模型</h2>
@@ -476,5 +511,6 @@
 <script src="/js/readiness.js"></script>
 <script src="/js/attempt-flow.js"></script>
 <script src="/js/key-fallback.js"></script>
+<script src="/js/dsh.js"></script>
 </body>
 </html>

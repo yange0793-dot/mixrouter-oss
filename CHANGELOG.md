@@ -7,6 +7,15 @@
 
 #### 新增
 
+- 控制台增加 **DeepSeek Harness** 独立入口(`#dsh`):复用已有 Chat / Responses 渠道与 Key,
+  主模型及自由命名子槽单独保存到数据目录的 `dsh.json`,使用 `mixr-dsh-<槽名>` 别名;
+  默认子模型选择非 `main` 槽位,客户端模型选择清单同时包含主槽与子槽。
+- Harness 的「保存草稿」与「同步到 Harness」分开:显式确认后才写本机 desktop profile 的
+  `cordis.patch.yml`,写前备份,只维护托管区,保留已有 provider 与其他 patch;
+  托管区被改或同步期间文件变化时拒绝覆盖。同步不会安装或自动重启客户端,
+  需重启 Harness 后新建会话。
+- Harness 每槽可选择上游流式、非流式或继承默认。非流式返回 JSON 后可由 mixrouter 转成
+  客户端 SSE,不代表实时逐 token 输出;不改变 Claude Code / Codex / ZCode 的现有配置。
 - 新建 / 编辑渠道可根据 Base URL 和 API Key 获取上游模型列表,支持搜索选择、已有账号 Key
   及未保存的 Key。Claude 组去重追加且保留原主模型,Codex 组选定后填入模型字段;
   获取本身不保存渠道、不切换账号、不发送聊天请求。
@@ -51,6 +60,9 @@
 
 #### 接口
 
+- 新增 `GET/PUT /api/dsh` 与 `POST /api/dsh/sync`:保存和同步都校验 `expected_revision`,
+  同步另需 `confirm: true`;客户端使用 `/dsh/v1/responses`、`/dsh/v1/chat/completions`
+  与 `/dsh/v1/models`。推荐 Responses 接入,可翻译 Chat 上游,真实 Key 不写入 Harness。
 - 新增 `GET /api/onboarding/<claude|codex|zcode>`、
   `POST /api/onboarding/<app>/{preview,apply,undo-preview,undo}`。
 - 新增 `POST /api/providers/import/{preview,apply}`、`POST /api/providers/<id>/compatibility`、
@@ -72,6 +84,8 @@
 
 #### 未验证范围
 
+- Harness 接入口不等于已上线或已发布;不据此宣称真实上游、任意 Harness 版本或其他平台
+  安装布局已验证。同步依赖本机 Harness 官方 YAML 解析器与 preset 模板。
 - 接入向导、兼容测试、撤销、服务与升级、多 Key 备用只在 **macOS + Node 24** 上跑过测试与
   离线 fixture;**没有对真实上游发起生成请求**;其他平台未实跑,也没有对应的 CI 通过结论。
 

@@ -30,7 +30,7 @@ for (const d of [home, data, path.join(root, 'img'), path.join(root, 'tmp')]) fs
 
 // 复制线上数据(只读来源),让新代码去写副本
 let copied = [];
-for (const f of ['providers.json', 'routes.json', 'slots.json', 'sessions.json']) {
+for (const f of ['providers.json', 'routes.json', 'slots.json', 'dsh.json', 'sessions.json']) {
   const s = path.join(LIVE, f);
   if (fs.existsSync(s)) { fs.copyFileSync(s, path.join(data, f)); copied.push(f); }
 }

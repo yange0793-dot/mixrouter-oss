@@ -47,10 +47,13 @@
 | `POST /v1/responses/compact` | OpenAI responses | Codex(`responses` 渠道原样透传) |
 | `POST /v1/chat/completions` | OpenAI chat | Codex(`wire_api=chat` 的渠道) |
 | `GET /v1/models` | 只读模型清单 | Codex 组 + 路由目标 |
-| `HEAD <上面任意端点>` | 探活 | — |
+| `POST /dsh/v1/responses` | OpenAI responses | DeepSeek Harness 独立槽位 |
+| `POST /dsh/v1/chat/completions` | OpenAI chat | DeepSeek Harness 独立槽位 |
+| `GET /dsh/v1/models` | 只读槽位别名清单 | DeepSeek Harness |
+| `HEAD <上面的生成端点>` | 探活 | — |
 
-请求必须是 `Content-Type: application/json` 的 POST(可带 charset),非 POST 的协议路径
-直接 404、不会转发;响应头带
+生成请求必须是 `Content-Type: application/json` 的 POST(可带 charset),非 POST 的生成路径
+直接 404、不会转发;模型清单使用 GET。响应头带
 `x-mixrouter-app` / `x-mixrouter-provider` / `x-mixrouter-model` / `x-mixrouter-session`
 便于排查。
 
@@ -75,7 +78,8 @@
   重启就是再跑一次同一命令;只有 `mixctl start` 起的实例才用 `mixctl restart`。
 
 数据文件是 `providers.json`(含明文 Key,`0600`)、`routes.json`、
-`slots.json`、`sessions.json`、`logs/`,均已加入 `.gitignore`。
+`slots.json`、`sessions.json`、Harness 独立的 `dsh.json` 与 `logs/`。
+这些都是本机状态,不要提交到 git 或随发布包分发。
 把 `MIXR_DATA_DIR` 指到一个固定目录,升级换代码时数据才不跟着代码走;
 更换代码目录而不设它,服务会按空库启动。
 
@@ -120,6 +124,27 @@
 只写桌面端 `~/.zcode/v2/config.json` 的自有 provider 条目,不改默认模型、已有会话、
 其它服务商或 CLI 扩展配置。配完在 ZCode 模型选择器里选 **Mixrouter · …**;
 新条目没出现就重启客户端并新建会话。
+
+### DeepSeek Harness
+
+控制台入口是 `http://127.0.0.1:8788/#dsh`,不是 `mixctl route` 的新参数。
+先在现有渠道库配置已启用的 Chat / Responses 渠道与模型,再在 Harness 页配置 `main`
+与自由命名子槽,选择非 `main` 默认子模型,点击「保存草稿」后另行确认「同步到 Harness」。
+真实 Key 仍只在渠道库,客户端使用虚拟 mixrouter provider 与 `mixr-dsh-<槽名>` 别名。
+
+- 客户端 Base URL:`http://127.0.0.1:8787/dsh/v1`,推荐 Responses;Chat 上游可由代理翻译。
+- `GET /api/dsh` 读取配置、`revision`、可选渠道及客户端磁盘状态;
+  `PUT /api/dsh` 带 `expected_revision` 保存**整份**槽位配置到 `dsh.json`,不写客户端。
+- `POST /api/dsh/sync` 带 `{"confirm":true,"expected_revision":"<GET 返回的 revision>"}`
+  才同步客户端。它只写 `~/.dsh/profiles/desktop/cordis.patch.yml` 的托管区,
+  可用 `MIXR_DSH_CONFIG` 覆盖目标;保留现有 provider 与其他 patch、写前备份,
+  托管区被改或同步期间文件变化时拒绝覆盖。
+- 同步不会安装或自动重启 Harness,也不热改正在运行的会话。完成后重启 Harness 后新建会话。
+  每槽可设上游流式或非流式,省略 `upstream_stream` 即继承现有行为;
+  非流式完整 JSON 转成客户端 SSE **不是逐 token 实时输出**。
+
+Harness 的槽位和默认子模型独立于 Claude / Codex / ZCode,模型选择清单含 `main` 与各子槽。
+完整 JSON 格式、命名与上限见[参考手册](reference.md#deepseek-harness-独立槽位)。
 
 ## 4. 槽位与会话
 
@@ -253,7 +278,8 @@ npm run doctor -- --data-dir /absolute/path --port 8787 --ui-port 8788
 ```
 
 `npm run doctor` 是本机只读检查:Node 版本、运行入口文件、数据目录可写与权限、
-四个配置文件的 JSON 与顶层结构,以及回环地址上的代理/控制台是否可达。默认数据目录与
+四个配置文件的 JSON 与顶层结构,以及回环地址上的代理/控制台是否可达。此检查不包含
+Harness 的 `dsh.json` 或 `cordis.patch.yml` 同步有效性。默认数据目录与
 `npm run local` 相同;检查旧 `npm start` 的数据时用 `--data-dir` 明确指定。
 `--offline` 不连接端口,也不建目录或改配置。
 

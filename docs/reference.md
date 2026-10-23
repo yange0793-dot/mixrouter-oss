@@ -8,7 +8,8 @@
 
 ## 1. 请求怎么落到渠道
 
-一条请求的判定顺序是固定的四段,唯一定义在 `lib/routing/resolve.js`:
+Claude Code / Codex 普通入口的判定顺序是固定的四段,唯一定义在 `lib/routing/resolve.js`。
+DeepSeek Harness 的 `/dsh/v1/*` 入口使用独立槽位配置,见第 3 节,不按下面的普通规则兜底:
 
 | # | 阶段 | 说明 |
 | --- | --- | --- |
@@ -206,8 +207,8 @@ Anthropic `has_more` / `last_id` 分页通过同一端点的 `after_id` 继续�
 
 ## 3. 槽位
 
-槽位表全局只有一份,存在 `<MIXR_DATA_DIR>/slots.json`(`{version, claude, codex}`),
-别名由 `slotAlias()` 生成:`mixr-` + 槽名。
+Claude Code / Codex 的全局槽位表存在 `<MIXR_DATA_DIR>/slots.json`(`{version, claude, codex}`),
+别名由 `slotAlias()` 生成:`mixr-` + 槽名。Harness 使用独立 `dsh.json`,不写这份槽位表。
 
 | 槽 | 别名 | 客户端 env |
 | --- | --- | --- |
@@ -261,6 +262,85 @@ curl -s -X POST http://127.0.0.1:8788/api/router/codex \
 
 不带 `--apply` 只落 `slots.json`,不碰客户端配置;换来源只改槽位表,运行中的进程下一次
 请求就读到新落点,不必重启。重启只读 `slots.json`,不会拿备份或启动快照反写槽位。
+
+### DeepSeek Harness 独立槽位
+
+控制台左侧 **DeepSeek Harness**(`http://127.0.0.1:8788/#dsh`)单独管理 Harness 的
+主模型与子模型,配置保存在 `<MIXR_DATA_DIR>/dsh.json`(`0600`),结构为
+`{version: 1, slots, default_subagent}`。不写 Claude / Codex 的 `slots.json`,
+不改 Claude Code / Codex / ZCode 客户端配置。
+
+| 字段 | 约束与含义 |
+| --- | --- |
+| `slots` | 完整槽位映射,必须包含 `main`;最多 32 槽(含主槽,即至多 31 个自由命名子槽);保存时整体替换,不是部分更新 |
+| 槽名 | `^[a-z0-9][a-z0-9-]{0,23}$`,即 1–24 位小写字母、数字或连字符,首位不能是连字符;保留名 `constructor` / `prototype` / `__proto__` 不接受 |
+| `slots.<name>.provider` | 已存在且启用的渠道 ID,必须显式标 `wire_api: chat` 或 `responses`;复用渠道库及其 Key |
+| `slots.<name>.model` | 必填非空模型名,最长 256 字符、不含控制字符;可填写渠道清单以外的自定义模型,不保证账号有调用权限 |
+| `slots.<name>.upstream_stream` | 可选布尔值:省略继承现有行为,`true` 强制上游流式,`false` 强制上游非流式 JSON |
+| `default_subagent` | API 接受空字符串或已配置的非 `main` 槽名;空字符串同步时子工具默认回落主模型;控制台要求选择有效子槽,模型选择清单同时包含主槽与子槽 |
+
+每槽的客户端别名为 `mixr-dsh-<name>`,如 `mixr-dsh-main` / `mixr-dsh-worker`。
+只在 `/dsh/v1/*` 入口解析这份配置,不使用普通规则兜底、会话粘性或手动渠道钉定;
+每槽只绑定单一渠道与模型,不提供 `pool` / `strategy` / 固定 `key_id` 字段。
+别名发到普通 `/v1/*` 不会选中 Harness 槽位。
+
+#### 配置与同步 API(控制台口 8788)
+
+- `GET /api/dsh` 返回 `version`、`slots`、`default_subagent`、`revision`、`providers` 与 `client`。
+  `providers` 只包含 Chat / Responses 渠道的公开 ID、名称、模型、协议和启用状态,不含 Key;
+  `client` 是本机安装与**磁盘配置**状态,可标记 `not_configured` / `configured` /
+  `out_of_sync` / `conflict`,不证明运行中的 Harness 会话已接入。
+- `PUT /api/dsh` 接收整份槽位映射,带 `expected_revision`。必须使用最近一次 GET 的
+  `revision`,版本不匹配或 `dsh.json` 已被外部改动时返回 409,不覆盖。
+  配置校验失败返回 400;保存只更新路由,不修改 Harness 文件。
+- `POST /api/dsh/sync` 接收 `{"confirm":true,"expected_revision":"<当前 revision>"}`。
+  未明确确认不写文件;同步前同样校验已保存槽位和 revision。
+  它写本机 `~/.dsh/profiles/desktop/cordis.patch.yml` 的受控托管区,
+  可用 `MIXR_DSH_CONFIG` 重定向;保留已有 provider 与其他 patch,已有文件先留
+  `.bak-mixrouter-<时间戳>-<随机>` 私有备份。托管区标记/校验和被外部修改,
+  或同步期间文件变化时返回 409;托管区外的合法用户 patch 重新读取合并,不整份覆盖。
+  不会安装或自动重启 Harness,返回 `restart_required: true`。
+
+保存示例(渠道 ID 和模型名换成自己已保存的值):
+
+```json
+{
+  "expected_revision": "<GET /api/dsh 返回的 revision>",
+  "slots": {
+    "main": {"provider": "p-main", "model": "main-model"},
+    "worker": {"provider": "p-sub", "model": "sub-model", "upstream_stream": false}
+  },
+  "default_subagent": "worker"
+}
+```
+
+#### 客户端 API(代理口 8787)
+
+| 端点 | 用途 |
+| --- | --- |
+| `POST /dsh/v1/responses` | 推荐的 Harness Responses 接口,可翻译 Chat 上游 |
+| `POST /dsh/v1/chat/completions` | Chat Completions 接口,须选择兼容的 Chat 渠道 |
+| `GET /dsh/v1/models` | 本地已配置槽位别名列表,包含 `mixr-dsh-main`,不是上游模型清单 |
+
+同步写入虚拟 mixrouter provider,Base URL 为 `http://127.0.0.1:8787/dsh/v1`,
+主模型为 `mixr-dsh-main`,真实上游 Key 仍由 mixrouter 转发时注入,无需在 Harness 再填写。
+同步后重启 Harness 后新建会话;现有会话不会自动热切换。
+
+**流式边界**:上游传输与客户端响应格式分开。`upstream_stream: false` 不把客户端
+SSE 请求改成 JSON 响应,而是在完整上游 JSON 返回后转成客户端 SSE;
+它不是逐 token 实时输出,等待仍受非流式超时及端到端总预算约束。
+省略此字段保持原有流式行为,不全局改动其他客户端。
+
+**同步限制**:默认从 `/Applications/DeepSeek Harness.app/Contents/Resources/app`
+读取安装内容,`MIXR_DSH_APP` 可指定 `.app` 路径或其内部 app 目录。mixrouter 无需安装
+额外 npm 依赖;安全合并使用 Harness 自带的官方 `js-yaml` 与 `standard` / `ptc` / `cordis`
+preset 模板。未安装 Harness 仍可配置路由,但不能同步;同步不会修改已安装 app。
+缺少解析器或模板时拒绝同步,此入口不是通用 YAML 编辑器。目标配置含无法安全合并的
+动态 `!!js`、已有非托管 `mixrouter` provider、损坏或重复托管标记时拒绝覆盖;
+flow-style 顶层数组也拒绝追加,须先由用户整理为 block patch list。
+已有其他 provider 的 Key 可能仍在原 patch 或备份中,请将这些文件按凭据文件保管。
+备份与替换不构成文件锁,最终检查到原子替换之间仍有极小竞争窗。
+不宣称支持任意 Harness 版本或其他平台安装布局。
 
 ---
 
@@ -577,7 +657,8 @@ MIXR_DATA_DIR=/absolute/path node scripts/diagnose-upstream.js --mode provider -
 
 覆盖范围就是上面三处受管文件(`providers.json`、Claude `settings.json`、Codex `config.toml`)。
 **ZCode 的 `~/.zcode/v2/config.json` 不在 `mixctl backups` / `mixctl restore` 的范围内**,
-恢复 ZCode 配置请用它的备份文件手工替换。
+恢复 ZCode 配置请用它的备份文件手工替换。Harness 的 `cordis.patch.yml` 与
+`.bak-mixrouter-*` 备份同样不在这两个命令的范围内,需停止客户端后手工恢复。
 
 恢复前请停止对应客户端与路由器,成功后再重启。`providers.json` 恢复后要重启 mixrouter
 ——运行中的路由器内存不会自动刷新。
@@ -600,13 +681,15 @@ require 之后再改不生效。
 | --- | --- | --- |
 | `MIXROUTER_PORT` / `MIXUI_PORT` | 8787 / 8788 | 代理口 / 控制台口 |
 | `MIXROUTER_ALT_PORTS` | 空 | 逗号分隔,在这些端口上也服务同一个代理 |
-| `MIXR_DATA_DIR` | 仓库根 | providers / routes / slots / sessions / logs 的总目录 |
+| `MIXR_DATA_DIR` | 仓库根 | providers / routes / slots / sessions / dsh / logs 的总目录 |
 | `MIXR_LOG_RETENTION_DAYS` | 30 | 新请求日志归档保留天数(0–36500);`0` 永久保留 |
 | `MIXR_LOG_COMPRESS` | 关 | 仅 `on` 启用新请求日志归档 gzip |
 | `MIXR_LOG_RETAIN_DAYS` / `MIXR_LOG_SWEEP_MS` | 2 / 21600000 | responses 归档与 launchd.log 的保留天数与清理周期 |
 | `MIXR_CLAUDE_SETTINGS` | `~/.claude/settings.json` | Claude Code 客户端配置 |
 | `MIXR_CODEX_CONFIG` | `~/.codex/config.toml` | Codex 客户端配置 |
 | `MIXR_ZCODE_CONFIG` | `~/.zcode/v2/config.json` | ZCode 客户端配置 |
+| `MIXR_DSH_CONFIG` | `~/.dsh/profiles/desktop/cordis.patch.yml` | Harness 显式同步的 desktop profile patch 路径,须为绝对路径 |
+| `MIXR_DSH_APP` | `/Applications/DeepSeek Harness.app` | Harness 安装路径,同步时读取其官方 YAML 解析器与 preset 模板,须为绝对路径 |
 | `MIXR_RESPONSE_ARCHIVE` | 关 | 仅 `on` 开启上游响应正文归档 |
 | `MIXR_RESPONSE_ARCHIVE_DIR` | `<MIXR_DATA_DIR>/logs/responses` | 返回归档私有目录 |
 | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | 未设 | 压缩窗口的环境覆盖,优先于磁盘设置 |

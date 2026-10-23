@@ -760,6 +760,10 @@ const classifyProxyRequest = endpoints.classifyProxyRequest;
 const wireOf = endpoints.wireOf;
 const upstreamPathOf = endpoints.upstreamPathOf;
 const joinUpstreamPath = endpoints.joinUpstreamPath;
+const dshRouting = require('./lib/dsh-routing').createDshRouting({
+  root: ROOT, home: os.homedir(), env: process.env, routerURL: ROUTER_URL,
+  getProviders: () => [...store.claude, ...store.codex],
+});
 
 // GET /v1/models:只读清单(Codex 组渠道的模型 + 路由目标模型 + Codex 槽位别名),给会探模型的客户端用
 function modelList() {
@@ -849,7 +853,8 @@ const activeRequests = {
 };
 const attemptDeps = {
   http, https,
-  storeOf, slotMapOf: () => slotMap, sessionConfig, compactLib,
+  storeOf: (app, ep) => ep?.client === 'dsh' ? [...store.claude, ...store.codex] : storeOf(app),
+  slotMapOf: () => slotMap, sessionConfig, compactLib,
   wireOf, upstreamPathOf, joinUpstreamPath,
   buildUpstreamHeaders, buildOpenAiHeaders, applyModel, toolFilter,
   safeHeader, hasCtlChar, transportAgent, createResponseArchive, channelSecrets, clientToken,
@@ -871,7 +876,7 @@ const { runAttempts } = createAttemptRunner({ runAttempt, convRetries: CONV_RETR
 const prepareRequest = createPreparer({
   UI_PORT, MAX_ATTEMPTS,
   storeOf, sessionRecord, sessionConfig, sessionKeyOf, sessionIdentity, sessionLabel,
-  bodyRouteText, compactTexts, resolveRoute, compactLib, wireOf,
+  bodyRouteText, compactTexts, resolveRoute, compactLib, wireOf, dshRouting,
   resolveSessionTarget, sessionEntry, clientToken,
   captureRequest: key => sess.captureRequest(key),
 }).prepareRequest;
@@ -883,7 +888,7 @@ const proxyHandler = proxyHttp.createProxyHandler({
   onBodyDrainAbort: () => { bodyDrainAborts++; },
   onBodyDrainTimeout: () => { bodyDrainTimeouts++; },
   randomUUID: () => crypto.randomUUID(),
-  httpBody, protoError, classifyProxyRequest, ENDPOINTS, modelList, sessionKeyOf,
+  httpBody, protoError, classifyProxyRequest, ENDPOINTS, modelList, sessionKeyOf, dshRouting,
   prepareRequest, createRequestContext, runAttempts,
   // 终态的两个副作用仍然留在主入口:会话计数/用量累加(会话语义不在这里)与请求日志落盘。
   // 会话这一半走**在途 guard**:令牌是入口捕获的那个(flight),由 settleRequest 按记录世代
@@ -1243,7 +1248,7 @@ const apiHandler = createConsoleHandler({
   applyClientSwitch, clientSwitchMessage, withStoreRollback, drainStoreWarnings, testProvider,
   sessionList, sessionRecord, storeOf, findProvider, providerApp, ghostRefs,
   mutateSessions, saveRoutes, saveSlots, saveStore, requestLog, compactWindow,
-  slotsPublic, validateSlotPut,
+  slotsPublic, validateSlotPut, dshRouting,
   usageSummary, readinessApi, activeRequests: () => activeRequestCount,
   switchClaude, switchCodex, switchZcode, switchRouter,
 });

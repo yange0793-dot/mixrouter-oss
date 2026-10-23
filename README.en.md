@@ -23,8 +23,8 @@ pages for exact field and command reference.
 
 Good fit:
 
-- You use Claude Code, Codex, and ZCode on your own machine and want them to talk to
-  self-hosted or third-party providers.
+- You use Claude Code, Codex, ZCode, or DeepSeek Harness on your own machine and want them to
+  talk to self-hosted or third-party providers.
 - You have several providers or several keys and need routing by model, session, or subagent
   slot, with a console that shows where a request will land.
 - You want models that only expose OpenAI-style endpoints to work in Claude Code without
@@ -79,10 +79,15 @@ Not a good fit:
   401/402 (account-level) and 403/404/429 (model-level) are the only failures that may switch
   keys. Pinned session keys and compact-only keys never switch, and `active_key` is never
   rewritten.
+- **Independent DeepSeek Harness slots.** Reuse existing Chat / Responses providers, models, and
+  keys, while keeping routing in a separate `dsh.json`. Main and custom-named subagent slots use
+  `mixr-dsh-<slot>` aliases. Saving routing and syncing the client are separate operations; Claude
+  Code, Codex, and ZCode configuration is unchanged. See the connection steps below.
 - **Local console.** `127.0.0.1:8788` manages providers, routes, sessions, slots, logs, and
-  backups. Open Claude Code, Codex, or ZCode directly from the sidebar, choose list or card
-  views for providers, and expand model slots when needed. Fetch upstream models using a Base URL
-  and API key while creating or editing a provider, then search and select models to add; manual entry remains available.
+  backups. Open Claude Code, Codex, or ZCode providers, or the independent DeepSeek Harness page,
+  directly from the sidebar, choose list or card views for providers, and expand model slots when
+  needed. Fetch upstream models using a Base URL and API key while creating or editing a provider,
+  then search and select models to add; manual entry remains available.
   System/light/dark themes,
   `⌘K` / `Ctrl+K` quick navigation, and page deep links are supported.
   The usage page shares one set of filters across request/token totals, cache and success rates,
@@ -137,7 +142,30 @@ is rewritten):
 ./mixctl route zcode            # ZCode, Anthropic protocol by default
 ```
 
-Check the local setup:
+### Connect DeepSeek Harness
+
+1. With Harness already installed, open **DeepSeek Harness** in the console sidebar
+   (`http://127.0.0.1:8788/#dsh`). Keep providers and keys in the existing provider library;
+   this page selects enabled providers with `wire_api: chat` or `responses`, without storing
+   another real key.
+2. Configure `main`, add custom-named subagent slots as needed, choose each slot's provider,
+   model, and upstream streaming mode, then select a non-`main` default subagent slot.
+   **Save draft** (「保存草稿」) only updates `dsh.json`.
+3. Separately choose **Sync to Harness** (「同步到 Harness」) and confirm. This updates only
+   the managed block of `~/.dsh/profiles/desktop/cordis.patch.yml`, preserves existing providers
+   and other patches, backs up before writing, and refuses to overwrite a modified managed block
+   or a file changed during sync. **Restart Harness, then start a new session**; existing
+   sessions are not switched automatically.
+
+Harness uses a virtual mixrouter provider with Base URL `http://127.0.0.1:8787/dsh/v1` and main
+model `mixr-dsh-main`. Its model picker includes both main and subagent aliases; no real provider
+key needs to be entered again. Responses is recommended; mixrouter can translate a Chat upstream.
+A slot's non-streaming mode collects the full upstream JSON before adapting it to client SSE,
+**not real-time token streaming**. Inherit-default mode preserves existing behavior. This entry
+point does not change Claude Code, Codex, or ZCode routing or client settings. See the
+[reference](docs/reference.md#deepseek-harness-独立槽位) for the API and naming limits (Chinese).
+
+### Check the local setup
 
 ```bash
 npm run doctor                       # read-only: no upstream calls, no config changes, no keys or session content printed
