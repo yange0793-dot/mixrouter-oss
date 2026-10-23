@@ -37,6 +37,7 @@ function harness(initialView = 'overview', data = fixture()) {
     constructor(id, tag) {
       this.id = id; this.tagName = String(tag).toUpperCase(); this.value = ''; this.hidden = false;
       this.disabled = false; this.style = {}; this.className = ''; this.textContent = ''; this.children = [];
+      this.focused = false; this.selectedText = false;
       this._html = ''; this._owned = [];
     }
     set innerHTML(text) {
@@ -45,6 +46,7 @@ function harness(initialView = 'overview', data = fixture()) {
       for (const match of this._html.matchAll(/<([a-z][\w-]*)\b[^>]*\bid="([^"]+)"[^>]*>/gi)) {
         const child = new Element(match[2], match[1]);
         child.value = match[0].match(/\bvalue="([^"]*)"/)?.[1] || '';
+        child.selected = /\bselected\b/.test(match[0]);
         child.disabled = /\bdisabled\b/.test(match[0]);
         child.inlineInput = match[0].match(/\boninput="([^"]*)"/)?.[1];
         child.inlineChange = match[0].match(/\bonchange="([^"]*)"/)?.[1];
@@ -55,7 +57,8 @@ function harness(initialView = 'overview', data = fixture()) {
     }
     get innerHTML() { return this._html; }
     querySelectorAll(selector) { return this.children.filter(node => selector.split(',').includes(node.tagName.toLowerCase())); }
-    focus() { context.document.activeElement = this; }
+    focus() { context.document.activeElement = this; this.focused = true; }
+    select() { this.selectedText = true; }
   }
   for (const match of html.matchAll(/<([a-z][\w-]*)\b[^>]*\bid="([^"]+)"[^>]*>/gi)) {
     const node = new Element(match[2], match[1]);
@@ -206,20 +209,27 @@ test('other errors do not claim unsupported; version conflict keeps draft and re
   assert.match(h.get('dsh-status').textContent, /版本冲突/);
 });
 
-test('main stays visible while subagent slots start collapsed and remain expandable', async () => {
-  const h = harness(); await h.load();
+test('all four subslots stay visible and models offer provider choices plus custom input', async () => {
+  const data = fixture();
+  data.slots['worker-2'] = { provider: 'chat1', model: 'deepseek-main' };
+  data.slots['worker-3'] = { provider: 'resp1', model: 'deepseek-worker' };
+  data.slots['worker-4'] = { provider: 'chat1', model: 'deepseek-other' };
+  const h = harness('overview', data); await h.load();
   const rows = h.get('dsh-slots').innerHTML;
-  assert.match(rows, /^<div class="dsh-slot">[\s\S]*主模型 · main[\s\S]*<\/div><details class="dsh-subslots" id="dsh-subslots"><summary>其余 1 个槽位<\/summary>/);
-  assert.match(rows, /<datalist id="dsh-slot-0-models"><option value="deepseek-main"/);
-  assert.match(rows, /<datalist id="dsh-slot-1-models"><option value="deepseek-worker"/);
-  assert.doesNotMatch(rows, /<details[^>]*\bopen\b/);
+  assert.doesNotMatch(rows, /dsh-subslots|<details/);
+  assert.equal((rows.match(/class="dsh-slot"/g) || []).length, 5, 'main plus four configured subslots render at once');
+  assert.match(rows, /dsh-slot-0-model-choice/);
+  assert.match(rows, /<option value="0" selected>deepseek-main<\/option>/);
+  assert.match(rows, /<option value="custom">自定义模型…<\/option>/);
+  assert.match(rows, /dsh-slot-1-model-choice/);
+  assert.match(rows, /<option value="0" selected>deepseek-worker<\/option>/);
   assert.match(rows, /value="off1" disabled/);
   assert.doesNotMatch(rows, /Messages only|not-for-dsh/);
-  h.get('dsh-new-name').value = 'reviewer';
-  assert.equal(h.run('dshAddSlot()'), true);
-  assert.equal(h.get('dsh-subslots').open, true, 'new slot opens the collapsed list for immediate editing');
-  h.run("dshSetSlot('main','provider','anthropic1'); dshSetSlot('main','provider','off1')");
-  assert.equal(h.ui().draft.slots.main.provider, 'chat1');
+  h.run("dshChooseModel('main','1')");
+  assert.equal(h.ui().draft.slots.main.model, 'deepseek-other');
+  assert.equal(h.get('dsh-slot-0-model').value, 'deepseek-other');
+  h.run("dshChooseModel('main','custom')");
+  assert.equal(h.get('dsh-slot-0-model').focused, true);
 });
 
 test('new subagent names are validated, cannot reuse main or duplicate worker, and aliases stay distinct', async () => {
@@ -320,7 +330,7 @@ test('unchanged refresh does not rebuild model inputs and untrusted text is HTML
   assert.doesNotMatch(h.get('dsh-slots').innerHTML, /<script>/);
 });
 
-test('initial empty slots create an unsaved local main draft and allow main-only save', async () => {
+test('initial empty slots show main plus four available subslot rows', async () => {
   const data = fixture(); data.slots = {}; data.default_subagent = '';
   const h = harness('overview', data); await h.load();
   assert.deepEqual(h.ui().draft, { slots: { main: { provider: '', model: '' } }, default_subagent: '' });
@@ -328,6 +338,8 @@ test('initial empty slots create an unsaved local main draft and allow main-only
   assert.equal(h.get('dsh-editor').hidden, false);
   assert.match(h.get('dsh-default-subagent').innerHTML, /跟随主模型/);
   assert.equal(h.get('dsh-sync').disabled, true);
+  assert.equal((h.get('dsh-slots').innerHTML.match(/class="dsh-slot"/g) || []).length, 1, 'blank subslots are added explicitly, not persisted as empty configurations');
+  assert.match(h.get('dsh-slots').innerHTML, /主模型 · main/);
   h.input('dsh-slot-0-provider', 'chat1', 'change');
   h.input('dsh-slot-0-model', 'new-main');
   await h.run('dshSave()');
@@ -363,14 +375,15 @@ test('client profile conflict blocks sync but not slot save; out_of_sync allows 
   assert.equal(h.get('dsh-sync').disabled, false);
 });
 
-test('provider changes update datalists without replacing a dirty model input', async () => {
+test('provider changes refresh model choices without replacing a dirty custom input', async () => {
   const h = harness(); await h.load();
   h.input('dsh-slot-0-model', 'dirty-model');
   const input = h.get('dsh-slot-0-model');
   const data = fixture(); data.providers[0].models = ['new-remote-model']; h.update(data);
   await h.run('dshRefresh()');
   assert.equal(h.get('dsh-slot-0-model'), input);
-  assert.match(h.get('dsh-slot-0-models').innerHTML, /new-remote-model/);
+  assert.match(h.get('dsh-slot-0-model-choice').innerHTML, /new-remote-model/);
+  assert.equal(h.get('dsh-slot-0-model-choice').value, 'custom');
   assert.equal(h.ui().draft.slots.main.model, 'dirty-model');
 });
 

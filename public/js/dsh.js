@@ -123,10 +123,21 @@
       <div><dt>会话</dt><dd>同步后需重启 Harness 后新建会话</dd></div>
     </dl>`;
   }
-  function modelOptions(slot) {
+  function modelNames(slot) {
     const provider = providerById(slot.provider);
-    const models = [...new Set([...(Array.isArray(provider?.models) ? provider.models : []), provider?.model].filter(m => typeof m === 'string' && m))];
-    return models.map(model => `<option value="${escape(model)}"></option>`).join('');
+    return [...new Set([...(Array.isArray(provider?.models) ? provider.models : []), provider?.model].filter(m => typeof m === 'string' && m))];
+  }
+  function modelChoiceValue(slot) {
+    if (!slot.model) return '';
+    const index = modelNames(slot).indexOf(slot.model);
+    return index < 0 ? 'custom' : String(index);
+  }
+  function modelOptionsHtml(slot) {
+    const models = modelNames(slot);
+    const selected = modelChoiceValue(slot);
+    const placeholder = `<option value=""${selected === 'custom' ? ' disabled' : ' selected'}>${slot.provider ? '选择模型' : '先选择渠道'}</option>`;
+    return placeholder + models.map((model, index) => `<option value="${index}"${String(index) === selected ? ' selected' : ''}>${escape(model)}</option>`).join('')
+      + `<option value="custom"${selected === 'custom' ? ' selected' : ''}>自定义模型…</option>`;
   }
   function renderDefaults() {
     const select = $d('dsh-default-subagent');
@@ -147,11 +158,13 @@
     ['main', ...Object.keys(draft.slots).filter(name => name !== 'main')].forEach((name, index) => {
       const slot = draft.slots[name];
       const select = $d(`dsh-slot-${index}-provider`);
-      const list = $d(`dsh-slot-${index}-models`);
+      const modelSelect = $d(`dsh-slot-${index}-model-choice`);
       const options = providerOptions(slot);
-      const models = modelOptions(slot);
+      const models = modelOptionsHtml(slot);
       if (select && select.innerHTML !== options) { select.innerHTML = options; select.value = slot.provider; }
-      if (list && list.innerHTML !== models) list.innerHTML = models;
+      if (modelSelect && modelSelect.innerHTML !== models) { modelSelect.innerHTML = models; modelSelect.value = modelChoiceValue(slot); }
+      const modelInput = $d(`dsh-slot-${index}-model`);
+      if (modelInput) modelInput.placeholder = slot.provider ? '选择或输入自定义模型名' : '先选择渠道';
     });
   }
   function renderSlot(name, index) {
@@ -162,19 +175,18 @@
     return `<div class="dsh-slot">
       <div class="dsh-slot-ident"><h3>${name === 'main' ? '主模型 · main' : escape(name)}</h3><span class="mono">mixr-dsh-${escape(name)}</span></div>
       <label class="field" for="${id}-provider">渠道<select id="${id}-provider" onchange="dshSetSlot(${arg},'provider',this.value)">${choices}</select></label>
-      <label class="field" for="${id}-model">模型<input type="text" id="${id}-model" list="${id}-models" value="${escape(slot.model)}" placeholder="可填写自定义模型名" spellcheck="false" oninput="dshSetSlot(${arg},'model',this.value)"><datalist id="${id}-models">${modelOptions(slot)}</datalist></label>
+      <label class="field" for="${id}-model">模型<div class="dsh-model-picker"><select id="${id}-model-choice" aria-label="${name === 'main' ? '主模型' : escape(name)}模型列表" onchange="dshChooseModel(${arg},this.value)">${modelOptionsHtml(slot)}</select><input type="text" id="${id}-model" value="${escape(slot.model)}" placeholder="选择或输入自定义模型名" spellcheck="false" oninput="dshSetSlot(${arg},'model',this.value)"></div></label>
       <label class="field" for="${id}-stream">上游请求<select id="${id}-stream" onchange="dshSetSlot(${arg},'upstream_stream',this.value)"><option value="inherit">继承默认</option><option value="true">流式</option><option value="false">非流式</option></select></label>
       ${name === 'main' ? '<span class="dsh-slot-fixed">主槽不可删除</span>' : `<button type="button" class="small danger dsh-slot-action" onclick="dshDeleteSlot(${arg})">删除子槽</button>`}
     </div>`;
   }
   function renderSlots() {
     const names = ['main', ...Object.keys(draft.slots).filter(name => name !== 'main')];
-    const subslots = names.slice(1);
-    const rest = subslots.length ? `<details class="dsh-subslots" id="dsh-subslots"><summary>其余 ${subslots.length} 个槽位</summary><div class="dsh-subslot-list">${subslots.map((name, index) => renderSlot(name, index + 1)).join('')}</div></details>` : '';
-    $d('dsh-slots').innerHTML = renderSlot('main', 0) + rest;
+    $d('dsh-slots').innerHTML = names.map((name, index) => renderSlot(name, index)).join('');
     names.forEach((name, index) => {
       const slot = draft.slots[name];
       $d(`dsh-slot-${index}-provider`).value = slot.provider;
+      $d(`dsh-slot-${index}-model-choice`).value = modelChoiceValue(slot);
       $d(`dsh-slot-${index}-stream`).value = typeof slot.upstream_stream === 'boolean' ? String(slot.upstream_stream) : 'inherit';
     });
     renderDefaults();
@@ -199,9 +211,34 @@
       if (value && (!provider || provider.enabled === false)) return;
       slot.provider = value;
       const index = ['main', ...Object.keys(draft.slots).filter(n => n !== 'main')].indexOf(name);
-      $d(`dsh-slot-${index}-models`).innerHTML = modelOptions(slot);
-    } else if (field === 'model') slot.model = String(value);
-    else return;
+      const modelSelect = $d(`dsh-slot-${index}-model-choice`);
+      if (modelSelect) { modelSelect.innerHTML = modelOptionsHtml(slot); modelSelect.value = modelChoiceValue(slot); }
+      const modelInput = $d(`dsh-slot-${index}-model`);
+      if (modelInput) modelInput.placeholder = slot.provider ? '选择或输入自定义模型名' : '先选择渠道';
+    } else if (field === 'model') {
+      slot.model = String(value);
+      const index = ['main', ...Object.keys(draft.slots).filter(n => n !== 'main')].indexOf(name);
+      const modelSelect = $d(`dsh-slot-${index}-model-choice`);
+      if (modelSelect) modelSelect.value = modelChoiceValue(slot);
+    } else return;
+    touched();
+  }
+  function dshChooseModel(name, value) {
+    if (!draft || !Object.hasOwn(draft.slots, name) || busy || unsupported || configError || !connected()) return;
+    const index = ['main', ...Object.keys(draft.slots).filter(n => n !== 'main')].indexOf(name);
+    const modelSelect = $d(`dsh-slot-${index}-model-choice`);
+    if (value === 'custom') {
+      if (modelSelect) modelSelect.value = 'custom';
+      const input = $d(`dsh-slot-${index}-model`);
+      input?.focus(); input?.select();
+      return;
+    }
+    const selected = Number(value);
+    const models = modelNames(draft.slots[name]);
+    if (!Number.isInteger(selected) || selected < 0 || selected >= models.length) return;
+    draft.slots[name].model = models[selected];
+    const input = $d(`dsh-slot-${index}-model`);
+    if (input) input.value = models[selected];
     touched();
   }
   function dshSetDefault(value) {
@@ -219,8 +256,6 @@
     draft.slots[name] = { provider: '', model: '' };
     input.value = '';
     touched(); renderSlots();
-    const subslots = $d('dsh-subslots');
-    if (subslots) subslots.open = true;
     const index = ['main', ...Object.keys(draft.slots).filter(n => n !== 'main')].indexOf(name);
     $d(`dsh-slot-${index}-provider`)?.focus();
     return true;
@@ -357,7 +392,7 @@
   }
 
   Object.assign(window, {
-    dshRefresh, dshReload, dshSave, dshSync, dshAddSlot, dshDeleteSlot, dshSetSlot, dshSetDefault,
+    dshRefresh, dshReload, dshSave, dshSync, dshAddSlot, dshDeleteSlot, dshSetSlot, dshChooseModel, dshSetDefault,
     dshUiState: () => ({ draft: draft ? copy(draft) : null, dirty, revision: snapshot?.revision, unsupported, configError, busy }),
   });
   // app.refresh() owns periodic updates; only the initially visible view reads on mount.
