@@ -309,7 +309,7 @@
         <div id="dsh-editor" hidden>
           <div class="panel" aria-labelledby="dsh-slots-title">
             <h2 id="dsh-slots-title">模型槽位</h2>
-            <p class="hint">主模型和已配置的子槽始终显示，不再折叠；默认配置包含四个子槽。模型可从所选渠道登记的模型中下拉选择，也可直接输入自定义模型；上游模式只控制向渠道发出的请求，不改变 Harness 客户端的响应方式。</p>
+            <p class="hint">主模型和已配置的子槽始终显示，不再折叠；当前四个子槽全部常显。模型可从所选渠道登记的模型中下拉选择，也可直接输入自定义模型；上游模式只控制向渠道发出的请求，不改变 Harness 客户端的响应方式。</p>
             <div id="dsh-slots" class="dsh-slots"></div>
             <form class="dsh-add" id="dsh-add-form" onsubmit="event.preventDefault();dshAddSlot()">
               <label class="field" for="dsh-new-name">新增子智能体名称<input id="dsh-new-name" type="text" placeholder="如 reviewer" pattern="[a-z0-9][a-z0-9-]{0,23}" maxlength="24" autocomplete="off" spellcheck="false" aria-describedby="dsh-name-hint"></label>
