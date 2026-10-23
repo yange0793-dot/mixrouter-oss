@@ -29,6 +29,7 @@ fs.mkdirSync(HOME);
 fs.mkdirSync(path.join(TMP, 'logs'));
 const mod = require('../mixrouter');
 let ui, proxy, upstream, base, upstreamStatus = 200;
+let holdNextReply = false, heldReply = null;
 const hits = [], sockets = new Set();
 const routeFile = path.join(TMP, 'dsh.json');
 const channel = id => [...mod._state.store.claude, ...mod._state.store.codex].find(p => p.id === id);
@@ -111,18 +112,22 @@ before(async () => {
         res.writeHead(upstreamStatus, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify({ error: { message: 'fixture upstream rejection', type: 'invalid_request_error', code: 'fixture_error' } }));
       }
-      const chat = req.url.endsWith('/chat/completions');
-      const json = chat ? chatJson(body.model) : responsesJson(body.model);
-      if (!body.stream) {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        return res.end(JSON.stringify(json));
-      }
-      if (!chat) return wireOpenai.emitResponsesSse(res, json);
-      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-      const choices = json.choices.map(({ message, ...rest }) => ({ ...rest, delta: {
-        ...message, tool_calls: message.tool_calls.map((call, index) => ({ ...call, index })),
-      } }));
-      res.end(sse({ ...json, object: 'chat.completion.chunk', choices }) + 'data: [DONE]\n\n');
+      const reply = () => {
+        const chat = req.url.endsWith('/chat/completions');
+        const json = chat ? chatJson(body.model) : responsesJson(body.model);
+        if (!body.stream) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify(json));
+        }
+        if (!chat) return wireOpenai.emitResponsesSse(res, json);
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        const choices = json.choices.map(({ message, ...rest }) => ({ ...rest, delta: {
+          ...message, tool_calls: message.tool_calls.map((call, index) => ({ ...call, index })),
+        } }));
+        res.end(sse({ ...json, object: 'chat.completion.chunk', choices }) + 'data: [DONE]\n\n');
+      };
+      if (holdNextReply) { holdNextReply = false; heldReply = reply; }
+      else reply();
     });
   });
   upstream.on('connection', socket => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); });
@@ -145,7 +150,7 @@ beforeEach(() => {
   mod._state.routes = { rules: [], default: mod.normalizeRule({}) };
   mod._state.slotMap = { claude: {}, codex: {} };
   mod._state.sessions.clear(); mod._state.cooldowns = {}; mod._state.resetPools();
-  upstreamStatus = 200; hits.length = 0;
+  upstreamStatus = 200; hits.length = 0; holdNextReply = false; heldReply = null;
 });
 after(async () => {
   // This force-flush clears the production session debounce even if beforeEach cleared the map.
@@ -287,6 +292,7 @@ for (const id of ['cc-chat', 'cc-responses', 'cx-chat', 'cx-responses']) {
       assert.match(result.headers['content-type'], /text\/event-stream/);
       assert.equal(result.headers['x-mixrouter-app'], 'claude');
       assert.equal(result.headers['x-mixrouter-model'], `${id}-${name}-real`);
+      assert.equal(result.headers['x-mixrouter-upstream-stream'], 'false');
       assert.equal(hits.length, 1);
       const sent = hits[0];
       assert.equal(sent.path, `/${id}/v1/${id.endsWith('chat') ? 'chat/completions' : 'responses'}`);
@@ -504,6 +510,55 @@ test('startup malformed or invalid dsh.json fails closed and preserves its origi
   }
 });
 
+test('external atomic main-slot changes reach proxy routing and console state without restarting', async () => {
+  const initial = await configure({ main: { provider: 'cx-responses', model: 'old-main' },
+    worker: { provider: 'cc-chat', model: 'keep-worker', upstream_stream: true } });
+  const next = { version: 1, slots: { ...initial.slots,
+    main: { provider: 'cc-responses', model: 'hebox-main', upstream_stream: false } }, default_subagent: '' };
+  const replacement = routeFile + '.replacement';
+  fs.writeFileSync(replacement, JSON.stringify(next));
+  fs.renameSync(replacement, routeFile);
+  const result = await send();
+  assert.equal(result.status, 200, result.text);
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].path, '/cc-responses/v1/responses');
+  assert.equal(hits[0].body.model, 'hebox-main');
+  assert.equal(hits[0].body.stream, false);
+  const state = await readState();
+  assert.deepEqual(state.data.slots, next.slots);
+  assert.notEqual(state.data.revision, initial.revision);
+  const stale = await api('/api/dsh', { expected_revision: initial.revision,
+    slots: initial.slots, default_subagent: '' }, 'PUT');
+  assert.equal(stale.status, 409);
+  assert.deepEqual(JSON.parse(fs.readFileSync(routeFile, 'utf8')), next);
+});
+
+test('external broken or deleted Harness config fails closed and recovers after repair', async () => {
+  const state = await configure({ main: { provider: 'cc-responses', model: 'safe-main', upstream_stream: false } });
+  const original = fs.readFileSync(routeFile, 'utf8');
+  try {
+    for (const broken of ['{', null]) {
+      if (broken === null) fs.unlinkSync(routeFile);
+      else fs.writeFileSync(routeFile, broken);
+      hits.length = 0;
+      const failed = await send();
+      assert.equal(failed.status, 503, failed.text);
+      assert.equal(hits.length, 0, 'invalid disk config must not retain a stale upstream route');
+      const exposed = await readState();
+      assert.ok(exposed.data.error);
+      const saveResult = await api('/api/dsh', { expected_revision: state.revision,
+        slots: state.slots, default_subagent: '' }, 'PUT');
+      assert.equal(saveResult.status, 409);
+      fs.writeFileSync(routeFile, original);
+      const recovered = await send();
+      assert.equal(recovered.status, 200, recovered.text);
+      assert.equal(hits.at(-1).body.model, 'safe-main');
+      assert.equal(hits.at(-1).body.stream, false);
+      assert.equal((await readState()).data.error, undefined);
+    }
+  } finally { fs.writeFileSync(routeFile, original); }
+});
+
 test('routing factory enforces the 32-slot limit and trims freeform models without requiring provider discovery', () => {
   const root = path.join(TMP, 'factory'); fs.mkdirSync(root);
   const routing = createDshRouting({ root, home: HOME, env: { ...process.env, MIXR_DATA_DIR: root },
@@ -516,4 +571,157 @@ test('routing factory enforces the 32-slot limit and trims freeform models witho
   assert.equal(saved.default_subagent, '');
   assert.throws(() => routing.save({ expected_revision: saved.revision, slots: { ...slots, overflow: slots.main } }),
     error => error.statusCode === 400 && /32/.test(error.message));
+});
+
+test('v1 policy view records actual fixed-main behavior without rewriting live-compatible bytes', async () => {
+  const state = await configure({ main: { provider: 'cc-responses', model: 'legacy-main' },
+    worker: { provider: 'cc-chat', model: 'legacy-worker' } });
+  const bytes = fs.readFileSync(routeFile, 'utf8');
+  const current = (await readState()).data;
+  assert.equal(current.source_version, 1);
+  assert.equal(current.migration_required, true);
+  assert.deepEqual(current.subagents, { owner: 'mixrouter', allow_model_selection: true,
+    allowed_slots: ['main', 'worker'], default: { mode: 'slot', slot: 'main' } });
+  assert.equal(current.policy_coverage.global_enforcement, false);
+  assert.equal(current.revision, state.revision);
+  assert.equal(fs.readFileSync(routeFile, 'utf8'), bytes);
+});
+
+test('v2 route catalog remains complete while child candidates are independent and version downgrades are blocked', async () => {
+  const legacy = await configure({ main: { provider: 'cc-responses', model: 'legacy-main' },
+    worker: { provider: 'cc-chat', model: 'legacy-worker' } });
+  const next = { version: 2, slots: {
+    main: { ...legacy.slots.main, upstream_stream: false },
+    worker: { ...legacy.slots.worker, capabilities: { context_window: 128000, max_tokens: 8192,
+      input: ['text'], reasoning_efforts: { off: null, low: 'light', high: 'deep' } } },
+  }, subagents: { owner: 'mixrouter', allow_model_selection: true, allowed_slots: ['worker'],
+    default: { mode: 'slot', slot: 'worker' }, max_depth: 1, max_active: 4 } };
+  try {
+    const saved = await api('/api/dsh', { ...next, expected_revision: legacy.revision }, 'PUT');
+    assert.equal(saved.status, 200, saved.text);
+    assert.equal(saved.data.version, 2);
+    assert.equal(saved.data.migration_required, false);
+    assert.deepEqual(saved.data.subagents, next.subagents);
+    assert.deepEqual(JSON.parse(fs.readFileSync(routeFile, 'utf8')), next);
+    const list = await request(proxy, '/dsh/v1/models', 'GET');
+    assert.deepEqual(list.data.data.map(item => item.id), ['mixr-dsh-main', 'mixr-dsh-worker']);
+    const result = await send();
+    assert.equal(result.status, 200, result.text);
+    assert.equal(hits.at(-1).body.model, 'legacy-main');
+    const observations = (await readState()).data.observations;
+    assert.equal(observations.last_request.alias, 'mixr-dsh-main');
+    assert.equal(observations.last_request.model, 'legacy-main');
+    assert.equal(observations.last_request.outcome, 'ok');
+    assert.equal(JSON.stringify(observations).includes('secret-'), false);
+    const downgrade = await api('/api/dsh', { slots: legacy.slots, default_subagent: '', expected_revision: saved.data.revision }, 'PUT');
+    assert.equal(downgrade.status, 409, downgrade.text);
+    assert.deepEqual(JSON.parse(fs.readFileSync(routeFile, 'utf8')), next);
+    const stale = await api('/api/dsh/preview', { expected_revision: legacy.revision }, 'POST');
+    assert.equal(stale.status, 409);
+  } finally {
+    fs.writeFileSync(routeFile, JSON.stringify({ version: 1, slots: legacy.slots, default_subagent: '' }));
+  }
+});
+
+test('saved type routes hot-reload main and child models across Chat and Responses without changing PID or aliases', async () => {
+  const legacy = await configure({ main: { provider: 'cc-chat', model: 'main-before', upstream_stream: false },
+    reviewer: { provider: 'cx-responses', model: 'child-before', upstream_stream: false } });
+  const initial = { version: 2, slots: {
+    main: { ...legacy.slots.main }, reviewer: { ...legacy.slots.reviewer, label: '代码审查' },
+  }, subagents: { owner: 'mixrouter', allow_model_selection: true, allowed_slots: ['reviewer'],
+    default: { mode: 'slot', slot: 'reviewer' } } };
+  const pid = process.pid, beforeClients = [process.env.MIXR_CLAUDE_SETTINGS, process.env.MIXR_CODEX_CONFIG,
+    process.env.MIXR_ZCODE_CONFIG].map(file => [file, fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null]);
+  try {
+    const started = await api('/api/dsh', { ...initial, expected_revision: legacy.revision }, 'PUT');
+    assert.equal(started.status, 200, started.text);
+    for (const name of ['main', 'reviewer']) {
+      assert.equal((await send(name)).status, 200);
+      assert.equal(hits.at(-1).body.model, name === 'main' ? 'main-before' : 'child-before');
+    }
+    const changed = structuredClone(initial);
+    changed.slots.main = { provider: 'cc-responses', model: 'main-after', upstream_stream: true };
+    changed.slots.reviewer = { label: '代码审查', provider: 'cx-chat', model: 'child-after', upstream_stream: true };
+    const saved = await api('/api/dsh', { ...changed, expected_revision: started.data.revision }, 'PUT');
+    assert.equal(saved.status, 200, saved.text);
+    assert.equal(saved.data.slots.reviewer.label, '代码审查');
+    for (const name of ['main', 'reviewer']) {
+      const response = await send(name);
+      assert.equal(response.status, 200, response.text);
+      assert.equal(hits.at(-1).body.model, name === 'main' ? 'main-after' : 'child-after');
+      assert.equal(hits.at(-1).path, name === 'main' ? '/cc-responses/v1/responses' : '/cx-chat/v1/chat/completions');
+      assert.equal(hits.at(-1).body.stream, true);
+      assertResult(responseResult(response));
+    }
+    assert.equal((await send('reviewer', true, '/dsh/v1/chat/completions')).status, 200);
+    assert.equal(hits.at(-1).body.model, 'child-after');
+    assert.equal(process.pid, pid);
+    assert.deepEqual((await request(proxy, '/dsh/v1/models', 'GET')).data.data.map(row => row.id),
+      ['mixr-dsh-main', 'mixr-dsh-reviewer']);
+    assert.deepEqual(saved.data.subagents, initial.subagents);
+    assert.equal(fs.existsSync(CONFIG), false, 'model hot-save never writes the Harness profile');
+    for (const [file, text] of beforeClients) assert.equal(fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null, text);
+  } finally { fs.writeFileSync(routeFile, JSON.stringify({ version: 1, slots: legacy.slots, default_subagent: '' })); }
+});
+
+test('in-flight route keeps its original model while the next request sees a hot-saved model', async () => {
+  await configure({ main: { provider: 'cc-responses', model: 'inflight-old', upstream_stream: false } });
+  holdNextReply = true;
+  const pending = send();
+  await waitFor(() => typeof heldReply === 'function', { label: 'old request reached mock upstream' });
+  assert.equal(hits.at(-1).body.model, 'inflight-old');
+  const release = heldReply; heldReply = null; let released = false;
+  try {
+    const saved = await save({ main: { provider: 'cx-responses', model: 'next-request-new', upstream_stream: false } });
+    assert.equal(saved.status, 200, saved.text);
+    release(); released = true;
+    const original = await pending;
+    assert.equal(original.status, 200, original.text);
+    assert.equal(responseResult(original).model, 'inflight-old');
+    const next = await send();
+    assert.equal(next.status, 200, next.text);
+    assert.equal(hits.at(-1).body.model, 'next-request-new');
+    assert.equal(hits.at(-1).path, '/cx-responses/v1/responses');
+  } finally { if (!released) release(); await pending.catch(() => {}); }
+});
+
+test('v2 metadata and child policy validation fail before disk or other-client changes', async () => {
+  const state = await configure({ main: { provider: 'cc-chat', model: 'safe-main' },
+    worker: { provider: 'cx-responses', model: 'safe-worker' } });
+  const original = fs.readFileSync(routeFile, 'utf8');
+  const next = { version: 2, slots: state.slots, subagents: { owner: 'mixrouter', allow_model_selection: true,
+    allowed_slots: ['worker'], default: { mode: 'slot', slot: 'worker' } } };
+  const bad = [
+    { ...next, subagents: { ...next.subagents, allowed_slots: [] } },
+    { ...next, subagents: { ...next.subagents, allowed_slots: ['missing'] } },
+    { ...next, subagents: { ...next.subagents, default: { mode: 'slot', slot: 'main' } } },
+    { ...next, subagents: { ...next.subagents, max_active: 0 } },
+    { ...next, subagents: { ...next.subagents, max_depth: 65 } },
+    { ...next, slots: { ...next.slots, main: { ...next.slots.main, capabilities: { context_window: 4096, max_tokens: 8192 } } } },
+    { ...next, slots: { ...next.slots, main: { ...next.slots.main, capabilities: { reasoning_efforts: { off: null } } } } },
+  ];
+  for (const candidate of bad) {
+    const failed = await api('/api/dsh', { ...candidate, expected_revision: state.revision }, 'PUT');
+    assert.equal(failed.status, 400, failed.text);
+    assert.equal(fs.readFileSync(routeFile, 'utf8'), original);
+  }
+});
+
+test('DSH API observations expose actual failed route metadata, not prompts sessions or upstream error bodies', async () => {
+  await configure({ main: { provider: 'cc-responses', model: 'failed-observation', upstream_stream: false } });
+  upstreamStatus = 400;
+  const failed = await send();
+  assert.equal(failed.status, 400, failed.text);
+  const state = await readState();
+  const observations = state.data.observations;
+  assert.equal(observations.scope, 'current_process_recent_requests');
+  assert.equal(observations.last_request.alias, 'mixr-dsh-main');
+  assert.equal(observations.last_request.model, 'failed-observation');
+  assert.equal(observations.last_request.provider, 'cc-responses');
+  assert.equal(observations.last_request.outcome, 'error');
+  assert.equal(observations.last_request.status, 400);
+  assert.equal(JSON.stringify(observations).includes('fixture upstream rejection'), false);
+  assert.equal(JSON.stringify(observations).includes('fixture input'), false);
+  assert.equal(JSON.stringify(observations).includes('dsh-fixture'), false);
+  assert.equal(JSON.stringify(observations).includes('secret-'), false);
 });

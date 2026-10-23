@@ -79,10 +79,14 @@ Not a good fit:
   401/402 (account-level) and 403/404/429 (model-level) are the only failures that may switch
   keys. Pinned session keys and compact-only keys never switch, and `active_key` is never
   rewritten.
-- **Independent DeepSeek Harness slots.** Reuse existing Chat / Responses providers, models, and
-  keys, while keeping routing in a separate `dsh.json`. Main and custom-named subagent slots use
-  `mixr-dsh-<slot>` aliases. Saving routing and syncing the client are separate operations; Claude
-  Code, Codex, and ZCode configuration is unchanged. See the connection steps below.
+- **DeepSeek Harness main model and child-model catalog.** Choose one main provider and model,
+  then label child models for coding, review, research, testing, or a custom purpose. The main agent
+  explicitly selects a model for ordinary subagent calls; labels neither classify tasks automatically
+  nor create agent roles with their own prompts. Existing `mixr-dsh-<slot>` aliases stay stable;
+  saving another real provider or model takes effect on subsequent routed requests without a restart.
+  Catalog, capability, default, and candidate-policy changes need a separate preview and sync, followed
+  by restarting Harness and starting a new session. Other clients and the independent fork, Team,
+  workflow, and DS Bot creation paths are not reconfigured.
 - **Local console.** `127.0.0.1:8788` manages providers, routes, sessions, slots, logs, and
   backups. Open Claude Code, Codex, or ZCode providers, or the independent DeepSeek Harness page,
   directly from the sidebar, choose list or card views for providers, and expand model slots when
@@ -144,25 +148,51 @@ is rewritten):
 
 ### Connect DeepSeek Harness
 
-1. With Harness already installed, open **DeepSeek Harness** in the console sidebar
-   (`http://127.0.0.1:8788/#dsh`). Keep providers and keys in the existing provider library;
-   this page selects enabled providers with `wire_api: chat` or `responses`, without storing
-   another real key.
-2. Configure `main`, add custom-named subagent slots as needed, choose each slot's provider,
-   model, and upstream streaming mode, then select a non-`main` default subagent slot.
-   **Save draft** (「保存草稿」) only updates `dsh.json`.
-3. Separately choose **Sync to Harness** (「同步到 Harness」) and confirm. This updates only
-   the managed block of `~/.dsh/profiles/desktop/cordis.patch.yml`, preserves existing providers
-   and other patches, backs up before writing, and refuses to overwrite a modified managed block
-   or a file changed during sync. **Restart Harness, then start a new session**; existing
-   sessions are not switched automatically.
+1. Open **DeepSeek Harness** in the console sidebar (`http://127.0.0.1:8788/#dsh`). Keep providers
+   and keys in the existing provider library; this page selects enabled providers with
+   `wire_api: chat` or `responses`, without storing another real key.
+2. Choose one main provider and model. Add child models with common purpose labels or custom names,
+   select each model, and decide whether the main agent may explicitly select it. A purpose label is
+   only a model-catalog display name: it is not an automatic task classifier or an agent identity
+   with its own prompt, tools, or memory.
+3. The default child model may be a fixed catalog entry or **Follow the current conversation**
+   (「跟随当前对话」), which really inherits the parent model for that call. Enable explicit model
+   selection as needed. Capabilities, policy ownership, and depth/concurrency limits are advanced
+   settings. With `owner: harness`, sync only maintains the provider and alias catalog; it does not
+   overwrite native main-model, subagent, or preset settings.
+4. **Save and hot-load** (「保存并热生效」) updates only `dsh.json`. Changing the real provider,
+   model, or upstream streaming mode behind an already-connected alias affects subsequent routed
+   requests, including an existing conversation; in-flight requests retain their original route.
+   Initial connection, added/deleted/renamed catalog entries, capabilities, defaults, and candidate
+   policies require **Connect / sync Harness** (「接入/同步 Harness」): read its preview and explicitly
+   confirm before the managed block of `~/.dsh/profiles/desktop/cordis.patch.yml` is written.
+   Existing providers and other patches are preserved, with a backup before writing.
+   **Restart Harness and start a new session to read the changed catalog or policy.** Profile
+   conflicts are never repaired automatically; recognizable native edits have a separate reconnection
+   preview showing before/after main models and require confirmation. A profile changed after a repair
+   preview is not overwritten. Ordinary route saving never performs that repair or sync.
 
-Harness uses a virtual mixrouter provider with Base URL `http://127.0.0.1:8787/dsh/v1` and main
-model `mixr-dsh-main`. Its model picker includes both main and subagent aliases; no real provider
-key needs to be entered again. Responses is recommended; mixrouter can translate a Chat upstream.
-A slot's non-streaming mode collects the full upstream JSON before adapting it to client SSE,
-**not real-time token streaming**. Inherit-default mode preserves existing behavior. This entry
-point does not change Claude Code, Codex, or ZCode routing or client settings. See the
+Existing v1 files and API requests remain compatible. Reading does not migrate files; the new page
+upgrades to v2 only on save and preserves old routes, all candidates, and the fixed default. An empty
+v1 `default_subagent` means fixed `main`, **not** inheritance after the parent switches models.
+Historical image/reasoning declarations are retained for review, not presented as detected capabilities.
+Adding a purpose label does not establish that the model supports it.
+
+**Coverage:** MixRouter manages defaults and explicit model selection for ordinary `subagent` (spawn)
+calls, not a global allowlist. True inheritance may use a parent model outside the candidate pool;
+fork and Team calls inherit their parent model, while workflows and DS Bots use independent creation
+paths. Native child presets/named tools provide one-off roles; DS Bots provide persistent named agents.
+Conversations using another direct provider are not switched automatically and must select a MixRouter
+alias to use this router.
+
+Harness uses a virtual mixrouter provider with Base URL `http://127.0.0.1:8787/dsh/v1`. The full model
+catalog includes `mixr-dsh-main` and all child aliases; the ordinary subagent candidate list is separate.
+With MixRouter-owned policy, `mixr-dsh-main` is synced as the main default; real provider keys are injected
+by the proxy. Responses is recommended and can translate a Chat upstream. Non-streaming mode collects
+the full upstream JSON before adapting it to client SSE, **not real-time token streaming**; inherit-default
+mode preserves existing upstream behavior. Recent route observations are redacted metadata from the
+current process, not complete history; an in-stream failure is an error even with HTTP 200. Disk sync
+is not proof that running sessions adopted it. See the
 [reference](docs/reference.md#deepseek-harness-独立槽位) for the API and naming limits (Chinese).
 
 ### Check the local setup

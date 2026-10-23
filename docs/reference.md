@@ -265,19 +265,47 @@ curl -s -X POST http://127.0.0.1:8788/api/router/codex \
 
 ### DeepSeek Harness 独立槽位
 
-控制台左侧 **DeepSeek Harness**(`http://127.0.0.1:8788/#dsh`)单独管理 Harness 的
-主模型与子模型,配置保存在 `<MIXR_DATA_DIR>/dsh.json`(`0600`),结构为
-`{version: 1, slots, default_subagent}`。不写 Claude / Codex 的 `slots.json`,
-不改 Claude Code / Codex / ZCode 客户端配置。
+控制台左侧 **DeepSeek Harness**(`http://127.0.0.1:8788/#dsh`)管理一个主模型与
+按用途标记的子模型目录。代码编写、代码审查、资料检索等用途可快捷添加,也支持中文自定义名称。
+默认子模型可选固定模型或“跟随当前对话”,并可允许主智能体显式选模;
+能力声明、策略管理方、限额及诊断按需展开。旧配置不按模型品牌猜用途,已有落点和候选保持不变。
+
+配置保存在 `<MIXR_DATA_DIR>/dsh.json`(`0600`),v2 结构为 `{version: 2, slots, subagents}`。
+**槽名**决定稳定别名 `mixr-dsh-<槽名>`;**用途标签 `label`**只决定目录显示名;
+**候选名单**决定普通子工具可显式选择哪些模型。主智能体通过普通 `subagent` 调用选择模型,
+代理按请求中的别名转发,不读取任务文字做自动分类或确定性用途路由。
+标签不创建带 prompt、工具或记忆的角色;原生 Bot 身份和 preset 仍在 Harness 中管理。
+不写 Claude / Codex 的 `slots.json`,不改其他客户端设置。
 
 | 字段 | 约束与含义 |
 | --- | --- |
-| `slots` | 完整槽位映射,必须包含 `main`;最多 32 槽(含主槽,即至多 31 个自由命名子槽);保存时整体替换,不是部分更新 |
-| 槽名 | `^[a-z0-9][a-z0-9-]{0,23}$`,即 1–24 位小写字母、数字或连字符,首位不能是连字符;保留名 `constructor` / `prototype` / `__proto__` 不接受 |
-| `slots.<name>.provider` | 已存在且启用的渠道 ID,必须显式标 `wire_api: chat` 或 `responses`;复用渠道库及其 Key |
-| `slots.<name>.model` | 必填非空模型名,最长 256 字符、不含控制字符;可填写渠道清单以外的自定义模型,不保证账号有调用权限 |
-| `slots.<name>.upstream_stream` | 可选布尔值:省略继承现有行为,`true` 强制上游流式,`false` 强制上游非流式 JSON |
-| `default_subagent` | API 接受空字符串或已配置的非 `main` 槽名;空字符串同步时子工具默认回落主模型;控制台要求选择有效子槽,模型选择清单同时包含主槽与子槽 |
+| `slots` | 完整槽位映射,必须包含 `main`;最多 32 槽(含主槽,至多 31 个子槽);保存时整体替换,不是部分更新 |
+| 槽名 | `^[a-z0-9][a-z0-9-]{0,23}$`,1–24 位小写字母、数字或连字符,首位不能是连字符;保留名 `constructor` / `prototype` / `__proto__` 不接受 |
+| `slots.<name>.provider` | 已存在且启用的 `chat` / `responses` 渠道 ID;复用渠道库及 Key |
+| `slots.<name>.model` | 必填非空模型名,最长 256 字符、不含控制字符;可填写渠道清单外的自定义模型,不保证账号有调用权限 |
+| `slots.<name>.label` | v2 可选用途显示名;trim 后最多 24 字符,空字符串省略,非字符串或控制字符报错;子槽同步名称为 `Mixrouter · 用途标签 · 槽名`,无标签时为 `Mixrouter · 槽名`,主槽恒为 `Mixrouter · 主模型` |
+| `slots.<name>.upstream_stream` | 可选布尔值:省略继承现有行为,`true` 上游流式,`false` 上游完整 JSON |
+| `slots.<name>.capabilities` | v2 可选容量/输入/推理能力声明,不是上游探测结果;见下表 |
+| `subagents.owner` | `mixrouter` 管理普通 spawn 的默认、候选和可选限额;`harness` 只同步 provider/别名目录,主模型、子策略和 preset 由 Harness 持有 |
+| `subagents.allow_model_selection` | 布尔值,表示是否允许普通子工具显式选模,不是自动分类或是否运行子任务;MixRouter 管理时关闭此项会保留名单,使用固定默认或父模型 |
+| `subagents.allowed_slots` | 唯一、已配置槽名数组;开启显式选模时至少一项;与全部模型目录独立,`main` 需显式勾选 |
+| `subagents.default` | `{mode:'slot',slot:'worker'}` 固定任意已有槽,或 `{mode:'inherit'}` 真正省略子工具 provider/model/reasoningEffort 并继承父模型;固定默认须在开启的候选池内;Harness 管理时仅保留偏好,不应用 |
+| `subagents.max_depth` | 可选整数 0–64;同时写 Host 与普通 spawn 工具实例,避免安装包工具默认值覆盖 Host;0 关闭该委派路径 |
+| `subagents.max_active` | 可选整数 1–64;同一根 Agent 下所有层级的活跃子任务容量;不计主 Agent |
+
+| 能力字段 | 约束与默认 |
+| --- | --- |
+| `context_window` / `max_tokens` | 正安全整数;都填写时输出上限须不大于上下文;省略采用 Harness 适配器默认 262144 / 32768,不代表已验证上游容量 |
+| `input` | `['text']` 或 `['text','image']`;省略采用 Harness 适配器默认 text,不猜图片支持 |
+| `reasoning_efforts` | `false` 表示不公布推理档位;或等级 → wire 值的精确映射,可用 off/minimal/low/medium/high/xhigh/max;仅 off 支持 null,至少一项非 off 等级 |
+
+v1 `{version:1,slots,default_subagent}` 文件与旧 PUT 请求继续兼容。
+旧 API 接受空 `default_subagent` 或已配置的非 `main` 槽名;空值同步后实际固定 `main`,
+不是动态继承,旧名单包含全部槽。新简单默认选项通过 v2 `{mode:'inherit'}` 明确选择真正继承,
+不将旧空值或兼容固定槽 setter 改读为继承。
+读取只展示归一化迁移视图,不改文件;新页面首次保存才升级 v2,保留旧落点、声明、全部候选与固定默认。
+已保存 v2 后,旧请求降级保存返回 409,避免丢失子策略。新页面还检查 `api_version:2`,
+在仅静态资源更新、旧后端仍运行时保持只读,不向忽略新字段的旧后端提交 v2。
 
 每槽的客户端别名为 `mixr-dsh-<name>`,如 `mixr-dsh-main` / `mixr-dsh-worker`。
 只在 `/dsh/v1/*` 入口解析这份配置,不使用普通规则兜底、会话粘性或手动渠道钉定;
@@ -286,13 +314,26 @@ curl -s -X POST http://127.0.0.1:8788/api/router/codex \
 
 #### 配置与同步 API(控制台口 8788)
 
-- `GET /api/dsh` 返回 `version`、`slots`、`default_subagent`、`revision`、`providers` 与 `client`。
-  `providers` 只包含 Chat / Responses 渠道的公开 ID、名称、模型、协议和启用状态,不含 Key;
-  `client` 是本机安装与**磁盘配置**状态,可标记 `not_configured` / `configured` /
-  `out_of_sync` / `conflict`,不证明运行中的 Harness 会话已接入。
+- `GET /api/dsh` 返回 `api_version:2`、`supported_config_versions:[1,2]`、保存的 `version` / `slots`、
+  归一化 `subagents`、`source_version` / `migration_required`、`revision`、`providers` 与 `client`;
+  v1 另保留 `default_subagent`。`providers` 仅含公开 ID、名称、模型、协议和启用状态,不含 Key。
+  `client` 的 `not_configured` / `configured` / `out_of_sync` / `conflict` 是安装与**磁盘配置**事实,
+  `policy_owner`、`sync_needed`、`affected_sections` 和 warnings 辅助核对同步范围,
+  不证明运行中的 Harness 会话已采用。top-level `policy_coverage` 明确覆盖差异。
+  `observations` 只统计当前进程日志 ring 的最近 DSH 请求:sample/ok/error/cancelled 计数、
+  `last_request` / `recent` / `by_slot`;仅白名单时间、alias、slot、渠道、模型、状态、错误类别与强度,
+  不含 prompt、会话标识、正文或凭据。流内出错即使 HTTP 200 也不计为成功。
 - `PUT /api/dsh` 接收整份槽位映射,带 `expected_revision`。必须使用最近一次 GET 的
   `revision`,版本不匹配或 `dsh.json` 已被外部改动时返回 409,不覆盖。
-  配置校验失败返回 400;保存只更新路由,不修改 Harness 文件。
+  配置校验失败返回 400;保存只更新 `dsh.json`,不修改 Harness 文件。已有别名的渠道、模型和
+  上游流式模式对后续请求立即生效,在途请求不变。目录增删、用途显示名、能力声明、默认值与
+  子策略只是已保存偏好,须另行预览/同步后重启 Harness 并新建会话,才由客户端读取。
+  控制台读取与请求解析均刷新 `dsh.json` 的外部原子修改;
+  文件损坏或配置过后被删除时停止转发,不沿用旧渠道。
+- `POST /api/dsh/preview` 接收 `{"expected_revision":"<当前 revision>"}`,
+  返回 `{preview,revision}`。仅预览已保存配置,不创建目录、备份或写文件;
+  返回实际变更的 `affected_sections`、`released_sections`、`model_count`、`changes`、覆盖与 warnings;
+  `changes` 分别标明目录、所有权、主默认、普通子策略和原生移交,不返回整段 preset 或秘密。
 - `POST /api/dsh/sync` 接收 `{"confirm":true,"expected_revision":"<当前 revision>"}`。
   未明确确认不写文件;同步前同样校验已保存槽位和 revision。
   它写本机 `~/.dsh/profiles/desktop/cordis.patch.yml` 的受控托管区,
@@ -300,6 +341,13 @@ curl -s -X POST http://127.0.0.1:8788/api/router/codex \
   `.bak-mixrouter-<时间戳>-<随机>` 私有备份。托管区标记/校验和被外部修改,
   或同步期间文件变化时返回 409;托管区外的合法用户 patch 重新读取合并,不整份覆盖。
   不会安装或自动重启 Harness,返回 `restart_required: true`。
+- **重新接入**:设置页改变可识别托管段时,普通同步仍返回冲突。
+  `client.repair_available:true` 表示可先以 `POST /api/dsh/preview` 的 `repair:true`
+  做零写预览;返回 `profile_revision`、`main_before`、`main_after` 与恢复说明。
+  确认后 `POST /api/dsh/sync` 额外提交 `repair:true`、`expected_profile_revision`。
+  仅精确匹配本工具生成的 provider 表达式、已知托管条目及有效元数据才提供此入口;
+  profile 在预览后再变更即返回 409。恢复先备份,只重建自有段,段外字节不变。
+  这不是普通保存流程,不会让更换真实模型顺带写入 Harness 配置。
 
 保存示例(渠道 ID 和模型名换成自己已保存的值):
 
@@ -308,9 +356,14 @@ curl -s -X POST http://127.0.0.1:8788/api/router/codex \
   "expected_revision": "<GET /api/dsh 返回的 revision>",
   "slots": {
     "main": {"provider": "p-main", "model": "main-model"},
-    "worker": {"provider": "p-sub", "model": "sub-model", "upstream_stream": false}
+    "worker": {"label": "代码审查", "provider": "p-sub", "model": "sub-model", "upstream_stream": false,
+      "capabilities": {"context_window": 128000, "max_tokens": 8192,
+        "input": ["text"], "reasoning_efforts": {"off": null, "low": "low", "high": "high"}}}
   },
-  "default_subagent": "worker"
+  "version": 2,
+  "subagents": {"owner": "mixrouter", "allow_model_selection": true,
+    "allowed_slots": ["worker"], "default": {"mode": "slot", "slot": "worker"},
+    "max_depth": 1, "max_active": 4}
 }
 ```
 
@@ -323,8 +376,22 @@ curl -s -X POST http://127.0.0.1:8788/api/router/codex \
 | `GET /dsh/v1/models` | 本地已配置槽位别名列表,包含 `mixr-dsh-main`,不是上游模型清单 |
 
 同步写入虚拟 mixrouter provider,Base URL 为 `http://127.0.0.1:8787/dsh/v1`,
-主模型为 `mixr-dsh-main`,真实上游 Key 仍由 mixrouter 转发时注入,无需在 Harness 再填写。
-同步后重启 Harness 后新建会话;现有会话不会自动热切换。
+真实上游 Key 仍由 mixrouter 转发时注入,无需在 Harness 再填写。全部槽注册到模型目录,
+不是全部自动成为子候选;MixRouter 管理时另按 `allowed_slots` 同步普通子候选名单,
+并将 `mixr-dsh-main` 写为主模型默认值。
+`owner: harness` 只同步 provider/模型目录,不覆盖主模型、子策略或 preset;
+从 MixRouter 移交时将最后有效原生值留在托管区外,保留原配置优先级和后续原生覆盖。
+此后的主/子偏好只存在 `dsh.json`,不会因它们变化而自动改写 profile;
+切回 MixRouter 管理并确认同步时才重新采用本页保存的偏好。
+Harness 临时切到其他 provider 直连的对话不会经过 MixRouter,
+须在其模型选择器选择已接入的 MixRouter 别名;同步不自动切换已有会话。
+
+**子策略覆盖**:MixRouter 管理的普通 `subagent`(spawn)仅在显式指定 provider/model/effort
+时检查模型名单。固定默认在保存时校验与候选的关系,默认/真正继承的运行路径不经过相同检查,
+因此真正继承可能使用候选池外的父模型。`subagent_fork` 继承父模型,Team 成员继承 lead 模型;
+workflow 可指定独立 route,DS Bot 支持逐 Bot 模型设置。本页不是全局白名单,
+不强制其他创建路径。模型路由槽与原生 `agentPreset` 的角色/工具配置互相独立;
+一次性具名角色可用原生子 preset / 具名工具,常驻具名智能体可用 DS Bot。
 
 **流式边界**:上游传输与客户端响应格式分开。`upstream_stream: false` 不把客户端
 SSE 请求改成 JSON 响应,而是在完整上游 JSON 返回后转成客户端 SSE;

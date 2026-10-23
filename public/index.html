@@ -295,34 +295,51 @@
 
       <section id="view-dsh" style="display:none" aria-labelledby="dsh-title">
         <div class="head">
-          <div><h1 id="dsh-title">DeepSeek Harness</h1><div class="sub">独立配置主模型与子智能体。保存路由草稿不会安装、重启或改写客户端；同步后请重启 Harness 后新建会话。</div></div>
-          <div class="actions"><button type="button" id="dsh-reload" onclick="dshReload()">重新载入</button><button type="button" class="primary" id="dsh-save" onclick="dshSave()" disabled>保存草稿</button><button type="button" id="dsh-sync" onclick="dshSync()" disabled>同步到 Harness</button></div>
+          <div><h1 id="dsh-title">DeepSeek Harness</h1><div class="sub">主模型与常用任务模型。保存只更新 MixRouter 路由；接入 Harness 单独确认。</div></div>
+          <div class="actions"><button type="button" id="dsh-save" class="primary" onclick="dshSave()" disabled>保存并热生效</button><button type="button" id="dsh-sync" onclick="dshSync()" disabled>接入/同步 Harness</button><button type="button" id="dsh-reload" onclick="dshReload()">重新载入</button></div>
         </div>
-        <p class="hint dsh-status" id="dsh-status" role="status" aria-live="polite">进入此页后读取 DeepSeek Harness 配置。</p>
-        <div id="dsh-unsupported" class="empty" hidden><b>当前后端不支持 DeepSeek Harness</b>此页需要 /api/dsh；请更新服务端。不会改用其他客户端的配置接口。</div>
-        <div class="panel" aria-labelledby="dsh-client-title">
-          <h2 id="dsh-client-title">客户端配置状态</h2>
-          <p class="hint">按磁盘配置判断，不代表上游连通性，也不代表正在运行的会话已经切换。这里只同步自有 profile 的模型与白名单字段。</p>
-          <div id="dsh-client" class="dsh-client"><p class="hint">尚未读取。</p></div>
-          <p class="hint dsh-outcome" id="dsh-outcome" role="status" hidden></p>
-        </div>
+        <p class="hint dsh-status" id="dsh-status" role="status" aria-live="polite">进入此页后读取配置。</p>
+        <div id="dsh-unsupported" class="empty" hidden><b>当前后端不支持 DeepSeek Harness</b>此页需要 /api/dsh；请更新服务端。</div>
+        <p id="dsh-backend-upgrade" class="dsh-notice" role="status" hidden>后端待更新，请重启 MixRouter 加载新版子策略 API。当前页面只读。</p>
+        <details class="dsh-summary-details"><summary>配置与同步状态</summary><div id="dsh-summary" class="dsh-summary" aria-label="主模型和任务模型状态"></div></details>
+        <p id="dsh-migration" class="dsh-notice" role="status" hidden></p>
+        <p class="hint dsh-outcome" id="dsh-outcome" role="status" hidden></p>
         <div id="dsh-editor" hidden>
-          <div class="panel" aria-labelledby="dsh-slots-title">
-            <h2 id="dsh-slots-title">模型槽位</h2>
-            <p class="hint">主模型和已配置的子槽始终显示，不再折叠；当前四个子槽全部常显。模型可从所选渠道登记的模型中下拉选择，也可直接输入自定义模型；上游模式只控制向渠道发出的请求，不改变 Harness 客户端的响应方式。</p>
+          <section class="dsh-primary-section dsh-main-section" aria-labelledby="dsh-main-title">
+            <h2 id="dsh-main-title">主模型</h2>
+            <div id="dsh-main-slot" class="dsh-slots"></div>
+          </section>
+          <section class="dsh-primary-section dsh-task-section" aria-labelledby="dsh-task-title">
+            <div class="dsh-section-heading"><h2 id="dsh-task-title">子任务模型</h2><p class="hint">按常用任务类型配置模型，主智能体可从勾选的候选中选择。任务类型是模型选择标签，不会新增角色或指令。</p></div>
+            <div class="dsh-preset-buttons" aria-label="添加常用任务类型">
+              <button type="button" onclick="dshAddPreset('coder')">+ 代码编写</button><button type="button" onclick="dshAddPreset('reviewer')">+ 代码审查</button><button type="button" onclick="dshAddPreset('researcher')">+ 资料检索</button><button type="button" onclick="dshAddPreset('tester')">+ 测试验证</button><button type="button" onclick="dshAddPreset('planner')">+ 任务规划</button><button type="button" onclick="dshAddPreset('writer')">+ 文档写作</button><button type="button" onclick="dshAddPreset('vision')">+ 图片理解</button>
+            </div>
             <div id="dsh-slots" class="dsh-slots"></div>
-            <form class="dsh-add" id="dsh-add-form" onsubmit="event.preventDefault();dshAddSlot()">
-              <label class="field" for="dsh-new-name">新增子智能体名称<input id="dsh-new-name" type="text" placeholder="如 reviewer" pattern="[a-z0-9][a-z0-9-]{0,23}" maxlength="24" autocomplete="off" spellcheck="false" aria-describedby="dsh-name-hint"></label>
-              <button type="submit" id="dsh-add" disabled>添加子智能体</button>
-              <p class="hint" id="dsh-name-hint">1–24 位小写字母、数字或连字符，首位不可为连字符；main、constructor、prototype 等为保留名称。最多 32 槽（含 main）。</p>
-            </form>
-          </div>
-          <div class="panel" aria-labelledby="dsh-default-title">
-            <h2 id="dsh-default-title">默认子智能体</h2>
-            <p class="hint">未指定子槽时使用此项；留空跟随主模型，或选择已配置渠道和模型的非 main 槽位。</p>
-            <label class="field dsh-default" for="dsh-default-subagent">默认槽位<select id="dsh-default-subagent" onchange="dshSetDefault(this.value)"></select></label>
-            <p class="hint dsh-draft-note" id="dsh-draft-note">自动刷新不会覆盖编辑草稿。同步前请先保存。</p>
-          </div>
+            <form class="dsh-add" id="dsh-add-custom-form" onsubmit="event.preventDefault();dshAddCustomTask()"><label class="field" for="dsh-add-custom-label">自定义任务类型<input id="dsh-add-custom-label" type="text" maxlength="24" placeholder="例如数据分析" autocomplete="off"></label><button type="submit" id="dsh-add-custom-label-button">添加任务</button></form>
+          </section>
+          <section class="dsh-default-simple" aria-labelledby="dsh-simple-default-title">
+            <h2 id="dsh-simple-default-title">子任务默认选择</h2>
+            <label class="field" for="dsh-default-task">未指定模型时使用<select id="dsh-default-task" onchange="dshSetDefaultTask(this.value)"></select></label>
+            <label class="dsh-toggle" for="dsh-allow-model-selection"><input type="checkbox" id="dsh-allow-model-selection" onchange="dshSetPolicy('allow_model_selection',this.checked)"><span><b>允许主智能体为子任务选择模型</b><small>从勾选的候选中选择；关闭后使用左侧默认模型。</small></span></label>
+          </section>
+          <p class="dsh-field-error" id="dsh-policy-error" role="status" hidden></p>
+          <details class="dsh-advanced"><summary>高级设置与诊断</summary>
+            <div id="dsh-advanced-controls">
+              <div class="dsh-policy-head">
+                <label class="field" for="dsh-policy-owner">策略所有权<select id="dsh-policy-owner" onchange="dshSetPolicy('owner',this.value)"><option value="harness">Harness 管理 · 仅同步模型目录</option><option value="mixrouter">MixRouter 管理 · 目录与普通 spawn 策略</option></select></label>
+                <label class="field" for="dsh-default-mode">默认方式<select id="dsh-default-mode" onchange="dshSetPolicy('default_mode',this.value)"><option value="slot">固定路由</option><option value="inherit">继承当前对话</option></select></label>
+                <label class="field" for="dsh-default-subagent">固定默认槽位<select id="dsh-default-subagent" onchange="dshSetDefault(this.value)"></select></label>
+                <label class="field" for="dsh-max-depth">最大深度<input type="text" inputmode="numeric" id="dsh-max-depth" placeholder="留空保留现有" oninput="dshSetPolicy('max_depth',this.value)"></label>
+                <label class="field" for="dsh-max-active">同时活跃数<input type="text" inputmode="numeric" id="dsh-max-active" placeholder="留空保留现有" oninput="dshSetPolicy('max_active',this.value)"></label>
+              </div>
+              <p class="hint" id="dsh-owner-note"></p><p class="hint" id="dsh-selection-note"></p><p class="hint" id="dsh-default-note"></p><p class="hint" id="dsh-draft-note">自动刷新不会覆盖编辑草稿。</p>
+              <p class="dsh-field-error" id="dsh-policy-error-advanced" hidden></p><div id="dsh-coverage"></div>
+              <div class="dsh-debug-block"><h3>预览同步影响</h3><button type="button" id="dsh-preview" onclick="dshPreview()" disabled>预览同步</button><div id="dsh-preview-panel" class="panel" aria-labelledby="dsh-preview-title" hidden><h4 id="dsh-preview-title">同步预览</h4><div id="dsh-preview-result" role="status" aria-live="polite"></div></div></div>
+              <div class="dsh-debug-block"><h3>磁盘客户端配置</h3><div id="dsh-client" class="dsh-client"><p class="hint">尚未读取。</p></div></div>
+              <div class="dsh-debug-block"><h3>当前进程近期请求</h3><div id="dsh-observations"><p class="hint">尚无可用观测。</p></div></div>
+              <div class="dsh-debug-block"><h3>低级模型路由槽</h3><form class="dsh-add" id="dsh-add-form" onsubmit="event.preventDefault();dshAddSlot()"><label class="field" for="dsh-new-name">槽位 ID<input id="dsh-new-name" type="text" placeholder="如 legacy-route" pattern="[a-z0-9][a-z0-9-]{0,23}" maxlength="24" autocomplete="off" spellcheck="false" aria-describedby="dsh-name-hint"></label><button type="submit" id="dsh-add" disabled>新增未勾选路由</button><p class="hint" id="dsh-name-hint">用于兼容既有低级配置；新增路由不会自动加入候选。</p></form></div>
+            </div>
+          </details>
         </div>
       </section>
 

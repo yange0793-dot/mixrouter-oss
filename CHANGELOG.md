@@ -5,15 +5,37 @@
 
 ## [Unreleased]
 
+#### 修复
+
+- Harness 接入状态兼容设置页改写的可识别托管段:普通同步仍保持校验,另提供
+  「重新接入」的只读预览和确认恢复;写入校验预览后的 profile 指纹,备份原文件并保留段外设置。
+  普通模型保存始终独立,不因接入待修复而停用,也不触发 profile 写入或客户端重启。
+- Harness 控制台恢复 provider、模型与流式选择的真实保存状态:离线选择不再只改下拉框外观,
+  失败重载保留在途编辑的未保存状态,保存采用后端返回并显示主槽的实际渠道与上游模式。
+- 已有 Harness 槽位的路由修改从下一条请求生效,无需同步或重启;外部原子替换 `dsh.json`
+  同步进入控制台与转发,损坏或删除已配置文件时明确拒绝转发,不沿用启动时的旧渠道。
+- 原生 Responses 的空输出 `upstream_error` 在客户端正文提交前按现有预算重试同一渠道;
+  已输出正文或工具调用后不重放。后续尝试成功时不再残留此前的网络错误分类。
+
 #### 新增
 
-- 控制台增加 **DeepSeek Harness** 独立入口(`#dsh`):复用已有 Chat / Responses 渠道与 Key,
-  主模型及自由命名子槽单独保存到数据目录的 `dsh.json`,使用 `mixr-dsh-<槽名>` 别名;
-  默认子模型选择非 `main` 槽位,客户端模型选择清单同时包含主槽与子槽。
-- Harness 的「保存草稿」与「同步到 Harness」分开:显式确认后才写本机 desktop profile 的
-  `cordis.patch.yml`,写前备份,只维护托管区,保留已有 provider 与其他 patch;
+- 控制台增加 **DeepSeek Harness** 独立入口(`#dsh`):一个主模型和按用途标记的子模型目录,
+  代码编写、代码审查、资料检索、测试验证、任务规划、文档写作、图片理解可快捷添加,
+  也支持中文自定义名称。复用已有 Chat / Responses 渠道与 Key,配置独立保存到 `dsh.json`。
+  v2 可选 `label` 仅是目录显示名,不做自动任务分类,也不生成带 prompt 的智能体角色;
+  主智能体在普通子任务调用中显式选模型。旧别名、落点、候选与默认保持不变,
+  去除重复模型输入和候选卡片,能力、限额与诊断按需展开。
+- Harness v2 将全部模型目录与普通 spawn 候选池分开:独立选模开关、固定默认或真正继承父模型、
+  显式深度/并行上限,以及逐槽容量、输入类型和推理 wire 映射。保留 v1 旧声明、全部候选与
+  空默认值实际固定 `main` 的语义;升级后旧客户端降级保存返回 409,避免丢失新版策略。
+  `owner: harness` 仅同步 provider/别名目录,不覆盖原生主模型、子策略或 preset;
+  从 MixRouter 移交时保留最后有效原生设置。fork / Team / workflow / DS Bot 保持各自创建路径,
+  候选策略不是全局白名单。
+- Harness 的「保存并热生效」与「接入/同步 Harness」分开:保存只更新路由配置;
+  目录、能力、默认值与候选策略变更须先只读预览,再明确确认写入 desktop profile 的
+  `cordis.patch.yml`。写前备份,只维护托管区,保留已有 provider 与其他 patch;
   托管区被改或同步期间文件变化时拒绝覆盖。同步不会安装或自动重启客户端,
-  需重启 Harness 后新建会话。
+  需重启 Harness 后新建会话,不把磁盘同步当作运行时采纳证明。
 - Harness 每槽可选择上游流式、非流式或继承默认。非流式返回 JSON 后可由 mixrouter 转成
   客户端 SSE,不代表实时逐 token 输出;不改变 Claude Code / Codex / ZCode 的现有配置。
 - 新建 / 编辑渠道可根据 Base URL 和 API Key 获取上游模型列表,支持搜索选择、已有账号 Key
@@ -60,9 +82,11 @@
 
 #### 接口
 
-- 新增 `GET/PUT /api/dsh` 与 `POST /api/dsh/sync`:保存和同步都校验 `expected_revision`,
-  同步另需 `confirm: true`;客户端使用 `/dsh/v1/responses`、`/dsh/v1/chat/completions`
-  与 `/dsh/v1/models`。推荐 Responses 接入,可翻译 Chat 上游,真实 Key 不写入 Harness。
+- 新增 `GET/PUT /api/dsh`、`POST /api/dsh/preview` 与 `POST /api/dsh/sync`:
+  保存、只读预览与同步均校验 `expected_revision`,同步另需 `confirm: true`。
+  GET 带 API 能力版本、旧配置迁移视图、控制覆盖和有界脱敏近期路由观测;
+  客户端使用 `/dsh/v1/responses`、`/dsh/v1/chat/completions` 与 `/dsh/v1/models`。
+  推荐 Responses 接入,可翻译 Chat 上游,真实 Key 不写入 Harness。
 - 新增 `GET /api/onboarding/<claude|codex|zcode>`、
   `POST /api/onboarding/<app>/{preview,apply,undo-preview,undo}`。
 - 新增 `POST /api/providers/import/{preview,apply}`、`POST /api/providers/<id>/compatibility`、

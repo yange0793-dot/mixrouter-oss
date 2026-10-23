@@ -107,7 +107,7 @@ test('失败转移:过程里能看见「这一发失败 → 等待重试 → 再
   assert.strictEqual(retry.wait_ms, 0, 'MIXR_RETRY_DELAY_MS=0 时必须如实记 0,不伪装成等待');
 
   const logs = await logsOf('?limit=1');
-  assert.strictEqual(logs[0].err_class, 'upstream_server');
+  assert.strictEqual(logs[0].err_class, '', '已重试成功,旧错误只留在尝试过程');
   assert.strictEqual(logs[0].request_id, t.id);
 });
 
