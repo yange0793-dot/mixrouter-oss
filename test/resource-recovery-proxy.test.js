@@ -117,6 +117,29 @@ for (const [stream, override, status, json] of [
   recovered(await ask(body)); assert.equal(hash(body), before);
 });
 
+test('HTTP400 SSE content-type with raw JSON resource error recovers on the same candidate/model/key', async () => {
+  reply = (_req, res) => {
+    if (seen.length !== 1) return success(res);
+    res.writeHead(400, { 'Content-Type': 'text/event-stream' });
+    res.end(JSON.stringify(mismatch()));
+  };
+  recovered(await ask());
+});
+
+test('HTTP400 SSE content-type with raw JSON schema error or semantic content never recovers', async () => {
+  for (const value of [
+    { error: { code: null, type: 'invalid_request_error', message: 'Invalid schema for function Read' } },
+    { ...mismatch(), output: complete().output },
+    { ...mismatch(), content: [{ type: 'tool_use', id: 'execute-once', name: 'Write', input: {} }] },
+  ]) {
+    seen = [];
+    reply = (_req, res) => { res.writeHead(400, { 'Content-Type': 'text/event-stream' }); res.end(JSON.stringify(value)); };
+    const result = await ask();
+    assert.equal(result.status, 400); assert.equal(seen.length, 1); assert.equal(log().attempts, 1);
+    assert.equal(result.text, JSON.stringify(value));
+  }
+});
+
 test('same candidate model/key is frozen even if active key changes during recovery delay', async () => {
   configure({ pinned: true });
   reply = (_req, res) => {

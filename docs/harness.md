@@ -85,6 +85,14 @@ Mixrouter 在共用代理链中识别这类已知错误,不限定某个客户端
 
 尝试过程里可见 `resource_binding_recovery`;只记元数据,不为此新增正文或加密推理归档。
 「共用识别」不等于「所有协议任意历史都能修复」,也不保证多账号上游此后永不出错。
+没有明确资源绑定错误的空流、零用量或无细节 `PI_AI_ERROR` 不属于这条恢复,不能据此宣称已修复。
+
+### 不使用 Mixrouter 时
+
+可使用独立的 [resource-history-bridge](https://github.com/yange0793-dot/resource-history-bridge):
+它是本机 HTTP 桥和 Node.js 库,不依赖 Mixrouter。客户端须能修改 API Base URL 并使用 Responses;
+封闭客户端或其他协议不会自动获得资源绑定恢复。独立桥有自己的保守历史类型边界,
+不等同于 Mixrouter 的全部转换能力;接入命令、限制与当前验证范围以该仓库 README 为准。
 
 ## 本机 API
 
