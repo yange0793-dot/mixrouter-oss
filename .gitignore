@@ -17,6 +17,10 @@ slots.json
 slots.json.tmp
 slots.json.bak*
 
+# Harness 主模型与白名单池(本机路由状态)
+harness.json
+harness.json.*
+
 # 已移除模块的遗留运行数据,仍不入库
 dsh.json
 dsh.json.*

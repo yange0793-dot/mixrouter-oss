@@ -48,6 +48,24 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8788/
 
 ---
 
+## Azure 资源绑定错误 / Harness 模型池错误
+
+看到 `The requested item was created under a different Azure OpenAI resource` 时,不是本机
+session ID 坏了。含完整原生 Responses input、无服务器历史引用且尚未提交正文的请求,
+会在原预算内同落点恢复一次;日志尝试数包含恢复调用,诊断过程标记 `resource_binding_recovery`。
+
+- `resource_binding_history_missing`:客户端只给服务器引用或工具配对不完整。需由客户端重发
+  完整历史或新开会话,不要手工删 `call_id`、工具结果或加密推理来凑通过。
+- 预算已用完、第二次仍失败、已发送正文或未知签名错误:不会无限恢复或改用池内其他模型。
+- Harness 主模型保存后能热改路由,但白名单变动需再次预览/确认接入并新开会话。
+- `harness_model_not_found`:别名不在池里,不会回落默认模型。
+- `harness_route_unavailable`:配置里的渠道/Key/准确模型已失效,在 Harness 页面重新选择。
+- `harness_protocol_unsupported`:所选渠道不兼容该入口,接入使用通用 Messages 入口。
+- 接入报 409:预览已过期、文件外部变化或 YAML 无法安全局部合并;重新预览或在 Harness
+  原生配置中修正冲突,不通过整对象 `!!js` 覆盖来绕过。
+
+详见[Harness 接入与恢复边界](harness.md)。其他没有细节的上游错误并不属于本条修复。
+
 ## 1. 请求 503:先看错误码
 
 代理的错误码是分型的,`err_class` 与响应体里的 `error.type` 会直接告诉你该往哪查。

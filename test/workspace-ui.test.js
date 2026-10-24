@@ -133,8 +133,8 @@ function storageFrom(seed = {}) {
 
 function setup(options = {}) {
   const elements = new Map();
-  const VIEW_NAMES = ['overview', 'providers', 'routes', 'sessions', 'usage', 'diagnostics', 'settings'];
-  // 侧栏真实结构:六个普通视图入口 + 三个客户端入口(都指向 providers,靠 data-app 区分)。
+  const VIEW_NAMES = ['overview', 'providers', 'routes', 'harness', 'sessions', 'usage', 'diagnostics', 'settings'];
+  // 侧栏真实结构:七个普通视图入口 + 三个客户端入口(都指向 providers,靠 data-app 区分)。
   const navLinks = VIEW_NAMES.filter(view => view !== 'providers')
     .map(view => { const link = new Element('a'); link.dataset.view = view; return link; });
   for (const app of ['claude', 'codex', 'zcode']) {
@@ -377,7 +377,7 @@ test('移除的客户端视图:旧深链与偏好回概览,快速跳转不再提
 
     h.get('quick-nav-open').click();
     const input = h.get('quick-nav-input');
-    for (const query of ['DeepSeek Harness', 'harness', 'dsh']) {
+    for (const query of ['dsh']) {
       input.value = query;
       input.emit('input');
       assert.equal(h.get('quick-nav-list').children.length, 0, `${query} 不再提供跳转目标`);
@@ -386,6 +386,34 @@ test('移除的客户端视图:旧深链与偏好回概览,快速跳转不再提
   }
   assert.doesNotMatch(INDEX, /href="#dsh"|data-view="dsh"|id="view-dsh"/);
   assert.doesNotMatch(SOURCE, /dsh:|view: 'dsh'/);
+});
+
+test('Harness 新入口:独立深链与偏好、快速跳转命中,不借用客户端槽位导航', () => {
+  for (const options of [{ hash: '#harness' }, { storage: { 'mixr.ui.view': 'harness', 'mixr.ui.app': 'codex' } }]) {
+    const h = setup(options);
+    h.boot();
+    assert.deepEqual(h.showCalls, ['harness']);
+    assert.equal(h.hash(), '#harness');
+    assert.equal(h.doc.title, 'Harness · Mixrouter');
+    const active = h.navLinks.filter(link => link.classList.contains('active'));
+    assert.equal(active.length, 1);
+    assert.equal(active[0].dataset.view, 'harness');
+    assert.equal(active[0].dataset.app, undefined);
+    h.get('quick-nav-open').click();
+    const input = h.get('quick-nav-input');
+    for (const query of ['DeepSeek Harness', 'harness']) {
+      input.value = query;
+      input.emit('input');
+      assert.equal(h.get('quick-nav-list').children.length, 1, `${query} 命中新 Harness 入口`);
+      assert.equal(h.get('quick-nav-list').children[0].children[0].textContent, 'Harness');
+    }
+    input.emit('keydown', { key: 'Enter' });
+    assert.equal(h.showCalls.at(-1), 'harness');
+    assert.equal(h.hash(), '#harness');
+    assert.equal(h.get('quick-nav-mask').open, false);
+  }
+  assert.match(INDEX, /href="#harness" data-view="harness"/);
+  assert.match(INDEX, /id="view-harness"/);
 });
 
 test('存储被拒(隐私模式)时默认值照常生效,不抛错也不假持久化', () => {
@@ -464,7 +492,7 @@ test('快速跳转:按钮打开、过滤、方向键+回车跳转,关闭后焦�
   assert.equal(dialog.open, true, '用原生 showModal');
   assert.equal(dialog.hidden, false, '关闭态的 hidden 兜底要放开');
   assert.equal(h.doc.activeElement, input, '打开后焦点在搜索框');
-  assert.equal(h.get('quick-nav-list').children.length, 10, '七个页面 + 三个客户端入口');
+  assert.equal(h.get('quick-nav-list').children.length, 11, '八个页面 + 三个客户端入口');
 
   input.value = 'codex';
   input.emit('input');

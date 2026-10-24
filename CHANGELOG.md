@@ -7,16 +7,25 @@
 
 #### 移除
 
-- 移除 DeepSeek Harness 控制台接入、配置同步与独立槽位路由模块。Harness 自行维护渠道、模型与
-  子任务配置;升级不会自动改写其配置,旧 Mixrouter 托管配置需手动解绑。
+- 移除旧 DeepSeek Harness 全配置托管、固定角色与子策略模块,旧 `/dsh/*`、`/api/dsh` 和
+  `dsh.json` 不恢复。新的轻量入口仅管理主模型与子代理白名单池,不会自动迁移旧配置。
 
 #### 修复
 
+- 已知「历史输出项来自不同资源」错误增加有界恢复:共用错误识别,原生 Responses 完整历史
+  仅移除输出项资源 `id`,保留 `call_id`、工具参数/结果和 `encrypted_content`。
+  每请求最多一次,保持同一落点与 Key、计入原有重试和时限预算;客户端正文提交后不重放。
+  含服务器历史引用、`/responses/compact`、任意 400 与其他协议签名不做猜测性改写。
 - 原生 Responses 的空输出 `upstream_error` 在客户端正文提交前按现有预算重试同一渠道;
   已输出正文或工具调用后不重放。后续尝试成功时不再残留此前的网络错误分类。
 
 #### 新增
 
+- 独立「DeepSeek Harness」页,只提供主模型与子代理白名单池两个业务配置区;
+  路由保存到 `harness.json`,主模型自动纳入池,不影响其他客户端槽位与会话覆盖。
+  使用 Harness 原生普通子代理白名单验证显式选择,主模型可按任务自主选择池内模型。
+  预览并明确确认后才最小合并客户端字段与凭据引用,先备份、不重启;
+  池更新需重新接入并新开会话,不声称覆盖所有 workflow/fork/team 调用。
 - 新建 / 编辑渠道可根据 Base URL 和 API Key 获取上游模型列表,支持搜索选择、已有账号 Key
   及未保存的 Key。Claude 组去重追加且保留原主模型,Codex 组选定后填入模型字段;
   获取本身不保存渠道、不切换账号、不发送聊天请求。
@@ -61,6 +70,9 @@
 
 #### 接口
 
+- 新增 `GET/PUT /api/harness`、`POST /api/harness/{preview,connect}`,
+  以及隔离模型池路由 `/harness/v1/{models,messages,messages/count_tokens,responses,chat/completions}`;
+  未知别名和不兼容协议明确拒绝,不回落普通路由。
 - 新增 `GET /api/onboarding/<claude|codex|zcode>`、
   `POST /api/onboarding/<app>/{preview,apply,undo-preview,undo}`。
 - 新增 `POST /api/providers/import/{preview,apply}`、`POST /api/providers/<id>/compatibility`、

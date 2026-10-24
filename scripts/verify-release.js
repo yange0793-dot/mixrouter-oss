@@ -91,6 +91,8 @@ function scrubEnv(parent, dirs) {
     MIXR_CLAUDE_SETTINGS: path.join(dirs.home, '.claude', 'settings.json'),
     MIXR_CODEX_CONFIG: path.join(dirs.home, '.codex', 'config.toml'),
     MIXR_ZCODE_CONFIG: path.join(dirs.home, '.zcode', 'v2', 'config.json'),
+    DSH_HOME: path.join(dirs.home, '.dsh'),
+    MIXR_HARNESS_PROFILE: path.join(dirs.home, '.dsh', 'profiles', 'desktop', 'cordis.patch.yml'),
     MIXR_UPSTREAM_PROXY: '', // 明确的空值,不回落到调用方 shell 的隧道
     // npm 自己的缓存也放进临时目录,别在验证时往真实 HOME 写东西。
     npm_config_cache: path.join(dirs.tmp, 'npm-cache'),

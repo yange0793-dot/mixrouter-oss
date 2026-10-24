@@ -31,13 +31,14 @@ test('测试入口:按当前 Node 能力选 flag,18 不传 --test-timeout', () =
 test('测试入口:隔离 HOME/数据/客户端与 tmp,不继承现役路由旋钮', t => {
   const root = fixture(t);
   const parent = { PATH: '/bin', HOME: '/real-home', MIXR_DATA_DIR: '/real-data',
-    MIXROUTER_PORT: '8787', MIXUI_PORT: '8788', NODE_OPTIONS: '--trace-warnings', NODE_TEST_CONTEXT: 'child-v8' };
+    MIXROUTER_PORT: '8787', MIXUI_PORT: '8788', DSH_HOME: '/real-dsh',
+    MIXR_HARNESS_PROFILE: '/real-dsh/profile.yml', NODE_OPTIONS: '--trace-warnings', NODE_TEST_CONTEXT: 'child-v8' };
   const saved = { ...parent };
   const env = testEnv(parent, root);
   assert.deepEqual(parent, saved);
   for (const key of ['HOME', 'USERPROFILE', 'XDG_CONFIG_HOME', 'TMPDIR', 'TMP', 'TEMP',
     'MIXR_DATA_DIR',
-    'MIXR_CLAUDE_SETTINGS', 'MIXR_CODEX_CONFIG', 'MIXR_ZCODE_CONFIG']) {
+    'MIXR_CLAUDE_SETTINGS', 'MIXR_CODEX_CONFIG', 'MIXR_ZCODE_CONFIG', 'DSH_HOME', 'MIXR_HARNESS_PROFILE']) {
     assert.ok(env[key].startsWith(root + path.sep), `${key} 未隔离`);
   }
   assert.equal(env.MIXROUTER_ALT_PORTS, undefined);
