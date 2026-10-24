@@ -362,6 +362,32 @@ test('初始优先级:URL hash 胜过保存的视图,保存值胜过概览;主�
   assert.equal(fallback.doc.documentElement.style.colorScheme, 'light dark');
 });
 
+test('移除的客户端视图:旧深链与偏好回概览,快速跳转不再提供入口', () => {
+  for (const options of [{ hash: '#dsh' }, { storage: { 'mixr.ui.view': 'dsh' } }]) {
+    const h = setup(options);
+    h.boot();
+    assert.deepEqual(h.showCalls, ['overview']);
+    assert.equal(h.hash(), '#overview');
+    assert.equal(h.doc.title, '概览 · Mixrouter');
+    h.resetHistory();
+    h.window.workspaceNavigate('dsh');
+    h.window.workspaceViewChanged('dsh');
+    assert.deepEqual(h.showCalls, [], '旧视图名不能重新进入导航');
+    assert.equal(h.hash(), '#overview');
+
+    h.get('quick-nav-open').click();
+    const input = h.get('quick-nav-input');
+    for (const query of ['DeepSeek Harness', 'harness', 'dsh']) {
+      input.value = query;
+      input.emit('input');
+      assert.equal(h.get('quick-nav-list').children.length, 0, `${query} 不再提供跳转目标`);
+    }
+    input.emit('keydown', { key: 'Escape' });
+  }
+  assert.doesNotMatch(INDEX, /href="#dsh"|data-view="dsh"|id="view-dsh"/);
+  assert.doesNotMatch(SOURCE, /dsh:|view: 'dsh'/);
+});
+
 test('存储被拒(隐私模式)时默认值照常生效,不抛错也不假持久化', () => {
   const h = setup({ denyStorage: true });
   assert.doesNotThrow(() => h.boot());
@@ -438,7 +464,7 @@ test('快速跳转:按钮打开、过滤、方向键+回车跳转,关闭后焦�
   assert.equal(dialog.open, true, '用原生 showModal');
   assert.equal(dialog.hidden, false, '关闭态的 hidden 兜底要放开');
   assert.equal(h.doc.activeElement, input, '打开后焦点在搜索框');
-  assert.equal(h.get('quick-nav-list').children.length, 11, '八个页面 + 三个客户端入口');
+  assert.equal(h.get('quick-nav-list').children.length, 10, '七个页面 + 三个客户端入口');
 
   input.value = 'codex';
   input.emit('input');

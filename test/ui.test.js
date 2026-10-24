@@ -1565,16 +1565,15 @@ test('「应用槽位到客户端」带回备份轮换:并进同一条提示,且
 //   · 最近实际落点只认会话的 actual,没有就写「暂无」,绝不拿路由预览冒充
 //   · 设置页只读那四个端点,且不请求任何配置正文
 
-test('概览:八个视图里最靠前的一页,只读,且不放任何可写控件', async () => {
+test('概览:七个视图里最靠前的一页,只读,且不放任何可写控件', async () => {
   const h = await harness();
   assert.equal(h.run('view'), 'overview', '默认视图是概览');
-  assert.equal(h.run('VIEWS.length'), 8);
-  assert.deepEqual(Array.from(h.run('VIEWS')), ['overview', 'usage', 'providers', 'dsh', 'routes', 'sessions', 'diagnostics', 'settings']);
-  assert.equal(h.run('VIEW_LABELS.dsh'), 'DeepSeek Harness');
+  assert.equal(h.run('VIEWS.length'), 7);
+  assert.deepEqual(Array.from(h.run('VIEWS')), ['overview', 'usage', 'providers', 'routes', 'sessions', 'diagnostics', 'settings']);
   assert.equal(h.run("VIEW_LABELS.diagnostics"), '诊断');
   assert.equal(h.run("VIEW_LABELS.settings"), '设置与备份');
-  // 八个视图节默认都藏起来,由 showView 统一开关
-  for (const v of ['overview', 'usage', 'providers', 'dsh', 'routes', 'sessions', 'diagnostics', 'settings']) {
+  // 其余六个视图节默认都藏起来,由 showView 统一开关
+  for (const v of ['overview', 'usage', 'providers', 'routes', 'sessions', 'diagnostics', 'settings']) {
     const el = h.get('view-' + v);
     assert.ok(el, `视图节 view-${v} 必须存在`);
     if (v !== 'overview') assert.equal(el.style.display, 'none', `view-${v} 默认必须是 display:none`);
@@ -1590,6 +1589,23 @@ test('概览:八个视图里最靠前的一页,只读,且不放任何可写控�
   // 概览读的是 /api/state,不额外发任何请求
   const writes = h.requests.filter(r => r.method !== 'GET');
   assert.equal(writes.length, 0, '渲染概览不发写请求');
+});
+
+test('已移除的客户端视图没有导航、资源、DOM 或刷新入口', async () => {
+  const h = await harness();
+  assert.equal(h.run("VIEW_LABELS.dsh"), undefined);
+  assert.equal(h.document.getElementById('view-dsh'), null);
+  assert.doesNotMatch(html, /href="#dsh"|data-view="dsh"|id="dsh(?:-[^"]*)?"/);
+  assert.doesNotMatch(html, /\/(?:js\/dsh\.js|styles\/dsh\.css)/);
+  assert.equal(fs.existsSync(path.join(__dirname, '../public/js/dsh.js')), false);
+  assert.equal(fs.existsSync(path.join(__dirname, '../public/styles/dsh.css')), false);
+  assert.doesNotMatch(source, /\bdshRefresh\b/);
+
+  h.run("dshRefresh = () => { throw new Error('removed view refreshed'); }");
+  assert.doesNotThrow(() => h.run("showView('dsh')"));
+  assert.equal(h.run('view'), 'overview', '移除的视图不能通过程序化切换恢复');
+  await h.run('refresh()');
+  assert.equal(h.requests.some(request => request.url.startsWith('/api/dsh')), false);
 });
 
 test('概览的需处理事项:有问题时逐条列出并给跳转,没问题时明确写「没有需要处理的事项」', async () => {
