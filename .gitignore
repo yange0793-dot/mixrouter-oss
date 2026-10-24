@@ -17,7 +17,7 @@ slots.json
 slots.json.tmp
 slots.json.bak*
 
-# Harness 模型槽位(本机运行状态)
+# 已移除模块的遗留运行数据,仍不入库
 dsh.json
 dsh.json.*
 

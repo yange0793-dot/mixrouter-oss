@@ -10,13 +10,12 @@
  *   workspaceAppChanged(app)。没有这个文件时那两个 typeof 检查直接跳过,页面照常工作。
  */
 (function () {
-  const VIEWS = ['overview', 'usage', 'providers', 'dsh', 'routes', 'sessions', 'diagnostics', 'settings'];
+  const VIEWS = ['overview', 'usage', 'providers', 'routes', 'sessions', 'diagnostics', 'settings'];
   const APPS = ['claude', 'codex', 'zcode'];
   const LABELS = {
     overview: '概览',
     usage: '用量统计',
     providers: '渠道与 Key',
-    dsh: 'DeepSeek Harness',
     routes: '路由',
     sessions: '会话',
     diagnostics: '诊断',
@@ -261,7 +260,6 @@
     claude: '<rect x="2.5" y="3" width="13" height="5" rx="1.5"/><rect x="2.5" y="10" width="13" height="5" rx="1.5"/><path d="M5.5 5.5h.01M5.5 12.5h.01"/>',
     codex: '<path d="M3 5.5 9 3l6 2.5v7L9 15l-6-2.5z"/><path d="M3 5.5 9 8l6-2.5M9 8v7"/>',
     zcode: '<path d="M4 4h10l-10 10h10"/>',
-    dsh: '<rect x="2.5" y="3" width="13" height="12" rx="2"/><path d="m5 6 3 3-3 3M10 12h3"/>',
   };
   function setViewIcon(viewName, appName) {
     const icon = el('topbar-view-icon');
@@ -491,7 +489,6 @@
     { view: 'providers', app: 'claude', label: 'Claude Code 渠道', hint: '渠道与 Key', keywords: 'claude anthropic' },
     { view: 'providers', app: 'codex', label: 'Codex 渠道', hint: '渠道与 Key', keywords: 'codex openai' },
     { view: 'providers', app: 'zcode', label: 'ZCode 渠道', hint: '渠道与 Key', keywords: 'zcode' },
-    { view: 'dsh', label: 'DeepSeek Harness', hint: '主模型、子智能体与客户端同步', keywords: 'deepseek harness dsh' },
   ];
 
   function paletteMatches(query) {

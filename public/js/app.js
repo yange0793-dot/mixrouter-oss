@@ -168,7 +168,6 @@ function refresh() {
       // 早一步渲染就会把一次成功的刷新说成"待确认"。
       renderOverviewPage();
       if (view === 'providers') renderProviders();
-      if (view === 'dsh' && typeof dshRefresh === 'function') dshRefresh();
       reconcileRouting();
       // 5 秒轮询不得打断正在编辑的用户。会话页的可编辑控件有两处:表格里的绑定下拉,以及表格外的搜索框。
       // 只挡 sess-body 是不够的 —— 搜索框在表格外拿焦点时,这里照样会重渲染,把用户敲了一半的词抹掉
@@ -194,8 +193,8 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) refr
 window.addEventListener('offline', () => { setConnection(false, '网络连接已断开'); renderProviders(); });
 window.addEventListener('online', refresh);
 
-const VIEWS = ['overview', 'usage', 'providers', 'dsh', 'routes', 'sessions', 'diagnostics', 'settings'];
-const VIEW_LABELS = { overview: '概览', usage: '用量统计', providers: '渠道与 Key', dsh: 'DeepSeek Harness', routes: '路由', sessions: '会话', diagnostics: '诊断', settings: '设置与备份' };
+const VIEWS = ['overview', 'usage', 'providers', 'routes', 'sessions', 'diagnostics', 'settings'];
+const VIEW_LABELS = { overview: '概览', usage: '用量统计', providers: '渠道与 Key', routes: '路由', sessions: '会话', diagnostics: '诊断', settings: '设置与备份' };
 // 切视图只有这一条路径。原先 nav 的 onclick 里写着全部逻辑,gotoLogs() 只能去"点"那个 <a>
 // ——视图一改名,选择器返回 null,.click() 就当场抛 TypeError(会话页的「日志」按钮变成死按钮,
 // 而且没有任何提示)。抽成函数后,程序化切换不再依赖导航项是否存在。
@@ -218,7 +217,6 @@ function showView(name) {
   if (typeof usageSetVisible === 'function') usageSetVisible(view === 'usage');
   if (view === 'usage' && typeof renderUsage === 'function') renderUsage();
   if (view === 'providers') { renderProviders(); ensureHealth(); }
-  if (view === 'dsh' && typeof dshRefresh === 'function') dshRefresh();
   if (view === 'sessions') renderSessions();
   if (view === 'routes' && !windowSnapshot && !windowLoadTask) loadCompactWindow();
   // 设置页的四条只读读取按页面进入时机触发,且各自独立失败:
