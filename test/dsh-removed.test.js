@@ -129,9 +129,13 @@ test('removed Harness console APIs return 404 and do not expose a client base UR
     routes: mod._state.routes, slots: mod._state.slotMap }, before);
   assert.equal(fs.existsSync(process.env.MIXR_DSH_CONFIG), false);
   assert.equal(fs.existsSync(path.join(TMP, 'dsh.json')), false);
+  const harness = await request(ui, '/api/harness');
+  assert.equal(harness.status, 200, 'new lightweight API is independent of retired /api/dsh');
+  assert.equal(harness.data.configured, false);
+  assert.equal(fs.existsSync(path.join(TMP, 'harness.json')), false);
 });
 
-test('ordinary model listing and both health endpoints still work without a Harness module', async () => {
+test('ordinary model listing and both health endpoints still work without a configured Harness pool', async () => {
   assert.equal((await request(proxy, '/healthz')).status, 200);
   assert.equal((await request(ui, '/healthz')).status, 200);
   const models = await request(proxy, '/v1/models');

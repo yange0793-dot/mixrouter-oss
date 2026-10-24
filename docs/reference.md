@@ -308,6 +308,12 @@ curl -s -X POST http://127.0.0.1:8788/api/router/codex \
 
 ## 5. 上游健康:超时、冷却、重试
 
+已知 Azure 输出项资源绑定错误使用共用识别和协议限定投影:只有不含服务器历史引用的完整原生
+Responses input 才移除输出项 `id`,保持 `call_id`、工具内容、加密推理、session 和缓存身份。
+每请求最多一次,同渠道/模型/Key、计入已有总调用上限和时限;已提交正文后、`/responses/compact`、
+任意 400 或其他协议的签名不改写。含 `previous_response_id`/`conversation`/`item_reference`
+不删除引用,返回无法恢复历史的明确错误。详见[资源绑定恢复边界](harness.md#资源绑定错误恢复)。
+
 - **三段超时**,分别独立配置:
   `MIXR_FIRST_HEADER_TIMEOUT_MS`(发请求到收到响应头)、
   `MIXR_STREAM_IDLE_TIMEOUT_MS`(流式两次数据之间的最大间隔)、
@@ -562,7 +568,8 @@ MIXR_DATA_DIR=/absolute/path node scripts/diagnose-upstream.js --mode provider -
 哪几份,但**删除照做**,没有"停下等我另存"这一步。
 
 三处备份池:`providers.json`、Claude `settings.json`、Codex `config.toml`。
-**ZCode 的备份暂未纳入清点表。** 路径可分别用 `MIXR_DATA_DIR`、`MIXR_CLAUDE_SETTINGS`、
+**ZCode 与 Harness 的备份暂未纳入清点表。** Harness 接入返回其 profile/凭据备份路径,
+不在 `mixctl restore` 自动还原范围内。路径可分别用 `MIXR_DATA_DIR`、`MIXR_CLAUDE_SETTINGS`、
 `MIXR_CODEX_CONFIG` 覆盖。
 
 `mixctl restore` 的边界:
@@ -600,13 +607,14 @@ require 之后再改不生效。
 | --- | --- | --- |
 | `MIXROUTER_PORT` / `MIXUI_PORT` | 8787 / 8788 | 代理口 / 控制台口 |
 | `MIXROUTER_ALT_PORTS` | 空 | 逗号分隔,在这些端口上也服务同一个代理 |
-| `MIXR_DATA_DIR` | 仓库根 | providers / routes / slots / sessions / logs 的总目录 |
+| `MIXR_DATA_DIR` | 仓库根 | providers / routes / slots / harness / sessions / logs 的总目录 |
 | `MIXR_LOG_RETENTION_DAYS` | 30 | 新请求日志归档保留天数(0–36500);`0` 永久保留 |
 | `MIXR_LOG_COMPRESS` | 关 | 仅 `on` 启用新请求日志归档 gzip |
 | `MIXR_LOG_RETAIN_DAYS` / `MIXR_LOG_SWEEP_MS` | 2 / 21600000 | responses 归档与 launchd.log 的保留天数与清理周期 |
 | `MIXR_CLAUDE_SETTINGS` | `~/.claude/settings.json` | Claude Code 客户端配置 |
 | `MIXR_CODEX_CONFIG` | `~/.codex/config.toml` | Codex 客户端配置 |
 | `MIXR_ZCODE_CONFIG` | `~/.zcode/v2/config.json` | ZCode 客户端配置 |
+| `MIXR_HARNESS_PROFILE` | `<DSH_HOME 或 ~/.dsh>/profiles/desktop/cordis.patch.yml` | Harness 预览/确认接入的字面量 patch 配置路径 |
 | `MIXR_RESPONSE_ARCHIVE` | 关 | 仅 `on` 开启上游响应正文归档 |
 | `MIXR_RESPONSE_ARCHIVE_DIR` | `<MIXR_DATA_DIR>/logs/responses` | 返回归档私有目录 |
 | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | 未设 | 压缩窗口的环境覆盖,优先于磁盘设置 |

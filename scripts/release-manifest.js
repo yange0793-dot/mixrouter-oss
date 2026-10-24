@@ -74,6 +74,7 @@ const EXCLUDE = [
   { path: 'routes.json', why: '本机路由规则,运行数据' },
   { path: 'sessions.json', why: '**含对话标签(对话内容片段)** 的会话绑定,运行数据' },
   { path: 'slots.json', why: '本机子代理槽位,运行数据' },
+  { path: 'harness.json', why: '本机 Harness 主模型与子代理白名单池,运行数据' },
   { path: 'dsh.json', why: '已移除接入模块的遗留运行数据,仍禁止进入制品' },
   { path: 'logs', why: '运行期日志(server.log / requests.jsonl / 响应归档)' },
   { path: 'backups', why: '历史备份归档,内含明文 Key 与渠道配置' },
@@ -90,7 +91,7 @@ const EXCLUDE = [
 
 // 运行数据基线:全仓唯一一处定义"什么算绝不发布的运行数据"。
 // 制品检查(CI)与单测都从这里取,不各自再抄一份。
-const RUNTIME_DATA_FILES = ['providers.json', 'routes.json', 'sessions.json', 'slots.json', 'dsh.json', 'client-managed.json'];
+const RUNTIME_DATA_FILES = ['providers.json', 'routes.json', 'sessions.json', 'slots.json', 'harness.json', 'dsh.json', 'client-managed.json'];
 const RUNTIME_DATA_DIRS = ['logs', 'backups', '.run'];
 
 // 控制台的每个脚本都必须随运行包交付,避免页面能打开但主题、导航或用量页失效。
@@ -99,6 +100,7 @@ const REQUIRED_ENTRIES = [
   'public/js/workspace.js', 'public/js/usage.js', 'public/styles/base.css',
   'public/js/readiness.js', 'public/js/attempt-flow.js', 'public/js/key-fallback.js',
   'public/styles/readiness.css', 'public/styles/attempt-flow.css', 'public/styles/key-fallback.css',
+  'public/js/harness.js', 'public/styles/harness.css',
 ];
 
 // 运行包的维护条目:解压后能验、能读、能报告问题。**不含 test/** —— 整套开发测试只在

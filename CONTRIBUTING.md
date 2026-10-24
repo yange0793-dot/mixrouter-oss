@@ -60,7 +60,7 @@ npm test                                                                   # 全
 
 以下文件含明文凭据或本机运行状态,已在 `.gitignore` 里,发布物也会按路径形状拦掉:
 
-`providers.json`、`routes.json`、`slots.json`、`sessions.json`、`logs/`、`backups/`、`.run/`、
+`providers.json`、`routes.json`、`slots.json`、`harness.json`、`sessions.json`、`logs/`、`backups/`、`.run/`、
 `*.bak*`、`*.json.*.tmp`。
 
 - **不要**为了"这样方便复现"把它们 `git add -f`;发布清单会在打包时逐文件挡掉,CI 还会解包复核。

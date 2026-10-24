@@ -61,6 +61,9 @@ Not a good fit:
   always stays first, backup members are tried in order, and saving does not rewrite an existing
   pool strategy. Codex slots show an explanatory note instead, because the Codex client config
   they write is single-provider.
+- **Harness main model and allowlist.** A separate page selects the main model and permitted
+  subagent models, reusing the provider catalog and protocol translation without fixed task roles
+  or changes to other client slots. Route saving is separate from previewing and confirming client writes.
 - **First-run onboarding.** The providers page walks through checking the client, picking or
   importing a provider, choosing a model and protocol, optionally running a compatibility test,
   then previewing and confirming the write. Only managed fields are shown, the client file is
@@ -229,10 +232,16 @@ The linked pages are in Chinese; the table says what each one covers.
 
 ## Important boundaries
 
-- **Harness maintains its own configuration.** Mixrouter no longer provides dedicated DeepSeek
-  Harness connection, sync, or slot routing. Manage providers, models, and subagent settings in
-  Harness itself. Upgrades do not rewrite its configuration; old Mixrouter-managed settings must
-  be disconnected manually.
+- **Lightweight Harness integration.** Only the main model and subagent allowlist pool are managed.
+  Saving routes does not write client files: preview and confirm connection separately on the
+  DeepSeek Harness page. Tools, permissions, and workspace settings stay native. Pool updates
+  require reconnecting and starting new sessions. The native ordinary-subagent entry point enforces
+  explicit selections; this is not a blanket workflow/fork/team policy. See [Harness integration](docs/harness.md) (Chinese).
+- **Bounded resource-binding recovery.** The shared matcher recognizes known upstream errors;
+  safe recovery strips resource-bound output-item IDs only from complete native Responses history,
+  once per request, on the same provider/model/key and within existing budgets. Tool pairing and
+  encrypted reasoning are retained. Arbitrary 400 errors, missing history, Anthropic/Chat tool IDs,
+  and signatures are not rewritten.
 - **Loopback only, literal Host.** The proxy and console accept only `127.0.0.1:port` or
   `[::1]:port`; `localhost` and custom domains get a 403. Write requests reject cross-site or
   cross-origin sources, and the proxy accepts only `Content-Type: application/json` POSTs.

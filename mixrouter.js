@@ -87,6 +87,7 @@ const { createReadinessApi } = require('./lib/http/readiness-api');
 const { createAttemptTraceStore } = require('./lib/observability/attempt-trace');
 const { explainError } = require('./lib/observability/error-guidance');
 const { createKeyFallback } = require('./lib/routing/key-fallback');
+const { createHarnessPool } = require('./lib/harness-pool');
 // Codex 配置的读写引擎:解析/校验/外科手术式改写 + 能力目录同步。
 // **这是全树唯一的 TOML 实现**(第二期合并完成):lib/toml.js 与 lib/codex-toml.js 现在只是
 // 它的薄适配(名字转发,没有自己的算法)。旧名字保留是为了既有导出面与测试,
@@ -752,6 +753,20 @@ function sseResult(wire, text) {
   return { ok: terminal, error: terminal ? '' : '上游流没有给出合法终态就结束了' };
 }
 
+const harness = createHarnessPool({
+  file: path.join(DATA_DIR, 'harness.json'),
+  profilePath: process.env.MIXR_HARNESS_PROFILE || path.join(process.env.DSH_HOME || path.join(os.homedir(), '.dsh'), 'profiles', 'desktop', 'cordis.patch.yml'),
+  getProviders: () => ['claude', 'codex'].flatMap(app => storeOf(app).map(provider => ({ ...provider, app }))),
+  routerURL: ROUTER_URL, routerToken: ROUTER_TOKEN,
+});
+function harnessProvider(id) {
+  for (const app of ['claude', 'codex']) {
+    const provider = storeOf(app).find(candidate => candidate.id === id);
+    if (provider) return { ...provider, wire_api: wireOf(provider, app) };
+  }
+  return undefined;
+}
+
 // ---------------------------------------------------------------- 代理服务
 // 端点 → 客户端组与协议:Claude 组说 Anthropic,Codex 组说 OpenAI
 // 端点识别与协议→上游路径换算见 lib/routing/endpoints.js
@@ -851,6 +866,7 @@ const attemptDeps = {
   http, https,
   storeOf,
   slotMapOf: () => slotMap, sessionConfig, compactLib,
+  refreshProvider: (provider, app, plan) => plan.harness ? harnessProvider(provider.id) : storeOf(app).find(candidate => candidate.id === provider.id),
   wireOf, upstreamPathOf, joinUpstreamPath,
   buildUpstreamHeaders, buildOpenAiHeaders, applyModel, toolFilter,
   safeHeader, hasCtlChar, transportAgent, createResponseArchive, channelSecrets, clientToken,
@@ -873,6 +889,7 @@ const prepareRequest = createPreparer({
   UI_PORT, MAX_ATTEMPTS,
   storeOf, sessionRecord, sessionConfig, sessionKeyOf, sessionIdentity, sessionLabel,
   bodyRouteText, compactTexts, resolveRoute, compactLib, wireOf,
+  resolveHarness: (model, kind) => harness.resolve(model, kind),
   resolveSessionTarget, sessionEntry, clientToken,
   captureRequest: key => sess.captureRequest(key),
 }).prepareRequest;
@@ -885,6 +902,7 @@ const proxyHandler = proxyHttp.createProxyHandler({
   onBodyDrainTimeout: () => { bodyDrainTimeouts++; },
   randomUUID: () => crypto.randomUUID(),
   httpBody, protoError, classifyProxyRequest, ENDPOINTS, modelList, sessionKeyOf,
+  harnessModelList: () => harness.models(),
   prepareRequest, createRequestContext, runAttempts,
   // 终态的两个副作用仍然留在主入口:会话计数/用量累加(会话语义不在这里)与请求日志落盘。
   // 会话这一半走**在途 guard**:令牌是入口捕获的那个(flight),由 settleRequest 按记录世代
@@ -1245,7 +1263,7 @@ const apiHandler = createConsoleHandler({
   sessionList, sessionRecord, storeOf, findProvider, providerApp, ghostRefs,
   mutateSessions, saveRoutes, saveSlots, saveStore, requestLog, compactWindow,
   slotsPublic, validateSlotPut,
-  usageSummary, readinessApi, activeRequests: () => activeRequestCount,
+  usageSummary, readinessApi, activeRequests: () => activeRequestCount, harness,
   switchClaude, switchCodex, switchZcode, switchRouter,
 });
 

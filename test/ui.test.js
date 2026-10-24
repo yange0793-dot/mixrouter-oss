@@ -1565,15 +1565,15 @@ test('「应用槽位到客户端」带回备份轮换:并进同一条提示,且
 //   · 最近实际落点只认会话的 actual,没有就写「暂无」,绝不拿路由预览冒充
 //   · 设置页只读那四个端点,且不请求任何配置正文
 
-test('概览:七个视图里最靠前的一页,只读,且不放任何可写控件', async () => {
+test('概览:八个视图里最靠前的一页,只读,且不放任何可写控件', async () => {
   const h = await harness();
   assert.equal(h.run('view'), 'overview', '默认视图是概览');
-  assert.equal(h.run('VIEWS.length'), 7);
-  assert.deepEqual(Array.from(h.run('VIEWS')), ['overview', 'usage', 'providers', 'routes', 'sessions', 'diagnostics', 'settings']);
+  assert.equal(h.run('VIEWS.length'), 8);
+  assert.deepEqual(Array.from(h.run('VIEWS')), ['overview', 'usage', 'providers', 'harness', 'routes', 'sessions', 'diagnostics', 'settings']);
   assert.equal(h.run("VIEW_LABELS.diagnostics"), '诊断');
   assert.equal(h.run("VIEW_LABELS.settings"), '设置与备份');
-  // 其余六个视图节默认都藏起来,由 showView 统一开关
-  for (const v of ['overview', 'usage', 'providers', 'routes', 'sessions', 'diagnostics', 'settings']) {
+  // 其余视图节默认都藏起来,由 showView 统一开关
+  for (const v of ['overview', 'usage', 'providers', 'harness', 'routes', 'sessions', 'diagnostics', 'settings']) {
     const el = h.get('view-' + v);
     assert.ok(el, `视图节 view-${v} 必须存在`);
     if (v !== 'overview') assert.equal(el.style.display, 'none', `view-${v} 默认必须是 display:none`);
@@ -1973,15 +1973,15 @@ test('视图切换:gotoLogs 走 showView,视图改名后会话页的「日志」
   assert.equal(h.run('logsTimer'), null, '离开诊断页要停掉自动刷新');
 });
 
-test('视图切换:七个视图各切一次,视图节显隐与面包屑都对得上', async () => {
+test('视图切换:八个视图各切一次,视图节显隐与面包屑都对得上', async () => {
   const h = await harness();
   // 这里只跑 app.js,外壳(workspace.js)不在虚拟 DOM 里,所以标题是 showView 写的通用名。
   // 真实页面上外壳在此之后把渠道页改写成「<客户端> 渠道」,那条由 workspace-ui.test.js 覆盖。
-  for (const [v, label] of [['overview', '概览'], ['usage', '用量统计'], ['providers', '渠道与 Key'], ['routes', '路由'], ['sessions', '会话'], ['diagnostics', '诊断'], ['settings', '设置与备份']]) {
+  for (const [v, label] of [['overview', '概览'], ['usage', '用量统计'], ['providers', '渠道与 Key'], ['harness', 'DeepSeek Harness'], ['routes', '路由'], ['sessions', '会话'], ['diagnostics', '诊断'], ['settings', '设置与备份']]) {
     h.run(`showView(${JSON.stringify(v)})`);
     assert.equal(h.run('view'), v);
     assert.equal(h.get('breadcrumb-view').textContent, label, `${v} 的面包屑`);
-    for (const other of ['overview', 'usage', 'providers', 'routes', 'sessions', 'diagnostics', 'settings']) {
+    for (const other of ['overview', 'usage', 'providers', 'harness', 'routes', 'sessions', 'diagnostics', 'settings']) {
       const display = h.get('view-' + other).style.display;
       if (other === v) assert.notEqual(display, 'none', `${v} 自己要显示`);
       else assert.equal(display, 'none', `${other} 在 ${v} 时应当隐藏`);

@@ -10,13 +10,14 @@
  *   workspaceAppChanged(app)。没有这个文件时那两个 typeof 检查直接跳过,页面照常工作。
  */
 (function () {
-  const VIEWS = ['overview', 'usage', 'providers', 'routes', 'sessions', 'diagnostics', 'settings'];
+  const VIEWS = ['overview', 'usage', 'providers', 'routes', 'harness', 'sessions', 'diagnostics', 'settings'];
   const APPS = ['claude', 'codex', 'zcode'];
   const LABELS = {
     overview: '概览',
     usage: '用量统计',
     providers: '渠道与 Key',
     routes: '路由',
+    harness: 'Harness',
     sessions: '会话',
     diagnostics: '诊断',
     settings: '设置与备份',
@@ -253,6 +254,7 @@
   const ICONS = {
     overview: '<rect x="2.5" y="2.5" width="5.2" height="5.2" rx="1.2"/><rect x="10.3" y="2.5" width="5.2" height="5.2" rx="1.2"/><rect x="2.5" y="10.3" width="5.2" height="5.2" rx="1.2"/><rect x="10.3" y="10.3" width="5.2" height="5.2" rx="1.2"/>',
     routes: '<circle cx="4" cy="9" r="1.8"/><circle cx="14" cy="4.5" r="1.8"/><circle cx="14" cy="13.5" r="1.8"/><path d="M5.8 9c2 0 3-4.5 6.4-4.5M5.8 9c2 0 3 4.5 6.4 4.5"/>',
+    harness: '<rect x="6.5" y="2.5" width="5" height="5" rx="1.2"/><path d="M9 7.5v3M4 10.5h10M4 10.5v2M14 10.5v2"/><circle cx="4" cy="14" r="1.5"/><circle cx="14" cy="14" r="1.5"/>',
     sessions: '<path d="M3 4h12v7.5H8L4.5 14v-2.5H3z"/><path d="M6 7h6"/>',
     usage: '<path d="M2.5 14.5h13"/><path d="M5 14V9M9 14V5M13 14v-3"/>',
     diagnostics: '<path d="M2 9h3l2-4 3 8 2-4h4"/>',
@@ -482,6 +484,7 @@
     { view: 'overview', label: '概览', hint: '状态、待办与客户端接入' },
     { view: 'providers', label: '渠道与 Key', hint: '上游渠道与客户端接入', keywords: 'provider key' },
     { view: 'routes', label: '路由规则', hint: '匹配、压缩与默认路由', keywords: 'route rule' },
+    { view: 'harness', label: 'Harness', hint: '主模型与子代理候选池', keywords: 'deepseek harness pool' },
     { view: 'sessions', label: '会话绑定', hint: '按会话配置渠道与 Key', keywords: 'session' },
     { view: 'usage', label: '用量统计', hint: '请求、tokens 与缓存命中', keywords: 'usage token' },
     { view: 'diagnostics', label: '诊断', hint: '请求日志与分槽用量', keywords: 'log logs' },
