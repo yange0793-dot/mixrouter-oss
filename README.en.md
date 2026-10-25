@@ -68,6 +68,11 @@ Not a good fit:
   always stays first, backup members are tried in order, and saving does not rewrite an existing
   pool strategy. Codex slots show an explanatory note instead, because the Codex client config
   they write is single-provider.
+- **Codex auto-compaction threshold.** View, save, or reset the threshold on the Codex page;
+  values such as `250k` and `0.5m` are accepted. Only the global `model_auto_compact_token_limit`
+  is changed, with a backup before writing. Known context windows show the 90% ceiling;
+  unknown windows are not guessed. Codex must reload its configuration; active sessions and
+  context-window settings are not changed automatically.
 - **Harness main model and allowlist.** A separate page selects the main model and permitted
   subagent models, reusing the provider catalog and protocol translation without fixed task roles
   or changes to other client slots. Route saving is separate from previewing and confirming client writes.

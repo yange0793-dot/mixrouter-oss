@@ -22,6 +22,8 @@ let windowSnapshot = null, windowDirty = false, windowRevision = 0, windowSelect
 let windowOutcome = null;
 let online = false, lastSync = null, refreshTask = null, activeDialog = null, returnFocus = null, confirmResolve = null, savingProvider = false;
 let codexSlotRevision = 0;
+let codexCompactDraft = null, codexCompactEditRevision = 0, savingCodexCompact = false, codexCompactLoadTask = null, codexCompactLoadSequence = 0;
+let codexCompactError = '', codexCompactMessage = '', codexCompactStateRevision = 0, codexCompactReadError = '';
 // /api/health 的最近一次只读快照(渠道页的冷却/可用性徽标与设置页共用)。它是**独立**的一次
 // fetch:读失败只让徽标与设置页那一块显示"未读取",绝不阻断 /api/state 的整页刷新。
 let liveHealth = null, healthError = '', healthTask = null;
@@ -37,7 +39,7 @@ async function api(path, opt = {}) {
   try {
     const r = await fetch(path, { ...opt, headers: { 'Content-Type': 'application/json', ...opt.headers }, signal: controller.signal, cache: 'no-store' });
     const j = await r.json();
-    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    if (!r.ok) { const error = new Error(j.error || `HTTP ${r.status}`); error.status = r.status; throw error; }
     return j;
   } finally { clearTimeout(timer); }
 }
@@ -133,6 +135,7 @@ function setConnection(connected, error = '') {
   $('add-rule').disabled = !routesDraft;
   // 会话覆盖弹窗:离线、没读到服务端版本、或正在保存时,三扇门都封掉
   if (typeof updateRoutingButtons === 'function') updateRoutingButtons();
+  renderCodexCompact();
   if (changed && state) renderSlots(true);
 }
 function renderOverview() {
@@ -1026,7 +1029,7 @@ function slotLine(s, providerCell, modelCell, badge, clear, attributes = '') {
 function codexSlotRow(s) {
   const locked = !online || slotBusy('codex', s.name);
   const label = s.name === 'main' ? 'main · 主模型' : s.name === 'reviewer' ? 'reviewer · 审查模型' : s.name;
-  return `<div class="rc-line codex-slot-line">
+  return `<div class="rc-line codex-slot-line" id="codex-slot-${esc(s.name)}">
     <div class="field slot-ident">${esc(label)}<span class="mono">${esc(s.alias)}</span></div>
     <label class="field">渠道<select id="codex-model-${esc(s.name)}" aria-label="${esc(s.name)} 渠道" onchange="setSlot('codex','${s.name}','provider',this.value)" ${locked ? 'disabled' : ''}>${slotChannelOptions(s.provider, 'codex')}</select></label>
     <label class="field">落点模型${slotModelCell(s, 'codex')}</label>
@@ -1036,13 +1039,145 @@ function codexSlotRow(s) {
 }
 function renderCodexConfig() {
   const live = state?.live?.codex || {};
-  const context = live.model_context_window || live.main?.context_window;
+  const context = live.compaction ? live.compaction.context_window : live.model_context_window || live.main?.context_window;
+  const explicit = live.compaction ? live.compaction.context_source === 'explicit' : !!live.model_context_window;
   const facts = [
-    ['上下文窗口', context ? `${Number(context).toLocaleString()} tokens${live.model_context_window ? '（显式配置）' : '（本地模型目录）'}` : '未声明，由 Codex 决定'],
-    ['自动压缩阈值', live.model_auto_compact_token_limit ? `${Number(live.model_auto_compact_token_limit).toLocaleString()} tokens` : 'Codex 自动（未覆写）'],
+    ['上下文窗口', context ? `${Number(context).toLocaleString()} tokens${explicit ? '（显式配置）' : '（本地模型目录）'}` : '未声明，由 Codex 决定'],
   ];
   const warnings = (live.warnings || []).map(warning => `<li>${esc(warning)}</li>`).join('');
   $('codex-config-details').innerHTML = `<dl class="config-facts">${facts.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join('')}</dl>${warnings ? `<ul class="config-warnings">${warnings}</ul>` : ''}<p class="hint">路由请求即时使用当前落点；已打开的 Codex 客户端会缓存模型标签，新客户端读取同步列表。命令行、profile 或项目配置可能覆盖全局默认。</p>`;
+}
+// 阈值草稿绑定到用户开始编辑时读到的磁盘版本。轮询只更新事实,不能替草稿领取新 revision。
+function codexCompactGate() {
+  const live = state?.live?.codex;
+  if (!online) return '控制台离线，阈值草稿保留；连接后重试。';
+  if (!live || live.error) return 'Codex 配置读取失败，阈值不可保存。';
+  if (live.profile) return `当前启用了 profile（${live.profile}），请先处理 profile 覆盖；全局阈值编辑已禁用。`;
+  if (codexCompactReadError) return codexCompactReadError;
+  if (!live.compaction || !Object.hasOwn(live.compaction, 'configured') || typeof live.revision !== 'string') return '当前服务端未提供阈值与磁盘版本信息，编辑不可用。';
+  return '';
+}
+function codexCompactInitial(live) {
+  const value = live.compaction ? live.compaction.configured : live.model_auto_compact_token_limit;
+  return value == null ? (live.model_auto_compact_token_limit == null ? 'auto' : String(live.model_auto_compact_token_limit)) : String(value);
+}
+function renderCodexCompact() {
+  const panel = $('codex-compact-panel'), input = $('codex-compact-input');
+  if (!panel || !input) return;
+  panel.hidden = !state || curApp !== 'codex';
+  if (!state || curApp !== 'codex') return;
+  const live = state.live?.codex || {}, compact = live.compaction;
+  const focused = document.activeElement === input;
+  if (!codexCompactDraft || (!codexCompactDraft.dirty && !focused && !savingCodexCompact && !codexCompactLoadTask)) {
+    codexCompactDraft = { value: codexCompactInitial(live), revision: live.revision, dirty: false };
+    input.value = codexCompactDraft.value;
+  }
+  const token = value => typeof value === 'number' && Number.isFinite(value) ? `${value.toLocaleString()} tokens` : '未知 / Codex 自行决定';
+  const configured = compact ? compact.configured : live.model_auto_compact_token_limit;
+  const invalid = (compact?.warnings || []).some(warning => String(warning).includes('model_auto_compact_token_limit') && String(warning).includes('不是正安全整数'));
+  const facts = [
+    ['磁盘已配', configured == null ? (invalid || live.model_auto_compact_token_limit != null ? `无效配置（${live.model_auto_compact_token_limit ?? '当前值未知'}），请核对警告` : '默认（顶层未覆写）') : token(configured)],
+    ['默认阈值', token(compact?.default_limit)],
+    ['推算有效阈值', token(compact?.effective_limit) + (compact?.capped ? '（capped：已受窗口 / 阈值上限约束）' : '')],
+  ];
+  $('codex-compact-facts').innerHTML = '<dl>' + facts.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join('') + '</dl>';
+  const source = compact?.context_source === 'explicit' ? '显式配置' : compact?.context_source === 'catalog' ? '本地模型目录' : '未知';
+  const warnings = Array.isArray(compact?.warnings) ? compact.warnings : [];
+  $('codex-compact-warnings').textContent = `推算依据：上下文窗口 ${token(compact?.context_window)}（来源：${source}）；不是当前会话实测值。` + (warnings.length ? ' ' + warnings.join(' ') : '');
+  const gate = codexCompactGate(), busy = savingCodexCompact || !!codexCompactLoadTask;
+  input.disabled = !!gate || busy;
+  $('codex-compact-save').disabled = !!gate || busy || !codexCompactDraft.dirty;
+  $('codex-compact-auto').disabled = !!gate || busy;
+  $('codex-compact-reload').disabled = !online || busy;
+  panel.setAttribute('aria-busy', String(busy));
+  input.setAttribute('aria-invalid', String(!!codexCompactError));
+  const conflict = codexCompactDraft.revision !== live.revision;
+  const status = $('codex-compact-status');
+  status.textContent = gate || (savingCodexCompact ? '正在保存磁盘阈值…' : codexCompactLoadTask ? '正在重新读取磁盘阈值…'
+    : codexCompactError || (conflict ? '磁盘配置已变化；草稿和原版本保留，保存将按原版本校验。请重新读取、核对后手动保存。'
+      : codexCompactMessage || (codexCompactDraft.dirty ? '阈值草稿未保存；自动刷新不会覆盖。' : '磁盘阈值已读取；尚未改动配置。')));
+  status.classList.toggle('err', !!gate || !!codexCompactError);
+  status.classList.toggle('warn', !gate && !codexCompactError && conflict);
+}
+function setCodexCompactValue(value) {
+  if (!codexCompactDraft) return;
+  codexCompactDraft.value = String(value); codexCompactDraft.dirty = true;
+  $('codex-compact-input').value = codexCompactDraft.value;
+  codexCompactEditRevision++; codexCompactError = ''; codexCompactMessage = '';
+  renderCodexCompact();
+}
+async function loadCodexCompact() {
+  if (!online || savingCodexCompact || codexCompactLoadTask) return;
+  const editRevision = codexCompactEditRevision;
+  if (codexCompactDraft?.dirty && !await askConfirm('重新读取 Codex 阈值', '保留当前阈值草稿，重新读取磁盘配置与版本。请核对新事实，再手动保存；这一步不会写入配置。', '读取并核对')) return;
+  if (editRevision !== codexCompactEditRevision || savingCodexCompact || codexCompactLoadTask) return;
+  const sequence = ++codexCompactLoadSequence, slotRevision = codexSlotRevision;
+  codexCompactLoadTask = api('/api/codex/config'); renderCodexCompact();
+  try {
+    const result = await codexCompactLoadTask;
+    if (sequence !== codexCompactLoadSequence || slotRevision !== codexSlotRevision) return;
+    const live = result.codex;
+    if (!live?.compaction || !Object.hasOwn(live.compaction, 'configured') || typeof live.revision !== 'string') throw new Error('服务端未返回阈值与磁盘版本');
+    state.live.codex = live; codexSlotRevision++; codexCompactStateRevision++; codexCompactReadError = '';
+    if (editRevision === codexCompactEditRevision) {
+      codexCompactDraft = codexCompactDraft?.dirty ? { ...codexCompactDraft, revision: live.revision }
+        : { value: codexCompactInitial(live), revision: live.revision, dirty: false };
+      $('codex-compact-input').value = codexCompactDraft.value;
+      codexCompactError = ''; codexCompactMessage = codexCompactDraft.dirty ? '已重新读取磁盘；草稿保留，请核对后手动保存。' : '已重新读取磁盘；尚未改动配置。';
+    } else codexCompactMessage = '读取期间的新草稿和原版本保留；请再次重新读取、核对后保存。';
+    renderProviders();
+  } catch (e) {
+    if (sequence === codexCompactLoadSequence && slotRevision === codexSlotRevision) codexCompactReadError = '读取失败：' + e.message + '。草稿保留，请重新读取后保存。';
+  } finally { codexCompactLoadTask = null; renderCodexCompact(); }
+}
+async function saveCodexCompact(forcedValue) {
+  if (curApp !== 'codex' || savingCodexCompact || codexCompactLoadTask || !codexCompactDraft) return;
+  const gate = codexCompactGate();
+  if (gate) { codexCompactError = gate; renderCodexCompact(); return; }
+  if (forcedValue !== 'auto' && !codexCompactDraft.dirty) return;
+  const raw = forcedValue === 'auto' ? 'auto' : codexCompactDraft.value.trim().toLowerCase();
+  const match = raw.match(/^(\d+)(?:\.(\d+))?([km])?$/);
+  const scale = match?.[3] === 'm' ? 6 : match?.[3] === 'k' ? 3 : 0;
+  const fraction = (match?.[2] || '').replace(/0+$/, '');
+  const digits = match && (!match[2] || match[3]) && fraction.length <= scale ? (match[1] + fraction.padEnd(scale, '0')).replace(/^0+/, '') || '0' : '';
+  const value = digits && digits.length <= 16 ? Number(digits) : NaN;
+  if (raw !== 'auto' && (!Number.isSafeInteger(value) || value <= 0)) {
+    codexCompactError = '请输入 auto 或正整数 tokens（支持 k / m 简写）。'; renderCodexCompact(); return;
+  }
+  const revision = codexCompactDraft.revision, editRevision = codexCompactEditRevision;
+  const live = state.live.codex, target = live.config_file || live.config_path || APPS.codex.cfg;
+  const meaning = raw === 'auto' ? '只删除顶层 model_auto_compact_token_limit，恢复 Codex 默认；不禁用自动压缩' : `将顶层 model_auto_compact_token_limit 设为 ${value} tokens`;
+  if (!await askConfirm('保存 Codex 自动压缩阈值', `${meaning}。\n目标文件：${target}（原文件自动备份）。不改上下文窗口、模型槽位或其他配置。\nCodex 上限为上下文窗口的 90%；profile、项目或 CLI 可能覆盖。磁盘保存不会热改活会话；客户端需重新读取配置（必要时重新打开）并新开会话。`, raw === 'auto' ? '恢复默认' : '保存阈值')) return;
+  if (codexCompactGate() || savingCodexCompact || codexCompactLoadTask) { renderCodexCompact(); return; }
+  if (editRevision !== codexCompactEditRevision || revision !== codexCompactDraft.revision) {
+    codexCompactError = '确认期间阈值草稿已变化，请重新确认当前值。'; renderCodexCompact(); return;
+  }
+  const slotRevision = codexSlotRevision;
+  savingCodexCompact = true; codexCompactError = ''; codexCompactMessage = ''; renderCodexCompact();
+  try {
+    const result = await api('/api/codex/config', { method: 'POST', body: JSON.stringify({ action: 'compact_threshold', model_auto_compact_token_limit: raw === 'auto' ? 'auto' : raw, revision }) });
+    if (!result.ok || !result.codex?.compaction || typeof result.codex.revision !== 'string'
+      || result.codex.compaction.configured !== (raw === 'auto' ? null : value)) throw new Error('响应未确认磁盘阈值，可能已写盘；请重新读取核对');
+    const editedDuring = codexCompactEditRevision !== editRevision;
+    const slotsChanged = codexSlotRevision !== slotRevision;
+    state.live.codex = slotsChanged ? { ...state.live.codex, revision: result.codex.revision,
+      model_auto_compact_token_limit: result.codex.model_auto_compact_token_limit, compaction: result.codex.compaction } : result.codex;
+    codexSlotRevision++; codexCompactStateRevision++;
+    codexCompactDraft = editedDuring ? { ...codexCompactDraft, revision: result.codex.revision }
+      : { value: codexCompactInitial(result.codex), revision: result.codex.revision, dirty: false };
+    if (!editedDuring) $('codex-compact-input').value = codexCompactDraft.value;
+    codexCompactMessage = (raw === 'auto' ? '已恢复磁盘默认；只删除顶层阈值，不禁用压缩。' : '阈值已保存到磁盘。')
+      + ' 客户端需重新读取配置并新开会话；不会热改活会话。'
+      + (editedDuring ? ' 后续编辑仍在草稿中。' : '')
+      + (slotsChanged ? ' 槽位同时变化，请重新读取核对磁盘事实。' : '');
+    const warnings = [...(Array.isArray(result.warnings) ? result.warnings : []), ...(result.codex.compaction.warnings || [])];
+    toastWithBackupWarnings(codexCompactMessage, { warnings });
+    renderSlots(); renderProviders(); renderOverviewPage();
+  } catch (e) {
+    codexCompactError = e.status === 409 ? '磁盘版本冲突（409）；阈值草稿和原版本保留，未保存。请重新读取、核对后手动重试。'
+      : '阈值保存失败：' + e.message + '。草稿保留。';
+    toast(codexCompactError, 'err');
+  } finally { savingCodexCompact = false; renderCodexCompact(); }
 }
 function renderCodexSlotStatus() {
   const live = state.live?.codex || {}, name = codexSlotStatus.name;
@@ -1056,6 +1191,7 @@ function renderCodexSlotStatus() {
 }
 function renderCodexModels(force) {
   $('codex-models').hidden = !state || curApp !== 'codex';
+  renderCodexCompact();
   if (!state || curApp !== 'codex') return;
   renderCodexConfig(); renderCodexSlotStatus();
   const rows = ['main', 'reviewer'].map(name => codexSlotRow(
@@ -1063,8 +1199,12 @@ function renderCodexModels(force) {
   )).join('');
   const fields = $('codex-model-fields');
   const focused = fields.contains(document.activeElement) ? document.activeElement.id : '';
-  if (fields.innerHTML !== rows && (force || !focused)) {
-    fields.innerHTML = rows;
+  if (fields._codexRows !== rows && (force || !focused)) {
+    const compactPanel = $('codex-compact-panel');
+    // 主模型后放同一个面板节点:保持键盘顺序与视觉顺序一致,且重绘槽位时不拆掉阈值草稿。
+    if (compactPanel?.parentElement === fields && $('codex-models').appendChild) $('codex-models').appendChild(compactPanel);
+    fields.innerHTML = rows; fields._codexRows = rows;
+    if ($('codex-slot-main')?.after && compactPanel) $('codex-slot-main').after(compactPanel);
     if (focused) $(focused)?.focus();
   }
   for (const name of ['main', 'reviewer']) {
@@ -1111,7 +1251,7 @@ function renderSlots(force) {
 async function putSlot(app, name, value) {
   if (!online) { toast('控制台离线，未保存槽位改动', 'err'); renderSlots(true); return false; }
   if (slotBusy(app, name)) return false;
-  const key = app + ':' + name;
+  const key = app + ':' + name, compactStateRevision = codexCompactStateRevision;
   slotSaving.add(key);
   if (app === 'codex') { codexSlotStatus.name = name; codexSlotStatus.error = ''; }
   renderSlots(true);
@@ -1119,7 +1259,8 @@ async function putSlot(app, name, value) {
     const r = await api('/api/slots', { method: 'PUT', body: JSON.stringify({ [app]: { [name]: value } }) });
     if (r?.slots) state.slots = r.slots;
     if (app === 'codex') {
-      if (r?.live?.codex) state.live.codex = r.live.codex;
+      if (r?.live?.codex) state.live.codex = compactStateRevision === codexCompactStateRevision ? r.live.codex
+        : { ...r.live.codex, revision: state.live.codex.revision, model_auto_compact_token_limit: state.live.codex.model_auto_compact_token_limit, compaction: state.live.codex.compaction };
       codexSlotRevision++;
       renderProviders(); renderOverviewPage();
     } else await refresh();
@@ -1487,7 +1628,7 @@ function markRoutesDirty() { routesDirty = true; routesRevision++; updateRouteSt
 const routeInput = e => { if (!$('compact-panel').contains(e.target) && !$('compact-window-panel').contains(e.target) && e.target.matches('input, select')) markRoutesDirty(); };
 $('view-routes').addEventListener('input', routeInput);
 $('view-routes').addEventListener('change', routeInput);
-window.addEventListener('beforeunload', e => { if (routesDirty || compactDirty || windowDirty || routingDirty || (activeDialog?.id === 'mask')) { e.preventDefault(); e.returnValue = ''; } });
+window.addEventListener('beforeunload', e => { if (routesDirty || compactDirty || windowDirty || codexCompactDraft?.dirty || routingDirty || (activeDialog?.id === 'mask')) { e.preventDefault(); e.returnValue = ''; } });
 function renderRoutes() {
   if (!routesDraft) return;
   const focused = document.activeElement;

@@ -405,6 +405,28 @@ SSE。一次请求的上游调用总上界是 `MIXR_MAX_ATTEMPTS` + `MIXR_CONV_R
   `claude --continue` 继续。
 - 窗口值不是最终触发 token 数,还受客户端策略和模型上限影响;本控件不修改压缩禁用开关。
 
+**Codex 自动压缩阈值**在 Codex 页面单独编辑,不共用 Claude 的窗口控件。
+`GET /api/codex/config` 返回磁盘快照与 `codex.compaction`;
+`POST /api/codex/config` 接受
+`{action:"compact_threshold", model_auto_compact_token_limit:250000, revision:"当前版本"}`。
+取值为正安全整数 token 数,或 `250k` / `0.5m` 等字符串;`auto` / `null` 只删除顶层阈值键,
+不是关闭自动压缩。缺少值、零、负数、布尔、对象、非整数 token 数和溢出均在写入前拒绝。
+
+- 只改所选全局 Codex 配置里的 `model_auto_compact_token_limit`,不改模型、推理强度、
+  `model_context_window`、目录、权限、MCP、其它客户端或压缩路由。
+- 保存沿用 Codex 的私有备份、原子替换与 revision 冲突检查;版本已变返回 409,
+  当前明确选择 profile 时拒绝全局写入。profile、项目与命令行覆盖不在本控件范围内。
+- `compaction` 的 `configured` / `default_limit` / `effective_limit` 是磁盘推算,不是运行测量。
+  已知窗口优先取显式窗口,显式值按目录 `max_context_window` 截断;
+  未显式配置时取当前已同步目录的 `context_window`,缺少时才取 `max_context_window`。
+  阈值上限是窗口的 90%,而可用上下文百分比(通常 95%)不是压缩公式。
+  目录自带阈值作为模型默认;显式阈值覆盖默认,两者仍受已知 90% 上限约束。
+  配置值超限仍原样保存,`capped` 和提示标明推算有效值,不静默扩大窗口。
+- 窗口/默认值未知时返回 `null` 并说明上限未确认,不复制其它模型的 1M 或内置回退值。
+  自动同步槽位会保留显式阈值,不会为了新模型改写它。
+- 保存只更新磁盘,需 Codex 重新读取配置;重新打开客户端并新建会话是明确的读取方式。
+  不重启客户端、不热改活会话,服务升级本身也不自动写入某个数值。
+
 ---
 
 ## 7. 只读诊断(explain)

@@ -548,8 +548,27 @@ summary::marker { color: var(--border-strong); }
 .connection-details { margin: 0 0 14px; }
 .connection-details > summary { padding: 6px 0; }
 
-.codex-models { padding: 4px 0 14px; margin-bottom: 14px; border-bottom: 1px solid var(--border-soft); }
-.codex-models .model-fields { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.codex-models { display: grid; gap: 14px; padding: 4px 0 14px; margin-bottom: 14px; border-bottom: 1px solid var(--border-soft); }
+.codex-models > .hint { order: -1; }
+.codex-models .model-fields { display: contents; }
+#codex-slot-main { order: 0; }
+#codex-compact-panel { order: 1; }
+#codex-slot-reviewer { order: 2; }
+.codex-models .model-actions { order: 3; }
+#codex-config-details { order: 4; }
+.codex-compact { padding: 12px 14px; background: var(--panel); border: 1px solid var(--border-soft); border-radius: var(--radius); min-width: 0; }
+.codex-compact-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin-bottom: 10px; }
+.codex-compact-head h3 { font-size: 14px; }
+.codex-compact .hint { font-size: 13px; line-height: 1.65; }
+.codex-compact-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; }
+.codex-compact-controls .field { flex: 0 1 240px; }
+.codex-compact-facts dl { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 10px 0; }
+.codex-compact-facts dl > div { min-width: 0; }
+.codex-compact-facts dt { display: inline; font-size: 13px; color: var(--dim); }
+.codex-compact-facts dd { display: inline; margin-left: 6px; font-size: 13px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+#codex-compact-status { margin-top: 6px; }
+#codex-compact-status.err { color: var(--err-text); }
+#codex-compact-status.warn { color: var(--warn-text); }
 .codex-slot-line { display: grid; grid-template-columns: 216px minmax(0, 1fr) minmax(0, 1fr) auto 32px; align-items: end; }
 .codex-slot-line > .field { min-width: 0; }
 .codex-slot-line > .slot-ident { align-self: center; }
@@ -1151,7 +1170,7 @@ body[data-connection=offline] .card.cur { border-color: var(--border); }
   .grid { gap: 0; }
   .card { padding: 14px 18px; gap: 8px; }
   .current-config { grid-template-columns: 2fr 1.2fr 1fr; }
-  .codex-models .model-fields { grid-template-columns: minmax(0, 1fr); }
+  .codex-models .model-fields { display: contents; }
   .codex-models .config-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   @media (max-width: 640px) {
     .current-config { grid-template-columns: 1fr; gap: 0; }
@@ -1243,6 +1262,9 @@ body[data-connection=offline] .card.cur { border-color: var(--border); }
   .codex-slot-line { grid-template-columns: minmax(0, 1fr) 32px; }
   .codex-slot-line > .field { grid-column: 1 / -1; min-width: 0; }
   .codex-slot-line .slot-state { grid-column: 1; }
+  .codex-compact-controls .field { flex-basis: 100%; }
+  .codex-compact-controls button { flex: 1 1 auto; }
+  .codex-compact-facts dl { flex-direction: column; gap: 4px; }
   .banner { flex-wrap: wrap; }
   .banner button { margin-left: 0; }
   .filters { display: grid; grid-template-columns: minmax(0, 1fr); width: 100%; }
