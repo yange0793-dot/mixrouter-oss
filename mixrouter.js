@@ -785,9 +785,18 @@ function modelList() {
     seen.add(k);
     data.push({ id, object: 'model', owned_by: owner });
   };
-  for (const p of store.codex) if (p.enabled !== false && p.model) add(p.model, p.name);
+  for (const p of store.codex) {
+    if (p.enabled === false) continue;
+    for (const model of [p.model, ...(Array.isArray(p.models) ? p.models : [])]) {
+      if (typeof model === 'string' && model.trim()) add(model.trim(), p.name);
+    }
+  }
   for (const [name, s] of Object.entries(slotMap.codex || {})) {
-    if (s && s.provider) add(slotAlias('codex', name), 'slot:' + name);
+    if (!s || !s.provider) continue;
+    add(slotAlias('codex', name), 'slot:' + name);
+    const resolved = resolveSlot('codex', slotAlias('codex', name));
+    if (resolved?.provider && resolved.provider.enabled !== false && resolved.model)
+      add(resolved.model, resolved.provider.name);
   }
   for (const r of [...(routes.rules || []), routes.default || {}]) {
     if (!r) continue;

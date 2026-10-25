@@ -84,7 +84,7 @@ test('槽位 CRUD:校验、部分更新、null 删除、落盘 slots.json', asyn
   assert.equal(haiku.model, 'deepseek-v4-flash');
   const worker = r.data.slots.codex.find(s => s.name === 'worker');
   assert.equal(worker.alias, 'mixr-worker');
-  assert.equal(worker.model, 'gpt-6'); // Codex 槽落点 = 渠道自带模型
+  assert.equal(worker.model, 'gpt-6'); // 未覆盖时继承渠道默认模型
   assert.ok(fs.existsSync(path.join(TMP, 'slots.json')), 'slots.json 已落盘');
 
   // 部分更新:同组其它槽不受影响;null 删除
@@ -96,6 +96,110 @@ test('槽位 CRUD:校验、部分更新、null 删除、落盘 slots.json', asyn
   const st = JSON.parse(fs.readFileSync(path.join(TMP, 'slots.json'), 'utf8'));
   assert.equal(st.version, 1);
   assert.ok(st.claude.haiku && !st.claude.opus);
+});
+
+test('Codex 独立模型:保存、冷启动重载、同会话双槽转发保留各自落点', async () => {
+  const body = { codex: { main: { provider: 'ca', model: ' custom-main ' },
+    reviewer: { provider: 'ca', model: 'custom-review' } } };
+  const put = await api('/api/slots', body, 'PUT');
+  assert.equal(put.status, 200);
+  const file = path.join(TMP, 'slots.json');
+  const disk = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.deepEqual(disk.codex, { main: { provider: 'ca', model: 'custom-main' },
+    reviewer: { provider: 'ca', model: 'custom-review' } });
+  fs.writeFileSync(path.join(TMP, 'providers.json'), JSON.stringify({ version: 2, ...mod._state.store }));
+  const { spawnSync } = require('node:child_process');
+  const child = spawnSync(process.execPath, ['-e', `
+    const router = require(${JSON.stringify(path.resolve(__dirname, '../mixrouter.js'))});
+    console.log(JSON.stringify({ map: router._state.slotMap, slots: router.slotsPublic(),
+      main: router.resolveRoute('mixr-main', {}, 'codex').model,
+      reviewer: router.resolveRoute('mixr-reviewer', {}, 'codex').model }));
+  `], { env: process.env, encoding: 'utf8', timeout: 10000 });
+  assert.equal(child.status, 0, child.stderr);
+  const loaded = JSON.parse(child.stdout);
+  assert.deepEqual(loaded.map.codex, disk.codex);
+  assert.equal(loaded.main, 'custom-main');
+  assert.equal(loaded.reviewer, 'custom-review');
+  assert.deepEqual(loaded.slots.codex, (await api('/api/slots', null, 'GET')).data.slots.codex);
+  hits.length = 0;
+  for (const name of ['main', 'reviewer']) {
+    const result = await request(`http://127.0.0.1:${proxyPort()}/v1/responses`, 'POST',
+      { model: 'mixr-' + name, input: 'hi' }, { 'session-id': 'independent-slots' });
+    assert.equal(result.status, 200);
+    assert.equal(result.headers['x-mixrouter-model'], 'custom-' + (name === 'main' ? 'main' : 'review'));
+    assert.equal(hits.at(-1).body.model, result.headers['x-mixrouter-model']);
+    assert.equal(hits.at(-1).headers.authorization, 'Bearer key-c');
+  }
+  assert.equal(mod._state.store.codex[0].model, 'gpt-6', '选槽模型不能改渠道默认');
+});
+
+test('槽位模型部分更新:同渠道省略保留、换渠道省略继承、显式空串清除', async () => {
+  mod._state.store.codex.push({ ...mod._state.store.codex[0], id: 'cb', model: 'new-default' });
+  for (const [app, name, provider, alternate, fallback] of [
+    ['claude', 'opus', 'pa', 'pb', 'm-off'], ['codex', 'worker', 'ca', 'cb', 'new-default'],
+  ]) {
+    const put = value => api('/api/slots', { [app]: { [name]: value } }, 'PUT');
+    let result = await put({ provider, model: 'explicit-model' });
+    assert.equal(result.status, 200);
+    result = await put({ provider });
+    let slot = result.data.slots[app].find(item => item.name === name);
+    assert.equal(slot.model, 'explicit-model');
+    assert.equal(slot.configured_model, 'explicit-model');
+    result = await put({ provider: alternate });
+    slot = result.data.slots[app].find(item => item.name === name);
+    assert.equal(slot.model, fallback);
+    assert.equal(slot.configured_model, '');
+    await put({ provider, model: 'explicit-model' });
+    result = await put({ provider, model: '  ' });
+    slot = result.data.slots[app].find(item => item.name === name);
+    assert.equal(slot.model, app === 'claude' ? 'glm-5.3' : 'gpt-6');
+    assert.equal(slot.configured_model, '');
+    const channel = mod._state.store[app].find(item => item.id === provider);
+    if (app === 'claude') channel.models[0] = 'next-default'; else channel.model = 'next-default';
+    result = await put({ provider, dropTools: ['Bash'] });
+    assert.equal(result.data.slots[app].find(item => item.name === name).model, 'next-default', '继承不能固化旧默认');
+  }
+});
+
+test('槽位坏 model 类型:两组都回 400,整份补丁不改内存、磁盘或客户端', async () => {
+  await api('/api/slots', { claude: { main: { provider: 'pa', model: 'original' } },
+    codex: { worker: { provider: 'ca', model: 'original' } } }, 'PUT');
+  const beforeMap = structuredClone(mod._state.slotMap);
+  const disk = fs.readFileSync(path.join(TMP, 'slots.json'), 'utf8');
+  const client = fs.readFileSync(process.env.MIXR_CLAUDE_SETTINGS, 'utf8');
+  for (const [app, provider, name] of [['claude', 'pa', 'main'], ['codex', 'ca', 'worker']]) {
+    for (const model of [null, 0, false, [], {}]) {
+      const body = { claude: { opus: { provider: 'pa', model: 'should-not-write' } },
+        [app]: { ...(app === 'claude' ? { opus: { provider: 'pa', model: 'should-not-write' } } : {}), [name]: { provider, model } } };
+      const result = await api('/api/slots', body, 'PUT');
+      assert.equal(result.status, 400);
+      assert.match(result.data.error, /model 必须是字符串/);
+      assert.deepEqual(mod._state.slotMap, beforeMap);
+      assert.equal(fs.readFileSync(path.join(TMP, 'slots.json'), 'utf8'), disk);
+      assert.equal(fs.readFileSync(process.env.MIXR_CLAUDE_SETTINGS, 'utf8'), client);
+      assert.equal(fs.existsSync(process.env.MIXR_CODEX_CONFIG), false, '保存槽位不创建客户端配置');
+    }
+  }
+});
+
+test('Codex PUT 保留备池、策略和工具过滤,显式空数组才清除', async () => {
+  mod._state.store.codex.push({ ...mod._state.store.codex[0], id: 'cb' });
+  const put = value => api('/api/slots', { codex: { worker: value } }, 'PUT');
+  let result = await put({ provider: 'ca', model: 'target', pool: [{ provider: 'cb', model: 'backup' }],
+    strategy: 'round_robin', dropTools: [' Bash '] });
+  assert.equal(result.status, 200);
+  result = await put({ provider: 'ca', model: 'next-target' });
+  let slot = result.data.slots.codex[0];
+  assert.deepEqual(slot.pool, [{ provider: 'cb', model: 'backup' }]);
+  assert.equal(slot.strategy, 'round_robin');
+  assert.deepEqual(slot.dropTools, ['Bash']);
+  assert.equal(mod.resolveSlot('codex', 'mixr-worker').rule.pool[0].model, 'next-target');
+  result = await put({ provider: 'ca', pool: [], dropTools: [] });
+  slot = result.data.slots.codex[0];
+  assert.equal(slot.model, 'next-target');
+  assert.deepEqual(slot.pool, []);
+  assert.deepEqual(slot.dropTools, []);
+  assert.equal(mod._state.slotMap.codex.worker.strategy, undefined);
 });
 
 test('别名解析:精确命中、优先于规则、未知别名落回普通路由', () => {
@@ -278,6 +382,29 @@ test('PUT /api/slots 落盘失败:接口回 500,且内存与盘都不许变(此�
   assert.equal(r.status, 500, `夹具:这次写入必须失败(实得 ${r.status} ${r.text})`);
   assert.equal(live(), 'ORIGINAL', '内存必须回滚 —— 槽位解析读的是内存,不然"保存失败"当场就生效了');
   assert.equal(onDisk(), 'ORIGINAL', '盘上当然也不能变');
+});
+
+test('Codex 槽模型保存失败回滚:有效模型、显式覆盖与备池均保持原样', async () => {
+  mod._state.store.codex.push({ ...mod._state.store.codex[0], id: 'cb' });
+  const value = { provider: 'ca', model: 'original-target', pool: [{ provider: 'cb', model: 'backup-target' }],
+    strategy: 'priority', dropTools: ['Bash'] };
+  assert.equal((await api('/api/slots', { codex: { worker: value } }, 'PUT')).status, 200);
+  const before = structuredClone(mod._state.slotMap);
+  const file = path.join(TMP, 'slots.json');
+  const disk = fs.readFileSync(file, 'utf8');
+  const realRename = fs.renameSync;
+  fs.renameSync = (from, to) => {
+    if (String(to) === file) throw Object.assign(new Error('simulated'), { code: 'EIO' });
+    return realRename(from, to);
+  };
+  let result;
+  try { result = await api('/api/slots', { codex: { worker: { provider: 'ca', model: 'changed-target' } } }, 'PUT'); }
+  finally { fs.renameSync = realRename; }
+  assert.equal(result.status, 500);
+  assert.deepEqual(mod._state.slotMap, before);
+  assert.equal(fs.readFileSync(file, 'utf8'), disk);
+  assert.equal(mod.resolveRoute('mixr-worker', {}, 'codex').model, 'original-target');
+  assert.equal(mod.slotsPublic().codex[0].configured_model, 'original-target');
 });
 
 test('PUT /api/routes 落盘失败:接口回 500,且内存与盘都不许变(此前内存会先动)', async () => {

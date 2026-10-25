@@ -119,6 +119,58 @@ test('Codex sync copies only known model metadata and preserves the original cat
   assert.equal(JSON.parse(fs.readFileSync(path.join(temporary, 'mixrouter-model-catalog.json'), 'utf8')).models.some(item => item.slug === 'mixr-main'), false);
 });
 
+test('Codex 目录同步按同渠道两个槽的显式模型分别复制能力', () => {
+  const reviewerModel = { ...model, slug: 'review-target', display_name: 'Reviewer', context_window: 128000,
+    supported_reasoning_levels: [{ effort: 'medium' }], input_modalities: ['text'] };
+  fs.writeFileSync(path.join(temporary, 'catalog.json'), JSON.stringify({ models: [model, reviewerModel] }));
+  router._state.slotMap.codex = { main: { provider: 'native', model: 'known-model' },
+    reviewer: { provider: 'native', model: 'review-target' } };
+  router.switchCodexRouter({ slots: true });
+  const generated = JSON.parse(fs.readFileSync(path.join(temporary, 'mixrouter-model-catalog.json'), 'utf8'));
+  assert.deepEqual(generated.models.find(item => item.slug === 'mixr-reviewer'),
+    { ...reviewerModel, slug: 'mixr-reviewer', display_name: 'mixr-reviewer · review-target' });
+  const live = router.liveState().codex;
+  assert.equal(live.main.target, 'known-model');
+  assert.equal(live.reviewer.target, 'review-target');
+  assert.equal(live.reviewer.context_window, 128000);
+  assert.deepEqual(live.reviewer.reasoning_levels, ['medium']);
+  assert.equal(live.reviewer.catalog_match, true);
+  assert.equal(config.read(codexFile).document.get('review_model'), 'mixr-reviewer');
+  assert.equal(config.read(codexFile).document.get('model_reasoning_effort'), 'max');
+  assert.equal(fs.readFileSync(claudeFile, 'utf8'), originalClaude);
+  assert.equal(provider.model, 'known-model');
+});
+
+test('Codex 换槽模型后不再暴露旧别名能力,同步后目录匹配恢复', () => {
+  const alternate = { ...model, slug: 'alternate-target', context_window: 128000,
+    supported_reasoning_levels: [{ effort: 'medium' }] };
+  fs.writeFileSync(path.join(temporary, 'catalog.json'), JSON.stringify({ models: [model, alternate] }));
+  router.updateCodexConfig({ action: 'sync_catalog', revision: router.liveState().codex.revision });
+  router._state.slotMap.codex.main.model = 'alternate-target';
+  let live = router.liveState().codex;
+  assert.equal(live.main.catalog_match, false);
+  assert.equal(live.main.target, 'alternate-target');
+  assert.equal(live.main.metadata_source, 'alternate-target');
+  assert.equal(live.main.context_window, 128000);
+  assert.deepEqual(live.main.reasoning_levels, ['medium']);
+  const before = fs.readFileSync(codexFile, 'utf8');
+  assert.throws(() => router.updateCodexConfig({ action: 'reasoning', model_reasoning_effort: 'ultra', revision: live.revision }),
+    error => error.statusCode === 400, '不能按旧模型档位接受保存');
+  assert.equal(fs.readFileSync(codexFile, 'utf8'), before);
+  router.updateCodexConfig({ action: 'sync_catalog', revision: live.revision });
+  live = router.liveState().codex;
+  assert.equal(live.main.catalog_match, true);
+  assert.equal(live.main.metadata_source, 'mixr-main');
+  assert.deepEqual(live.main.reasoning_levels, ['medium']);
+  router._state.slotMap.codex.main.model = 'unknown-target';
+  live = router.liveState().codex;
+  assert.equal(live.main.catalog_match, false);
+  assert.equal(live.main.context_window, null);
+  assert.deepEqual(live.main.reasoning_levels, []);
+  assert.equal(live.main.metadata_source, '');
+  assert.ok(live.warnings.some(warning => warning.includes('落点能力未知')));
+});
+
 test('Codex stale revision and invalid reasoning are rejected without writes', () => {
   const version = router.liveState().codex.revision;
   fs.appendFileSync(codexFile, '\n# external change\n');

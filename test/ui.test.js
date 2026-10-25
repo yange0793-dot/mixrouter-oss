@@ -92,6 +92,16 @@ async function harness(data = fixture(), opts = {}) {
       for (const match of value.matchAll(/<(input|select|button|div|label)\b[^>]*\bid="([^"]+)"[^>]*>/g)) {
         const el = new Element(match[2], match[1]); el.parentElement = this; elements.set(el.id, el);
         el.value = match[0].match(/\bvalue="([^"]*)"/)?.[1] || '';
+        el.disabled = /\sdisabled(?:\s|>)/.test(match[0]);
+        for (const handler of match[0].matchAll(/\bon(\w+)="([^"]*)"/g)) {
+          const code = handler[2].replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+          el.events[handler[1]] = [event => inlineRun(code, el, event)];
+        }
+        if (match[1] === 'select') {
+          const options = value.slice(match.index + match[0].length).split('</select>')[0];
+          const selected = [...options.matchAll(/<option\b([^>]*)>/g)].find(option => /\bselected\b/.test(option[1]));
+          el.value = (selected || /<option\b([^>]*)>/.exec(options))?.[1].match(/\bvalue="([^"]*)"/)?.[1] || '';
+        }
       }
     }
     get innerHTML() { return this._html || ''; }
@@ -200,10 +210,19 @@ async function harness(data = fixture(), opts = {}) {
           if (!patch || typeof patch !== 'object') continue;
           for (const [name, val] of Object.entries(patch)) {
             if (val === null) { const i = slots[app].findIndex(s => s.name === name); if (i >= 0) slots[app].splice(i, 1); continue; }
-            const entry = slots[app].find(s => s.name === name);
-            if (entry) Object.assign(entry, val);
+            let entry = slots[app].find(s => s.name === name);
+            if (!entry) { entry = { name, alias: 'mixr-' + name }; slots[app].push(entry); }
+            const previousProvider = entry.provider;
+            Object.assign(entry, val);
+            if (opts.persistSlots) {
+              const p = data.providers[app].find(p => p.id === entry.provider);
+              entry.configured_model = Object.hasOwn(val, 'model') ? val.model : previousProvider === val.provider ? entry.configured_model || '' : '';
+              entry.model = entry.configured_model || (app === 'codex' ? p?.model : p?.models?.[0]) || '';
+              entry.provider_name = p?.name || ''; entry.enabled = !!p?.enabled;
+            }
           }
         }
+        if (opts.persistSlots) data.slots = structuredClone(slots);
         return { ok: true, json: async () => ({ ok: true, slots: structuredClone(slots) }) };
       }
       if (url.startsWith('/api/compact/window')) {
@@ -268,7 +287,11 @@ async function harness(data = fixture(), opts = {}) {
     },
   });
   const run = code => vm.runInContext(code, context);
-  inlineRun = code => run(`(function(event){${code}})({ preventDefault(){} })`);
+  inlineRun = (code, element, event = { preventDefault() {} }) => {
+    context.__inlineElement = element; context.__inlineEvent = event; context.__inlineCode = code;
+    // eval 的完成值让测试等待行内异步动作,事件里的 this / event 仍是实际控件。
+    return run('(function(event){return eval(__inlineCode)}).call(__inlineElement,__inlineEvent)');
+  };
   script.runInContext(context);
   await run('refreshTask');
   return {
@@ -1153,6 +1176,222 @@ test('Codex main/reviewer selectors are always visible and save independently', 
   assert.equal(h.get('codex-models').hidden, true);
 });
 
+function codexSlotsFixture() {
+  const data = fixture();
+  data.providers.codex[0].models = ['gpt-test', 'gpt-review', 'gpt-test'];
+  data.providers.codex.push({ id: 'o3', name: 'Other upstream', model: 'gpt-other', models: ['gpt-other-extra'], enabled: true });
+  data.slots.codex = ['main', 'reviewer', 'worker'].map(name => ({
+    name, alias: 'mixr-' + name, provider: 'o1', provider_name: 'Beta', enabled: true, model: 'gpt-test', configured_model: '',
+  }));
+  data.live.codex = { router: true, model: 'gpt-raw-default', review_model: 'gpt-raw-review', match: true, base_url: data.router.codex_base, revision: 'codex-one',
+    main: { reasoning_levels: ['low', 'high'] }, model_reasoning_effort: 'high' };
+  return data;
+}
+
+test('Codex channel and target model controls are separate for fixed and custom slots', async () => {
+  const h = await harness(codexSlotsFixture(), { persistSlots: true });
+  h.run("setApp('codex')");
+  for (const name of ['main', 'reviewer', 'worker']) {
+    assert.equal(h.get('slot-model-codex-' + name).value, '', 'explicit inherit remains selected instead of effective target');
+    assert.equal(h.get('codex-model-' + name).value, 'o1');
+  }
+  assert.match(h.get('codex-model-fields').innerHTML, /落点模型/);
+  assert.match(h.get('codex-model-fields').innerHTML, /渠道默认模型：gpt-test/);
+  assert.equal((h.get('codex-model-fields').innerHTML.match(/value="gpt-test"/g) || []).length, 2, 'candidate list deduplicates channel default');
+  const reviewer = h.get('slot-model-codex-reviewer'); reviewer.value = 'gpt-review';
+  await reviewer.events.change[0]();
+  assert.deepEqual(h.requests.findLast(r => r.url === '/api/slots').body, { codex: { reviewer: { provider: 'o1', model: 'gpt-review' } } });
+  assert.equal(h.data.providers.codex[0].model, 'gpt-test', 'selecting a target never edits channel default');
+  assert.equal(h.data.slots.codex.find(s => s.name === 'main').configured_model, '');
+  assert.equal(h.get('slot-model-codex-reviewer').value, 'gpt-review');
+  assert.equal(h.get('slot-model-codex-main').value, '');
+  const worker = h.get('slot-model-codex-worker'); worker.value = 'gpt-review';
+  await worker.events.change[0]();
+  assert.equal(h.data.slots.codex.find(s => s.name === 'worker').configured_model, 'gpt-review');
+  assert.match(h.get('codex-config-details').innerHTML, /gpt-raw-default/);
+  assert.match(h.get('codex-model-status').textContent, /路由落点已保存/);
+  assert.equal(h.requests.some(r => r.url === '/api/router/codex'), false, 'saving a slot never applies aliases');
+});
+
+test('Codex slot badge distinguishes raw native defaults from aliases already written', async () => {
+  const data = codexSlotsFixture(); data.live.codex.review_model = 'mixr-reviewer';
+  const h = await harness(data); h.run("setApp('codex')");
+  const fields = h.get('codex-model-fields').innerHTML;
+  const main = fields.split('reviewer · 审查模型')[0];
+  const reviewer = fields.split('reviewer · 审查模型')[1];
+  assert.match(main, /未应用/);
+  assert.match(reviewer, /已写入/);
+  assert.match(h.get('codex-config-details').innerHTML, /gpt-raw-default/);
+  assert.equal(h.get('slot-model-codex-main').value, '');
+  h.data.live.codex.model = 'mixr-main'; await h.run('refresh()');
+  assert.equal((h.get('codex-model-fields').innerHTML.match(/已写入/g) || []).length, 2);
+});
+
+test('Codex candidate registry is independent of channel default and saved with trimmed deduped models', async () => {
+  const h = await harness(codexSlotsFixture()); h.run("setApp('codex'); openProvider('o1')");
+  assert.equal(h.get('m-model').value, 'gpt-test');
+  assert.equal(h.get('m-models-list').innerHTML, '');
+  assert.match(h.get('m-codex-models-list').innerHTML, /gpt-review/);
+  h.run("modelDraft=[{value:' gpt-review ',editing:false},{value:'gpt-extra',editing:false},{value:'gpt-review',editing:false}]");
+  await h.run('saveProvider()');
+  const request = h.requests.findLast(r => r.url === '/api/providers/o1' && r.method === 'PUT');
+  assert.equal(request.body.model, 'gpt-test');
+  assert.deepEqual(request.body.models, ['gpt-review', 'gpt-extra']);
+  const fresh = await harness(); fresh.run("setApp('codex'); openProvider()");
+  fresh.get('m-name').value = 'New'; fresh.get('m-base').value = 'https://new.example'; fresh.get('m-key').value = 'sk-test';
+  fresh.run("modelDraft=[{value:'candidate-only',editing:false}]");
+  await fresh.run('saveProvider()');
+  assert.equal(fresh.requests.some(r => r.url === '/api/providers' && r.method === 'POST'), false, 'candidate does not fill required default');
+  assert.equal(fresh.get('m-model').value, '');
+});
+
+test('Codex same channel keeps override, new channel resets default and empty model explicitly inherits', async () => {
+  const data = codexSlotsFixture();
+  Object.assign(data.slots.codex[0], { model: 'handwritten', configured_model: 'handwritten' });
+  const h = await harness(data, { persistSlots: true }); h.run("setApp('codex')");
+  assert.equal(h.get('slot-model-codex-main').value, 'handwritten');
+  await h.run("setSlot('codex','main','provider','o1')");
+  assert.equal(h.data.slots.codex[0].configured_model, 'handwritten');
+  assert.deepEqual(h.requests.findLast(r => r.url === '/api/slots').body, { codex: { main: { provider: 'o1' } } });
+  await h.run("setSlot('codex','main','model','')");
+  assert.deepEqual(h.requests.findLast(r => r.url === '/api/slots').body, { codex: { main: { provider: 'o1', model: '' } } });
+  assert.equal(h.data.slots.codex[0].model, 'gpt-test');
+  await h.run("setSlot('codex','main','provider','o3')");
+  assert.equal(h.get('slot-model-codex-main').value, '');
+  assert.equal(h.data.slots.codex[0].model, 'gpt-other');
+  assert.match(h.get('codex-model-fields').innerHTML, /gpt-other-extra/);
+});
+
+test('Codex custom editor handles Escape, Enter and blur once, preserving typing across poll and other slot save', async () => {
+  const h = await harness(codexSlotsFixture(), { persistSlots: true }); h.run("setApp('codex')");
+  const count = () => h.requests.filter(r => r.url === '/api/slots' && r.method === 'PUT').length;
+  h.run("onSlotModelPick('codex','main','__custom__')");
+  let input = h.get('slot-model-codex-main');
+  input.value = 'unfinished'; input.events.input[0]();
+  await h.run('refresh()');
+  assert.equal(h.get('slot-model-codex-main'), input);
+  await h.run("setSlot('codex','reviewer','model','gpt-review')");
+  input = h.get('slot-model-codex-main');
+  assert.equal(input.value, 'unfinished', 'forced render from another slot keeps custom draft');
+  const beforeEscape = count();
+  input.events.keydown[0]({ key: 'Escape', target: input });
+  assert.equal(count(), beforeEscape);
+  assert.equal(h.run('slotModelEdit.codex'), null);
+  h.run("onSlotModelPick('codex','main','__custom__')");
+  input = h.get('slot-model-codex-main'); input.value = 'custom-main';
+  await input.events.keydown[0]({ key: 'Enter', target: input, preventDefault() {} });
+  input.events.blur[0]();
+  assert.equal(count(), beforeEscape + 1, 'Enter does not cause a second blur write');
+  assert.equal(h.data.slots.codex[0].configured_model, 'custom-main');
+  h.run("onSlotModelPick('codex','worker','__custom__')");
+  input = h.get('slot-model-codex-worker'); input.value = 'custom-worker';
+  await input.events.blur[0]();
+  assert.equal(h.data.slots.codex[2].configured_model, 'custom-worker');
+  assert.equal(h.run('slotModelEdit.codex'), null);
+});
+
+test('Codex save errors restore old channel and target without a false saved state', async () => {
+  const h = await harness(codexSlotsFixture(), { persistSlots: true }); h.run("setApp('codex')");
+  h.run("globalThis.originalSlotFetch = fetch; fetch = async (url, opt) => { if (url === '/api/slots') throw new Error('simulated slot failure'); return originalSlotFetch(url,opt); }");
+  await h.run("setSlot('codex','main','provider','o3')");
+  assert.equal(h.get('codex-model-main').value, 'o1');
+  await h.run("setSlot('codex','main','model','gpt-review')");
+  assert.equal(h.get('slot-model-codex-main').value, '');
+  assert.equal(h.run('slotSaving.size'), 0);
+  assert.match(h.get('codex-model-status').textContent, /保存失败/);
+  assert.match(h.get('toast').textContent, /simulated slot failure/);
+  assert.equal(h.data.slots.codex[0].model, 'gpt-test');
+});
+
+test('Deleted and disabled Codex channels stay truthful and offline controls stop writes', async () => {
+  const data = codexSlotsFixture();
+  data.slots.codex[0].provider = 'deleted-id'; data.slots.codex[0].enabled = false;
+  data.slots.codex[1].provider = 'o2'; data.slots.codex[1].enabled = false;
+  const h = await harness(data); h.run("setApp('codex')");
+  assert.equal(h.get('codex-model-main').value, 'deleted-id');
+  assert.equal(h.get('codex-model-reviewer').value, 'o2');
+  assert.match(h.get('codex-model-fields').innerHTML, /原渠道已删除/);
+  assert.match(h.get('codex-model-fields').innerHTML, /渠道停用/);
+  const count = h.requests.length;
+  await h.run("setSlot('codex','main','provider','o2')");
+  assert.equal(h.requests.length, count);
+  h.run("onSlotModelPick('codex','worker','__custom__')");
+  const input = h.get('slot-model-codex-worker'); input.value = 'offline-draft'; input.events.input[0]();
+  h.disconnect(); await h.run('refresh()');
+  assert.equal(h.get('codex-model-worker').disabled, true);
+  assert.equal(h.get('slot-model-codex-worker').disabled, true);
+  assert.equal(h.get('slot-model-codex-worker').value, 'offline-draft');
+  assert.equal(h.get('codex-model-apply').disabled, true);
+  const writes = h.requests.filter(r => r.method !== 'GET').length;
+  await h.run("setSlot('codex','worker','model','gpt-review')");
+  assert.equal(h.requests.filter(r => r.method !== 'GET').length, writes);
+});
+
+test('Codex empty main can be created and new slot validation cannot overwrite existing slots', async () => {
+  const data = codexSlotsFixture(); data.slots.codex = [];
+  const h = await harness(data, { persistSlots: true }); h.run("setApp('codex')");
+  await h.run("setSlot('codex','main','provider','o1')");
+  assert.equal(h.data.slots.codex[0].model, 'gpt-test');
+  assert.equal(h.get('slot-model-codex-main').value, '');
+  for (const name of ['main', 'reviewer', 'bad/name', 'toolong-toolong-toolong-toolong']) {
+    const before = h.requests.length;
+    h.get('slot-new-name').value = name; h.get('slot-new-provider').value = 'o1';
+    await h.run('addCodexSlot()');
+    assert.equal(h.requests.length, before);
+  }
+  h.get('slot-new-name').value = 'worker'; h.get('slot-new-provider').value = 'o1';
+  await h.run('addCodexSlot()');
+  assert.equal(h.data.slots.codex.find(s => s.name === 'worker').configured_model, '');
+  assert.equal(h.get('slot-new-name').value, '');
+  h.get('slot-new-name').value = 'worker'; h.get('slot-new-provider').value = 'o3';
+  const before = h.requests.length; await h.run('addCodexSlot()');
+  assert.equal(h.requests.length, before);
+});
+
+test('Codex alias apply pins shown config revision and slot bindings across confirmation', async () => {
+  for (const change of ['revision', 'slot', 'offline']) {
+    const h = await harness(codexSlotsFixture()); h.run("setApp('codex')");
+    const pending = h.run('applySlotsClaude()');
+    assert.equal(h.get('confirm-mask').classList.contains('show'), true);
+    if (change === 'revision') h.data.live.codex.revision = 'codex-two';
+    if (change === 'slot') h.data.slots.codex[0].model = 'external-target';
+    if (change === 'offline') h.disconnect();
+    await h.run('refresh()'); h.run('finishConfirm(true)'); await pending;
+    assert.equal(h.requests.some(r => r.url === '/api/router/codex'), false, change + ' invalidates confirmation');
+    assert.match(h.get('toast').textContent, /确认期间/);
+  }
+  const h = await harness(codexSlotsFixture()); h.run("setApp('codex')");
+  await h.confirm('applySlotsClaude()');
+  assert.deepEqual(h.requests.findLast(r => r.url === '/api/router/codex').body, { slots: true, revision: 'codex-one' });
+});
+
+test('Codex reasoning keeps first displayed revision and guards config/draft changes during confirmation', async () => {
+  const h = await harness(codexSlotsFixture()); h.run("setApp('codex')");
+  const control = h.get('codex-reasoning'); control.focus();
+  h.data.live.codex.revision = 'codex-two'; await h.run('refresh()');
+  control.value = 'low'; control.events.change[0]();
+  assert.equal(h.run('codexConfigRevisionDraft'), 'codex-one', 'handler pins displayed revision, not latest polled state');
+  await h.run("saveCodexConfig('reasoning')");
+  assert.equal(h.requests.some(r => r.url === '/api/codex/config'), false);
+  h.run('reloadCodexReasoning()');
+  assert.equal(h.run('codexReasoningDraft'), null);
+  assert.equal(h.get('codex-config-controls').dataset.revision, 'codex-two');
+  for (const change of ['revision', 'draft', 'offline']) {
+    const next = await harness(codexSlotsFixture()); next.run("setApp('codex'); setCodexReasoning('low','codex-one')");
+    const pending = next.run("saveCodexConfig('reasoning')");
+    if (change === 'revision') { next.data.live.codex.revision = 'codex-two'; await next.run('refresh()'); }
+    if (change === 'draft') next.run("setCodexReasoning('high','codex-one')");
+    if (change === 'offline') { next.disconnect(); await next.run('refresh()'); }
+    next.run('finishConfirm(true)'); await pending;
+    assert.equal(next.requests.some(r => r.url === '/api/codex/config'), false, change);
+    assert.notEqual(next.run('codexReasoningDraft'), null);
+  }
+  const clean = await harness(codexSlotsFixture()); clean.run("setApp('codex'); setCodexReasoning('low','codex-one')");
+  await clean.confirm("saveCodexConfig('reasoning')");
+  assert.deepEqual(clean.requests.findLast(r => r.url === '/api/codex/config').body,
+    { action: 'reasoning', revision: 'codex-one', model_reasoning_effort: 'low' });
+});
+
 test('provider overview resolves configured slots without claiming a live request result', async () => {
   const data = fixture();
   data.live.codex = { router: true, model: 'mixr-main', base_url: 'http://127.0.0.1:8787/v1', match: true };
@@ -1359,11 +1598,11 @@ test('generated handlers compile safely for quotes, apostrophes, and HTML in pro
 });
 
 test('槽位落点模型是下拉:渠道模型列全可选,换渠道当场换清单,未登记的模型名走「自定义模型…」', async () => {
-  const h = await harness();
+  const h = await harness(fixture(), { persistSlots: true });
   h.run("setApp('claude')");
   const before = h.get('slots-rows').innerHTML;
   // 必须是 select:datalist 会被 Chromium 按输入框已有内容过滤,填了值就只剩一个候选,等于没法挑
-  assert.match(before, /<select aria-label="main 槽模型" onchange="onSlotModelPick\('claude','main',this\.value\)">/);
+  assert.match(before, /<select aria-label="main 槽模型" onchange="onSlotModelPick\('claude','main',this\.value\)"/);
   assert.match(before, /<option value="claude-special" selected>claude-special<\/option>/);
   assert.match(before, /<option value="__custom__">自定义模型…<\/option>/);
   assert.doesNotMatch(before, /claude-old/);
@@ -1377,9 +1616,8 @@ test('槽位落点模型是下拉:渠道模型列全可选,换渠道当场换清
   assert.doesNotMatch(after, /claude-special/);
   assert.match(after, /<select aria-label="subagent 槽模型" disabled><option>（先选渠道）<\/option><\/select>/);
   // 渠道清单里没有的模型名:选「自定义模型…」切输入框后照样能提交
-  // (夹具的 /api/state 是静态的,refresh 会把槽位表还原成初始值,所以这里只断言提交内容)
   h.run("onSlotModelPick('claude','main','__custom__')");
-  assert.match(h.get('slots-rows').innerHTML, /<input type="text" aria-label="main 槽模型" list="slot-models-main" value="claude-special"/);
+  assert.match(h.get('slots-rows').innerHTML, /<input type="text" aria-label="main 槽模型" list="slot-models-main" value="claude-old"/);
   h.run("slotModelKey({ key: 'Escape', target: {} }, 'claude', 'main')");
   assert.equal(h.run('slotModelEdit.claude'), null);
   assert.match(h.get('slots-rows').innerHTML, /<select aria-label="main 槽模型"/, 'Esc 退出输入框,回到下拉');

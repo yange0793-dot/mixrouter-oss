@@ -120,6 +120,7 @@ for (const id of ['m-base', 'm-key', 'm-wire', 'm-wire-claude', 'm-direct']) {
 }
 
 function setConnection(connected, error = '') {
+  const changed = online !== connected;
   online = connected; document.body.dataset.connection = connected ? 'online' : 'offline';
   $('connection-label').textContent = connected ? '控制台已连接' : '控制台离线';
   $('connection-banner').classList.toggle('show', !connected);
@@ -131,6 +132,7 @@ function setConnection(connected, error = '') {
   $('add-rule').disabled = !routesDraft;
   // 会话覆盖弹窗:离线、没读到服务端版本、或正在保存时,三扇门都封掉
   if (typeof updateRoutingButtons === 'function') updateRoutingButtons();
+  if (changed && state) renderSlots(true);
 }
 function renderOverview() {
   const ps = allProviders(), stats = state.stats || {};
@@ -179,7 +181,7 @@ function refresh() {
       setConnection(false, e.message);
       // 离线时概览与渠道页都要重画:它们显示的"客户端接入状态"按 online 判断,
       // 不重画就会留着上一份快照说"已写入配置",而连接横幅同时在说离线。
-      renderOverviewPage();
+      renderOverviewPage(); renderSlots();
       if (view === 'providers') renderProviders();
       return false;
     }
@@ -190,7 +192,7 @@ function refresh() {
 // 标签页在后台时不轮询:没人看的状态没必要每 5 秒打一次 /api/state,切回来立刻补一次。
 setInterval(() => { if (document.hidden) return; refresh(); }, 5000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
-window.addEventListener('offline', () => { setConnection(false, '网络连接已断开'); renderProviders(); });
+window.addEventListener('offline', () => { setConnection(false, '网络连接已断开'); renderProviders(); renderSlots(); });
 window.addEventListener('online', refresh);
 
 const VIEWS = ['overview', 'usage', 'providers', 'harness', 'routes', 'sessions', 'diagnostics', 'settings'];
@@ -558,8 +560,8 @@ function openProvider(id) {
   $('m-model').value = editing?.model || ''; $('m-wire').value = editing?.wire_api || (curApp === 'zcode' && isCodex ? zcodeWire : 'responses');
   $('m-dropimg').checked = !!editing?.drop_images;
   // 下拉候选 = 本组渠道登记过的模型名(含正在编辑这条自己的),手写的新名字会临时并进来
-  modelCandidates = [...new Set(providers(editingGroup).flatMap(p => p.models || []))].sort();
-  modelDraft = (editing?.models || []).map(m => ({ value: m, editing: false }));
+  modelCandidates = [...new Set(providers(editingGroup).flatMap(p => [...(isCodex ? [p.model] : []), ...(p.models || [])]).filter(Boolean))].sort();
+  modelDraft = (editing?.models || (isCodex && editing?.model ? [editing.model] : [])).map(m => ({ value: m, editing: false }));
   renderModelDraft();
   $('m-wire-claude').value = editing?.wire_api === 'responses' ? 'responses' : editing?.wire_api === 'chat' ? 'chat' : 'anthropic';
   $('m-note').value = editing?.note || ''; $('m-enabled').checked = editing ? !!editing.enabled : true;
@@ -672,7 +674,7 @@ function resetModelDiscovery() {
   discoveryState.controller = null; discoveryState.loading = false; discoveryState.fetchKeyId = '';
   const search = $('m-model-search'); if (search) search.value = '';
   if ($('m-discovery-hint')) $('m-discovery-hint').textContent = editingGroup === 'codex'
-    ? 'Codex 渠道只把所选模型填进下方「模型」字段；获取列表本身不会覆盖它，保存仍需手动点「保存渠道」。'
+    ? '勾选的模型追加到下方候选列表，不更改默认模型；新渠道请另外填写默认模型，保存仍需手动点「保存渠道」。'
     : 'Claude 渠道会把勾选的模型追加到模型列表末尾，第一项（主模型）和已填的行都不动；保存仍需手动点「保存渠道」。';
   updateFetchButton(false);
   setDiscoveryStatus(DISCOVERY_DEFAULT_STATUS);
@@ -688,7 +690,7 @@ function updateDiscoveryApplyButton() {
   const add = $('m-model-add-selected'); if (!add) return;
   const n = discoveryState.selected.length;
   add.disabled = !n || discoveryState.loading;
-  add.textContent = (editingGroup === 'codex' ? '填入所选模型' : '加入模型列表') + (n ? `（${n}）` : '');
+  add.textContent = '加入模型列表' + (n ? `（${n}）` : '');
 }
 // 勾选只同步已有复选框与按钮,整块重绘会把键盘焦点从刚按下的那一行甩掉。
 function syncDiscoverySelectionDom() {
@@ -713,23 +715,15 @@ function toggleDiscoveryModel(index, checked) {
   const model = discoveryState.models[index];
   if (typeof model !== 'string') return;
   const chosen = new Set(discoveryState.selected);
-  if (checked) {
-    if (editingGroup === 'codex') chosen.clear(); // Codex 只有一个模型字段:单选
-    chosen.add(model);
-  } else chosen.delete(model);
+  if (checked) chosen.add(model);
+  else chosen.delete(model);
   discoveryState.selected = discoveryState.models.filter(m => chosen.has(m));
   syncDiscoverySelectionDom();
 }
 function applyDiscoverySelection() {
   const picked = discoveryState.models.filter(m => discoveryState.selected.includes(m));
   if (!picked.length) return setDiscoveryStatus('先勾选要使用的模型', 'err');
-  if (editingGroup === 'codex') {
-    if (!$('m-model')) return;
-    $('m-model').value = picked[0];
-    setDiscoveryStatus(`已把 ${picked[0]} 填进「模型」字段；保存渠道后才会写进渠道库`, 'ok');
-    return;
-  }
-  // 追加而不是替换:第一项是主模型,手填的行也可能还没保存,都不能被一次拉取冲掉。
+  // 追加而不是替换:Claude 第一项是主模型;Codex 默认模型是独立字段,两者都不被发现结果改写。
   const existing = new Set(modelDraft.map(r => String(r.value || '').trim()).filter(Boolean));
   let added = 0;
   for (const m of picked) if (!existing.has(m)) { modelDraft.push({ value: m, editing: false }); existing.add(m); added++; }
@@ -770,7 +764,7 @@ async function fetchProviderModels() {
     discoveryState.models = models; discoveryState.selected = []; discoveryState.query = '';
     if ($('m-model-search')) $('m-model-search').value = '';
     renderModelDiscovery();
-    setDiscoveryStatus(models.length ? `已获取 ${models.length} 个模型，勾选后${editingGroup === 'codex' ? '填入模型' : '加入模型列表'}` : '上游返回了空的模型列表', models.length ? 'ok' : '');
+    setDiscoveryStatus(models.length ? `已获取 ${models.length} 个模型，勾选后加入模型列表` : '上游返回了空的模型列表', models.length ? 'ok' : '');
   } catch (e) {
     if (seq !== discoveryState.seq || signature !== discoverySignature() || activeDialog?.id !== 'mask') return;
     setDiscoveryStatus(e?.name === 'AbortError' ? '请求超时，请稍后重试' : '获取失败：' + (e?.message || '网络错误'), 'err');
@@ -787,13 +781,15 @@ function modelSelectOptions(row) {
     .concat([`<option value="${MODEL_CUSTOM}">自定义模型…</option>`]).join('');
 }
 function renderModelDraft() {
-  $('m-models-list').innerHTML = modelDraft.length ? modelDraft.map((r, i) => `<div class="rc-line">
-    <label class="field" style="flex:1">模型${i === 0 ? '（主）' : ''}${r.editing
+  const isCodex = editingGroup === 'codex';
+  $(isCodex ? 'm-models-list' : 'm-codex-models-list').innerHTML = '';
+  $(isCodex ? 'm-codex-models-list' : 'm-models-list').innerHTML = modelDraft.length ? modelDraft.map((r, i) => `<div class="rc-line">
+    <label class="field" style="flex:1">模型${i === 0 && !isCodex ? '（主）' : ''}${r.editing
       ? `<input type="text" aria-label="模型${i + 1}" value="${esc(r.value)}" placeholder="模型名，可带 [1M] 后缀" spellcheck="false" autocomplete="off" oninput="modelDraft[${i}].value=this.value" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}" onblur="endModelEdit(${i},this.value)">`
       : `<select aria-label="模型${i + 1}" onchange="pickModelDraft(${i},this.value)">${modelSelectOptions(r)}</select>`}</label>
     <button type="button" class="iconbtn" aria-label="删除这个模型" onclick="removeModelDraft(${i})">×</button></div>`).join('')
     + `<datalist id="model-candidates">${[...new Set(modelCandidates)].map(m => `<option value="${esc(m)}"></option>`).join('')}</datalist>`
-    : '<p class="muted">还没有模型。点「＋ 添加模型」加一个；第一项会当主模型用。</p>';
+    : `<p class="muted">${isCodex ? '候选列表可留空；槽位仍可使用默认模型或手写模型名。' : '还没有模型。点「＋ 添加模型」加一个；第一项会当主模型用。'}</p>`;
 }
 function addModelDraft() { modelDraft.push({ value: '', editing: false }); renderModelDraft(); }
 function removeModelDraft(i) { modelDraft.splice(i, 1); renderModelDraft(); }
@@ -815,8 +811,9 @@ async function saveProvider() {
   if (!online) return toast('控制台离线，表单已保留，请连接后保存', 'err');
   if (!$('provider-form').reportValidity()) return;
   const body = { app: editingGroup, name: $('m-name').value.trim(), base_url: $('m-base').value.trim(), api_key: keyDraft.length ? '' : $('m-key').value, note: $('m-note').value, enabled: $('m-enabled').checked, direct: $('m-direct').checked };
+  body.models = [...new Set(modelDraft.map(r => String(r.value || '').trim()).filter(Boolean))];
   if (editingGroup === 'codex') { body.model = $('m-model').value.trim(); body.wire_api = $('m-wire').value; body.drop_images = $('m-dropimg').checked; }
-  else { body.models = [...new Set(modelDraft.map(r => String(r.value || '').trim()).filter(Boolean))]; body.wire_api = $('m-wire-claude').value; }
+  else body.wire_api = $('m-wire-claude').value;
   if (!body.name || !body.base_url) return toast('名称与 Base URL 必填', 'err');
   // 编辑时把多 Key 清单一起提交(留空=不改;清单清空=退回单 Key);新建渠道用上面的 API Key 一把起步
   if (editing) body.keys = keyDraft.filter(k => k.id || k.key.trim()).map(k => ({ id: k.id, label: k.label.trim(), key: k.key.trim() }));
@@ -901,20 +898,38 @@ async function testProvider(id) {
 // Codex 槽名自拟,客户端用 codex -m mixr-<槽名> 选用。别名请求优先于一切路由规则。
 const SLOT_LABELS = { main: '主模型 main', opus: 'Opus 槽', sonnet: 'Sonnet 槽', haiku: 'Haiku 槽', subagent: 'Subagent 槽' };
 const SLOT_MODEL_CUSTOM = '__custom__';
-const slotModelEdit = { claude: null };        // {name, value} 正在手写模型名的槽位（下拉切输入框）
+const slotModelEdit = { claude: null, codex: null }; // {name, value, original, provider} 手写模型草稿
+const slotSaving = new Set();
+const codexSlotDraft = { name: '', provider: '' };
+const slotConfiguredModel = s => Object.hasOwn(s, 'configured_model') ? s.configured_model || '' : s.model || '';
+const slotBusy = (app, name) => slotSaving.has(app + ':' + name);
 function onSlotModelPick(app, name, value) {
+  const s = (slotsOf()[app] || []).find(x => x.name === name);
+  if (!online || !s?.provider || slotBusy(app, name)) return;
   if (value === SLOT_MODEL_CUSTOM) {
-    const s = (slotsOf()[app] || []).find(x => x.name === name);
-    slotModelEdit[app] = { name, value: (s && s.model) || '' };   // 记下原值,失焦时才知道有没有真改
-    return renderSlots(true);
+    const original = slotConfiguredModel(s);
+    slotModelEdit[app] = { name, value: original, original, provider: s.provider };
+    renderSlots(true);
+    $('slot-model-' + app + '-' + name)?.focus();
+    return;
   }
   slotModelEdit[app] = null;
   return setSlot(app, name, 'model', value);
 }
+function updateSlotModelDraft(app, name, value) {
+  if (slotModelEdit[app]?.name === name) slotModelEdit[app].value = value;
+}
 async function commitSlotModel(app, name, value) {
+  const edit = slotModelEdit[app];
+  const s = (slotsOf()[app] || []).find(x => x.name === name);
+  if (!edit || edit.name !== name || slotBusy(app, name)) return false;
+  if (s?.provider !== edit.provider) {
+    toast('槽位渠道已变化，手写模型未保存；请重新选择渠道', 'err');
+    return false;
+  }
   slotModelEdit[app] = null;
   const ok = await setSlot(app, name, 'model', (value || '').trim());
-  renderSlots(true);         // 立刻收回输入框换成下拉,别等下一轮轮询(焦点还停在表内,轮询守卫会跳过重绘)
+  renderSlots(true);
   return ok;
 }
 // 回车直接提交,不必先点走焦点
@@ -927,51 +942,64 @@ function slotModelKey(ev, app, name) {
 function endSlotModelEdit(app, name, value) {
   const e = slotModelEdit[app];
   if (!e || e.name !== name) return;
+  if (value !== e.original) return commitSlotModel(app, name, value);
   slotModelEdit[app] = null;
-  if (value !== e.value) commitSlotModel(app, name, value);
 }
 const slotsOf = () => state?.slots || { claude: [], codex: [] };
 function slotChannelOptions(sel, group) {
-  return '<option value="">(未配置)</option>' + providers(group).map(p => {
-    // 渠道当前生效的 Key(账号)一并显示:渠道库里切换后,槽位这一行跟着变
-    const act = (p.keys || []).find(k => k.id === p.active_key) || (p.keys || [])[0];
-    return `<option value="${esc(p.id)}" ${p.id === sel ? 'selected' : ''}>${esc(p.name)}${act ? ' · ' + esc(act.label) : ''}${p.enabled ? '' : '（停用）'}</option>`;
-  }).join('');
+  const missing = sel && !providers(group).some(p => p.id === sel);
+  return `<option value="" ${sel ? '' : 'selected'}>(未配置)</option>`
+    + (missing ? `<option value="${esc(sel)}" selected disabled>原渠道已删除（${esc(sel)}）</option>` : '')
+    + providers(group).map(p => {
+      // 渠道当前生效的 Key(账号)一并显示:渠道库里切换后,槽位这一行跟着变
+      const act = (p.keys || []).find(k => k.id === p.active_key) || (p.keys || [])[0];
+      return `<option value="${esc(p.id)}" ${p.id === sel ? 'selected' : ''} ${group === 'codex' && !p.enabled ? 'disabled' : ''}>${esc(p.name)}${act ? ' · ' + esc(act.label) : ''}${p.enabled ? '' : '（停用）'}</option>`;
+    }).join('');
 }
 function slotBadge(s, liveRouter) {
   if (!s.provider) return '<span class="badge off">未配置</span>';
+  if (!providers(curApp).some(p => p.id === s.provider)) return '<span class="badge off">渠道已删除</span>';
   if (!s.enabled) return '<span class="badge off">渠道停用</span>';
   if (curApp === 'claude') {
     if (!liveRouter) return '<span class="badge info">已配置 · 未切路由</span>';
     const env = state.live?.claude?.slots?.[s.name] || '';
     return env === s.alias ? '<span class="badge on">已写入</span>' : '<span class="badge drift">未同步</span>';
   }
-  return '<span class="badge info">已配置</span>';
+  const live = state.live?.codex || {};
+  const configuredAlias = s.name === 'main' ? live.model : s.name === 'reviewer' ? live.review_model : '';
+  if (['main', 'reviewer'].includes(s.name)) {
+    const applied = online && !live.error && live.router && configuredAlias === s.alias;
+    return `<span class="badge ${applied ? 'on' : 'drift'}">${applied ? '已写入' : '未应用'}</span>`;
+  }
+  return '<span class="badge info">路由已保存</span>';
 }
-function claudeSlotRow(s) {
-  const ch = providers('claude').find(p => p.id === s.provider);
-  const known = [...new Set((ch && ch.models) || [])];
-  const cur = s.model || '';
-  // 落点模型是下拉:渠道模型列表 + 当前值(可能是手写的未登记模型名)+「自定义模型…」。
-  // 不要退回 datalist——Chromium 会按输入框已有内容过滤候选,填了值就只剩那一个,等于没法挑;
-  // 想写渠道清单里没有的模型名,走最后一项切输入框(服务端只校验字符串,不比对渠道模型表)
+function slotModelCell(s, app) {
+  const ch = providers(app).find(p => p.id === s.provider);
+  const known = [...new Set([...(app === 'codex' ? [ch?.model] : []), ...(ch?.models || [])].filter(Boolean))];
+  const cur = slotConfiguredModel(s), edit = slotModelEdit[app];
+  const locked = !online || slotBusy(app, s.name);
+  const id = `slot-model-${app}-${s.name}`;
+  // 下拉始终列全候选;未登记模型走手写输入,不让 datalist 按旧值过滤掉其他候选。
   const options = [
-    `<option value="" ${cur ? '' : 'selected'}>（渠道第一个模型）</option>`,
+    `<option value="" ${cur ? '' : 'selected'}>${app === 'codex' ? '（渠道默认模型：' + esc(ch?.model || '未配置') + '）' : '（渠道第一个模型）'}</option>`,
     ...known.map(m => `<option value="${esc(m)}" ${m === cur ? 'selected' : ''}>${esc(m)}</option>`),
     ...(cur && !known.includes(cur) ? [`<option value="${esc(cur)}" selected>${esc(cur)}（自定义）</option>`] : []),
     `<option value="${SLOT_MODEL_CUSTOM}">自定义模型…</option>`,
   ].join('');
-  const suggestions = [...new Set([...(cur ? [cur] : []), ...known])]
-    .map(m => `<option value="${esc(m)}"></option>`).join('');
-  const modelCell = !s.provider
-    ? `<select aria-label="${esc(s.name)} 槽模型" disabled><option>（先选渠道）</option></select>`
-    : slotModelEdit.claude?.name === s.name
-      ? `<input type="text" aria-label="${esc(s.name)} 槽模型" list="slot-models-${esc(s.name)}" value="${esc(cur)}" placeholder="模型名，可带 [1M] 后缀" spellcheck="false" autocomplete="off" onkeydown="slotModelKey(event,'claude','${s.name}')" onchange="commitSlotModel('claude','${s.name}',this.value)" onblur="endSlotModelEdit('claude','${s.name}',this.value)"><datalist id="slot-models-${esc(s.name)}">${suggestions}</datalist>`
-      : `<select aria-label="${esc(s.name)} 槽模型" onchange="onSlotModelPick('claude','${s.name}',this.value)">${options}</select>`;
+  if (!s.provider) return `<select aria-label="${esc(s.name)} 槽模型" disabled><option>（先选渠道）</option></select>`;
+  if (edit?.name === s.name) {
+    const list = app === 'claude' ? 'slot-models-' + s.name : 'slot-models-codex-' + s.name;
+    const suggestions = [...new Set([...(cur ? [cur] : []), ...known])].map(m => `<option value="${esc(m)}"></option>`).join('');
+    return `<input type="text" aria-label="${esc(s.name)} 槽模型" list="${esc(list)}" value="${esc(edit.value)}" id="${esc(id)}" placeholder="模型名${app === 'claude' ? '，可带 [1M] 后缀' : ''}" spellcheck="false" autocomplete="off" oninput="updateSlotModelDraft('${app}','${s.name}',this.value)" onkeydown="slotModelKey(event,'${app}','${s.name}')" onblur="endSlotModelEdit('${app}','${s.name}',this.value)" ${locked ? 'disabled' : ''}><datalist id="${esc(list)}">${suggestions}</datalist>`;
+  }
+  return `<select aria-label="${esc(s.name)} 槽模型" onchange="onSlotModelPick('${app}','${s.name}',this.value)" id="${esc(id)}" ${locked ? 'disabled' : ''}>${options}</select>`;
+}
+function claudeSlotRow(s) {
+  const locked = !online || slotBusy('claude', s.name);
   return slotLine(s,
-    `<select aria-label="${esc(s.name)} 槽渠道" onchange="setSlot('claude','${s.name}','provider',this.value)">${slotChannelOptions(s.provider, 'claude')}</select>`,
-    modelCell, slotBadge(s, !!state.live?.claude?.router),
-    s.provider ? `<button class="iconbtn" aria-label="清空 ${esc(s.name)} 槽" onclick="clearSlot('claude','${s.name}')">×</button>` : '');
+    `<select aria-label="${esc(s.name)} 槽渠道" onchange="setSlot('claude','${s.name}','provider',this.value)" ${locked ? 'disabled' : ''}>${slotChannelOptions(s.provider, 'claude')}</select>`,
+    slotModelCell(s, 'claude'), slotBadge(s, !!state.live?.claude?.router),
+    s.provider ? `<button class="iconbtn" aria-label="清空 ${esc(s.name)} 槽" onclick="clearSlot('claude','${s.name}')" ${locked ? 'disabled' : ''}>×</button>` : '');
 }
 // 全局与会话槽位共用原有行布局;差异只在控件的读写范围。
 function slotLine(s, providerCell, modelCell, badge, clear, attributes = '') {
@@ -984,17 +1012,29 @@ function slotLine(s, providerCell, modelCell, badge, clear, attributes = '') {
   </div>`;
 }
 function codexSlotRow(s) {
-  return `<div class="rc-line">
-    <label class="field slot-ident">${esc(s.name)}<span class="mono">${esc(s.alias)} · codex -m ${esc(s.alias)}</span></label>
-    <label class="field" style="flex:2">渠道<select aria-label="${esc(s.name)} 渠道" onchange="setSlot('codex','${s.name}','provider',this.value)">${slotChannelOptions(s.provider, 'codex')}</select></label>
-    <span style="align-self:center">${slotBadge(s, false)}</span>
-    ${s.provider ? `<button class="iconbtn" aria-label="删除 ${esc(s.name)} 槽" onclick="clearSlot('codex','${s.name}')">×</button>` : ''}
+  const locked = !online || slotBusy('codex', s.name);
+  const label = s.name === 'main' ? 'main · 主模型' : s.name === 'reviewer' ? 'reviewer · 审查模型' : s.name;
+  return `<div class="rc-line codex-slot-line">
+    <div class="field slot-ident">${esc(label)}<span class="mono">${esc(s.alias)}</span></div>
+    <label class="field">渠道<select id="codex-model-${esc(s.name)}" aria-label="${esc(s.name)} 渠道" onchange="setSlot('codex','${s.name}','provider',this.value)" ${locked ? 'disabled' : ''}>${slotChannelOptions(s.provider, 'codex')}</select></label>
+    <label class="field">落点模型${slotModelCell(s, 'codex')}</label>
+    <span class="slot-state">${slotBadge(s, false)}</span>
+    ${s.provider ? `<button class="iconbtn" aria-label="删除 ${esc(s.name)} 槽" onclick="clearSlot('codex','${s.name}')" ${locked ? 'disabled' : ''}>×</button>` : ''}
   </div>`;
 }
-let codexModelSaving = false;
 let codexConfigSaving = false;
 let codexReasoningDraft = null;
 let codexConfigRevisionDraft = '';
+let codexReasoningRevision = 0;
+function setCodexReasoning(value, revision) {
+  if (codexReasoningDraft === null) codexConfigRevisionDraft = revision;
+  codexReasoningDraft = value; codexReasoningRevision++;
+}
+function reloadCodexReasoning() {
+  if (codexConfigSaving) return;
+  codexReasoningDraft = null; codexConfigRevisionDraft = ''; codexReasoningRevision++;
+  renderCodexConfig(true);
+}
 function renderCodexConfig(force) {
   const live = state?.live?.codex || {};
   const main = live.main || {}, reviewer = live.reviewer || {};
@@ -1011,25 +1051,35 @@ function renderCodexConfig(force) {
   const disabled = !online || !live.revision || !!live.error || !!live.profile || codexConfigSaving;
   const effort = codexReasoningDraft === null ? live.model_reasoning_effort || '' : codexReasoningDraft;
   const levels = [...new Set([...(main.reasoning_levels || []), ...(effort ? [effort] : [])])];
-  const controls = `<label class="reasoning-control" for="codex-reasoning">推理档位<select id="codex-reasoning" onchange="codexReasoningDraft=this.value;codexConfigRevisionDraft=state.live.codex.revision" ${disabled ? 'disabled' : ''}><option value="" ${!effort ? 'selected' : ''}>自动</option>${levels.map(level => `<option value="${esc(level)}" ${level === effort ? 'selected' : ''}>${esc(level)}</option>`).join('')}</select></label><button class="small" id="codex-reasoning-save" onclick="saveCodexConfig('reasoning')" ${disabled ? 'disabled' : ''}>保存推理设置</button><button class="small" id="codex-catalog-sync" onclick="saveCodexConfig('sync_catalog')" ${disabled || !live.model_catalog_json ? 'disabled' : ''}>同步模型能力目录</button>`;
+  const controls = `<label class="reasoning-control" for="codex-reasoning">推理档位<select id="codex-reasoning" onchange="setCodexReasoning(this.value,${handlerArg(live.revision || '')})" ${disabled ? 'disabled' : ''}><option value="" ${!effort ? 'selected' : ''}>自动</option>${levels.map(level => `<option value="${esc(level)}" ${level === effort ? 'selected' : ''}>${esc(level)}</option>`).join('')}</select></label><button class="small" id="codex-reasoning-save" onclick="saveCodexConfig('reasoning')" ${disabled ? 'disabled' : ''}>保存推理设置</button><button class="small" id="codex-reasoning-reload" onclick="reloadCodexReasoning()" ${codexConfigSaving ? 'disabled' : ''}>重新载入推理设置</button>${codexReasoningDraft !== null && codexConfigRevisionDraft !== live.revision ? '<span class="msg" role="status">配置已变化；草稿保留，请重新载入后再保存。</span>' : ''}<button class="small" id="codex-catalog-sync" onclick="saveCodexConfig('sync_catalog')" ${disabled || !live.model_catalog_json ? 'disabled' : ''}>同步模型能力目录</button>`;
   const container = $('codex-config-controls');
-  if (container.innerHTML !== controls && (force || !container.contains(document.activeElement))) container.innerHTML = controls;
+  if (container.innerHTML !== controls && (force || !container.contains(document.activeElement))) {
+    container.innerHTML = controls;
+    container.dataset.revision = live.revision || '';
+  }
+  $('codex-reasoning').disabled = disabled;
+  $('codex-reasoning-save').disabled = disabled;
+  $('codex-catalog-sync').disabled = disabled || !live.model_catalog_json;
 }
 async function saveCodexConfig(action) {
-  if (curApp !== 'codex' || !online || codexConfigSaving || !state?.live?.codex?.revision) return;
+  if (curApp !== 'codex' || !online || codexConfigSaving || !state?.live?.codex?.revision || state.live.codex.error || state.live.codex.profile) return;
   const live = state.live.codex;
-  const effort = $('codex-reasoning').value;
-  const body = { action, revision: action === 'reasoning' && codexConfigRevisionDraft ? codexConfigRevisionDraft : live.revision,
+  const effort = codexReasoningDraft === null ? $('codex-reasoning').value : codexReasoningDraft;
+  const draftRevision = codexReasoningRevision;
+  const body = { action, revision: action === 'reasoning' && codexConfigRevisionDraft ? codexConfigRevisionDraft : $('codex-config-controls').dataset.revision,
     ...(action === 'reasoning' ? { model_reasoning_effort: effort || null } : {}) };
   const message = action === 'sync_catalog'
     ? '从你现有的模型目录复制已知落点的能力到 mixr 别名，保留原目录；未知模型不猜测。Codex 需重启生效。'
     : `仅把 Codex 全局推理档位改为「${effort || '自动'}」，保留模型、MCP、插件和权限设置。原文件自动备份，Codex 需重启生效。`;
+  if (!body.revision || body.revision !== live.revision) return toast('Codex 配置已变化；请重新载入后再保存', 'err');
   if (!await askConfirm(action === 'sync_catalog' ? '同步 Codex 模型目录' : '保存 Codex 推理设置', message, '保存')) return;
+  if (curApp !== 'codex' || !online || codexConfigSaving || state.live?.codex?.revision !== body.revision || state.live.codex.error || state.live.codex.profile || draftRevision !== codexReasoningRevision)
+    return toast('确认期间 Codex 配置或草稿已变化；请重新确认', 'err');
   codexConfigSaving = true; renderCodexConfig(true);
   try {
     const result = await api('/api/codex/config', { method: 'POST', body: JSON.stringify(body) });
     if (result?.codex) state.live.codex = result.codex;
-    codexReasoningDraft = null; codexConfigRevisionDraft = '';
+    if (draftRevision === codexReasoningRevision) { codexReasoningDraft = null; codexConfigRevisionDraft = ''; }
     toast('Codex 配置已保存；重启 Codex 后生效', 'ok');
     await refresh();
   } catch (error) { toast('Codex 配置未保存：' + error.message, 'err'); }
@@ -1039,37 +1089,26 @@ function renderCodexModels(force) {
   $('codex-models').hidden = !state || curApp !== 'codex';
   if (!state || curApp !== 'codex') return;
   renderCodexConfig(force);
-  const rows = ['main', 'reviewer'].map(name => {
-    const slot = (slotsOf().codex || []).find(s => s.name === name);
-    const selected = slot?.provider || '';
-    const options = providers('codex').filter(p => p.enabled || p.id === selected).map(p =>
-      `<option value="${esc(p.id)}" ${p.id === selected ? 'selected' : ''} ${!p.enabled ? 'disabled' : ''}>${esc(p.name)} · ${esc(p.model || '未配置模型')}${p.enabled ? '' : '（停用）'}</option>`).join('');
-    return `<label for="codex-model-${name}"><strong>${name === 'main' ? 'main · 主模型' : 'reviewer · 审查模型'}</strong><select id="codex-model-${name}" onchange="switchCodexModel('${name}',this.value)" ${!online || codexModelSaving ? 'disabled' : ''}><option value="" disabled ${!selected ? 'selected' : ''}>选择渠道与模型</option>${selected && !providers('codex').some(p => p.id === selected) ? `<option selected disabled value="${esc(selected)}">原渠道已删除</option>` : ''}${options}</select></label>`;
-  }).join('');
+  const rows = ['main', 'reviewer'].map(name => codexSlotRow(
+    (slotsOf().codex || []).find(s => s.name === name) || { name, alias: 'mixr-' + name, provider: '', model: '', configured_model: '' }
+  )).join('');
   const fields = $('codex-model-fields');
   const focused = fields.contains(document.activeElement) ? document.activeElement.id : '';
   if (fields.innerHTML !== rows && (force || !focused)) {
     fields.innerHTML = rows;
     if (focused) $(focused)?.focus();
   }
-  $('codex-model-apply').disabled = !online || codexModelSaving || !['main', 'reviewer'].every(name =>
-    (slotsOf().codex || []).some(s => s.name === name && s.provider && s.enabled && s.model));
-}
-async function switchCodexModel(name, provider) {
-  if (codexModelSaving || !online || !['main', 'reviewer'].includes(name)) return;
-  const p = providers('codex').find(p => p.id === provider && p.enabled && p.model);
-  if (!p) { renderCodexModels(true); return; }
-  codexModelSaving = true;
-  $('codex-model-status').textContent = '保存中…';
-  renderCodexModels(true);
-  try {
-    const saved = await putSlot('codex', name, { provider });
-    $('codex-model-status').textContent = saved ? `${name} 已保存：${p.name}` : '保存失败，选择未确认';
-  } finally {
-    codexModelSaving = false;
-    renderCodexModels(true);
+  $('codex-model-apply').disabled = !online || slotSaving.size > 0 || !!slotModelEdit.codex || !['main', 'reviewer'].every(name =>
+    (slotsOf().codex || []).some(s => s.name === name && s.provider && s.enabled && s.model && providers('codex').some(p => p.id === s.provider && p.enabled)));
+  for (const name of ['main', 'reviewer']) {
+    const s = (slotsOf().codex || []).find(s => s.name === name);
+    $('codex-model-' + name).disabled = !online || slotBusy('codex', name);
+    const model = $('slot-model-codex-' + name);
+    if (model) model.disabled = !online || slotBusy('codex', name) || !s?.provider;
   }
 }
+// 老页面入口仍沿用同一保存路径,不再有第二套 Codex 槽位状态。
+function switchCodexModel(name, provider) { return setSlot('codex', name, 'provider', provider); }
 function renderSlots(force) {
   renderCodexModels(force);
   const panel = $('slots-panel');
@@ -1083,14 +1122,14 @@ function renderSlots(force) {
     ? '把每个槽位绑定到「渠道 @ 模型」：应用后客户端 env 写入别名（mixr-…），该槽的所有请求——含子代理与后台任务——按槽位落点分发，优先于路由规则。落点模型从渠道模型列表里挑，要写渠道没登记的模型名就选「自定义模型…」。'
     : 'Codex 槽位是路由别名：客户端处于路由模式后，codex exec -m mixr-<槽名> 即按槽位落点分发；GET /v1/models 也会列出这些别名。';
   $('slots-apply').hidden = false;
-  $('slots-apply').disabled = !online;
+  $('slots-apply').disabled = !online || slotSaving.size > 0 || !!slotModelEdit[curApp];
   const list = slotsOf()[curApp] || [];
   const rows = isClaude
     ? list.map(claudeSlotRow).join('')
     : list.filter(s => !['main', 'reviewer'].includes(s.name)).map(codexSlotRow).join('') + `<div class="rc-line">
         <label class="field slot-ident">新槽位<span class="mono">别名 mixr-&lt;槽名&gt;</span></label>
-        <label class="field" style="flex:1">槽位名<input id="slot-new-name" placeholder="如 worker" autocomplete="off" spellcheck="false"></label>
-        <label class="field" style="flex:2">渠道<select id="slot-new-provider">${slotChannelOptions('', 'codex')}</select></label>
+        <label class="field" style="flex:1">槽位名<input id="slot-new-name" value="${esc(codexSlotDraft.name)}" oninput="codexSlotDraft.name=this.value" placeholder="如 worker" autocomplete="off" spellcheck="false" ${online ? '' : 'disabled'}></label>
+        <label class="field" style="flex:2">渠道<select id="slot-new-provider" onchange="codexSlotDraft.provider=this.value" ${online ? '' : 'disabled'}>${slotChannelOptions(codexSlotDraft.provider, 'codex')}</select></label>
         <button class="small" style="align-self:center" onclick="addCodexSlot()" ${online ? '' : 'disabled'}>＋ 添加槽位</button>
       </div>`;
   // 轮询不重绘正在操作的槽位表:内容没变跳过;焦点在表内时不打扰。force=用户刚提交槽位改动,
@@ -1103,44 +1142,74 @@ function renderSlots(force) {
   }
 }
 async function putSlot(app, name, value) {
-  if (!online) { toast('控制台离线，未保存槽位改动', 'err'); return false; }
+  if (!online) { toast('控制台离线，未保存槽位改动', 'err'); renderSlots(true); return false; }
+  if (slotBusy(app, name)) return false;
+  const key = app + ':' + name;
+  slotSaving.add(key);
+  if (app === 'codex') $('codex-model-status').textContent = `${name} 保存中…`;
+  renderSlots(true);
   try {
     const r = await api('/api/slots', { method: 'PUT', body: JSON.stringify({ [app]: { [name]: value } }) });
-    if (r?.slots) { state.slots = r.slots; renderSlots(true); }
-    await refresh(); return true;
-  }
-  catch (e) { toast('槽位保存失败：' + e.message, 'err'); return false; }
+    if (r?.slots) state.slots = r.slots;
+    await refresh();
+    if (app === 'codex') $('codex-model-status').textContent = `${name} 路由落点已保存；Codex 默认模型仍按配置文件读取`;
+    return true;
+  } catch (e) {
+    if (app === 'codex') $('codex-model-status').textContent = `${name} 保存失败，已恢复原选择`;
+    toast('槽位保存失败：' + e.message, 'err'); return false;
+  } finally { slotSaving.delete(key); renderSlots(true); }
 }
 async function setSlot(app, name, field, value) {
+  if (slotBusy(app, name)) return false;
   if (field === 'provider' && !value) return clearSlot(app, name);
   const s = (slotsOf()[app] || []).find(x => x.name === name);
-  if (!s) return;
+  if (!s && !(app === 'codex' && ['main', 'reviewer'].includes(name))) return false;
+  if (field === 'provider') {
+    const p = providers(app).find(p => p.id === value);
+    if (!p || (app === 'codex' && (!p.enabled || !p.model))) { renderSlots(true); return false; }
+    if (slotModelEdit[app]?.name === name) slotModelEdit[app] = null;
+  } else if (!s?.provider) return false;
   const val = field === 'provider'
-    ? { provider: value, ...(app === 'claude' ? { model: (providers('claude').find(p => p.id === value)?.models || [s.model])[0] || '' } : {}) }
+    ? { provider: value, ...(app === 'claude' ? { model: (providers('claude').find(p => p.id === value)?.models || [s?.model])[0] || '' } : {}) }
     : { provider: s.provider, model: value };
-  if (await putSlot(app, name, val)) toast(`槽位 ${name} 已更新`, 'ok');
+  const ok = await putSlot(app, name, val);
+  if (ok) toast(`槽位 ${name} 已更新`, 'ok');
+  return ok;
 }
 async function clearSlot(app, name) {
-  if (await putSlot(app, name, null)) toast(`槽位 ${name} 已清空`, 'ok');
+  if (slotModelEdit[app]?.name === name) slotModelEdit[app] = null;
+  const ok = await putSlot(app, name, null);
+  if (ok) toast(`槽位 ${name} 已清空`, 'ok');
+  return ok;
 }
 async function addCodexSlot() {
   const name = ($('slot-new-name').value || '').trim().toLowerCase();
   const provider = $('slot-new-provider').value;
+  codexSlotDraft.name = $('slot-new-name').value; codexSlotDraft.provider = provider;
   if (!/^[a-z0-9][a-z0-9-]{0,23}$/.test(name)) return toast('槽位名只能用小写字母、数字、连字符（≤24 位）', 'err');
-  if (!provider) return toast('请选择渠道', 'err');
-  if (await putSlot('codex', name, { provider })) { toast(`槽位 ${name} 已添加，别名 mixr-${name}`, 'ok'); $('slot-new-name').value = ''; }
+  if (['main', 'reviewer'].includes(name) || (slotsOf().codex || []).some(s => s.name === name)) return toast('槽位名已存在，请使用不同名称', 'err');
+  if (!providers('codex').some(p => p.id === provider && p.enabled && p.model)) return toast('请选择已启用且有默认模型的渠道', 'err');
+  if (await putSlot('codex', name, { provider })) {
+    toast(`槽位 ${name} 已添加，别名 mixr-${name}`, 'ok');
+    codexSlotDraft.name = ''; codexSlotDraft.provider = ''; renderSlots(true);
+  }
 }
 async function applySlotsClaude() {
   if (curApp === 'codex') {
-    if (!canConnect('codex')) return;
+    if (!canConnect('codex') || slotSaving.size || slotModelEdit.codex || codexConfigSaving) return;
     const slots = slotsOf().codex || [];
     const selected = ['main', 'reviewer'].map(name => slots.find(s => s.name === name));
-    if (selected.some(s => !s?.provider || !s.enabled || !s.model))
+    if (selected.some(s => !s?.provider || !s.enabled || !s.model || !providers('codex').some(p => p.id === s.provider && p.enabled)))
       return toast('请先配置 main 和 reviewer 槽位', 'err');
+    const revision = state.live?.codex?.revision;
+    const snapshot = JSON.stringify(selected);
     const lines = selected.map(s => `${s.alias} → ${s.provider_name} @ ${s.model}`).join('\n');
     if (!await askConfirm('应用 Codex 槽位', `${lines}\n将写入 model / review_model，原配置自动备份。重启 Codex 后生效。`, '应用并切路由')) return;
+    const latest = ['main', 'reviewer'].map(name => (slotsOf().codex || []).find(s => s.name === name));
+    if (curApp !== 'codex' || !canConnect('codex') || slotSaving.size || slotModelEdit.codex || codexConfigSaving || state.live?.codex?.revision !== revision || JSON.stringify(latest) !== snapshot)
+      return toast('确认期间 Codex 配置或槽位已变化；请重新确认', 'err');
     try {
-      await api('/api/router/codex', { method: 'POST', body: JSON.stringify({ slots: true, revision: state.live?.codex?.revision }) });
+      await api('/api/router/codex', { method: 'POST', body: JSON.stringify({ slots: true, revision }) });
       toast('Codex 槽位已写入；请重启 Codex 生效', 'ok'); await refresh();
     } catch (e) { toast('应用失败：' + e.message, 'err'); }
     return;

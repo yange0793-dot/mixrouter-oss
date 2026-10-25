@@ -369,7 +369,7 @@ test('默认「当前生效 Key」用草稿里的新 Key：编辑生效账号后
   assert.deepEqual(providerReqs(h).at(-1).body, { base_url: 'https://anthropic.example', wire_api: 'anthropic', direct: false, provider_id: 'a1', key_id: 'k1' });
 });
 
-test('Codex 渠道：获取不覆盖模型，只有显式填入才写 m-model', async () => {
+test('Codex 渠道：获取与批量追加候选都不覆盖独立默认模型', async () => {
   const h = await harness();
   h.fetchStub(async () => reply(200, { models: ['gpt-new', 'gpt-other'] }));
   h.run("curApp='codex'; openProvider('o1')");
@@ -379,11 +379,29 @@ test('Codex 渠道：获取不覆盖模型，只有显式填入才写 m-model', 
   assert.equal(providerReqs(h).at(-1).body.wire_api, 'responses');
   assert.equal(providerReqs(h).at(-1).body.base_url, 'https://openai.example/v1');
   h.run('toggleDiscoveryModel(0,true); toggleDiscoveryModel(1,true)');
-  assert.deepEqual(list(h.run('discoveryState.selected')), ['gpt-other'], 'Codex 模型字段只有一个,选择是单选');
+  assert.deepEqual(list(h.run('discoveryState.selected')), ['gpt-new', 'gpt-other']);
   h.run('applyDiscoverySelection()');
-  assert.equal(h.get('m-model').value, 'gpt-other');
-  assert.deepEqual(list(h.run('modelDraft.map(r => r.value)')), [], 'Codex 不走 Claude 的模型列表');
-  assert.equal(h.requests.some(r => r.url.startsWith('/api/providers') && r.method !== 'GET' && r.url !== '/api/providers/models'), false, '填入不等于保存');
+  assert.equal(h.get('m-model').value, 'gpt-test', '登记候选不修改渠道默认模型');
+  assert.deepEqual(list(h.run('modelDraft.map(r => r.value)')), ['gpt-test', 'gpt-new', 'gpt-other']);
+  h.run('applyDiscoverySelection()');
+  assert.deepEqual(list(h.run('modelDraft.map(r => r.value)')), ['gpt-test', 'gpt-new', 'gpt-other'], '重复追加去重');
+  assert.equal(h.requests.some(r => r.url.startsWith('/api/providers') && r.method !== 'GET' && r.url !== '/api/providers/models'), false, '追加不等于保存');
+});
+
+test('Codex 新渠道候选与默认值独立，编辑已登记渠道不丢候选', async () => {
+  const data = fixture();
+  data.providers.codex[0].models = ['gpt-test', 'registered-other'];
+  const h = await harness(data);
+  h.run("curApp='codex'; openProvider('o1')");
+  assert.deepEqual(list(h.run('modelDraft.map(r => r.value)')), ['gpt-test', 'registered-other']);
+  h.run('closeModal(); openProvider()');
+  assert.equal(h.get('m-model').value, '');
+  h.get('m-base').value = 'https://new.example'; h.get('m-key').value = 'sk-test';
+  h.fetchStub(async () => reply(200, { models: ['new-one', 'new-two'] }));
+  await h.run('fetchProviderModels()');
+  h.run('toggleDiscoveryModel(0,true); toggleDiscoveryModel(1,true); applyDiscoverySelection()');
+  assert.deepEqual(list(h.run('modelDraft.map(r => r.value)')), ['new-one', 'new-two']);
+  assert.equal(h.get('m-model').value, '', '新渠道也不自动选择默认模型');
 });
 
 test('模型获取有独立 20 秒预算，不继承 api() 的 12 秒', async () => {

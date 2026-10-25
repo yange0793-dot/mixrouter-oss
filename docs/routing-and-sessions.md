@@ -47,6 +47,14 @@ Claude Code / Codex 的全局槽位表存在 `<MIXR_DATA_DIR>/slots.json`(`{ ver
 
 **Codex 自拟槽名**:槽名须匹配 `^[a-z0-9][a-z0-9-]{0,23}$`(`CODEX_SLOT_NAME_RE`),
 如 `worker`、`reviewer`;路由模式下直接 `codex exec -m mixr-worker`。`GET /v1/models` 也会列出这些别名。
+Codex 的 `main`、`reviewer` 和自拟槽位都分别选择**渠道**与**落点模型**,可从渠道登记模型中挑选
+或填写自定义模型。显式落点只改变该槽,不会改变渠道默认 `model` 或其它槽;留空继承渠道默认值。
+`PUT /api/slots` 同渠道省略 `model` 保留原值,换渠道且省略则恢复新默认,传 `model: ""` 明确恢复继承。
+状态中的 `model` 是有效落点,`configured_model` 是显式保存的值(空串即继承)。
+
+保存槽位立即改变后续别名请求的服务端落点,**不自动改 Codex 的全局默认模型**。
+首次使用 `main` / `reviewer` 时需点「应用到 Codex」确认写入别名并重启 Codex;
+页面会分别显示槽位已保存与客户端是否已写入,避免把尚未应用的选择当作正在使用的模型。
 
 槽位落点的三条性质:
 
