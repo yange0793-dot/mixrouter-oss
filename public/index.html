@@ -258,6 +258,20 @@
           <div class="codex-models" id="codex-models" hidden>
             <p class="hint">分别选择渠道与落点模型；路由请求即时切换，Mixrouter 管理的 Codex 模型列表自动同步。不改渠道默认模型。</p>
             <div class="model-fields" id="codex-model-fields"></div>
+            <div class="codex-compact" id="codex-compact-panel" aria-labelledby="codex-compact-title">
+              <div class="codex-compact-head"><h3 id="codex-compact-title">自动压缩阈值</h3><span class="hint">只写全局阈值，不改上下文窗口</span></div>
+              <div class="codex-compact-controls">
+                <label class="field" for="codex-compact-input">阈值 tokens<input id="codex-compact-input" type="text" placeholder="auto、200k、1m" inputmode="text" autocomplete="off" spellcheck="false" aria-describedby="codex-compact-help codex-compact-status" oninput="setCodexCompactValue(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();saveCodexCompact()}"></label>
+                <button class="small primary" id="codex-compact-save" type="button" onclick="saveCodexCompact()" disabled>保存阈值</button>
+                <button class="small" id="codex-compact-auto" type="button" onclick="saveCodexCompact('auto')" disabled>恢复默认</button>
+                <button class="small" id="codex-compact-reload" type="button" onclick="loadCodexCompact()" disabled>重新读取</button>
+              </div>
+              <div id="codex-compact-facts" class="codex-compact-facts"></div>
+              <p class="hint" id="codex-compact-help">支持整数或 k / m 简写；auto 只删除顶层 model_auto_compact_token_limit，不禁用自动压缩。Codex 会将阈值限制在上下文窗口的 90% 以内。</p>
+              <p class="hint" id="codex-compact-restart">磁盘保存不会热改正在运行的会话。需让 Codex 客户端重新读取配置（必要时重新打开）并新开会话；profile、项目配置或 CLI 参数可能覆盖全局值。</p>
+              <p class="hint" id="codex-compact-warnings"></p>
+              <p id="codex-compact-status" class="hint" role="status" aria-live="polite">尚未读取磁盘阈值。</p>
+            </div>
             <div class="model-actions"><span id="codex-model-status" role="status"></span></div>
             <div id="codex-config-details"></div>
           </div>

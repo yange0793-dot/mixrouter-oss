@@ -88,9 +88,9 @@ async function harness(data = fixture(), opts = {}) {
       };
     }
     set innerHTML(value) {
-      this._html = value; this.htmlWrites++;
+      this._html = value; this.htmlWrites++; this.children = [];
       for (const match of value.matchAll(/<(input|select|button|div|label)\b[^>]*\bid="([^"]+)"[^>]*>/g)) {
-        const el = new Element(match[2], match[1]); el.parentElement = this; elements.set(el.id, el);
+        const el = new Element(match[2], match[1]); el.parentElement = this; this.children.push(el); elements.set(el.id, el);
         el.value = match[0].match(/\bvalue="([^"]*)"/)?.[1] || '';
         el.disabled = /\sdisabled(?:\s|>)/.test(match[0]);
         for (const handler of match[0].matchAll(/\bon(\w+)="([^"]*)"/g)) {
@@ -119,6 +119,16 @@ async function harness(data = fixture(), opts = {}) {
       return [];
     }
     querySelector(selector) { return selector === '.modal' ? this.modal : this.querySelectorAll(selector)[0] || null; }
+    appendChild(el) {
+      if (el.parentElement) el.parentElement.children = el.parentElement.children.filter(child => child !== el);
+      this.children.push(el); el.parentElement = this; return el;
+    }
+    after(el) {
+      const parent = this.parentElement;
+      if (!parent) return;
+      if (el.parentElement) el.parentElement.children = el.parentElement.children.filter(child => child !== el);
+      parent.children.splice(parent.children.indexOf(this) + 1, 0, el); el.parentElement = parent;
+    }
     reportValidity() { return true; }
     // 静态骨架里的行内 onclick(例如会话页空表那个「清除搜索与筛选」按钮)不是由脚本赋值的,
     // 假 DOM 原先直接当它不存在,点下去什么都不发生。这里把它记下来,click() 时交给 vm 执行。
@@ -169,6 +179,8 @@ async function harness(data = fixture(), opts = {}) {
     for (const id of ids) get(id).parentElement = get(parent);
     get(parent).parentElement = get('view-routes');
   }
+  get('codex-compact-panel').appendChild(get('codex-compact-input'));
+  get('codex-models').appendChild(get('codex-compact-panel'));
   for (const [maskId, controls] of [['mask', ['m-name', 'm-base', 'm-key', 'save-provider']], ['confirm-mask', ['confirm-cancel', 'confirm-ok']]]) {
     const mask = get(maskId); mask.modal = new Element(maskId + '-dialog'); mask.modal.parentElement = mask;
     mask.children = controls.map(id => { const el = get(id); el.parentElement = mask; return el; });
@@ -225,6 +237,20 @@ async function harness(data = fixture(), opts = {}) {
         if (opts.persistSlots) data.slots = structuredClone(slots);
         return { ok: true, json: async () => ({ ok: true, slots: structuredClone(slots),
           ...(body.codex ? { live: { codex: structuredClone(opts.slotLive || data.live.codex) } } : {}) }) };
+      }
+      if (url === '/api/codex/config') {
+        if (options.method === 'POST') {
+          if (body.revision !== data.live.codex.revision) return { ok: false, status: 409, json: async () => ({ error: 'Codex config changed; reload first' }) };
+          const raw = body.model_auto_compact_token_limit;
+          const match = String(raw).match(/^(\d+(?:\.\d+)?)(k|m)?$/);
+          const configured = raw === 'auto' ? null : Number(match[1]) * (match[2] === 'm' ? 1000000 : match[2] === 'k' ? 1000 : 1);
+          const compaction = data.live.codex.compaction;
+          const limit = configured ?? compaction.default_limit;
+          const effective = compaction.context_window == null || limit == null ? limit : Math.min(limit, Math.floor(compaction.context_window * 0.9));
+          data.live.codex = { ...data.live.codex, revision: 'codex-saved', model_auto_compact_token_limit: configured,
+            compaction: { ...compaction, configured, effective_limit: effective, capped: limit != null && effective < limit } };
+        }
+        return { ok: true, json: async () => options.method === 'POST' ? { ok: true, codex: structuredClone(data.live.codex), unknown_aliases: [] } : { codex: structuredClone(data.live.codex) } };
       }
       if (url.startsWith('/api/compact/window')) {
         const query = new URL(url, 'http://localhost').searchParams;
@@ -1192,6 +1218,233 @@ function codexSlotsFixture() {
     main: { reasoning_levels: ['low', 'high'] }, model_reasoning_effort: 'high' };
   return data;
 }
+
+function codexCompactFixture() {
+  const data = codexSlotsFixture();
+  Object.assign(data.live.codex, { config_file: '/home/test/.codex/config.toml', model_auto_compact_token_limit: 200000,
+    compaction: { configured: 200000, default_limit: 225000, effective_limit: 200000, context_window: 250000,
+      context_source: 'catalog', capped: false, warnings: [], restart_required: true } });
+  return data;
+}
+
+test('Codex threshold saves k/m inputs with the original revision and explicit file confirmation', async () => {
+  const h = await harness(codexCompactFixture()); h.run("setApp('codex')");
+  assert.equal(h.get('codex-compact-input').value, '200000');
+  assert.match(h.get('codex-compact-facts').innerHTML, /磁盘已配.*200,000.*默认阈值.*225,000.*推算有效阈值.*200,000/);
+  assert.match(html, /id="codex-compact-restart">[^<]*不会热改[^<]*新开会话[^<]*profile[^<]*CLI/);
+  assert.match(html, /aria-describedby="codex-compact-help codex-compact-status"/);
+  h.run("setCodexCompactValue('220k')");
+  const saving = h.run('saveCodexCompact()');
+  assert.match(h.get('confirm-text').textContent, /model_auto_compact_token_limit.*220000.*\/home\/test\/\.codex\/config.toml.*不改上下文窗口.*新开会话/s);
+  h.run('finishConfirm(true)'); await saving;
+  assert.deepEqual(h.requests.findLast(r => r.url === '/api/codex/config' && r.method === 'POST').body,
+    { action: 'compact_threshold', model_auto_compact_token_limit: '220k', revision: 'codex-one' });
+  assert.equal(h.run('codexCompactDraft.dirty'), false);
+  assert.equal(h.get('codex-compact-input').value, '220000');
+  assert.match(h.get('codex-compact-status').textContent, /已保存到磁盘.*不会热改/);
+  h.run("setCodexCompactValue('1m')"); await h.confirm('saveCodexCompact()');
+  assert.equal(h.requests.findLast(r => r.url === '/api/codex/config' && r.method === 'POST').body.model_auto_compact_token_limit, '1m');
+  assert.match(h.get('codex-compact-facts').innerHTML, /1,000,000.*225,000.*capped.*窗口 \/ 阈值上限约束/);
+});
+
+test('Codex restore default deletes only the top threshold and preserves model and context', async () => {
+  const h = await harness(codexCompactFixture()); h.run("setApp('codex')");
+  const oldModel = h.data.live.codex.model;
+  const restoring = h.run("saveCodexCompact('auto')");
+  assert.match(h.get('confirm-text').textContent, /只删除顶层.*不禁用自动压缩/);
+  h.run('finishConfirm(true)'); await restoring;
+  assert.deepEqual(h.requests.findLast(r => r.url === '/api/codex/config' && r.method === 'POST').body,
+    { action: 'compact_threshold', model_auto_compact_token_limit: 'auto', revision: 'codex-one' });
+  assert.equal(h.get('codex-compact-input').value, 'auto');
+  assert.equal(h.data.live.codex.model, oldModel);
+  assert.equal(h.data.live.codex.compaction.context_window, 250000);
+  assert.match(h.get('codex-compact-status').textContent, /已恢复磁盘默认.*不禁用压缩/);
+  assert.match(h.get('codex-compact-facts').innerHTML, /默认（顶层未覆写）.*225,000/);
+  h.run("setApp('claude')"); assert.equal(h.get('codex-compact-panel').hidden, true);
+});
+
+test('Codex threshold unknown context and defaults stay unknown without invented limits', async () => {
+  const data = codexCompactFixture();
+  data.live.codex.model_auto_compact_token_limit = null;
+  Object.assign(data.live.codex.compaction, { configured: null, default_limit: null, effective_limit: null, context_window: null, context_source: 'unknown', warnings: ['目录没有声明上下文窗口'] });
+  const h = await harness(data); h.run("setApp('codex')");
+  assert.match(h.get('codex-compact-facts').innerHTML, /未知 \/ Codex 自行决定/);
+  assert.match(h.get('codex-compact-warnings').textContent, /来源：未知.*没有声明/);
+  assert.doesNotMatch(h.get('codex-compact-facts').innerHTML + h.get('codex-compact-warnings').textContent, /244800|244,800|1,000,000|1M/);
+  assert.equal(h.get('codex-compact-auto').disabled, false, 'unknown defaults still permit explicit threshold or auto');
+});
+
+test('Codex malformed disk threshold is not labelled normal auto and window capped does not invent a threshold cap', async () => {
+  const data = codexCompactFixture(); data.live.codex.model_auto_compact_token_limit = 'invalid';
+  Object.assign(data.live.codex.compaction, { configured: null, effective_limit: null, capped: true, warnings: ['阈值不是正安全整数', '窗口按模型目录最大值截断'] });
+  const h = await harness(data); h.run("setApp('codex')");
+  assert.equal(h.get('codex-compact-input').value, 'invalid');
+  assert.match(h.get('codex-compact-facts').innerHTML, /无效配置（invalid）.*未知.*窗口 \/ 阈值上限约束/);
+  assert.doesNotMatch(h.get('codex-compact-facts').innerHTML, /默认（顶层未覆写）/);
+  assert.match(h.get('codex-compact-warnings').textContent, /不是正安全整数.*窗口按模型目录/);
+  data.live.codex.model_auto_compact_token_limit = null;
+  data.live.codex.compaction.warnings = ['model_auto_compact_token_limit 不是正安全整数；无法确认当前压缩阈值，不视为正常 auto'];
+  await h.run('refresh()');
+  assert.match(h.get('codex-compact-facts').innerHTML, /无效配置（当前值未知）/);
+  assert.doesNotMatch(h.get('codex-compact-facts').innerHTML, /默认（顶层未覆写）/);
+});
+
+test('Codex threshold rejects invalid values and disables writes when offline, config error, profile or unsupported', async () => {
+  const h = await harness(codexCompactFixture()); h.run("setApp('codex')");
+  for (const value of ['0', '-1', '0.1', '1.0', '1.0000000000000001k', '0.000999999999999999999k', 'words', '9007199254740992']) {
+    h.run(`setCodexCompactValue(${JSON.stringify(value)})`); await h.run('saveCodexCompact()');
+    assert.match(h.get('codex-compact-status').textContent, /正整数/);
+  }
+  assert.equal(h.requests.some(r => r.url === '/api/codex/config' && r.method === 'POST'), false);
+  h.run("setCodexCompactValue('220k')");
+  h.disconnect(); await h.run('refresh()');
+  for (const id of ['codex-compact-input', 'codex-compact-save', 'codex-compact-auto']) assert.equal(h.get(id).disabled, true);
+  await h.run('saveCodexCompact()');
+  assert.equal(h.get('codex-compact-input').value, '220k');
+  h.disconnect(false);
+  for (const mode of ['error', 'profile', 'unsupported']) {
+    delete h.data.live.codex.error; delete h.data.live.codex.profile;
+    if (mode === 'error') h.data.live.codex.error = 'bad config';
+    if (mode === 'profile') h.data.live.codex.profile = 'custom';
+    if (mode === 'unsupported') delete h.data.live.codex.compaction;
+    await h.run('refresh()');
+    for (const id of ['codex-compact-input', 'codex-compact-save', 'codex-compact-auto']) assert.equal(h.get(id).disabled, true, mode);
+    await h.run("saveCodexCompact('auto')");
+  }
+  assert.equal(h.requests.some(r => r.url === '/api/codex/config' && r.method === 'POST'), false);
+});
+
+test('Codex polling and slot save preserve threshold node, focus, value and draft baseline revision', async () => {
+  const data = codexCompactFixture(); const h = await harness(data, { persistSlots: true }); h.run("setApp('codex'); setCodexCompactValue('210k')");
+  const input = h.get('codex-compact-input'); input.focus();
+  data.live.codex.revision = 'codex-external'; data.live.codex.compaction.configured = 190000;
+  await h.run('refresh()');
+  assert.equal(h.get('codex-compact-input'), input); assert.equal(h.document.activeElement, input);
+  assert.equal(input.value, '210k'); assert.equal(h.run('codexCompactDraft.revision'), 'codex-one');
+  assert.match(h.get('codex-compact-status').textContent, /磁盘配置已变化.*原版本保留/);
+  await h.run("setSlot('codex','reviewer','model','gpt-review')");
+  assert.equal(input.value, '210k'); assert.equal(h.get('codex-compact-input'), input);
+  assert.equal(h.run('codexCompactDraft.revision'), 'codex-one');
+  assert.equal(h.get('codex-model-reviewer').disabled, false);
+  const posts = h.requests.filter(r => r.url === '/api/slots' && r.method === 'PUT'); assert.equal(posts.length, 1);
+  assert.equal(h.requests.some(r => r.url === '/api/codex/config'), false);
+});
+
+test('Codex 409 keeps original draft revision; explicit reload preserves draft for manual retry', async () => {
+  const data = codexCompactFixture(); const h = await harness(data); h.run("setApp('codex'); setCodexCompactValue('215k')");
+  data.live.codex.revision = 'codex-external'; data.live.codex.compaction.configured = 190000;
+  await h.run('refresh()'); await h.confirm('saveCodexCompact()');
+  assert.match(h.get('codex-compact-status').textContent, /409.*原版本保留.*手动重试/);
+  assert.equal(h.get('codex-compact-input').value, '215k'); assert.equal(h.run('codexCompactDraft.revision'), 'codex-one');
+  await h.confirm('loadCodexCompact()');
+  assert.equal(h.get('codex-compact-input').value, '215k'); assert.equal(h.run('codexCompactDraft.revision'), 'codex-external');
+  assert.equal(h.run('codexCompactDraft.dirty'), true);
+  assert.match(h.get('codex-compact-status').textContent, /草稿保留.*手动保存/);
+  assert.equal(h.requests.filter(r => r.url === '/api/codex/config' && r.method === 'POST').length, 1, 'reload cannot submit');
+  await h.confirm('saveCodexCompact()');
+  assert.equal(h.requests.findLast(r => r.url === '/api/codex/config' && r.method === 'POST').body.revision, 'codex-external');
+});
+
+test('Codex threshold busy state leaves slots editable and delayed response preserves later input', async () => {
+  const h = await harness(codexCompactFixture(), { persistSlots: true }); h.run("setApp('codex'); setCodexCompactValue('215k')");
+  h.run("const compactFetch = fetch; globalThis.resolveThreshold = null; fetch = (url,opt) => url === '/api/codex/config' && opt?.method === 'POST' ? new Promise(resolve => { resolveThreshold = async () => resolve(await compactFetch(url,opt)); }) : compactFetch(url,opt)");
+  const saving = h.run('saveCodexCompact()'); h.run('finishConfirm(true)'); await new Promise(resolve => setImmediate(resolve));
+  for (const id of ['codex-compact-input', 'codex-compact-save', 'codex-compact-auto', 'codex-compact-reload']) assert.equal(h.get(id).disabled, true);
+  assert.equal(h.get('codex-model-main').disabled, false); assert.equal(h.get('codex-model-reviewer').disabled, false);
+  h.run("setCodexCompactValue('220k')"); await h.run('resolveThreshold()'); await saving;
+  assert.equal(h.get('codex-compact-input').value, '220k'); assert.equal(h.run('codexCompactDraft.dirty'), true);
+  assert.equal(h.requests.findLast(r => r.url === '/api/codex/config' && r.method === 'POST').body.model_auto_compact_token_limit, '215k');
+  assert.match(h.get('codex-compact-status').textContent, /后续编辑仍在草稿/);
+  const before = h.requests.length, confirming = h.run('saveCodexCompact()');
+  h.run("setCodexCompactValue('230k'); finishConfirm(true)"); await confirming;
+  assert.equal(h.requests.length, before, 'changes during confirmation require a new confirmation');
+  assert.match(h.get('codex-compact-status').textContent, /重新确认/);
+});
+
+test('Codex old config GET cannot overwrite a completed hot slot update', async () => {
+  const data = codexCompactFixture(), live = { ...data.live.codex, revision: 'codex-hot', model: 'mixr-main' };
+  const h = await harness(data, { persistSlots: true, slotLive: live }); h.run("setApp('codex')");
+  h.run("const readFetch = fetch; globalThis.resolveConfigRead = null; fetch = async (url,opt) => { const response = await readFetch(url,opt); if (url !== '/api/codex/config') return response; const old = await response.json(); return new Promise(resolve => { resolveConfigRead = () => resolve({ok:true,json:async()=>old}); }); }");
+  const reading = h.run('loadCodexCompact()'); await new Promise(resolve => setImmediate(resolve));
+  await h.run("setSlot('codex','main','provider','o3')"); h.run('resolveConfigRead()'); await reading;
+  assert.equal(h.run('state.live.codex.revision'), 'codex-hot'); assert.equal(h.get('codex-model-main').value, 'o3');
+  assert.equal(h.get('codex-compact-reload').disabled, false);
+});
+
+test('Codex late polling cannot overwrite saved threshold and read-time typing retains the old baseline', async () => {
+  const h = await harness(codexCompactFixture()); h.run("setApp('codex'); setCodexCompactValue('210k')");
+  h.run("const thresholdPollFetch = fetch; globalThis.resolveThresholdPoll = null; fetch = async (url,opt) => { const response = await thresholdPollFetch(url,opt); if (url !== '/api/state') return response; const old = await response.json(); return new Promise(resolve => { resolveThresholdPoll = () => resolve({ok:true,json:async()=>old}); }); }");
+  const polling = h.run('refresh()'); await new Promise(resolve => setImmediate(resolve)); await h.confirm('saveCodexCompact()');
+  h.run('resolveThresholdPoll()'); await polling;
+  assert.equal(h.run('state.live.codex.revision'), 'codex-saved'); assert.equal(h.get('codex-compact-input').value, '210000');
+  h.run("fetch = thresholdPollFetch; const thresholdReadFetch = fetch; globalThis.resolveThresholdRead = null; fetch = async (url,opt) => { const response = await thresholdReadFetch(url,opt); if (url !== '/api/codex/config') return response; const result = await response.json(); result.codex.revision = 'codex-new-read'; return new Promise(resolve => { resolveThresholdRead = () => resolve({ok:true,json:async()=>result}); }); }");
+  const reading = h.run('loadCodexCompact()'); await new Promise(resolve => setImmediate(resolve));
+  h.run("setCodexCompactValue('220k'); resolveThresholdRead()"); await reading;
+  assert.equal(h.get('codex-compact-input').value, '220k'); assert.equal(h.run('codexCompactDraft.revision'), 'codex-saved');
+  assert.match(h.get('codex-compact-status').textContent, /磁盘配置已变化/);
+});
+
+test('Codex threshold reports backup warnings and never claims success for an unconfirmed saved value', async () => {
+  const h = await harness(codexCompactFixture()); h.run("setApp('codex'); setCodexCompactValue('213k')");
+  h.run("const warningCompactFetch = fetch; fetch = async (url,opt) => { const response = await warningCompactFetch(url,opt); if (url !== '/api/codex/config' || opt?.method !== 'POST') return response; const result = await response.json(); result.warnings = ['本次备份将顶掉旧配置备份']; return {ok:true,json:async()=>result}; }");
+  await h.confirm('saveCodexCompact()');
+  assert.equal(h.get('toast').className, 'warn'); assert.match(h.get('toast').textContent, /已保存到磁盘.*顶掉/s);
+  h.run("setCodexCompactValue('214k'); fetch = async (url,opt) => { const response = await warningCompactFetch(url,opt); if (url !== '/api/codex/config' || opt?.method !== 'POST') return response; const result = await response.json(); result.codex.compaction.configured = 999; return {ok:true,json:async()=>result}; }");
+  await h.confirm('saveCodexCompact()');
+  assert.equal(h.get('codex-compact-input').value, '214k'); assert.equal(h.run('codexCompactDraft.dirty'), true);
+  assert.match(h.get('codex-compact-status').textContent, /未确认.*可能已写盘.*重新读取/);
+});
+
+test('Codex clean threshold follows new disk revision but focused unfinished input is not overwritten', async () => {
+  const data = codexCompactFixture(), h = await harness(data); h.run("setApp('codex')");
+  data.live.codex.revision = 'codex-two'; data.live.codex.compaction.configured = 190000; await h.run('refresh()');
+  assert.equal(h.get('codex-compact-input').value, '190000'); assert.equal(h.run('codexCompactDraft.revision'), 'codex-two');
+  const input = h.get('codex-compact-input'); input.focus(); input.value = '22';
+  data.live.codex.revision = 'codex-three'; data.live.codex.compaction.configured = 180000; await h.run('refresh()');
+  assert.equal(input.value, '22'); assert.equal(h.run('codexCompactDraft.revision'), 'codex-two');
+  assert.equal(h.get('codex-compact-save').disabled, true, 'input event marks a draft before save');
+});
+
+test('Codex threshold panel follows main in DOM order and survives forced slot renders', async () => {
+  const h = await harness(codexCompactFixture(), { persistSlots: true }); h.run("setApp('codex'); setCodexCompactValue('212k')");
+  const panel = h.get('codex-compact-panel'), input = h.get('codex-compact-input'); input.focus();
+  assert.deepEqual(h.get('codex-model-fields').children.map(el => el.id).filter(id => ['codex-slot-main', 'codex-compact-panel', 'codex-slot-reviewer'].includes(id)),
+    ['codex-slot-main', 'codex-compact-panel', 'codex-slot-reviewer']);
+  await h.run("setSlot('codex','reviewer','model','gpt-review')");
+  assert.equal(h.get('codex-compact-panel'), panel); assert.equal(h.get('codex-compact-input'), input);
+  assert.equal(h.document.activeElement, input); assert.equal(input.value, '212k');
+  assert.equal(panel.parentElement, h.get('codex-model-fields'));
+});
+
+test('Concurrent Codex slot and threshold saves preserve newest threshold and hot routing in either response order', async () => {
+  for (const first of ['threshold', 'slot']) {
+    const data = codexCompactFixture();
+    const live = { ...data.live.codex, revision: 'slot-saved', model: 'mixr-main', main: { target: 'gpt-other' } };
+    const h = await harness(data, { persistSlots: true, slotLive: live }); h.run("setApp('codex'); setCodexCompactValue('212k')");
+    h.run("const concurrentFetch = fetch; globalThis.resolveConcurrentSlot = null; globalThis.resolveConcurrentThreshold = null; fetch = async (url,opt) => { const response = await concurrentFetch(url,opt); if (url === '/api/slots') return new Promise(resolve => { resolveConcurrentSlot = () => resolve(response); }); if (url === '/api/codex/config' && opt?.method === 'POST') return new Promise(resolve => { resolveConcurrentThreshold = () => resolve(response); }); return response; }");
+    const thresholdSaving = h.run('saveCodexCompact()'); h.run('finishConfirm(true)'); await new Promise(resolve => setImmediate(resolve));
+    const slotSaving = h.run("setSlot('codex','main','provider','o3')"); await new Promise(resolve => setImmediate(resolve));
+    if (first === 'threshold') { h.run('resolveConcurrentThreshold()'); await thresholdSaving; h.run('resolveConcurrentSlot()'); await slotSaving; }
+    else { h.run('resolveConcurrentSlot()'); await slotSaving; h.run('resolveConcurrentThreshold()'); await thresholdSaving; }
+    assert.equal(h.run('state.live.codex.compaction.configured'), 212000, first);
+    assert.equal(h.run('state.live.codex.model_auto_compact_token_limit'), 212000, first);
+    assert.equal(h.run('state.live.codex.model'), 'mixr-main', first);
+    assert.equal(h.run('state.slots.codex[0].model'), 'gpt-other', first);
+    assert.equal(h.get('codex-compact-input').value, '212000', first);
+    assert.match(h.get('codex-model-status').textContent, /即时/, first);
+  }
+});
+
+test('Codex threshold read failures preserve draft and beforeunload notices unsaved threshold', async () => {
+  const h = await harness(codexCompactFixture()); h.run("setApp('codex'); setCodexCompactValue('210k')");
+  h.run("const failingCompactFetch = fetch; fetch = async (url,opt) => { if (url === '/api/codex/config') throw new Error('config unavailable'); return failingCompactFetch(url,opt); }");
+  await h.confirm('loadCodexCompact()');
+  assert.equal(h.get('codex-compact-input').value, '210k'); assert.equal(h.run('codexCompactDraft.revision'), 'codex-one');
+  assert.match(h.get('codex-compact-status').textContent, /读取失败.*草稿保留/);
+  let prevented = false;
+  for (const fn of h.windowListeners.get('beforeunload')) fn({ preventDefault() { prevented = true; } });
+  assert.equal(prevented, true);
+});
 
 test('Codex channel and target model controls are separate for fixed and custom slots', async () => {
   const h = await harness(codexSlotsFixture(), { persistSlots: true });

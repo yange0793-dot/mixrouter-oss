@@ -1118,9 +1118,8 @@ function commitSlotUpdate(next, codexChanged) {
     ...(warnings.length ? { warnings } : {}) };
 }
 
-// 控制台「Codex」页的两个动作:同步能力目录 / 设置推理档位。都要求 revision 对得上 ——
-// 面板是只读渲染的,用户点了保存说明他看到的版本就是落盘依据;对不上就必须让他刷新,
-// 否则会把外部(或另一个面板)刚改的内容按旧快照覆盖掉。
+// Codex 受控写入:目录、推理档位与压缩阈值都要求 revision 对得上。
+// 保存只修改所选字段,不以旧快照覆盖外部或另一面板刚改的配置。
 function updateCodexConfig(options) {
   const before = codexConfig.read(CODEX_CONFIG);
   if (typeof options.revision !== 'string' || options.revision !== before.revision)
@@ -1138,9 +1137,12 @@ function updateCodexConfig(options) {
     if (effort !== null && (typeof effort !== 'string' || !levels.includes(effort)))
       throw codexConfig.invalid('推理档位必须来自当前模型的本地能力目录，或设为自动');
     top.model_reasoning_effort = effort;
+  } else if (options.action === 'compact_threshold') {
+    top.model_auto_compact_token_limit = codexConfig.parseCompactThreshold(options.model_auto_compact_token_limit);
   } else throw codexConfig.invalid('未知 Codex 配置操作');
-  commitCodexConfig(before, codexConfig.patch(before.text, { top }), prepared);
-  return { ok: true, codex: liveState().codex, unknown_aliases: prepared?.unknown || [] };
+  const result = commitCodexConfig(before, codexConfig.patch(before.text, { top }), prepared);
+  return { ok: true, codex: liveState().codex, unknown_aliases: prepared?.unknown || [],
+    ...(result.warnings.length ? { warnings: result.warnings } : {}) };
 }
 
 // 往 ~/.codex/config.toml 写一个渠道 section(外科手术):
