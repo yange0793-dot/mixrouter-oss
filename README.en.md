@@ -237,11 +237,11 @@ The linked pages are in Chinese; the table says what each one covers.
   DeepSeek Harness page. Tools, permissions, and workspace settings stay native. Pool updates
   require reconnecting and starting new sessions. The native ordinary-subagent entry point enforces
   explicit selections; this is not a blanket workflow/fork/team policy. See [Harness integration](docs/harness.md) (Chinese).
-- **Bounded resource-binding recovery.** The shared matcher recognizes known upstream errors;
-  safe recovery strips resource-bound output-item IDs only from complete native Responses history,
-  once per request, on the same provider/model/key and within existing budgets. Tool pairing and
-  encrypted reasoning are retained. Arbitrary 400 errors, missing history, Anthropic/Chat tool IDs,
-  and signatures are not rewritten.
+- **Bounded resource-binding recovery.** Known upstream errors permit one validated projection
+  of complete native Responses history; later attempts resend that same projection on the same
+  provider/model/key within existing budgets. Only supported output-item IDs are removed; tool
+  pairing, custom/additional-tool IDs, and encrypted reasoning are retained. Arbitrary 400 errors,
+  missing history, Anthropic/Chat tool IDs, and signatures are not rewritten.
 - **Loopback only, literal Host.** The proxy and console accept only `127.0.0.1:port` or
   `[::1]:port`; `localhost` and custom domains get a 403. Write requests reject cross-site or
   cross-origin sources, and the proxy accepts only `Content-Type: application/json` POSTs.

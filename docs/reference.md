@@ -279,6 +279,8 @@ curl -s -X POST http://127.0.0.1:8788/api/router/codex \
 - **思考回放按实际出站模型选格式**,不按渠道也不按客户端别名:有些模型用
   `summary:[{type:"summary_text",text}]`,DeepSeek 系用 `content:[{type:"reasoning_text",text}]`。
   不能同时塞两种字段,也不能删历史 thinking 规避校验;`[1M]` 后缀不改变这个选择。
+- **Chat → Responses 用量明细完整**:JSON 与流终态始终包含 `input_tokens_details.cached_tokens`
+  和 `output_tokens_details.reasoning_tokens`;缺省补 0,保留上游已报告计数与扩展字段,不从正文推算。
 - **工具定义显式写 `strict: false`**。Responses 省略 `strict` 时上游可能把 schema 规范化成
   严格模式,要求 `properties` 每个键都在 `required` 里——结果是客户端工具调用的可选参数
   从未被省略。空占位清理器删不掉非空字符串,挡不住它。
@@ -301,18 +303,25 @@ curl -s -X POST http://127.0.0.1:8788/api/router/codex \
 | `wire_api: "responses"` | `reasoning: {effort}` | 只认 `low/medium/high/xhigh/max`;登记为不支持该字段的模型整字段不发 |
 | `wire_api: "chat"` | 顶层 `reasoning_effort` | `xhigh` 夹到 `high`;认不出的值不发明默认档 |
 
-请求日志的 `effort` 记的是**真的发上去的那一档**(转换层报回来的),不是客户端想要的那档
-——两者的差正是"切了档却没效果"的案发现场。客户端没选或渠道收不了这个字段时它是空的。
+请求日志的 `effort` 记的是**真的发上去的那一档**:原生 Responses 读取出站 `reasoning.effort`,
+转换线读取转换结果,不是客户端想要的那档。两者的差正是"切了档却没效果"的案发现场。
+客户端没选或渠道收不了这个字段时它是空的。
 
 ---
 
 ## 5. 上游健康:超时、冷却、重试
 
-已知 Azure 输出项资源绑定错误使用共用识别和协议限定投影:只有不含服务器历史引用的完整原生
-Responses input 才移除输出项 `id`,保持 `call_id`、工具内容、加密推理、session 和缓存身份。
-每请求最多一次,同渠道/模型/Key、计入已有总调用上限和时限;已提交正文后、`/responses/compact`、
-任意 400 或其他协议的签名不改写。含 `previous_response_id`/`conversation`/`item_reference`
-不删除引用,返回无法恢复历史的明确错误。详见[资源绑定恢复边界](harness.md#资源绑定错误恢复)。
+已知 Azure 输出项资源绑定错误使用协议限定投影:只有不含服务器历史引用、工具类型配对完整的
+原生 Responses input 才移除受支持的 message/reasoning/function_call `id`,保持 `call_id`、
+工具内容、加密推理、custom/additional_tools ID、session 和缓存身份。每请求最多投影一次,
+重复故障同渠道/模型/Key 重发相同投影,计入已有总调用上限和时限。已提交输出后、
+`/responses/compact`、普通 400 或其他协议的签名不改写。含
+`previous_response_id`/`conversation`/`item_reference` 不删除引用,保留原始上游错误。
+详见[资源绑定恢复边界](harness.md#资源绑定错误恢复)。
+
+原生 Responses 的输出前连接中断、纯生命周期 EOF、明确临时错误与 HTTP408 也共用原预算
+恢复。已提交正文/推理/工具、未知/部分帧或超过 64KiB 的前缀不重放;空 completed 不改成成功
+或额外重试。恢复开始后固定出站快照,普通 HTTP 错误的已有 Key 备用/路由故障转移不受影响。
 
 - **三段超时**,分别独立配置:
   `MIXR_FIRST_HEADER_TIMEOUT_MS`(发请求到收到响应头)、

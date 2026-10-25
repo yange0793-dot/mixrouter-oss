@@ -4,8 +4,8 @@
 // usage.js 直接读 app.js 声明的 `$` / `esc` / `toast` / `view`,所以这里把它们先塞进上下文
 // —— 反过来也保证了「usage.js 不自己重复声明这些名字」这条硬约束会被加载动作本身验到。
 //
-// 日期全部相对「今天」构造,并用本地年月日拼字符串:测试本身也不能走 UTC 午夜,
-// 否则断言会在负时区差一天(那个 bug 正是 usage.js 要防的)。
+// 日期默认相对「今天」构造,特定星期的用例固定本地时钟;日期键用本地年月日拼字符串。
+// 测试本身也不能走 UTC 午夜,否则断言会在负时区差一天(那个 bug 正是 usage.js 要防的)。
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -173,10 +173,15 @@ function harness(options = {}) {
     createElement: tag => new Element('', tag),
   };
   const store = new Map();
+  const fixedMs = options.now ? options.now.getTime() : null;
+  const Clock = fixedMs === null ? Date : class extends Date {
+    constructor(...args) { super(...(args.length ? args : [fixedMs])); }
+    static now() { return fixedMs; }
+  };
   const context = vm.createContext({
     document, console, window: { addEventListener: () => {} },
     localStorage: { getItem: k => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) },
-    URLSearchParams, URL, Date, Math, JSON, Number, Object, Array, String, Set, Map, Promise, Error, isNaN,
+    URLSearchParams, URL, Date: Clock, Math, JSON, Number, Object, Array, String, Set, Map, Promise, Error, isNaN,
     AbortController: class {
       constructor() {
         // fetch 侧用它判断"这一发已被取代/超时",需要能真的 reject。
@@ -249,16 +254,16 @@ function harness(options = {}) {
 // 四种状态都要覆盖:今天/昨天/三天前有量、五天前是真实的 0、三十天前有量(用于验证
 // 「区间外不画成 0」)、覆盖窗口之外 120 天前(未覆盖)。数值让卡片与按日求和一致。
 function usageFixture(options = {}) {
-  const now = new Date();
+  const now = options.now || new Date();
   const scopeDays = options.scopeDays ?? 90;
   const coverageDays = options.coverageDays ?? 90;
   const scopeFrom = new Date(now.getFullYear(), now.getMonth(), now.getDate() - scopeDays, 0, 0, 0);
   const coverageFirst = new Date(now.getFullYear(), now.getMonth(), now.getDate() - coverageDays, 0, 0, 0);
   const today = dateKey(now);
-  const yesterday = dayKeyAgo(1);
-  const threeDaysAgo = dayKeyAgo(3);
-  const fiveDaysAgo = dayKeyAgo(5);
-  const thirtyDaysAgo = dayKeyAgo(30);
+  const yesterday = dateKey(addDays(now, -1));
+  const threeDaysAgo = dateKey(addDays(now, -3));
+  const fiveDaysAgo = dateKey(addDays(now, -5));
+  const thirtyDaysAgo = dateKey(addDays(now, -30));
   const daily = options.daily || [
     { t: thirtyDaysAgo, reqs: 21, tokens_in: 2000, tokens_out: 1000, cache_read: 2000 },
     { t: fiveDaysAgo, reqs: 0, tokens_in: 0, tokens_out: 0, cache_read: 0 },
@@ -387,7 +392,9 @@ test('查询:默认全部区间,带 dashboard=1 与 offset/limit;筛选值进同
 });
 
 test('热力图:53 周 × 7 行、周一为首列、371 格,区间外/未覆盖/未来/真实 0 各标各的', async () => {
-  const h = harness();
+  const now = new Date(2026, 9, 19, 12); // 周一:本周剩余六天均为未来,不随执行日变化。
+  const keyAgo = days => dateKey(addDays(now, -days));
+  const h = harness({ now, response: usageFixture({ now }) });
   await h.run('loadUsage()');
   const html = h.get('usage-heatmap').innerHTML;
   const cells = cellsOf(html);
@@ -403,7 +410,7 @@ test('热力图:53 周 × 7 行、周一为首列、371 格,区间外/未覆盖/
   assert.equal(h.get('usage-heatmap').attributes.role, 'group', '容器不能再是 img(否则格子从无障碍树里消失)');
   assert.match(h.get('usage-heatmap').attributes['aria-label'], /53 周/);
 
-  const today = dateKey(new Date());
+  const today = dateKey(now);
   const todayCell = cellFor(h, today);
   assert.ok(todayCell, '今天必须在网格里');
   assert.equal(todayCell['data-active'], 'true');
@@ -412,19 +419,20 @@ test('热力图:53 周 × 7 行、周一为首列、371 格,区间外/未覆盖/
   assert.ok(Number(todayCell['data-level']) > 0, '今天有真实用量,色阶不能是 0');
 
   // 覆盖范围内但没有任何请求的一天:真实 0,不是「未覆盖」
-  const zeroCell = cellFor(h, dayKeyAgo(10));
+  const zeroCell = cellFor(h, keyAgo(10));
   assert.equal(zeroCell['data-level'], '0');
   assert.equal(zeroCell['data-active'], 'true');
   assert.equal(zeroCell['data-coverage'], 'inside');
 
   // 覆盖窗口(90 天)之外:未覆盖,同样不能画成 0
-  const outside = cellFor(h, dayKeyAgo(120));
+  const outside = cellFor(h, keyAgo(120));
   assert.equal(outside['data-coverage'], 'outside');
   assert.equal(outside['data-level'], '0');
   assert.equal(outside['data-active'], 'false');
 
   // 本周剩下的日子是未来:数量 = 周日之前还剩几天
-  const remaining = 6 - mondayIndex(new Date());
+  const remaining = 6 - mondayIndex(now);
+  assert.equal(remaining, 6, '固定周一覆盖所有未来日期');
   const future = cells.filter(cell => cell['data-future'] === 'true');
   assert.equal(future.length, remaining);
   for (const cell of future) assert.ok(cell['data-date'] > today);
@@ -441,11 +449,24 @@ test('热力图:53 周 × 7 行、周一为首列、371 格,区间外/未覆盖/
 
   // 按日表格是热力图的等价物:区间内有覆盖的每一天都在,包括真实的 0
   const dailyRows = h.get('usage-daily-rows').innerHTML;
-  assert.match(dailyRows, new RegExp(`<td>${dayKeyAgo(5)}</td><td>0</td>`), '真实的 0 要出现在按日表里');
+  assert.match(dailyRows, new RegExp(`<td>${keyAgo(5)}</td><td>0</td>`), '真实的 0 要出现在按日表里');
   assert.match(dailyRows, new RegExp(`<td>${today}</td>`));
   assert.match(h.get('usage-calendar-summary').textContent, /最近 53 周/);
   assert.match(h.get('usage-calendar-summary').textContent, /共 42 次请求 · 20\.0k tokens/, '摘要要有区间总量');
   assert.doesNotMatch(html, /¥|cost|price/i, '热力图不带金额折算');
+});
+
+test('热力图:周日已到本周末,没有未来格也不显示未来图例', async () => {
+  const now = new Date(2026, 9, 25, 12);
+  const h = harness({ now, response: usageFixture({ now }) });
+  await h.run('loadUsage()');
+  const html = h.get('usage-heatmap').innerHTML;
+  const cells = cellsOf(html);
+  assert.equal(cells.length, 371);
+  assert.equal(cells.at(-1)['data-date'], dateKey(now), '最后一格就是今天');
+  assert.equal(cells.filter(cell => cell['data-future'] === 'true').length, 0);
+  assert.doesNotMatch(html, /未来/, '没有未来日期时不需要未来图例');
+  assert.equal(cellFor(h, dateKey(now))['data-active'], 'true');
 });
 
 test('切换区间:热力图仍是 53 周,但区间外的日子标成「不在区间」而不是零历史', async () => {

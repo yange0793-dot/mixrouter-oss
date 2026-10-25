@@ -150,10 +150,12 @@ test('same candidate model/key is frozen even if active key changes during recov
   recovered(await ask()); assert.equal(seen[1].headers.authorization, 'Bearer sk-original');
 });
 
-test('a second exact400 is returned after at most one recovery', async () => {
+test('repeated exact400 uses one projection and the existing shared call budget', async () => {
   reply = (_req, res) => failure(res);
-  const result = await ask(); assert.equal(result.status, 400); assert.equal(seen.length, 2);
-  assert.match(result.text, /different Azure OpenAI resource/); assert.equal(log().attempts, 2);
+  const result = await ask(); assert.equal(result.status, 400); assert.equal(seen.length, 3);
+  assert.equal(result.text, JSON.stringify(mismatch())); assert.equal(log().attempts, 3);
+  assert.deepEqual(seen[2].body, seen[1].body, 'later attempts reuse the same projected history');
+  assert.equal(seen[2].headers.authorization, seen[1].headers.authorization);
 });
 
 test('reference-only and missing tool history fail safely without inventing context', async () => {
@@ -166,7 +168,8 @@ test('reference-only and missing tool history fail safely without inventing cont
   ]) {
     seen = []; reply = (_req, res) => failure(res);
     const result = await ask(body); assert.equal(result.status, 400); assert.equal(seen.length, 1);
-    assert.match(result.text, /完整历史|完整对话/); assert.equal(log().err_class, 'resource_binding_history_missing');
+    assert.equal(result.text, JSON.stringify(mismatch()), 'retain the actual upstream error without invented context');
+    assert.match(log().err, /different Azure OpenAI resource/);
   }
 });
 
@@ -190,11 +193,12 @@ test('HTTP400 exact error with semantic output/content/choices is never replayed
   }
 });
 
-test('an upstream_error code cannot bypass the one-resource-recovery limit', async () => {
+test('an upstream_error label cannot expand the shared resource recovery budget', async () => {
   const value = failed().response; value.error.code = 'upstream_error';
   reply = (_req, res) => failure(res, { status: 200, value });
   const result = await ask({ ...history(), stream: false });
-  assert.equal(seen.length, 2); assert.equal(result.text, JSON.stringify(value));
+  assert.equal(seen.length, 3); assert.equal(result.text, JSON.stringify(value));
+  assert.deepEqual(seen[2].body, seen[1].body);
 });
 
 test('a changed body without resource ids does not manufacture a recovery', async () => {
