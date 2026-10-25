@@ -142,6 +142,38 @@ test('Native Codex sessions retaining the exact previous default hot-route after
   assert.equal((await send('old-native')).headers['x-mixrouter-model'], 'ordinary-fallback');
 });
 
+test('Codex Desktop retains exact previous main/reviewer IDs and observes hot edits in the same native session', async () => {
+  const headers = { 'session-id': 'desktop-same-session', 'user-agent': 'codex_desktop/0.162.1',
+    authorization: 'Bearer ' + router.ROUTER_TOKEN };
+  const send = (model, extra = {}) => request(proxy, '/v1/responses', { model, input: 'desktop task', stream: false },
+    'POST', { ...headers, ...extra });
+  assert.equal((await send('old-native')).headers['x-mixrouter-model'], 'ordinary-fallback');
+  assert.equal((await put(activeSlots())).status, 200);
+  assert.equal((await send('old-native')).headers['x-mixrouter-model'], 'target-a');
+  assert.equal((await send('old-review')).headers['x-mixrouter-model'], 'target-r');
+  assert.equal((await put({ main: { provider: 'native', model: 'desktop-main-b' },
+    reviewer: { provider: 'chat', model: 'desktop-review-b' } })).status, 200);
+  assert.equal((await send('old-native')).headers['x-mixrouter-model'], 'desktop-main-b');
+  assert.equal((await send('old-review')).headers['x-mixrouter-model'], 'desktop-review-b');
+  assert.equal(hits.at(-1).url, '/v1/chat/completions');
+  assert.equal((await send('old-native')).headers['x-mixrouter-model'], 'desktop-main-b', 'reviewer must not capture the next main request');
+  assert.equal(hits.at(-1).url, '/v1/responses');
+  for (const ua of ['codex_cli_rs/0.162.1', 'codex_exec/0.162.1', 'codex/0.162.1', 'codex 0.162.1']) {
+    assert.equal((await send('old-native', { 'user-agent': ua })).headers['x-mixrouter-model'], 'desktop-main-b', ua);
+  }
+  for (const [model, extra] of [['old-native-extra', {}], ['OLD-NATIVE', {}], ['unknown-desktop-model', {}],
+    ['old-native', { authorization: 'Bearer wrong-local-token' }], ['old-native', { 'session-id': '' }],
+    ...['codex_desktop_evil/0.162.1', 'codex_other/0.162.1', 'codex_desktop', 'openai-python/1.0']
+      .map(ua => ['old-native', { 'user-agent': ua }])]) {
+    assert.equal((await send(model, extra)).headers['x-mixrouter-model'], 'ordinary-fallback', JSON.stringify([model, extra]));
+  }
+  router._state.current.codex = 'native';
+  assert.equal((await send('old-native')).headers['x-mixrouter-model'], 'ordinary-fallback');
+  router._state.current.codex = '@router';
+  fs.writeFileSync(file, 'profile = "desktop-other"\n' + fs.readFileSync(file, 'utf8'));
+  assert.equal((await send('old-native')).headers['x-mixrouter-model'], 'ordinary-fallback');
+});
+
 test('Codex default provider edits synchronize inherited catalog but never change explicit slot or provider defaults', async () => {
   assert.equal((await put({ main: { provider: 'native' }, reviewer: { provider: 'native', model: 'explicit-review' } })).status, 200);
   const result = await request(ui, '/api/providers/native', { model: 'next-default' }, 'PUT');

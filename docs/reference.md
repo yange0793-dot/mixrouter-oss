@@ -243,9 +243,11 @@ Claude Code / Codex 的全局槽位表存在 `<MIXR_DATA_DIR>/slots.json`(`{vers
 重新打开客户端可读取新目录,磁盘更新不会即时刷新已打开的选择器。
 `profile`、项目配置及未登记的真实模型名不自动跟随全局主槽。
 
-兼容旧会话仅匹配托管目录登记的旧默认模型 ID,并同时要求原生 Codex 标识、本地路由凭据与
-可靠 session;满足时映射到对应槽别名再按当前槽位转发。显式 `-m` 选择同一旧默认 ID
-仍会命中,请求上无法区别它与仍持有旧默认的会话。无关原生 ID 与其它 OpenAI 客户端不受影响。
+兼容旧会话仅精确匹配托管目录登记的旧默认模型 ID,并同时要求原生 Codex 标识、本地路由凭据、
+可靠 `cx:` 会话与本机受管接入配置。标识支持现有 Codex CLI 形式和 `codex_desktop/`,
+不放宽其它未知 `codex_*` 前缀;满足时映射到对应槽别名再按当前槽位转发。显式 `-m` 选择
+同一旧默认 ID 仍会命中,请求上无法区别它与仍持有旧默认的会话。无关原生 ID 与其它 OpenAI
+客户端不受影响。
 通常使用对应 `mixr-<槽名>` 请求按槽路由;在途请求不因保存而中途换模型。
 
 **槽位落点的性质**:
@@ -505,6 +507,17 @@ MIXR_DATA_DIR=/absolute/path node scripts/diagnose-upstream.js --mode provider -
 日志**不含 Key 明文**,也不含会话标签;内容包括渠道名、模型名、会话键(哈希/ID 形态)
 与错误文本。
 
+路由准备阶段的拒绝(无路由、渠道停用、协议不匹配、固定 Key 不可用等)在 HTTP 返回错误前
+同步追加日志,记录短会话身份、请求模型、状态码与错误码;`attempts` 为 0,`provider`、
+`model_out`、`rule` 与 `slot` 为空,tokens 为 0,不臆测尚未取得的路由计划。这些拒绝不发上游;
+记录日志不额外创建/结算会话、不计为 active、不创建尝试过程。无路由失败不新建会话,
+但固定 Key 错误等准备路径此前可能已有会话记录。不回填历史拒绝;Host、跨站来源、内容类型与
+坏 JSON 等入口校验错误不写这类日志。
+Codex `no_route_error` 的日志 `err` 以固定布尔诊断
+`[Codex identity: native=<bool>, local_auth=<bool>, reliable_session=<bool>]` 开头,
+截断错误文本时仍保留身份诊断,HTTP 错误 message 原样不改。日志脱敏也覆盖本次客户端令牌
+(即使它未登记),不保存凭据、原始 UA、请求头或请求体;三个值不能替代旧 ID 登记与受管配置检查。
+
 **查询**:`mixctl logs` 走运行中服务的 `GET /api/logs`,默认查内存环(最近 500 条),
 默认返回 20 条;重启后内存环重新开始,查旧记录用 `--history`。
 `--since` / `--until` 含边界,接受 ISO 时间或 epoch 毫秒;`--provider`、`--model`、
@@ -521,6 +534,9 @@ MIXR_DATA_DIR=/absolute/path node scripts/diagnose-upstream.js --mode provider -
 原样报到 stderr 并以非 0 退出。
 
 ### 统计与指标
+
+统计包含新记录的路由准备阶段本机拒绝,它们增加失败请求数但不增加 tokens;
+0 tokens 本身不能证明是否调用过上游,需结合 `attempts`、错误码与实际落点判断。
 
 - `GET /api/stats` 聚合当前内存窗口;`history=1` 查磁盘历史,可带相同时间与筛选条件。
   两者都返回 `scope` 与 `range`,历史统计另带跳过条数,不提供历史延迟分位数。

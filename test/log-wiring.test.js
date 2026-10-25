@@ -169,7 +169,7 @@ test('全部既有端点在接线后仍返回原形状(回归闸门)', async () 
 test('/api/logs:limit 边界按修正后的语义(0/负数/非数/超大)', async () => {
   // 灌到 250 条:超过默认 200,才能把"默认 200"与"全量"区分开。
   // 用真代理请求而不是后门:写侧与读侧都必须是生产路径。
-  // (注:命不中路由的 503 在 entry 建出来之前就返回了,不落日志 —— 既有行为,与本次接线无关。)
+  // 入口拒绝的日志另由 test/proxy-route-errors.test.js 验证,这里仍用成功请求灌数据。
   const before = JSON.parse((await ui('GET', '/api/logs?limit=500')).text).logs.length;
   for (let i = before; i < 250; i++) {
     const r = await ask('echo-model');

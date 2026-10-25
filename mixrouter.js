@@ -49,7 +49,7 @@ const { createResolver } = require('./lib/routing/resolve');
 const { createExplainer } = require('./lib/routing/explain');
 const { createSessionStore } = require('./lib/routing/sessions');
 const slotsLib = require('./lib/routing/slots');
-const { createRequestLog } = require('./lib/observability/request-log');
+const { createRequestLog, scrubDeep } = require('./lib/observability/request-log');
 // 用量统计(磁盘日志 + 内存环,lib/usage/*):控制台 /api/usage 的后端。
 const { createUsageSummary } = require('./lib/usage/summary');
 // 备份池目标表**唯一**一份(见该模块文件头:/api/backups 与 mixctl 都从它取,谁都不许自己再列)。
@@ -914,7 +914,9 @@ const proxyHandler = proxyHttp.createProxyHandler({
   randomUUID: () => crypto.randomUUID(),
   httpBody, protoError, classifyProxyRequest, ENDPOINTS, modelList, sessionKeyOf,
   harnessModelList: () => harness.models(),
-  prepareRequest, createRequestContext, runAttempts,
+  prepareRequest, createRequestContext, runAttempts, sessionIdentity,
+  routeErrorIdentity: (req, ident) => `[Codex identity: native=${codexConfig.nativeClient(req.headers['user-agent'])}, local_auth=${clientToken(req) === ROUTER_TOKEN}, reliable_session=${String(ident.key).startsWith('cx:')}]`,
+  appendRejectedLog: (entry, req) => requestLog.append(scrubDeep(entry, [clientToken(req)].filter(Boolean))),
   // 终态的两个副作用仍然留在主入口:会话计数/用量累加(会话语义不在这里)与请求日志落盘。
   // 会话这一半走**在途 guard**:令牌是入口捕获的那个(flight),由 settleRequest 按记录世代
   // 判定该不该落账 —— 响应回来时这条会话可能已被手动重绑/解绑/清空/重存覆盖。
@@ -1071,7 +1073,7 @@ function managedCodexDocument(before) {
 }
 
 function codexLegacyAlias(modelIn, ctx) {
-  if (current.codex !== ROUTER_ID || ctx.token !== ROUTER_TOKEN || !/^codex(?:_cli_rs|_exec|[ /])/i.test(ctx.ua || '') ||
+  if (current.codex !== ROUTER_ID || ctx.token !== ROUTER_TOKEN || !codexConfig.nativeClient(ctx.ua) ||
       !String(ctx.session || '').startsWith('cx:')) return '';
   try {
     const before = codexConfig.read(CODEX_CONFIG);

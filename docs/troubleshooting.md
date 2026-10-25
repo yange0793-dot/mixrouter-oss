@@ -78,6 +78,19 @@ session ID 坏了。含完整原生 Responses input、无服务器历史引用�
 | `provider_key_unavailable_error` | 覆盖 / 压缩规则点名的 Key 被删、停用、重复或为空 | 控制台「渠道与 Key」页看失效 Key;`./mixctl sessions config <完整会话键>` |
 | `wire_api_mismatch_error` | 路由命中的全是 `responses` 渠道,而客户端说的是 chat(或反过来) | `./mixctl ls` 看每个渠道的 `(responses)` / `(chat)` |
 
+路由准备阶段的拒绝会在返回错误前同步写入脱敏请求日志:`attempts: 0`、`provider`、
+`model_out`、`rule` 与 `slot` 为空、tokens 为 0,`err_class` 记录对应错误码,不臆测路由计划。
+它们没有发上游;记录日志不额外创建/结算会话、不计为 active。无路由失败不新建会话,
+固定 Key 等准备路径此前可能已有记录。历史未记录的拒绝不会回填;
+Host、跨站来源、内容类型与坏 JSON 等入口校验错误仍不写这类日志。
+
+Codex 的 `no_route_error` 日志 `err` 以固定诊断开头:
+`[Codex identity: native=<bool>, local_auth=<bool>, reliable_session=<bool>]`。
+前缀在错误文本截断时仍保留,HTTP 错误 message 原样不改。三个布尔值分别说明是否识别原生
+标识、是否使用本地路由凭据、是否取得可靠 `cx:` 会话;日志脱敏也覆盖本次未登记的客户端令牌,
+不保存凭据、原始 UA、请求头或请求体。全部为 true 仍须核对精确登记的旧 ID、受管接入配置与路由,
+不能据此推断没有请求头证据的历史失败原因。
+
 排查命令(只读、零副作用):
 
 ```bash
@@ -283,6 +296,15 @@ echo '{"app":"claude","model":"m","context":{"compactTexts":["…"]}}' | ./mixct
 `MIXR_CODEX_CONFIG`(`~/.codex/config.toml`)、`MIXR_ZCODE_CONFIG`(`~/.zcode/v2/config.json`)。
 每次改写前都会自动备份。
 
+### Codex 保存槽位后仍显示旧模型
+
+先区分选择器显示名与真实转发落点:已接入本机路由后的槽位保存会热更新后续别名请求,
+原生选择器仍可能缓存旧目录,重开客户端才读取新显示名。用日志的 `model_in` / `model_out`
+核对转发,不要把显示名未刷新当成热切换失败。
+已登记旧默认 ID 的兼容映射支持现有 CLI 标识及 `codex_desktop/`,但仍须精确登记 ID、
+本地路由凭据、可靠 `cx:` 会话和受管接入配置;未知 `codex_*` 不自动放行。
+若实际得到 `no_route_error`,按 §1 的身份诊断与路由检查处理,不要加全模型兜底。
+
 ### Codex 后台记忆任务报无路由
 
 启用 Codex 原生记忆功能后,提取与整理任务可能使用与主对话不同的内置默认模型。
@@ -389,6 +411,8 @@ curl -s 'http://127.0.0.1:8788/api/stats?history=1' | python3 -m json.tool
 
 `by_slot` 按日志里**明确记录**的槽位累计;空槽记 `none`,缺字段的旧日志记 `unknown`,
 **不拿模型名或会话类型猜槽位**。两种统计都返回 `scope` 与 `range`,明确内存/磁盘来源与实际记录范围。
+新记录的路由准备阶段本机拒绝也计入失败请求数,但 tokens 为 0;0 tokens 本身不能证明是否
+调用过上游,结合 `attempts`、错误码和实际落点判断。
 这是用量统计,**不做金额折算**,也不是预算限流。
 
 ### 磁盘日志清理
@@ -499,6 +523,7 @@ ZCode 的备份暂未纳入。备份保留上限 5 份,轮换在**删除发生�
 
 - `GET /api/attempts` 只有**本进程内存**里的数据:最多 100 条、15 分钟未更新过期、重启清空。
   查更早的请求用 §8 的 `requests.jsonl`(按 `request_id` 关联)。
+- 路由准备阶段本机拒绝只写请求日志,`attempts: 0`,不会创建 trace;没有尝试过程不是日志丢失。
 - 页面只在「诊断」页可见时每 2 秒轮询;切到别的页就不刷新,不是卡住。
 - 一条 trace 里的事件是白名单字段;看不到 prompt、Key 或上游 URL 是设计如此。
 
