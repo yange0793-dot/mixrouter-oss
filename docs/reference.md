@@ -225,18 +225,28 @@ Claude Code / Codex 的全局槽位表存在 `<MIXR_DATA_DIR>/slots.json`(`{vers
 路由模式下直接 `codex exec -m mixr-worker`;`GET /v1/models` 也会列出这些别名。
 `main` / `reviewer` 两个槽可写到 Codex 全局配置的 `model` / `review_model`。
 
-**应用 Codex 槽位到客户端**:命令行没有 `route codex --slots`(会被拒绝),
-用控制台的「应用槽位到客户端」或直接调接口:
+**Codex 接入与热切换**:普通 `./mixctl route codex` 或接入向导自动采用可用的 `main` /
+`reviewer` 别名,并将 `model_catalog_json` 指向 `mixrouter-model-catalog.json`。
+普通接入缺少 `main` / `reviewer` 时,按渠道库顺序用首个启用且有默认模型与 Key 的 Codex
+渠道补齐;已有无效槽不覆盖,写入前返回 400。自动补齐保存在路由器槽位表,
+接入向导撤销客户端受管字段时不会删除这些槽。
+命令行没有 `route codex --slots`(仍会被拒绝);`POST /api/router/codex {"slots":true}`
+保留为不自动补槽的严格接入方式,要求两个槽都有效,否则写入前返回 400。
 
-```bash
-# revision 取自 /api/state 的 live.codex.revision
-curl -s -X POST http://127.0.0.1:8788/api/router/codex \
-  -H 'content-type: application/json' \
-  -d '{"slots":true,"revision":"<state.live.codex.revision>"}'
-```
+首次从直连切换时须确认接入,让 Codex 读取本机 provider 与别名配置。
+已经接入路由后,一次 `PUT /api/slots` 保存就更新后续别名请求的落点与托管目录,
+不需要再点应用或重启来改变转发落点;目录显示名标明槽位的当前实际目标。
+同步不改 `model_reasoning_effort`、用户上下文设置或其它客户端字段。
 
-两个槽都必须绑定已启用、有模型名和 API Key 的渠道,否则接口直接 400,不会先写坏配置。
-改完需重启 Codex 生效。
+托管目录优先采用本地原始目录中的目标模型能力;未知目标只登记身份,不猜测上下文窗口、
+推理档位或工具能力。原生选择器会缓存目录和显示名,实测没有可用的刷新接口;
+重新打开客户端可读取新目录,磁盘更新不会即时刷新已打开的选择器。
+`profile`、项目配置及未登记的真实模型名不自动跟随全局主槽。
+
+兼容旧会话仅匹配托管目录登记的旧默认模型 ID,并同时要求原生 Codex 标识、本地路由凭据与
+可靠 session;满足时映射到对应槽别名再按当前槽位转发。显式 `-m` 选择同一旧默认 ID
+仍会命中,请求上无法区别它与仍持有旧默认的会话。无关原生 ID 与其它 OpenAI 客户端不受影响。
+通常使用对应 `mixr-<槽名>` 请求按槽路由;在途请求不因保存而中途换模型。
 
 **槽位落点的性质**:
 

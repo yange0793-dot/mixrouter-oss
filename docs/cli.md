@@ -32,7 +32,8 @@
 
 `start` / `stop` / `restart` 管后台进程(pid 在 `.run/mixrouter.pid`);`status` 同时核对
 运行进程加载的源码指纹。`--slots` 只对 `route claude` 有效;Codex 槽位不是客户端 env,
-`mixctl route codex --slots` 会被直接拒绝,应用方式见「槽位」。`route` 会写客户端配置,
+`mixctl route codex --slots` 会被直接拒绝;普通 `route codex` 已自动使用可用主槽与审查槽别名。
+`route` 会写客户端配置,
 查询状态请用 `status` 或 `slots`。备份与还原是本地命令,不需要服务运行;
 **日志查询需要服务运行**。
 
@@ -105,10 +106,14 @@
 ./mixctl route codex                # config.toml 顶层 model_provider 换成 mixr-router
 ```
 
-对 `~/.codex/config.toml` 做原位改写:顶层 `model` / `model_provider` 替换,追加
-`[model_providers.mixr-*]` section,用户自己的 section 不动;二次切换会清掉旧的 mixr section。
+对 `~/.codex/config.toml` 做原位改写:顶层 `model_provider` 换成本机 provider,
+可用的 `main` / `reviewer` 自动写为 `model` / `review_model` 的槽位别名,
+`model_catalog_json` 指向托管目录。缺少两个默认槽时,普通接入用首个启用且有默认模型与 Key 的
+Codex 渠道补齐;已有无效槽不覆盖,需先修复。用户自己的 section 不动;
+二次切换会清掉未被 profile 引用的旧 mixr section。
 等价手改的 `base_url` 是 `http://127.0.0.1:8787/v1`(带 `/v1`),
-`wire_api = "responses"`,`experimental_bearer_token` 填占位值。Codex 需重启生效。
+`wire_api = "responses"`,`experimental_bearer_token` 填占位值。
+首次切换接入后让客户端重新读取连接配置;已接入后的槽位落点变更不需要再重启,见下节。
 
 ### ZCode
 
@@ -131,9 +136,15 @@
 
 **Codex 自拟槽名**(如 `worker` / `reviewer`):在控制台「渠道」页 Codex 标签下添加,
 然后用 `codex exec -m mixr-worker`。每个槽分别选择渠道与落点模型,可选渠道登记项或自定义模型;
-模型留空继承渠道默认 `model`,不修改渠道库默认值。`main` / `reviewer` 两个槽通过
-「应用到 Codex」写入 `model` / `review_model`;命令行没有 `route codex --slots`
-这个入口,接口是 `POST /api/router/codex {"slots":true}`。
+模型留空继承渠道默认 `model`,不修改渠道库默认值。已接入路由后,保存槽位即同步托管模型目录,
+后续 `mixr-main` / `mixr-reviewer` 等别名请求按新落点转发,无需另点应用。
+首次接入用 `./mixctl route codex`,命令行仍没有 `route codex --slots` 参数;
+`POST /api/router/codex {"slots":true}` 保留为严格要求两个槽都可用的接入接口。
+槽位保存不改 Codex 推理强度;原生选择器缓存显示名,重新打开客户端才读取新目录。
+profile、项目覆盖和未登记的真实模型名不自动跟随主槽。
+仅已登记的旧默认 ID 同时满足原生 Codex 标识、本地路由凭据与可靠会话时按兼容映射跟随;
+显式 `-m` 选择同一旧默认 ID 也会命中,因为请求上无法区别它与仍持有旧默认的会话。
+无关原生模型 ID 与其它 OpenAI 客户端不受影响。
 
 Claude 槽位可在控制台「后备渠道」编辑备池(`pool`)的顺序与成员模型，也可通过
 `PUT /api/slots` 维护。槽位请求按槽位自己的策略选择，**不复用**对话的粘性或手动钉定，

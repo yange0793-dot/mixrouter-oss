@@ -256,11 +256,10 @@
           </div>
           <div class="liveinfo" id="liveinfo"><div class="empty"><b>正在读取客户端配置</b>连接本地控制台后展示实际配置，不代表上游连通性。</div></div>
           <div class="codex-models" id="codex-models" hidden>
-            <p class="hint">路由槽位分别选择渠道与落点模型；保存不改渠道默认模型或 Codex 配置，点「应用到 Codex」才写入别名。</p>
+            <p class="hint">分别选择渠道与落点模型；路由请求即时切换，Mixrouter 管理的 Codex 模型列表自动同步。不改渠道默认模型。</p>
             <div class="model-fields" id="codex-model-fields"></div>
-            <div class="model-actions"><button class="small" id="codex-model-apply" onclick="applySlotsClaude()">应用到 Codex</button><span id="codex-model-status" role="status"></span></div>
+            <div class="model-actions"><span id="codex-model-status" role="status"></span></div>
             <div id="codex-config-details"></div>
-            <div class="model-actions" id="codex-config-controls"></div>
           </div>
           <div class="banner" id="drift-banner" role="status"><span id="drift-text"></span></div>
           <p class="hint" id="prov-health" hidden></p>

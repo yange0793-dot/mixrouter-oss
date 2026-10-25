@@ -553,7 +553,7 @@ test('/api/state 暴露路由模式信息;HEAD 探活与 GET /v1/models 可用',
 });
 
 // ---------------------------------------------------------------- 路由模式切换
-test('路由模式(Codex):顶层 model_provider 换 mixr-router、model 与用户 section 不动', () => {
+test('路由模式(Codex):自动建立稳定主/审查别名与目录,保留用户 section', () => {
   const cfgFile = process.env.MIXR_CODEX_CONFIG;
   fs.writeFileSync(cfgFile, [
     'model_provider = "custom"', 'model = "gpt-6-astra"', 'approval_policy = "never"', '',
@@ -564,7 +564,9 @@ test('路由模式(Codex):顶层 model_provider 换 mixr-router、model 与用�
   switchCodexRouter();
   const text = fs.readFileSync(cfgFile, 'utf8');
   assert.ok(text.includes('model_provider = "mixr-router"'));
-  assert.ok(text.includes('model = "gpt-6-astra"'), '路由模式不改模型名——路由规则就按它匹配');
+  assert.ok(text.includes('model = "mixr-main"'), '路由模式使用稳定线 ID,改槽不依赖客户端重新启动');
+  assert.strictEqual(mod.codexTopLevel(text, 'review_model'), 'mixr-reviewer');
+  assert.strictEqual(mod.codexTopLevel(text, 'model_catalog_json'), 'mixrouter-model-catalog.json');
   assert.ok(text.includes('[model_providers.custom]'), '用户自己的 section 一字不动');
   // 端口取模块导出的 ROUTER_URL,不写死 8787:测试入口会把 MIXROUTER_PORT 隔离成 0(见
   // scripts/run-tests.js 的 testEnv + test/test-runner.test.js 的隔离断言),写死就跟下一行的
@@ -583,12 +585,13 @@ test('路由模式(Codex):顶层 model_provider 换 mixr-router、model 与用�
   assert.strictEqual(live.codex.provider, ROUTER_SECTION);
   assert.strictEqual(live.codex.router, true);
   assert.strictEqual(live.codex.match, true);
-  assert.strictEqual(live.codex.model, 'gpt-6-astra');
+  assert.strictEqual(live.codex.model, 'mixr-main');
 });
 
 test('Codex slot application validates bindings and syncs main/reviewer without changing other settings', async () => {
   const f = process.env.MIXR_CODEX_CONFIG;
   const original = fs.readFileSync(f, 'utf8');
+  _state.slotMap.codex = {};
   const missing = await rawRequest(uiPort, 'POST', '/api/router/codex', { body: { slots: true } });
   assert.strictEqual(missing.status, 400);
   assert.strictEqual(fs.readFileSync(f, 'utf8'), original);
@@ -596,7 +599,7 @@ test('Codex slot application validates bindings and syncs main/reviewer without 
     body: { codex: { main: { provider: 'k1', model: 'custom-main' }, reviewer: { provider: 'k1', model: 'custom-review' } } },
   });
   assert.strictEqual(put.status, 200);
-  fs.writeFileSync(f, original.replace('approval_policy = "never"', 'approval_policy = "never"\nreview_model = "old-review"'));
+  fs.writeFileSync(f, original.replace('review_model = "mixr-reviewer"', 'review_model = "old-review"'));
   for (let i = 0; i < 2; i++) {
     const applied = await rawRequest(uiPort, 'POST', '/api/router/codex', { body: { slots: true } });
     assert.strictEqual(applied.status, 200);

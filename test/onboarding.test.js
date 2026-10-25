@@ -7,6 +7,7 @@ const path = require('node:path');
 
 const { createClientOnboarding } = require('../lib/client-onboarding');
 const codexConfig = require('../lib/codex-config');
+const { planCodexSlots } = require('../lib/codex-router-plan');
 const zcodeConfig = require('../lib/zcode-config');
 
 const ROUTER_URL = 'http://127.0.0.1:8787';
@@ -62,11 +63,12 @@ function claudeStub(file, routerURL, routerToken) {
   };
 }
 
-function codexStub(file, routerURL, routerToken, { slots = false } = {}) {
+function codexStub(file, routerURL, routerToken, { slots = true } = {}) {
   return () => {
     const before = codexConfig.read(file);
     const currentModel = before.document.get('model') || 'gpt-5';
-    const top = { model: slots ? 'mixr-main' : currentModel, model_provider: 'mixr-router' };
+    const top = { model: slots ? 'mixr-main' : currentModel, model_provider: 'mixr-router',
+      model_catalog_json: 'mixrouter-model-catalog.json' };
     if (slots) top.review_model = 'mixr-reviewer';
     const text = codexConfig.patch(before.text, {
       top,
@@ -181,6 +183,28 @@ test('PATH 里没有客户端时,仍能从常见安装目录找到并标出来�
   // PATH 里能找到时来源如实写 path,不谎称来自固定目录。
   binary(ws, 'claude');
   assert.equal(onboarding.inspect('claude').binary.source, 'path');
+});
+
+test('Codex inspect 提供共享接入计划,脱敏且只读,无效槽与 profile 明确报错', t => {
+  const ws = workspace(t);
+  const onboarding = factory(ws, { applyRouter() {}, getSlots: () => ({ claude: [], codex: [] }) });
+  const state = onboarding.inspect('codex');
+  assert.equal(state.codex_plan.ok, true);
+  assert.deepEqual(state.codex_plan.bootstrap, ['main', 'reviewer']);
+  assert.equal(state.codex_plan.model, 'mixr-main');
+  assert.equal(state.codex_plan.reviewModel, 'mixr-reviewer');
+  assert.equal(state.codex_plan.slots.find(slot => slot.name === 'main').model, 'gpt-5');
+  assert.equal(JSON.stringify(state).includes('codex-key'), false);
+  assert.equal(fs.existsSync(ws.codex), false);
+  assert.equal(fs.existsSync(ws.ledger), false);
+  const invalid = factory(ws, { applyRouter() {},
+    getSlots: () => ({ claude: [], codex: [{ name: 'main', provider: 'gone', model: 'gpt-5' }] }) }).inspect('codex');
+  assert.equal(invalid.codex_plan.ok, false);
+  assert.match(invalid.codex_plan.error, /main.*槽位/);
+  fs.mkdirSync(path.dirname(ws.codex), { recursive: true });
+  fs.writeFileSync(ws.codex, 'profile = "work"\n');
+  assert.equal(onboarding.inspect('codex').codex_plan.ok, false);
+  assert.match(onboarding.inspect('codex').codex_plan.error, /profile/);
 });
 
 // ---------------------------------------------------------------- Claude
@@ -350,6 +374,27 @@ test('Claude 预览后文件被外部修改:apply 以 409 拒绝,令牌过期也
 
 // ---------------------------------------------------------------- Codex
 
+test('Codex 纯槽位计划只补缺失默认槽,不改变输入或其它槽位', () => {
+  const providers = [{ id: 'off', enabled: false, model: 'off', api_key: 'k' },
+    { id: 'first', name: 'First', model: 'default', api_key: 'k' },
+    { id: 'second', model: 'other', api_key: 'k' }];
+  const slots = [{ name: 'worker', alias: 'mixr-worker', provider: 'second', model: 'custom', enabled: true },
+    { name: 'main', alias: 'wrong-alias', provider: 'second', model: 'explicit', enabled: true }];
+  const original = JSON.stringify({ slots, providers });
+  const plan = planCodexSlots(slots, providers);
+  assert.deepEqual(plan.bootstrap, ['reviewer']);
+  assert.equal(plan.model, 'mixr-main');
+  assert.equal(plan.reviewModel, 'mixr-reviewer');
+  assert.equal(plan.slots.find(slot => slot.name === 'main').model, 'explicit');
+  assert.equal(plan.slots.find(slot => slot.name === 'main').alias, 'mixr-main');
+  assert.equal(plan.slots.find(slot => slot.name === 'reviewer').provider, 'first');
+  assert.equal(plan.slots.find(slot => slot.name === 'reviewer').model, 'default');
+  assert.deepEqual(plan.slots.find(slot => slot.name === 'worker'), slots[0]);
+  assert.equal(JSON.stringify({ slots, providers }), original);
+  assert.throws(() => planCodexSlots(slots, providers, { strict: true }),
+    error => error.statusCode === 400 && /reviewer.*槽位/.test(error.message));
+});
+
 const CODEX_ORIGINAL = `model = "gpt-5"
 model_provider = "custom"
 
@@ -487,6 +532,30 @@ test('Codex 撤销冲突:受管 provider 字段或段内额外字段都会拒绝
   assert.match(JSON.stringify(undoPreview.conflicts), /额外字段/);
 });
 
+test('Codex 普通接入预览自动采用可用槽位并管理模型目录,不触碰推理强度', t => {
+  const ws = workspace(t);
+  fs.mkdirSync(path.dirname(ws.codex), { recursive: true });
+  fs.writeFileSync(ws.codex, CODEX_ORIGINAL.replace('model_provider = "custom"',
+    'model_provider = "custom"\nmodel_reasoning_effort = "max"'));
+  const onboarding = factory(ws, { applyRouter: codexStub(ws.codex, ROUTER_URL, ROUTER_TOKEN) });
+  const preview = onboarding.preview('codex');
+  assert.ok(preview.changes.some(change => change.field === 'model' && change.after === 'mixr-main'));
+  assert.ok(preview.changes.some(change => change.field === 'review_model' && change.after === 'mixr-reviewer'));
+  assert.ok(preview.changes.some(change => change.field === 'model_catalog_json' && change.after === 'mixrouter-model-catalog.json'));
+  assert.equal(preview.changes.some(change => change.field === 'model_reasoning_effort'), false);
+  assert.ok(preview.warnings.some(warning => /撤销只还原 model_catalog_json/.test(warning)));
+  const applied = onboarding.apply('codex', { token: preview.token, confirm: true });
+  assert.deepEqual(applied.changed, preview.changes);
+  assert.match(fs.readFileSync(ws.codex, 'utf8'), /model_reasoning_effort = "max"/);
+  const undoPreview = onboarding.previewUndo('codex');
+  onboarding.undo('codex', { token: undoPreview.token, confirm: true });
+  const restored = codexConfig.read(ws.codex).document;
+  assert.equal(restored.get('model'), 'gpt-5');
+  assert.equal(restored.get('review_model'), undefined);
+  assert.equal(restored.get('model_catalog_json'), undefined);
+  assert.equal(restored.get('model_reasoning_effort'), 'max');
+});
+
 test('Codex slots 预览:写 mixr-main / mixr-reviewer,撤销后恢复原 model 且删除 review_model', t => {
   const ws = workspace(t);
   fs.mkdirSync(path.dirname(ws.codex), { recursive: true });
@@ -517,7 +586,7 @@ test('预览的 after 与真实写入结果逐字段一致(Claude / Codex slots 
   const onboarding = factory(ws, {
     applyRouter(app, options) {
       if (app === 'claude') return claudeStub(ws.claude, ROUTER_URL, ROUTER_TOKEN)(app, options);
-      if (app === 'codex') return codexStub(ws.codex, ROUTER_URL, ROUTER_TOKEN, { slots: options.slots })(app, options);
+      if (app === 'codex') return codexStub(ws.codex, ROUTER_URL, ROUTER_TOKEN)(app, options);
       return zcodeStub(ws.zcode, ROUTER_URL, ROUTER_TOKEN)(app, options);
     },
   });
@@ -561,6 +630,42 @@ test('getSlots 收到 slotMap 原始对象形状也能工作;渠道库/槽位在
   assert.equal(fs.readFileSync(ws.codex, 'utf8'), before, '拒绝时不得写入');
 });
 
+test('Codex 普通接入预览披露缺失槽位自动补齐,严格接入不自动补槽', t => {
+  const ws = workspace(t);
+  fs.mkdirSync(path.dirname(ws.codex), { recursive: true });
+  fs.writeFileSync(ws.codex, CODEX_ORIGINAL);
+  const onboarding = factory(ws, {
+    applyRouter: codexStub(ws.codex, ROUTER_URL, ROUTER_TOKEN),
+    getSlots: () => ({ claude: [], codex: [] }),
+  });
+  const preview = onboarding.preview('codex');
+  assert.ok(preview.changes.some(change => change.field === 'model' && change.after === 'mixr-main'));
+  assert.ok(preview.changes.some(change => change.field === 'review_model' && change.after === 'mixr-reviewer'));
+  assert.ok(preview.warnings.some(warning => /自动补齐.*main.*reviewer/.test(warning)));
+  assert.ok(preview.warnings.some(warning => /撤销.*不删除.*槽/.test(warning)));
+  assert.throws(() => onboarding.preview('codex', { slots: true }),
+    error => error.statusCode === 400 && /槽位/.test(error.message));
+  assert.equal(fs.readFileSync(ws.codex, 'utf8'), CODEX_ORIGINAL, '预览不写客户端配置');
+});
+
+test('Codex 已有无效槽不被普通接入的自动补齐覆盖', t => {
+  const ws = workspace(t);
+  fs.mkdirSync(path.dirname(ws.codex), { recursive: true });
+  fs.writeFileSync(ws.codex, CODEX_ORIGINAL);
+  const onboarding = factory(ws, {
+    applyRouter: codexStub(ws.codex, ROUTER_URL, ROUTER_TOKEN),
+    getSlots: () => ({ claude: [], codex: [{ name: 'main', provider: 'missing', model: 'm', enabled: false }] }),
+  });
+  assert.throws(() => onboarding.preview('codex'),
+    error => error.statusCode === 400 && /main.*槽位/.test(error.message));
+  const raw = factory(ws, {
+    applyRouter: codexStub(ws.codex, ROUTER_URL, ROUTER_TOKEN),
+    getSlots: () => ({ claude: {}, codex: { main: { provider: '' } } }),
+  });
+  assert.throws(() => raw.preview('codex'),
+    error => error.statusCode === 400 && /main.*槽位/.test(error.message));
+});
+
 test('Codex 没有任何可用模型名时不写 model = "",预览直接拒绝', t => {
   const ws = workspace(t);
   fs.mkdirSync(path.dirname(ws.codex), { recursive: true });
@@ -570,7 +675,7 @@ test('Codex 没有任何可用模型名时不写 model = "",预览直接拒绝',
     getStore: () => ({ claude: [], codex: [{ id: 'c1', name: 'C1', enabled: false, api_key: 'k', model: 'gpt-5' }] }),
   });
   assert.throws(() => onboarding.preview('codex'),
-    error => error.statusCode === 400 && /模型名/.test(error.message));
+    error => error.statusCode === 400 && /模型名|槽位/.test(error.message));
   assert.equal(fs.readFileSync(ws.codex, 'utf8'), '[mcp_servers.fetch]\ncommand = "uvx"\n');
 });
 

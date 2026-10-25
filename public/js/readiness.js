@@ -174,8 +174,8 @@
     } finally { clearTimeout(timer); }
   }
 
-  // 写入方式取决于槽位表,不是向导里选的那一行:Claude/Codex 的服务端预览走路由模式,
-  // 只有 slots:true 才会把槽位别名写进 env / top model。这里如实算出"这次会写什么"。
+  // Claude 的槽位 env 按 slots:true 写入;Codex 正常接入会补缺槽并自动写入稳定别名。
+  // 具体补齐与有效性以服务端预览为准,不拿向导里选择的渠道冒充实际计划。
   function readinessWriteMode() {
     const app = readinessState.app;
     if (app === 'zcode') {
@@ -190,15 +190,18 @@
       const aliased = (R_SLOT_NAMES[app] || []).filter(name => readinessSlotState(app, name).configured);
       return {
         kind: 'slots', slots: true, model: main?.model || '',
-        note: `路由模式 + 槽位别名：${aliased.join(' / ')} 会指向 ${main?.provider_name || main?.provider || '所选渠道'}。`,
+        note: app === 'codex'
+          ? '接入路由并写入 model=mixr-main / review_model=mixr-reviewer；保留 main 与 reviewer 各自当前的渠道和落点模型，模型列表自动同步。已有失效槽位会拒绝写入。'
+          : `路由模式 + 槽位别名：${aliased.join(' / ')} 会指向 ${main?.provider_name || main?.provider || '所选渠道'}。`,
       };
     }
-    const unaliased = app === 'claude'
-      ? '其余槽位不写别名（手设的真实模型名保留，过期的 mixr-* 清掉），这些请求按路由规则分发。'
-      : 'Codex 需要 main 与 reviewer 两个槽位都可用；缺一个时只写路由地址，不会自动补槽。';
+    if (app === 'codex') return {
+      kind: 'router', slots: false, model: '',
+      note: '接入路由并自动写入 model=mixr-main / review_model=mixr-reviewer；缺少的槽位用渠道库中第一个已启用、有默认模型和 API Key 的渠道补齐。已有失效槽位不会覆盖，预览会拒绝写入。撤销客户端字段后，补齐的槽位仍保留。',
+    };
     return {
       kind: 'router', slots: false, model: '',
-      note: `只写路由地址与令牌，不写槽位别名（缺少：${missing.join(' / ')}）。${unaliased}`,
+      note: `只写路由地址与令牌，不写槽位别名（缺少：${missing.join(' / ')}）。其余槽位不写别名（手设的真实模型名保留，过期的 mixr-* 清掉），这些请求按路由规则分发。`,
     };
   }
 
@@ -461,9 +464,8 @@
 
   // ---------------------------------------------------------------- 渲染:模型与主槽
 
-  // 写入槽位这一步不是"可选的顺手活儿":Codex 的 slots 写入要求 main 与 reviewer 都有可用槽,
-  // Claude 只配 main 时其余槽不会有别名(会保留真实模型名或清掉过期 mixr-*)。所以这里把
-  // 每个客户端真正需要的槽位逐个列出来,并按用户点的那一下去配 —— 不承诺"配了 main 就通了"。
+  // 显示现有槽位并允许明确选定落点。Codex 接入时只补缺失项,不覆盖现有失效配置;
+  // Claude 只配 main 时其余槽不会有别名(会保留真实模型名或清掉过期 mixr-*)。
   const R_SLOT_NAMES = { claude: ['main', 'opus', 'sonnet', 'haiku', 'subagent'], codex: ['main', 'reviewer'] };
   const R_SLOT_LABEL = { main: 'main 主模型', reviewer: 'reviewer 审查模型', opus: 'opus 槽', sonnet: 'sonnet 槽', haiku: 'haiku 槽', subagent: 'subagent 槽' };
 
@@ -477,8 +479,8 @@
       text: `${slot.provider_name || slot.provider} @ ${slot.model || '渠道第一个模型'}`,
     };
   }
-  // 缺哪些"可转发"的槽位:Claude 只把 main 当必需(其余未配置时保留真实模型名,不写别名);
-  // Codex 两个都是必需项 —— 少一个 switchCodexRouter 会直接拒绝。
+  // 用现有槽位决定是否发送严格 slots:true。Codex 缺槽时走正常接入,由服务端补齐;
+  // 已有槽位是否有效仍以服务端预览为准。Claude 只把 main 当必需。
   function readinessMissingSlots(app) {
     const need = app === 'codex' ? ['main', 'reviewer'] : ['main'];
     return need.filter(name => !readinessSlotState(app, name).configured);
@@ -501,18 +503,17 @@
       </li>`;
     }).join('');
     const status = readinessState.slotSetup || null;
-    // Claude:主槽必配;其余四个是"要不要一起挂到这个渠道"。Codex:两个一起配,否则写入只能退回
-    // 纯路由且 reviewer 仍是旧值 —— 这正是"只配 main 却承诺接通"的坑。
+    // 明确设置覆盖用户选择的槽位;自动补齐只在首次接入缺槽时发生,不冒充同一动作。
     const actions = app === 'codex'
       ? `<button class="small" type="button" id="readiness-set-main" onclick="readinessSetMain()" ${can ? '' : 'disabled'}>把 main 设为该渠道</button>
          <button class="small primary" type="button" id="readiness-set-main-both" onclick="readinessSetSlots('codex')" ${can ? '' : 'disabled'}>把 main 与 reviewer 都设为该渠道</button>`
       : `<button class="small" type="button" id="readiness-set-main" onclick="readinessSetMain()" ${can ? '' : 'disabled'}>只设为主槽 main</button>
          <button class="small primary" type="button" id="readiness-set-main-both" onclick="readinessSetSlots('claude')" ${can ? '' : 'disabled'}>把全部槽位都设为该渠道</button>`;
     const explain = app === 'codex'
-      ? 'Codex 写入槽位别名时要求 main 与 reviewer 都有可用槽；只配 main，写入就会退回「只写路由地址」，不会自动补 reviewer。'
+      ? '可以分别设置落点；接入路由时缺失的 main / reviewer 会从第一个已启用、有默认模型和 API Key 的渠道补齐。已有失效槽位不会自动替换；撤销客户端字段后补齐槽位仍保留。'
       : '只配 main 时，其余槽位不写别名：原本手设的真实模型名会保留，过期的 mixr-* 会被清掉；这些请求会按路由规则分发，而不是按槽位落点。';
     return `<div class="readiness-slots" id="readiness-slot-setup">
-      <p class="readiness-section-label">槽位（${app === 'codex' ? '两个都要' : 'main 必需'}）</p>
+      <p class="readiness-section-label">槽位（${app === 'codex' ? 'main / reviewer，接入时补缺项' : 'main 必需'}）</p>
       <ul class="readiness-slot-list">${rows}</ul>
       <p class="hint">${rEsc(explain)}</p>
       <div class="savebar">${actions}<span class="msg" id="readiness-main-status" role="status">${rEsc(status?.text || '')}</span></div>
@@ -622,7 +623,7 @@
           <p class="hint">${readinessState.app === 'claude'
             ? 'Claude Code 需重启会话生效。'
             : readinessState.app === 'codex'
-              ? 'Codex 需重启生效。'
+              ? '首次接入需打开使用新配置的 Codex 客户端；已接入路由的槽位调整从下一次请求生效。已打开的 Codex 客户端会缓存模型标签，新客户端读取同步列表。'
               : `写入只改了 ZCode 的接入配置，不会切换你正在用的会话：请在 ZCode 的模型选择器里选择 Mixrouter${readinessState.model ? ' · ' + rEsc(readinessState.model) : ''}（必要时重启客户端），再开新会话。`} 如要回退，使用下面的撤销入口。</p>
         </div>`
       : readinessState.applyError
@@ -1140,8 +1141,8 @@
     try {
       const mode = readinessWriteMode();
       const options = {
-        // provider_id / model / key_id / client_wire 是向导的选择:当前服务端对 Claude/Codex
-        // 只消费 slots,其余键会被忽略(不会报错);后端支持后即可让选择直接驱动写入。
+        // Claude/Codex 的路由计划由现有槽位决定;Codex 缺槽时不发严格 slots:true,
+        // 让正常接入计划补齐。所选渠道用于上游测试,不覆盖现有槽位。
         provider_id: p.id,
         model: mode.model || readinessState.model,
         key_id: readinessState.keyId || undefined,

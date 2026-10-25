@@ -93,7 +93,8 @@ test('渠道 CRUD:slots 过 normalizeChannelSlots,只留四键、丢弃未知(�
   assert.strictEqual(norm.subagent, '');
 });
 
-test('switchCodex 全新文件:写顶层 model/model_provider 与 mixr-* section', () => {
+test('switchCodex 已有 0644 文件:写顶层 model/model_provider 与 mixr-* section,凭据权限收紧', () => {
+  fs.chmodSync(CODEX_CONFIG, 0o644);
   switchCodex(CODEX_CHANNEL);
   const text = fs.readFileSync(CODEX_CONFIG, 'utf8');
   assert.ok(text.includes('model = "gpt-5-codex"'));
