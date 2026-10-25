@@ -567,7 +567,6 @@ summary::marker { color: var(--border-strong); }
 .codex-models .config-facts dt { color: var(--dim); font-size: 13.5px; }
 .codex-models .config-facts dd { margin: 2px 0 0; overflow-wrap: anywhere; font-size: 14px; }
 .codex-models .config-warnings { color: var(--dim); font-size: 13.5px; line-height: 1.7; padding-left: 18px; }
-.codex-models .reasoning-control { display: flex; align-items: center; gap: 8px; }
 
 /* ---- Provider library ------------------------------------------------------ */
 .channel-toolbar {

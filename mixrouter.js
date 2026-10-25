@@ -93,6 +93,7 @@ const { createHarnessPool } = require('./lib/harness-pool');
 // 它的薄适配(名字转发,没有自己的算法)。旧名字保留是为了既有导出面与测试,
 // 见下面 writeCodexConfig / liveState 的说明。
 const codexConfig = require('./lib/codex-config');
+const { planCodexSlots } = require('./lib/codex-router-plan');
 
 const VERSION = '3.9.0';
 const ROOT = __dirname;
@@ -289,11 +290,12 @@ function drainStoreWarnings() {
 // /api/switch 能切到它,唯独 providers.json 里没有。重启后它凭空消失,而中途这一段
 // 行为完全不可解释。对比:configureClaudeSplit 一直是失败即回滚的。
 // 快照用结构化克隆:store 里全是纯 JSON 值(渠道对象/字符串/数组),没有函数和循环引用。
-function withStoreRollback(mutate) {
+function withStoreRollback(mutate, { syncCodex = false } = {}) {
   const before = structuredClone({ claude: store.claude, codex: store.codex, current });
   try {
     mutate();
-    saveStore();
+    if (syncCodex) withCodexSync(saveStore);
+    else saveStore();
   } catch (e) {
     store.claude = before.claude; store.codex = before.codex; current = { ...current, ...before.current };
     throw e;
@@ -684,7 +686,7 @@ const matchWhen = rulesLib.matchWhen;
 const resolveRoute = createResolver({
   getRoutes: () => routes, storeOf: app => storeOf(app),
   resolveSlot: (app, modelIn) => resolveSlot(app, modelIn),
-  findProvider, providerApp,
+  findProvider, providerApp, codexLegacyAlias,
 });
 // 诊断只读装配:不经 /api/state、sessionList 或任何会剪枝/落盘的会话入口。
 const explainRoute = createExplainer({
@@ -1011,20 +1013,107 @@ function switchClaude(p) {
 const tomlStr = codexConfig.quote;
 const codexTopLevel = codexConfig.topLevel;
 
-// Codex 配置写入的事务收尾:能力目录(prepared.file / prepared.sourceFile)与配置正文
-// 三份文件各自"内容变了才备份 + 原子落盘",任何一份都没变就不碰它 —— 不产生空备份。
-function commitCodexConfig(before, text, prepared) {
-  fs.mkdirSync(path.dirname(CODEX_CONFIG), { recursive: true });
+// 多文件同步失败时恢复全部已替换文件,包括本轮新建的目录文件与 slots.json。
+// 每份终名仍走原子替换;这不是跨文件的掉电事务,但 HTTP 失败不会留下半套配置。
+function commitCodexConfig(before, text, prepared, extraFiles = []) {
+  const writes = [];
   if (prepared) {
-    let previous = '';
-    try { previous = fs.readFileSync(prepared.file, 'utf8'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    if (previous !== prepared.content) { backupWithWatch(prepared.file); writeFileAtomic(prepared.file, prepared.content); }
-    const source = JSON.stringify({ source: prepared.source }, null, 2) + '\n';
-    let oldSource = '';
-    try { oldSource = fs.readFileSync(prepared.sourceFile, 'utf8'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    if (oldSource !== source) { backupWithWatch(prepared.sourceFile); writeFileAtomic(prepared.sourceFile, source); }
+    writes.push({ file: prepared.file, text: prepared.content, backup: true },
+      { file: prepared.sourceFile, text: JSON.stringify({ source: prepared.source, legacy_models: prepared.legacyModels }, null, 2) + '\n', backup: true });
   }
-  if (text !== before.text) { backupWithWatch(CODEX_CONFIG); writeFileAtomic(CODEX_CONFIG, text); }
+  writes.push({ file: CODEX_CONFIG, text, backup: true, secure: true },
+    ...extraFiles.map(write => ({ ...write, secure: write.file === PROVIDERS_FILE })));
+  const snapshots = writes.map(write => {
+    let previous = null, mode = 0o600, file = write.file;
+    try {
+      const stat = fs.lstatSync(file);
+      if (stat.isSymbolicLink()) file = fs.realpathSync(file);
+      const target = fs.statSync(file);
+      if (!target.isFile()) throw new Error(`${path.basename(write.file)} 不是普通文件`);
+      mode = target.mode & 0o777;
+      previous = fs.readFileSync(file, 'utf8');
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    return { ...write, file, previous, mode };
+  });
+  const configSnapshot = snapshots[prepared ? 2 : 0];
+  if ((configSnapshot.previous ?? '') !== before.text) {
+    throw Object.assign(new Error('Codex 配置已被外部修改，请刷新后重试'), { statusCode: 409 });
+  }
+  const changed = [], warnings = [];
+  try {
+    for (const item of snapshots) {
+      if (item.previous === item.text && (!item.secure || item.mode === 0o600)) continue;
+      fs.mkdirSync(path.dirname(item.file), { recursive: true });
+      if (item.backup && item.previous !== item.text) warnings.push(...(backupWithWatch(item.file).warnings || []));
+      writeFileAtomic(item.file, item.text, { mode: item.secure || item.previous === null ? 0o600 : item.mode });
+      changed.push(item);
+    }
+  } catch (error) {
+    const rollbackErrors = [];
+    for (const item of changed.reverse()) {
+      try {
+        if (item.previous === null) fs.unlinkSync(item.file);
+        else writeFileAtomic(item.file, item.previous, { mode: item.mode });
+      } catch (rollback) { rollbackErrors.push(`${path.basename(item.file)}: ${rollback.message}`); }
+    }
+    if (rollbackErrors.length) throw Object.assign(new Error(`Codex 同步失败: ${error.message};回滚也失败: ${rollbackErrors.join('; ')} —— 请检查上述文件`), { statusCode: 500 });
+    throw error;
+  }
+  return { warnings };
+}
+
+function managedCodexDocument(before) {
+  if (current.codex !== ROUTER_ID || !before.text.trim() || before.document.get('profile')) return false;
+  const value = key => before.document.get('model_providers', before.document.get('model_provider'), key);
+  return before.document.get('model_provider') === ROUTER_SECTION && value('base_url')?.replace(/\/+$/, '') === ROUTER_URL + '/v1' &&
+    value('wire_api') === 'responses' && value('experimental_bearer_token') === ROUTER_TOKEN &&
+    value('requires_openai_auth') !== true && !value('env_key');
+}
+
+function codexLegacyAlias(modelIn, ctx) {
+  if (current.codex !== ROUTER_ID || ctx.token !== ROUTER_TOKEN || !/^codex(?:_cli_rs|_exec|[ /])/i.test(ctx.ua || '') ||
+      !String(ctx.session || '').startsWith('cx:')) return '';
+  try {
+    const before = codexConfig.read(CODEX_CONFIG);
+    if (!managedCodexDocument(before) || path.basename(before.document.get('model_catalog_json') || '') !== 'mixrouter-model-catalog.json') return '';
+    const source = JSON.parse(fs.readFileSync(path.join(path.dirname(CODEX_CONFIG), 'mixrouter-model-catalog.source.json'), 'utf8'));
+    const alias = Object.hasOwn(source.legacy_models || {}, modelIn) ? source.legacy_models[modelIn] : '';
+    return typeof alias === 'string' && /^mixr-(main|reviewer)$/.test(alias) ? alias : '';
+  } catch { return ''; }
+}
+
+function prepareCodexSync(next = slotMap) {
+  if (current.codex !== ROUTER_ID) return null;
+  const before = codexConfig.read(CODEX_CONFIG);
+  if (!managedCodexDocument(before)) return null;
+  const slots = slotTable.slotsPublic(next).codex;
+  const prepared = codexConfig.prepareCatalog(CODEX_CONFIG, before.document, slots);
+  const top = { model_catalog_json: path.basename(prepared.file) };
+  // 已明确选择自定义别名时保留它;旧原生默认才升级为 main/reviewer 的稳定线 ID。
+  if (next.codex.main && !String(before.document.get('model') || '').startsWith('mixr-')) top.model = slotAlias('codex', 'main');
+  if (next.codex.reviewer && !String(before.document.get('review_model') || '').startsWith('mixr-')) top.review_model = slotAlias('codex', 'reviewer');
+  return { before, text: codexConfig.patch(before.text, { top }), prepared };
+}
+
+function withCodexSync(save) {
+  const plan = prepareCodexSync();
+  if (!plan) return save();
+  storeWarnings = [];
+  const result = commitCodexConfig(plan.before, plan.text, plan.prepared, [{ file: PROVIDERS_FILE,
+    text: JSON.stringify({ version: 2, current, claude: store.claude, codex: store.codex }, null, 2) + '\n', backup: true }]);
+  storeWarnings = result.warnings;
+  return result;
+}
+
+function commitSlotUpdate(next, codexChanged) {
+  const plan = codexChanged ? prepareCodexSync(next) : null;
+  let warnings = [];
+  if (plan) ({ warnings } = commitCodexConfig(plan.before, plan.text, plan.prepared, [{ file: SLOTS_FILE,
+    text: JSON.stringify({ version: 1, claude: next.claude, codex: next.codex }, null, 2) + '\n' }]));
+  else saveJson(SLOTS_FILE, { version: 1, claude: next.claude, codex: next.codex });
+  slotMap = next;
+  return { ok: true, slots: slotsPublic(), ...(codexChanged ? { live: { codex: liveState().codex } } : {}),
+    ...(warnings.length ? { warnings } : {}) };
 }
 
 // 控制台「Codex」页的两个动作:同步能力目录 / 设置推理档位。都要求 revision 对得上 ——
@@ -1058,7 +1147,7 @@ function updateCodexConfig(options) {
 //   2) 顶层 model / model_provider / review_model 原位替换;没有就插到文件最前
 //   3) 追加/更新 model_providers.<section>(沿用本机已验证的 bearer-token 模式,不依赖 auth.json)
 // 解析不了的 TOML 一律拒绝写(codexConfig.read 抛),不以空配置覆盖原文件。
-function writeCodexConfig({ section, name, base_url, api_key, wire_api, model, keepModel, reviewModel, syncCatalog = false, expectedRevision }) {
+function writeCodexConfig({ section, name, base_url, api_key, wire_api, model, keepModel, reviewModel, catalogPath, syncCatalog = false, expectedRevision }) {
   const before = codexConfig.read(CODEX_CONFIG);
   if (expectedRevision && expectedRevision !== before.revision)
     throw Object.assign(new Error('Codex 配置已被外部修改，请刷新后重试'), { statusCode: 409 });
@@ -1067,7 +1156,8 @@ function writeCodexConfig({ section, name, base_url, api_key, wire_api, model, k
   const text = codexConfig.patch(before.text, {
     top: { model: keepModel && before.document.get('model') ? before.document.get('model') : model,
       model_provider: section, review_model: reviewModel,
-      ...(prepared ? { model_catalog_json: path.basename(prepared.file) } : {}) },
+      ...(prepared ? { model_catalog_json: path.basename(prepared.file) } : {}),
+      ...(catalogPath !== undefined ? { model_catalog_json: catalogPath } : {}) },
     section, provider: { name, base_url, wire_api: wire_api || 'responses', requires_openai_auth: false, experimental_bearer_token: api_key },
   });
   commitCodexConfig(before, text, prepared);
@@ -1080,8 +1170,13 @@ function switchCodex(p) {
   // 旧配置里的 review_model 若还是本产品写的 mixr- 别名,直连时必须一起改掉:
   // 留着别名而 model_provider 已经换成真实渠道,审查模型会指向一个不存在的 provider。
   const review = before.document.get('review_model');
+  let catalogPath;
+  if (path.basename(before.document.get('model_catalog_json') || '') === 'mixrouter-model-catalog.json') {
+    const source = JSON.parse(fs.readFileSync(path.join(path.dirname(CODEX_CONFIG), 'mixrouter-model-catalog.source.json'), 'utf8'));
+    catalogPath = source.source || null;
+  }
   writeCodexConfig({ section: 'mixr-' + p.id, name: p.name, base_url: codexConfig.baseURL(p.base_url),
-    api_key: p.api_key, wire_api: p.wire_api || 'responses',
+    api_key: p.api_key, wire_api: p.wire_api || 'responses', catalogPath,
     model, ...(typeof review === 'string' && review.startsWith('mixr-') ? { reviewModel: model } : {}) });
 }
 
@@ -1107,27 +1202,24 @@ function switchClaudeRouter(options = {}) {
   return { warnings };
 }
 function switchCodexRouter(options = {}) {
-  const { text } = codexConfig.read(CODEX_CONFIG);
-  const cur = codexTopLevel(text, 'model');
-  const fallback = (store.codex.find(p => p.enabled !== false && p.model) || {}).model || '';
-  let model = cur || fallback, reviewModel;
-  if (options.slots) {
-    // 两个槽位都要先验证再动客户端配置:主槽缺 provider / 子代理槽指了个没有 Key 的渠道,
-    // 写进 config.toml 之后 Codex 启动才报错,那时用户已经看不到是哪一步配错了。
-    for (const name of ['main', 'reviewer']) {
-      const slot = resolveSlot('codex', slotAlias('codex', name));
-      if (!slot || !slot.provider || slot.provider.enabled === false || !slot.model || !slot.provider.api_key) {
-        const err = new Error(`Codex ${name} 槽位须绑定已启用、有模型名和 API Key 的渠道`);
-        err.statusCode = 400;
-        throw err;
-      }
-    }
-    model = slotAlias('codex', 'main');
-    reviewModel = slotAlias('codex', 'reviewer');
-  }
-  writeCodexConfig({ section: ROUTER_SECTION, name: `mixrouter(经 :${PROXY_PORT} 路由)`,
-    base_url: ROUTER_URL + '/v1', api_key: ROUTER_TOKEN, wire_api: 'responses',
-    model, reviewModel, keepModel: !options.slots, syncCatalog: !!options.slots, expectedRevision: options.revision });
+  const before = codexConfig.read(CODEX_CONFIG);
+  if (options.revision && options.revision !== before.revision)
+    throw Object.assign(new Error('Codex 配置已被外部修改，请刷新后重试'), { statusCode: 409 });
+  if (before.document.get('profile')) throw codexConfig.invalid('当前选择了 Codex profile，请先确认 profile 配置；未改写全局配置');
+  const next = structuredClone(slotMap);
+  const plan = planCodexSlots(slotTable.slotsPublic(next).codex, store.codex, { strict: !!options.slots });
+  for (const name of plan.bootstrap) next.codex[name] = { provider: plan.slots.find(slot => slot.name === name).provider };
+  const prepared = codexConfig.prepareCatalog(CODEX_CONFIG, before.document, plan.slots);
+  const text = codexConfig.patch(before.text, {
+    top: { model: plan.model, review_model: plan.reviewModel,
+      model_provider: ROUTER_SECTION, model_catalog_json: path.basename(prepared.file) },
+    section: ROUTER_SECTION, provider: { name: `mixrouter(经 :${PROXY_PORT} 路由)`, base_url: ROUTER_URL + '/v1',
+      wire_api: 'responses', requires_openai_auth: false, experimental_bearer_token: ROUTER_TOKEN },
+  });
+  const result = commitCodexConfig(before, text, prepared, [{ file: SLOTS_FILE,
+    text: JSON.stringify({ version: 1, claude: next.claude, codex: next.codex }, null, 2) + '\n' }]);
+  slotMap = next;
+  return result;
 }
 function switchRouter(app, options = {}) {
   if (app === 'zcode') return switchZcodeRouter(options);
@@ -1220,6 +1312,15 @@ function liveState() {
   // 各说各话,这里统一到一套。
   live.codex = codexConfig.state(CODEX_CONFIG, { current: current.codex, providers: store.codex,
     routerURL: ROUTER_URL, routerToken: ROUTER_TOKEN, slots: slotsPublic().codex });
+  let legacyModels = {};
+  const hotEnabled = current.codex === ROUTER_ID && live.codex.provider === ROUTER_SECTION && live.codex.match && !live.codex.profile;
+  if (hotEnabled && path.basename(live.codex.model_catalog_json || '') === 'mixrouter-model-catalog.json') {
+    try {
+      const source = JSON.parse(fs.readFileSync(path.join(path.dirname(CODEX_CONFIG), 'mixrouter-model-catalog.source.json'), 'utf8'));
+      legacyModels = Object.fromEntries(Object.entries(source.legacy_models || {}).filter(([id, alias]) => id && /^mixr-(main|reviewer)$/.test(alias)).slice(-32));
+    } catch {}
+  }
+  live.codex.hot_routing = { enabled: !!hotEnabled, legacy_models: legacyModels, native_picker_refresh: 'next-client' };
   live.zcode = liveZcodeState();
   return live;
 }
@@ -1270,8 +1371,8 @@ const apiHandler = createConsoleHandler({
   liveState, explainRoute, updateCodexConfig, configureClaudeSplit, healthStatus,
   applyClientSwitch, clientSwitchMessage, withStoreRollback, drainStoreWarnings, testProvider,
   sessionList, sessionRecord, storeOf, findProvider, providerApp, ghostRefs,
-  mutateSessions, saveRoutes, saveSlots, saveStore, requestLog, compactWindow,
-  slotsPublic, validateSlotPut,
+  mutateSessions, saveRoutes, saveSlots, saveStore, syncCodexStore: () => withCodexSync(saveStore), requestLog, compactWindow,
+  slotsPublic, validateSlotPut, commitSlotUpdate,
   usageSummary, readinessApi, activeRequests: () => activeRequestCount, harness,
   switchClaude, switchCodex, switchZcode, switchRouter,
 });

@@ -101,13 +101,19 @@ test('Codex drift detection checks endpoint, token and protocol, not just provid
   }
 });
 
-test('Codex sync copies only known model metadata and preserves the original catalog', () => {
+test('Codex sync copies known metadata and registers unknown target identities without invented capabilities', () => {
   const original = fs.readFileSync(path.join(temporary, 'catalog.json'), 'utf8');
   const result = router.updateCodexConfig({ action: 'sync_catalog', revision: router.liveState().codex.revision });
   const generated = JSON.parse(fs.readFileSync(path.join(temporary, 'mixrouter-model-catalog.json'), 'utf8'));
   const alias = generated.models.find(item => item.slug === 'mixr-main');
-  assert.deepEqual(alias, { ...model, slug: 'mixr-main', display_name: 'mixr-main · known-model' });
-  assert.equal(generated.models.some(item => item.slug === 'mixr-reviewer'), false);
+  assert.deepEqual(alias, { ...model, slug: 'mixr-main', display_name: 'known-model · main', visibility: 'list', priority: 0,
+    x_mixrouter: { target: 'known-model', capabilities_known: true } });
+  const reviewer = generated.models.find(item => item.slug === 'mixr-reviewer');
+  assert.equal(reviewer.x_mixrouter.capabilities_known, false);
+  assert.equal(reviewer.context_window, undefined);
+  assert.deepEqual(reviewer.supported_reasoning_levels, []);
+  assert.equal(reviewer.base_instructions, '');
+  assert.equal(generated.models.find(item => item.slug === 'known-model').visibility, 'hide');
   assert.deepEqual(result.unknown_aliases, ['mixr-reviewer']);
   assert.equal(fs.readFileSync(path.join(temporary, 'catalog.json'), 'utf8'), original);
   assert.equal(result.codex.model_reasoning_effort, 'max');
@@ -116,7 +122,7 @@ test('Codex sync copies only known model metadata and preserves the original cat
   router._state.slotMap.codex.main.provider = 'chat';
   assert.equal(router.liveState().codex.main.catalog_match, false);
   router.updateCodexConfig({ action: 'sync_catalog', revision: router.liveState().codex.revision });
-  assert.equal(JSON.parse(fs.readFileSync(path.join(temporary, 'mixrouter-model-catalog.json'), 'utf8')).models.some(item => item.slug === 'mixr-main'), false);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(temporary, 'mixrouter-model-catalog.json'), 'utf8')).models.find(item => item.slug === 'mixr-main').x_mixrouter.capabilities_known, false);
 });
 
 test('Codex 目录同步按同渠道两个槽的显式模型分别复制能力', () => {
@@ -128,7 +134,8 @@ test('Codex 目录同步按同渠道两个槽的显式模型分别复制能力',
   router.switchCodexRouter({ slots: true });
   const generated = JSON.parse(fs.readFileSync(path.join(temporary, 'mixrouter-model-catalog.json'), 'utf8'));
   assert.deepEqual(generated.models.find(item => item.slug === 'mixr-reviewer'),
-    { ...reviewerModel, slug: 'mixr-reviewer', display_name: 'mixr-reviewer · review-target' });
+    { ...reviewerModel, slug: 'mixr-reviewer', display_name: 'review-target · reviewer', visibility: 'list', priority: 1,
+      x_mixrouter: { target: 'review-target', capabilities_known: true } });
   const live = router.liveState().codex;
   assert.equal(live.main.target, 'known-model');
   assert.equal(live.reviewer.target, 'review-target');

@@ -57,6 +57,11 @@ Not a good fit:
 - **Slot routing and backup pools.** Bind a provider and model to a `mixr-<slot>` alias so the
   main chain and subagents can use separate accounts. Claude and Codex slots select the provider
   and target model independently, including custom targets, without changing provider defaults.
+  Once Codex is connected to the router, saving a slot updates subsequent alias requests and the
+  managed model catalog without another apply step or restart; the client's reasoning effort is
+  unchanged. The native picker caches display names; a fresh client reads the updated catalog.
+  A restricted compatibility mapping lets recorded former default IDs follow slots, including
+  an explicit selection of that same ID; unrelated models and other clients are unaffected.
   The session console lets each conversation
   use its own provider and model per slot; slots without an override inherit the global
   configuration. Each Claude slot row can edit its backup pool in place: the primary provider

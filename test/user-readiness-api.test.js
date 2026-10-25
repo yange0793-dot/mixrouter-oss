@@ -59,6 +59,80 @@ test('导入要求有效预览和明确确认', async () => {
 test('兼容测试未知渠道明确拒绝，不冒充测试成功', async () => {
   assert.equal((await api('/api/providers/not-found/compatibility', { model: 'test', confirm_run: true })).status, 404);
 });
+test('Codex 普通接入自动使用已有槽位,预览与实际写入一致且撤销保留推理强度', async () => {
+  const file = process.env.MIXR_CODEX_CONFIG;
+  const original = 'model = "before-main"\nreview_model = "before-review"\nmodel_provider = "openai"\nmodel_reasoning_effort = "max"\n';
+  fs.writeFileSync(file, original);
+  const saved = { store: mod._state.store, slots: mod._state.slotMap, current: mod._state.current };
+  const provider = { id: 'onboarding-codex', name: 'Fixture', enabled: true, api_key: 'fixture-key',
+    base_url: 'http://127.0.0.1:9', model: 'target-main', wire_api: 'responses' };
+  try {
+    mod._state.store = { claude: [], codex: [provider] };
+    mod._state.slotMap = { claude: {}, codex: { main: { provider: provider.id },
+      reviewer: { provider: provider.id, model: 'target-review' } } };
+    mod._state.current = { claude: '@router', codex: null, zcode: null };
+    const preview = await api('/api/onboarding/codex/preview', {});
+    assert.equal(preview.status, 200);
+    const expected = change => `${change.field}=${JSON.stringify(change.after ?? null)}`;
+    assert.ok(preview.body.changes.some(change => change.field === 'model' && change.after === 'mixr-main'));
+    assert.ok(preview.body.changes.some(change => change.field === 'review_model' && change.after === 'mixr-reviewer'));
+    assert.ok(preview.body.changes.some(change => change.field === 'model_catalog_json' && change.after === 'mixrouter-model-catalog.json'));
+    const applied = await api('/api/onboarding/codex/apply', { token: preview.body.token, confirm: true });
+    assert.equal(applied.status, 200);
+    assert.deepEqual(applied.body.changed.map(expected).sort(), preview.body.changes.map(expected).sort());
+    const text = fs.readFileSync(file, 'utf8');
+    assert.match(text, /model_reasoning_effort = "max"/);
+    fs.writeFileSync(file, text.replace('model_reasoning_effort = "max"', 'model_reasoning_effort = "xhigh"'));
+    const undoPreview = await api('/api/onboarding/codex/undo-preview', {});
+    assert.equal(undoPreview.status, 200);
+    assert.equal(undoPreview.body.can_undo, true);
+    assert.equal((await api('/api/onboarding/codex/undo', { token: undoPreview.body.token, confirm: true })).status, 200);
+    assert.equal(fs.readFileSync(file, 'utf8'), original.replace('model_reasoning_effort = "max"', 'model_reasoning_effort = "xhigh"'));
+    assert.equal(fs.existsSync(path.join(home, 'mixrouter-model-catalog.json')), true, '撤销不删除目录文件');
+  } finally {
+    mod._state.store = saved.store;
+    mod._state.slotMap = saved.slots;
+    mod._state.current = saved.current;
+  }
+});
+test('Codex 普通接入预览不补槽,确认后补齐且客户端撤销保留槽位', async () => {
+  const file = process.env.MIXR_CODEX_CONFIG;
+  fs.writeFileSync(file, 'model = "legacy-bootstrap"\n');
+  const saved = { store: mod._state.store, slots: mod._state.slotMap, current: mod._state.current };
+  const provider = { id: 'bootstrap-codex', name: 'Bootstrap', enabled: true, api_key: 'fixture-key',
+    base_url: 'http://127.0.0.1:9', model: 'bootstrap-target', wire_api: 'responses' };
+  try {
+    mod._state.store = { claude: [], codex: [provider] };
+    mod._state.slotMap = { claude: {}, codex: {} };
+    mod._state.current = { claude: '@router', codex: null, zcode: null };
+    const inspection = await api('/api/onboarding/codex');
+    assert.equal(inspection.status, 200);
+    assert.equal(inspection.body.codex_plan.ok, true);
+    assert.deepEqual(inspection.body.codex_plan.bootstrap, ['main', 'reviewer']);
+    assert.equal(inspection.body.codex_plan.slots.find(slot => slot.name === 'main').model, provider.model);
+    assert.equal(JSON.stringify(inspection.body).includes(provider.api_key), false);
+    const strict = await api('/api/onboarding/codex/preview', { slots: true });
+    assert.equal(strict.status, 400);
+    const preview = await api('/api/onboarding/codex/preview', {});
+    assert.equal(preview.status, 200);
+    assert.ok(preview.body.warnings.some(warning => /自动补齐.*main.*reviewer/.test(warning)));
+    assert.deepEqual(mod._state.slotMap.codex, {}, '预览不改变路由槽位');
+    const applied = await api('/api/onboarding/codex/apply', { token: preview.body.token, confirm: true });
+    assert.equal(applied.status, 200);
+    const key = change => `${change.field}=${JSON.stringify(change.after ?? null)}`;
+    assert.deepEqual(applied.body.changed.map(key).sort(), preview.body.changes.map(key).sort());
+    assert.deepEqual(mod._state.slotMap.codex, { main: { provider: provider.id }, reviewer: { provider: provider.id } });
+    const undoPreview = await api('/api/onboarding/codex/undo-preview', {});
+    assert.equal(undoPreview.body.can_undo, true);
+    assert.equal((await api('/api/onboarding/codex/undo', { token: undoPreview.body.token, confirm: true })).status, 200);
+    assert.equal(fs.readFileSync(file, 'utf8'), 'model = "legacy-bootstrap"\n');
+    assert.deepEqual(mod._state.slotMap.codex, { main: { provider: provider.id }, reviewer: { provider: provider.id } });
+  } finally {
+    mod._state.store = saved.store;
+    mod._state.slotMap = saved.slots;
+    mod._state.current = saved.current;
+  }
+});
 test('在途计数与尝试状态只读入口可用', async () => {
   assert.equal((await api('/api/state')).body.active_requests, 0);
   const traces = await api('/api/attempts');

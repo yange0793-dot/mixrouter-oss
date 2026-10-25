@@ -109,7 +109,8 @@ npm run upgrade -- --version vX.Y.Z --download --apply --yes   # 显式执行
 渠道库默认列表显示,右上可切成卡片;搜索与启用状态筛选对两种视图都生效。
 Claude 主模型和子代理的编辑入口在渠道库下方「模型槽位配置」,展开后配置与应用。
 Codex 的主模型与审查模型在连接配置下方直接显示,各自选择渠道与落点模型;
-其它自拟槽位在「模型槽位配置」中添加和编辑。
+其它自拟槽位在「模型槽位配置」中添加和编辑。已接入路由时选择保存即更新后续别名请求与
+托管模型目录,没有独立的推理设置面板或「应用到 Codex」步骤;客户端原有推理强度不变。
 上方「连接配置」可查看接入地址、协议和写入边界;「已写入配置」不代表真实上游连通。
 
 界面支持系统/浅色/深色主题,`⌘K`(Windows/Linux 为 `Ctrl+K`)打开快速跳转。
@@ -251,11 +252,19 @@ ANTHROPIC_AUTH_TOKEN = 任意占位值                  # 代理不校验
 ./mixctl route codex                # config.toml 顶层 model_provider 换成 mixr-router
 ```
 
-Codex 槽位(如 `main` / `reviewer`)不是客户端 env 别名,**没有 `route codex --slots`
-这个命令行参数**——`./mixctl route codex --slots` 会被 `mixctl` 直接拒绝。应用槽位用
-控制台「渠道」页 Codex 标签下的「应用槽位到客户端」按钮,它实际调的是
-`POST /api/router/codex {"slots": true, "revision": "<state.live.codex.revision>"}`。
-两个槽都必须已绑定启用、有模型名和 API Key 的渠道;改完需重启 Codex 生效。
+普通 `./mixctl route codex` 会自动采用已配置且可用的 `main` / `reviewer` 槽位别名,
+并设置托管模型目录。缺少这两个槽时,普通接入用首个启用且有默认模型与 Key 的 Codex 渠道补齐;
+已有无效槽不会被覆盖,需先修复。**没有 `route codex --slots` 这个命令行参数**,
+`./mixctl route codex --slots` 仍会被 `mixctl` 直接拒绝。
+
+首次从直连切到路由后,让 Codex 重新读取连接配置。之后在 Codex 页选择渠道与落点模型,
+保存即更新后续 `mixr-*` 请求与托管目录,不需要应用按钮或重启来改变转发落点。
+原有 `model_reasoning_effort` 不变,在 Codex 原生控件中调强度。
+原生选择器缓存目录和显示名,重新打开客户端才读取新目录;转发落点更新不依赖这一步。
+profile、项目模型覆盖与未登记的真实模型名不自动跟随主槽。
+已登记的旧默认 ID 仅在原生 Codex 标识、本地路由凭据与可靠会话同时满足时按兼容映射跟随;
+显式 `-m` 选择同一旧默认 ID 也会命中,请求上无法区别它与仍持有旧默认的会话。
+无关原生模型 ID 与其它 OpenAI 客户端不受影响。
 
 等价手改是在 `~/.codex/config.toml` 里加一个 provider section:
 
@@ -263,7 +272,8 @@ Codex 槽位(如 `main` / `reviewer`)不是客户端 env 别名,**没有 `route 
 base_url               = "http://127.0.0.1:8787/v1"      # 带 /v1
 wire_api               = "responses"
 experimental_bearer_token = "mixrouter-local"            # 占位,不能为空
-# 顶层 model 保持不动
+# 跟随主槽时,顶层 model 用 "mixr-main",review_model 用 "mixr-reviewer"
+# model_catalog_json 指向接入时生成的 mixrouter-model-catalog.json
 ```
 
 `./mixctl route codex` 是**外科手术式**改写:顶层原位替换、追加 `[model_providers.mixr-*]`

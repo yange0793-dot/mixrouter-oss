@@ -499,7 +499,7 @@ test('ZCode 客户端协议仍可选三种，选 OpenAI 后渠道来自 Codex �
   assert.equal(back.clientWire, 'messages', 'ZCode 选 Anthropic 时客户端协议叫 messages');
 });
 
-test('Codex 槽位设置同时配 main 与 reviewer，少一个就只说只写路由地址', async () => {
+test('Codex 槽位设置独立于初次接入，缺项明示自动补齐而非只写路由地址', async () => {
   const h = await harness();
   const slots = [];
   let store = fixture();
@@ -526,12 +526,41 @@ test('Codex 槽位设置同时配 main 与 reviewer，少一个就只说只写�
   });
   h.run("setApp('codex')");
   await h.run('readinessOpen()');
-  assert.match(h.get('readiness-body').innerHTML, /只写路由地址与令牌/);
-  assert.match(h.get('readiness-body').innerHTML, /main.*reviewer|reviewer/);
+  assert.match(h.get('readiness-body').innerHTML, /缺少的槽位.*第一个已启用、有默认模型和 API Key/);
+  assert.match(h.get('readiness-body').innerHTML, /撤销客户端字段后，补齐的槽位仍保留/);
+  assert.doesNotMatch(h.get('readiness-body').innerHTML, /只写路由地址与令牌|不会自动补槽/);
   await h.run("readinessSetSlots('codex')");
   assert.deepEqual(plain(slots.map(body => Object.keys(body.codex))), [['main'], ['reviewer']], '两个槽各自一次 PUT /api/slots');
   assert.match(h.get('readiness-body').innerHTML, /已把 main \/ reviewer 设为/);
-  assert.match(h.get('readiness-body').innerHTML, /路由模式 \+ 槽位别名：main \/ reviewer/);
+  assert.match(h.get('readiness-body').innerHTML, /保留 main 与 reviewer 各自当前的渠道和落点模型/);
+});
+
+test('Codex 缺槽预览不发送严格 slots:true，首次接入仍需确认且不声称标签热刷新', async () => {
+  for (const names of [[], ['main'], ['main', 'reviewer']]) {
+    const data = fixture();
+    data.slots.codex = names.map(name => ({ name, alias: 'mixr-' + name, provider: 'o1', enabled: true, model: 'gpt-test' }));
+    const h = await harness(data);
+    h.fetchStub(async url => {
+      if (url === '/api/onboarding/codex') return reply(200, { app: 'codex', config: { status: 'ok', path: '~/.codex/config.toml' } });
+      if (url === '/api/onboarding/codex/preview') return reply(200, { token: 'tcx', changes: [{ field: 'model', after: 'mixr-main' }], warnings: [] });
+      if (url === '/api/onboarding/codex/apply') return reply(200, { ok: true, changed: [{ field: 'model', after: 'mixr-main' }], ledger_saved: true });
+      if (url === '/api/state') return reply(200, data);
+      return reply(200, { ok: true });
+    });
+    h.run("setApp('codex')"); await h.run('readinessOpen()');
+    await h.run('readinessPreviewWrite()');
+    const body = h.find('/api/onboarding/codex/preview').at(-1).body;
+    assert.equal(body.slots, names.length === 2 ? true : undefined, 'only existing configured pair uses strict slots');
+    assert.equal(h.find('/api/onboarding/codex/apply').length, 0);
+    assert.equal(h.get('readiness-apply-btn').disabled, true);
+    h.get('readiness-write-confirm').checked = true; h.run('readinessSyncButtons()');
+    await h.run('readinessApplyWrite()');
+    assert.deepEqual(plain(h.find('/api/onboarding/codex/apply').at(-1).body), { token: 'tcx', confirm: true });
+    assert.match(h.get('readiness-body').innerHTML, /首次接入需打开使用新配置的 Codex 客户端/);
+    assert.match(h.get('readiness-body').innerHTML, /槽位调整从下一次请求生效/);
+    assert.match(h.get('readiness-body').innerHTML, /已打开的 Codex 客户端会缓存模型标签，新客户端读取同步列表/);
+    assert.doesNotMatch(h.get('readiness-body').innerHTML, /Codex 需重启生效|重新打开模型下拉/);
+  }
 });
 
 test('Claude 一键配齐五槽，未配副槽时明说不写别名', async () => {

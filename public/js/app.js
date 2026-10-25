@@ -21,6 +21,7 @@ let windowSnapshot = null, windowDirty = false, windowRevision = 0, windowSelect
 // 而"客户端需重开(新开会话)"是**必须**的一步。
 let windowOutcome = null;
 let online = false, lastSync = null, refreshTask = null, activeDialog = null, returnFocus = null, confirmResolve = null, savingProvider = false;
+let codexSlotRevision = 0;
 // /api/health 的最近一次只读快照(渠道页的冷却/可用性徽标与设置页共用)。它是**独立**的一次
 // fetch:读失败只让徽标与设置页那一块显示"未读取",绝不阻断 /api/state 的整页刷新。
 let liveHealth = null, healthError = '', healthTask = null;
@@ -157,10 +158,16 @@ function renderOverview() {
 function refresh() {
   if (refreshTask) return refreshTask;
   $('refresh-btn').disabled = true;
+  const codexRevision = codexSlotRevision;
   refreshTask = (async () => {
     try {
       const next = await api('/api/state');
       if (!next.providers || !next.routes || !next.current || !next.live) throw new Error('状态数据不完整');
+      // 轮询若早于刚完成的热更新,保留 PUT 返回的 Codex 状态,下轮再读最新快照。
+      if (state && codexRevision !== codexSlotRevision) {
+        if (state.slots) next.slots = { ...next.slots, codex: state.slots.codex };
+        next.live.codex = state.live.codex;
+      }
       state = next; lastSync = new Date();
       if (!routesDraft) { routesDraft = structuredClone(state.routes); routesBase = JSON.stringify(state.routes); routesBaseRevision = state.routes_revision || ''; renderRoutes(); }
       if (state.compact && !compactDraft) loadCompactDraft();
@@ -397,7 +404,7 @@ function liveLine() {
     <article class="mode-card ${direct ? 'selected' : ''}"><div class="top"><h2>直连渠道</h2>${modeBadge(direct)}</div><p>${direct ? esc(lv.match === true ? selected?.name || lv.provider || '自定义上游' : lv.provider || '自定义上游（配置未匹配）') : '客户端直接请求上游，不经过本地路由'}</p><p class="mono">${esc(lv?.base_url && !lv.router ? lv.base_url : '从下方渠道卡片选择接入')}</p></article>
     <article class="mode-card ${inRouter ? 'selected' : ''}"><div class="top"><h2>路由模式</h2>${modeBadge(inRouter)}</div><p>经本地代理按规则分发，按会话保持渠道粘性</p><p class="mono">${esc(inRouter ? lv.base_url || routerBase() : routerBase() || '等待后端提供路由地址')}</p></article>
     </div><p class="config-line">${esc(APPS[curApp].cfg)} · ${stateLabel}${lv?.wire_api ? ' · 协议 ' + esc(lv.wire_api) : ''}${lv?.model ? ' · 配置模型 ' + esc(lv.model) : ''}${cur ? ' · 库内选中 ' + esc(cur === (state.router?.id || '@router') ? '路由模式' : selected?.name || cur) : ''}</p>
-    <p class="integration-note">${curApp === 'zcode' ? esc(ZCODE_HELP) + '。以上仅表示集成配置，不代表当前运行会话已切换；写入时合并并保留其他 provider，不默认更改现有默认模型。' : '切换会写入客户端配置，原文件自动备份。' + (curApp === 'claude' ? 'Claude Code 需重启会话生效。' : 'Codex 需重启生效。')}</p></details>`;
+    <p class="integration-note">${curApp === 'zcode' ? esc(ZCODE_HELP) + '。以上仅表示集成配置，不代表当前运行会话已切换；写入时合并并保留其他 provider，不默认更改现有默认模型。' : '切换会写入客户端配置，原文件自动备份。' + (curApp === 'claude' ? 'Claude Code 需重启会话生效。' : '首次接入或切换直连需重新打开 Codex；路由槽位调整从下一次请求生效。')}</p></details>`;
 }
 // 渠道库布局:list(默认,高密度行式账本)或 grid(并列卡片)。偏好记在 localStorage,
 // 但读写全程兜底:隐私模式、旧浏览器或坏值都不能把渠道页带崩,读不到就退回默认。
@@ -901,6 +908,7 @@ const SLOT_MODEL_CUSTOM = '__custom__';
 const slotModelEdit = { claude: null, codex: null }; // {name, value, original, provider} 手写模型草稿
 const slotSaving = new Set();
 const codexSlotDraft = { name: '', provider: '' };
+const codexSlotStatus = { name: '', error: '' };
 const slotConfiguredModel = s => Object.hasOwn(s, 'configured_model') ? s.configured_model || '' : s.model || '';
 const slotBusy = (app, name) => slotSaving.has(app + ':' + name);
 function onSlotModelPick(app, name, value) {
@@ -966,12 +974,16 @@ function slotBadge(s, liveRouter) {
     return env === s.alias ? '<span class="badge on">已写入</span>' : '<span class="badge drift">未同步</span>';
   }
   const live = state.live?.codex || {};
+  if (!online) return '<span class="badge off">离线 · 待确认</span>';
+  if (live.error) return '<span class="badge off">配置读取失败</span>';
+  if (!providers('codex').some(p => p.id === s.provider && p.enabled)) return '<span class="badge off">渠道停用</span>';
+  if (!s.model) return '<span class="badge off">模型未配置</span>';
+  if (!live.router) return `<span class="badge info">${live.base_url ? '直连 · 不使用槽位' : '尚未接入路由'}</span>`;
+  if (live.hot_routing?.enabled === false) return '<span class="badge off">路由配置未受管</span>';
   const configuredAlias = s.name === 'main' ? live.model : s.name === 'reviewer' ? live.review_model : '';
-  if (['main', 'reviewer'].includes(s.name)) {
-    const applied = online && !live.error && live.router && configuredAlias === s.alias;
-    return `<span class="badge ${applied ? 'on' : 'drift'}">${applied ? '已写入' : '未应用'}</span>`;
-  }
-  return '<span class="badge info">路由已保存</span>';
+  if (['main', 'reviewer'].includes(s.name) && configuredAlias !== s.alias)
+    return '<span class="badge info">默认未使用此槽</span>';
+  return '<span class="badge on">即时生效</span>';
 }
 function slotModelCell(s, app) {
   const ch = providers(app).find(p => p.id === s.provider);
@@ -981,7 +993,7 @@ function slotModelCell(s, app) {
   const id = `slot-model-${app}-${s.name}`;
   // 下拉始终列全候选;未登记模型走手写输入,不让 datalist 按旧值过滤掉其他候选。
   const options = [
-    `<option value="" ${cur ? '' : 'selected'}>${app === 'codex' ? '（渠道默认模型：' + esc(ch?.model || '未配置') + '）' : '（渠道第一个模型）'}</option>`,
+    `<option value="" ${cur ? '' : 'selected'}>${app === 'codex' ? '（渠道默认模型：' + esc((cur ? ch?.model : s.model) || ch?.model || '未配置') + '）' : '（渠道第一个模型）'}</option>`,
     ...known.map(m => `<option value="${esc(m)}" ${m === cur ? 'selected' : ''}>${esc(m)}</option>`),
     ...(cur && !known.includes(cur) ? [`<option value="${esc(cur)}" selected>${esc(cur)}（自定义）</option>`] : []),
     `<option value="${SLOT_MODEL_CUSTOM}">自定义模型…</option>`,
@@ -1022,73 +1034,30 @@ function codexSlotRow(s) {
     ${s.provider ? `<button class="iconbtn" aria-label="删除 ${esc(s.name)} 槽" onclick="clearSlot('codex','${s.name}')" ${locked ? 'disabled' : ''}>×</button>` : ''}
   </div>`;
 }
-let codexConfigSaving = false;
-let codexReasoningDraft = null;
-let codexConfigRevisionDraft = '';
-let codexReasoningRevision = 0;
-function setCodexReasoning(value, revision) {
-  if (codexReasoningDraft === null) codexConfigRevisionDraft = revision;
-  codexReasoningDraft = value; codexReasoningRevision++;
-}
-function reloadCodexReasoning() {
-  if (codexConfigSaving) return;
-  codexReasoningDraft = null; codexConfigRevisionDraft = ''; codexReasoningRevision++;
-  renderCodexConfig(true);
-}
-function renderCodexConfig(force) {
+function renderCodexConfig() {
   const live = state?.live?.codex || {};
-  const main = live.main || {}, reviewer = live.reviewer || {};
-  const context = live.model_context_window || main.context_window;
+  const context = live.model_context_window || live.main?.context_window;
   const facts = [
-    ['配置中的主模型', `${live.model || '未设置'}${main.target && main.target !== live.model ? ' → ' + main.target : ''}`],
-    ['配置中的审查模型', `${live.review_model || '跟随主模型'}${reviewer.target && reviewer.target !== live.review_model ? ' → ' + reviewer.target : ''}`],
     ['上下文窗口', context ? `${Number(context).toLocaleString()} tokens${live.model_context_window ? '（显式配置）' : '（本地模型目录）'}` : '未声明，由 Codex 决定'],
     ['自动压缩阈值', live.model_auto_compact_token_limit ? `${Number(live.model_auto_compact_token_limit).toLocaleString()} tokens` : 'Codex 自动（未覆写）'],
-    ['模型能力目录', live.model_catalog_json || 'Codex 内置目录'],
-    ['配置文件', live.config_path || APPS.codex.cfg],
   ];
-  $('codex-config-details').innerHTML = `<dl class="config-facts">${facts.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join('')}</dl><ul class="config-warnings">${(live.warnings || []).map(warning => `<li>${esc(warning)}</li>`).join('')}</ul><p class="hint">这里读取本机全局默认配置，不代表已运行会话；命令行、profile 和项目覆盖需另行确认。修改后重启 Codex 生效，不改 Claude 配置。</p>`;
-  const disabled = !online || !live.revision || !!live.error || !!live.profile || codexConfigSaving;
-  const effort = codexReasoningDraft === null ? live.model_reasoning_effort || '' : codexReasoningDraft;
-  const levels = [...new Set([...(main.reasoning_levels || []), ...(effort ? [effort] : [])])];
-  const controls = `<label class="reasoning-control" for="codex-reasoning">推理档位<select id="codex-reasoning" onchange="setCodexReasoning(this.value,${handlerArg(live.revision || '')})" ${disabled ? 'disabled' : ''}><option value="" ${!effort ? 'selected' : ''}>自动</option>${levels.map(level => `<option value="${esc(level)}" ${level === effort ? 'selected' : ''}>${esc(level)}</option>`).join('')}</select></label><button class="small" id="codex-reasoning-save" onclick="saveCodexConfig('reasoning')" ${disabled ? 'disabled' : ''}>保存推理设置</button><button class="small" id="codex-reasoning-reload" onclick="reloadCodexReasoning()" ${codexConfigSaving ? 'disabled' : ''}>重新载入推理设置</button>${codexReasoningDraft !== null && codexConfigRevisionDraft !== live.revision ? '<span class="msg" role="status">配置已变化；草稿保留，请重新载入后再保存。</span>' : ''}<button class="small" id="codex-catalog-sync" onclick="saveCodexConfig('sync_catalog')" ${disabled || !live.model_catalog_json ? 'disabled' : ''}>同步模型能力目录</button>`;
-  const container = $('codex-config-controls');
-  if (container.innerHTML !== controls && (force || !container.contains(document.activeElement))) {
-    container.innerHTML = controls;
-    container.dataset.revision = live.revision || '';
-  }
-  $('codex-reasoning').disabled = disabled;
-  $('codex-reasoning-save').disabled = disabled;
-  $('codex-catalog-sync').disabled = disabled || !live.model_catalog_json;
+  const warnings = (live.warnings || []).map(warning => `<li>${esc(warning)}</li>`).join('');
+  $('codex-config-details').innerHTML = `<dl class="config-facts">${facts.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join('')}</dl>${warnings ? `<ul class="config-warnings">${warnings}</ul>` : ''}<p class="hint">路由请求即时使用当前落点；已打开的 Codex 客户端会缓存模型标签，新客户端读取同步列表。命令行、profile 或项目配置可能覆盖全局默认。</p>`;
 }
-async function saveCodexConfig(action) {
-  if (curApp !== 'codex' || !online || codexConfigSaving || !state?.live?.codex?.revision || state.live.codex.error || state.live.codex.profile) return;
-  const live = state.live.codex;
-  const effort = codexReasoningDraft === null ? $('codex-reasoning').value : codexReasoningDraft;
-  const draftRevision = codexReasoningRevision;
-  const body = { action, revision: action === 'reasoning' && codexConfigRevisionDraft ? codexConfigRevisionDraft : $('codex-config-controls').dataset.revision,
-    ...(action === 'reasoning' ? { model_reasoning_effort: effort || null } : {}) };
-  const message = action === 'sync_catalog'
-    ? '从你现有的模型目录复制已知落点的能力到 mixr 别名，保留原目录；未知模型不猜测。Codex 需重启生效。'
-    : `仅把 Codex 全局推理档位改为「${effort || '自动'}」，保留模型、MCP、插件和权限设置。原文件自动备份，Codex 需重启生效。`;
-  if (!body.revision || body.revision !== live.revision) return toast('Codex 配置已变化；请重新载入后再保存', 'err');
-  if (!await askConfirm(action === 'sync_catalog' ? '同步 Codex 模型目录' : '保存 Codex 推理设置', message, '保存')) return;
-  if (curApp !== 'codex' || !online || codexConfigSaving || state.live?.codex?.revision !== body.revision || state.live.codex.error || state.live.codex.profile || draftRevision !== codexReasoningRevision)
-    return toast('确认期间 Codex 配置或草稿已变化；请重新确认', 'err');
-  codexConfigSaving = true; renderCodexConfig(true);
-  try {
-    const result = await api('/api/codex/config', { method: 'POST', body: JSON.stringify(body) });
-    if (result?.codex) state.live.codex = result.codex;
-    if (draftRevision === codexReasoningRevision) { codexReasoningDraft = null; codexConfigRevisionDraft = ''; }
-    toast('Codex 配置已保存；重启 Codex 后生效', 'ok');
-    await refresh();
-  } catch (error) { toast('Codex 配置未保存：' + error.message, 'err'); }
-  finally { codexConfigSaving = false; if (curApp === 'codex') renderCodexConfig(true); }
+function renderCodexSlotStatus() {
+  const live = state.live?.codex || {}, name = codexSlotStatus.name;
+  $('codex-model-status').textContent = !online ? '控制台离线，生效状态待确认'
+    : codexSlotStatus.error ? `${name} 保存失败，已恢复原选择`
+    : [...slotSaving].some(key => key.startsWith('codex:')) ? '保存中…'
+    : live.error ? 'Codex 配置读取失败，生效状态待确认'
+    : live.router && live.hot_routing?.enabled === false ? 'Codex 路由配置未受管，未同步客户端默认模型与列表'
+    : live.router ? `${name ? name + ' 已更新；' : ''}下一次槽位请求即时使用当前落点`
+    : live.base_url ? 'Codex 当前直连，不使用槽位' : 'Codex 尚未接入路由';
 }
 function renderCodexModels(force) {
   $('codex-models').hidden = !state || curApp !== 'codex';
   if (!state || curApp !== 'codex') return;
-  renderCodexConfig(force);
+  renderCodexConfig(); renderCodexSlotStatus();
   const rows = ['main', 'reviewer'].map(name => codexSlotRow(
     (slotsOf().codex || []).find(s => s.name === name) || { name, alias: 'mixr-' + name, provider: '', model: '', configured_model: '' }
   )).join('');
@@ -1098,8 +1067,6 @@ function renderCodexModels(force) {
     fields.innerHTML = rows;
     if (focused) $(focused)?.focus();
   }
-  $('codex-model-apply').disabled = !online || slotSaving.size > 0 || !!slotModelEdit.codex || !['main', 'reviewer'].every(name =>
-    (slotsOf().codex || []).some(s => s.name === name && s.provider && s.enabled && s.model && providers('codex').some(p => p.id === s.provider && p.enabled)));
   for (const name of ['main', 'reviewer']) {
     const s = (slotsOf().codex || []).find(s => s.name === name);
     $('codex-model-' + name).disabled = !online || slotBusy('codex', name);
@@ -1120,9 +1087,9 @@ function renderSlots(force) {
   const isClaude = curApp === 'claude';
   $('slots-hint').textContent = isClaude
     ? '把每个槽位绑定到「渠道 @ 模型」：应用后客户端 env 写入别名（mixr-…），该槽的所有请求——含子代理与后台任务——按槽位落点分发，优先于路由规则。落点模型从渠道模型列表里挑，要写渠道没登记的模型名就选「自定义模型…」。'
-    : 'Codex 槽位是路由别名：客户端处于路由模式后，codex exec -m mixr-<槽名> 即按槽位落点分发；GET /v1/models 也会列出这些别名。';
-  $('slots-apply').hidden = false;
-  $('slots-apply').disabled = !online || slotSaving.size > 0 || !!slotModelEdit[curApp];
+    : '自定义槽位同步到 Mixrouter 管理的 Codex 模型列表；选择 mixr-<槽名> 后，下一次路由请求即使用当前落点。';
+  $('slots-apply').hidden = !isClaude;
+  $('slots-apply').disabled = !isClaude || !online || slotSaving.size > 0 || !!slotModelEdit.claude;
   const list = slotsOf()[curApp] || [];
   const rows = isClaude
     ? list.map(claudeSlotRow).join('')
@@ -1146,16 +1113,19 @@ async function putSlot(app, name, value) {
   if (slotBusy(app, name)) return false;
   const key = app + ':' + name;
   slotSaving.add(key);
-  if (app === 'codex') $('codex-model-status').textContent = `${name} 保存中…`;
+  if (app === 'codex') { codexSlotStatus.name = name; codexSlotStatus.error = ''; }
   renderSlots(true);
   try {
     const r = await api('/api/slots', { method: 'PUT', body: JSON.stringify({ [app]: { [name]: value } }) });
     if (r?.slots) state.slots = r.slots;
-    await refresh();
-    if (app === 'codex') $('codex-model-status').textContent = `${name} 路由落点已保存；Codex 默认模型仍按配置文件读取`;
+    if (app === 'codex') {
+      if (r?.live?.codex) state.live.codex = r.live.codex;
+      codexSlotRevision++;
+      renderProviders(); renderOverviewPage();
+    } else await refresh();
     return true;
   } catch (e) {
-    if (app === 'codex') $('codex-model-status').textContent = `${name} 保存失败，已恢复原选择`;
+    if (app === 'codex') { codexSlotStatus.name = name; codexSlotStatus.error = e.message; }
     toast('槽位保存失败：' + e.message, 'err'); return false;
   } finally { slotSaving.delete(key); renderSlots(true); }
 }
@@ -1195,26 +1165,7 @@ async function addCodexSlot() {
   }
 }
 async function applySlotsClaude() {
-  if (curApp === 'codex') {
-    if (!canConnect('codex') || slotSaving.size || slotModelEdit.codex || codexConfigSaving) return;
-    const slots = slotsOf().codex || [];
-    const selected = ['main', 'reviewer'].map(name => slots.find(s => s.name === name));
-    if (selected.some(s => !s?.provider || !s.enabled || !s.model || !providers('codex').some(p => p.id === s.provider && p.enabled)))
-      return toast('请先配置 main 和 reviewer 槽位', 'err');
-    const revision = state.live?.codex?.revision;
-    const snapshot = JSON.stringify(selected);
-    const lines = selected.map(s => `${s.alias} → ${s.provider_name} @ ${s.model}`).join('\n');
-    if (!await askConfirm('应用 Codex 槽位', `${lines}\n将写入 model / review_model，原配置自动备份。重启 Codex 后生效。`, '应用并切路由')) return;
-    const latest = ['main', 'reviewer'].map(name => (slotsOf().codex || []).find(s => s.name === name));
-    if (curApp !== 'codex' || !canConnect('codex') || slotSaving.size || slotModelEdit.codex || codexConfigSaving || state.live?.codex?.revision !== revision || JSON.stringify(latest) !== snapshot)
-      return toast('确认期间 Codex 配置或槽位已变化；请重新确认', 'err');
-    try {
-      await api('/api/router/codex', { method: 'POST', body: JSON.stringify({ slots: true, revision }) });
-      toast('Codex 槽位已写入；请重启 Codex 生效', 'ok'); await refresh();
-    } catch (e) { toast('应用失败：' + e.message, 'err'); }
-    return;
-  }
-  if (!canConnect('claude')) return;
+  if (curApp !== 'claude' || !canConnect('claude')) return;
   const configured = slotsOf().claude.filter(s => s.provider);
   const lines = configured.length
     ? configured.map(s => `· ${s.env}=${s.alias} → ${s.provider_name} @ ${s.model || '(渠道未配模型)'}`).join('\n')
