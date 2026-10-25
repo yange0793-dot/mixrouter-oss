@@ -204,7 +204,7 @@ test('chatJsonToResponses:正文与工具调用都摊成 responses output', () =
   assert.deepStrictEqual(resp.output.map(o => o.type), ['message', 'function_call']);
   assert.strictEqual(resp.output[0].content[0].text, '好的');
   assert.strictEqual(resp.output[1].call_id, 'k1');
-  assert.deepStrictEqual(resp.usage, { input_tokens: 3, output_tokens: 4, total_tokens: 7, input_tokens_details: { cached_tokens: 2 } });
+  assert.deepStrictEqual(resp.usage, { input_tokens: 3, output_tokens: 4, total_tokens: 7, input_tokens_details: { cached_tokens: 2 }, output_tokens_details: { reasoning_tokens: 0 } });
 });
 
 test('chatJsonToResponses:畸形上游响应不抛,并给出可用的空壳', () => {
@@ -320,7 +320,7 @@ test('streamChatAsResponses:usage 取最后一次并回报给调用方(统计靠
     F({ choices: [{ delta: {} }], usage: { prompt_tokens: 5, completion_tokens: 6, total_tokens: 11, prompt_tokens_details: { cached_tokens: 2 } } }),
     'data: [DONE]\n\n',
   ]);
-  assert.deepStrictEqual(usages, [{ input_tokens: 5, output_tokens: 6, total_tokens: 11, input_tokens_details: { cached_tokens: 2 } }]);
+  assert.deepStrictEqual(usages, [{ input_tokens: 5, output_tokens: 6, total_tokens: 11, input_tokens_details: { cached_tokens: 2 }, output_tokens_details: { reasoning_tokens: 0 } }]);
   const done = events(res.text).find(e => e.type === 'response.completed');
   assert.deepStrictEqual(done.response.usage, usages[0], '终态里也要带同一份 usage');
 });
@@ -364,6 +364,6 @@ test('streamChatAsResponses:一个字都没吐就 [DONE],收尾仍要给出合�
   const { res, usages } = await runStream(['data: [DONE]\n\n']);
   assert.deepStrictEqual(types(res.text), ['response.created', 'response.completed']);
   assert.deepStrictEqual(events(res.text).find(e => e.type === 'response.completed').response.output, []);
-  assert.deepStrictEqual(usages, [{ input_tokens: 0, output_tokens: 0, total_tokens: 0 }]);
+  assert.deepStrictEqual(usages, [{ input_tokens: 0, output_tokens: 0, total_tokens: 0, input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } }]);
   assert.strictEqual(res.ended, true);
 });

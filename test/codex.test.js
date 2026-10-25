@@ -226,7 +226,8 @@ test('chatToolChoice 与 chatJsonToResponses', () => {
   assert.strictEqual(resp.output[0].content[0].text, '好的');
   assert.strictEqual(resp.output[1].type, 'function_call');
   assert.strictEqual(resp.output[1].call_id, 'call_1');
-  assert.deepStrictEqual(resp.usage, { input_tokens: 3, output_tokens: 4, total_tokens: 7 });
+  assert.deepStrictEqual(resp.usage, { input_tokens: 3, output_tokens: 4, total_tokens: 7,
+    input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } });
 });
 
 test('extractUsageOpenAI:两种协议、末尾取值、缓存读', () => {
