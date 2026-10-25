@@ -130,8 +130,9 @@
 再点「应用槽位到客户端」。旧版本遗留的 `fable` 槽不再使用,加载时会从内存槽表清理。
 
 **Codex 自拟槽名**(如 `worker` / `reviewer`):在控制台「渠道」页 Codex 标签下添加,
-然后用 `codex exec -m mixr-worker`。`main` / `reviewer` 两个槽通过
-「应用槽位到客户端」写入 `model` / `review_model`;命令行没有 `route codex --slots`
+然后用 `codex exec -m mixr-worker`。每个槽分别选择渠道与落点模型,可选渠道登记项或自定义模型;
+模型留空继承渠道默认 `model`,不修改渠道库默认值。`main` / `reviewer` 两个槽通过
+「应用到 Codex」写入 `model` / `review_model`;命令行没有 `route codex --slots`
 这个入口,接口是 `POST /api/router/codex {"slots":true}`。
 
 Claude 槽位可在控制台「后备渠道」编辑备池(`pool`)的顺序与成员模型，也可通过

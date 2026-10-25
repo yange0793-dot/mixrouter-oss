@@ -55,7 +55,9 @@ Not a good fit:
   not a hard guarantee: cooldowns, rebinding after failure, failover, manual pinning, and
   session overrides can all change the target.
 - **Slot routing and backup pools.** Bind a provider and model to a `mixr-<slot>` alias so the
-  main chain and subagents can use separate accounts. The session console lets each conversation
+  main chain and subagents can use separate accounts. Claude and Codex slots select the provider
+  and target model independently, including custom targets, without changing provider defaults.
+  The session console lets each conversation
   use its own provider and model per slot; slots without an override inherit the global
   configuration. Each Claude slot row can edit its backup pool in place: the primary provider
   always stays first, backup members are tried in order, and saving does not rewrite an existing

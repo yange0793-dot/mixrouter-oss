@@ -60,8 +60,8 @@ Claude Code / Codex 入口的判定顺序是固定的四段,唯一定义在 `lib
 | `name` | 必填,非空 |
 | `base_url` | 合法 `http(s)` URL;尾部 `/` 与末尾 `/v1` 会被规范化,路径前缀保留 |
 | `api_key` | 不能含换行或控制字符;渠道有多 Key 清单时 `api_key` 恒等于生效那把 |
-| `models` | Claude 组:模型名数组,第一项是主模型,支持 `[1M]` 后缀 |
-| `model` | Codex 组必填:渠道自带模型名 |
+| `models` | Claude 组:模型名数组,第一项是主模型,支持 `[1M]` 后缀;Codex 组:可选登记候选列表,须为字符串数组,去空白和重复项 |
+| `model` | Codex 组必填:独立的渠道默认模型名,须非空;候选列表和槽位落点不覆盖它 |
 | `wire_api` | Claude 组:`anthropic`(缺省)/ `responses` / `chat`;Codex 组:`responses`(缺省)/ `chat` |
 | `ua` | 渠道级 User-Agent,压过客户端自己的 UA |
 | `direct` | `true` = 这个渠道跳过 `MIXR_UPSTREAM_PROXY` 隧道 |
@@ -244,7 +244,11 @@ curl -s -X POST http://127.0.0.1:8788/api/router/codex \
 - 槽位可以配 `pool` 与 `strategy`。`resolveSlot` 会**自动把槽位的 `provider` 排到池首**,
   `pool` 里只需写后备成员;`priority` 策略下主渠道仍是主选。
 - 渠道停用/删除得到明确的 `provider_disabled_error` / `no_route_error`。
-- 落点模型:Claude 槽绑定时选定(空 = 渠道 `models[0]`);Codex 槽用渠道自带模型名。
+- 落点模型:Claude 与 Codex 槽都可独立选定。模型留空时继承渠道默认值:
+  Claude 取 `models[0]`,Codex 取 `model`;显式落点不修改渠道的默认模型。
+- `PUT /api/slots` 的 `model` 须为字符串。显式 `model: ""` 恢复继承;同渠道省略 `model`
+  保留已有落点,换渠道且省略 `model` 则恢复新渠道默认值。状态的 `model` 是有效落点,
+  `configured_model` 是保存的显式值(空串表示继承)。
 
 **Claude 槽位备池可在控制台编辑**:展开「后备渠道」选择顺序和每个成员的模型，确认后保存。
 主渠道不变；不同模型需明确确认降级，界面不推断图片或工具能力。已有其它策略保留，

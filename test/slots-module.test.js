@@ -181,10 +181,35 @@ test('resolveSlot:Claude 落点模型取 s.model,空则回退渠道第一个 mod
   assert.equal(t.resolveSlot(noModels, 'claude', 'mixr-opus').model, '', '渠道没有 models → 空串');
 });
 
-test('resolveSlot:Codex 落点模型取渠道自带 model,忽略槽里存的 model', () => {
+test('resolveSlot:同一 Codex 渠道的槽可选不同模型,省略或空串继承渠道默认', () => {
   const t = T();
-  const map = { claude: {}, codex: { worker: { provider: 'px', model: '槽里写的' } } };
-  assert.equal(t.resolveSlot(map, 'codex', 'mixr-worker').model, 'gpt-5-codex');
+  const map = { claude: {}, codex: {
+    main: { provider: 'px', model: 'custom-main' },
+    reviewer: { provider: 'px', model: 'custom-review' },
+    worker: { provider: 'px' }, empty: { provider: 'px', model: '' },
+  } };
+  for (const [name, model] of [['main', 'custom-main'], ['reviewer', 'custom-review'],
+    ['worker', 'gpt-5-codex'], ['empty', 'gpt-5-codex']]) {
+    const resolved = t.resolveSlot(map, 'codex', 'mixr-' + name);
+    assert.equal(resolved.model, model);
+    assert.equal(resolved.rule.model, model, '规则必须携带同一个落点,供实际转发使用');
+  }
+  const store = { claude: [], codex: [{ ...STORE.codex[0], model: 'changed-default' }] };
+  assert.equal(T({ store }).resolveSlot(map, 'codex', 'mixr-main').model, 'custom-main');
+  assert.equal(T({ store }).resolveSlot(map, 'codex', 'mixr-worker').model, 'changed-default');
+});
+
+test('resolveSlot:Codex 备池主渠道用槽模型,备渠道继承槽模型或自己的显式覆盖', () => {
+  const store = { claude: [], codex: [STORE.codex[0], STORE.codex[1],
+    { id: 'backup', model: 'backup-default', enabled: true }, { id: 'custom', model: 'other-default', enabled: true }] };
+  const map = { codex: { worker: { provider: 'px', model: 'slot-model',
+    pool: ['backup', { provider: 'custom', model: 'backup-model' }, 'pxdead'], strategy: 'priority' } } };
+  const resolved = T({ store }).resolveSlot(map, 'codex', 'mixr-worker');
+  assert.deepEqual(resolved.rule.pool, [
+    { provider: 'px', model: 'slot-model' }, { provider: 'backup', model: 'slot-model' },
+    { provider: 'custom', model: 'backup-model' },
+  ]);
+  assert.equal(resolved.rule.strategy, 'priority');
 });
 
 test('resolveSlot:返回的 rule 形状固定(转发层依赖它)' , () => {
@@ -240,8 +265,15 @@ test('validateSlotPut:形状错误逐条报(非对象组/非对象值/缺 provid
   assert.match(v({ claude: { opus: { model: 'm' } } }), /必须是 \{provider, model\} 或 null/);
   assert.match(v({ claude: { opus: { provider: 42, model: 'm' } } }), /必须是 \{provider, model\} 或 null/);
   assert.match(v({ claude: { opus: { provider: 'pa', model: 42 } } }), /model 必须是字符串/);
-  // codex 侧不校验 model 类型(渠道自带模型),故只给 provider 是合法的
-  assert.equal(v({ codex: { worker: { provider: 'px' } } }), null);
+  for (const app of ['claude', 'codex']) {
+    const name = app === 'claude' ? 'opus' : 'worker';
+    const provider = app === 'claude' ? 'pa' : 'px';
+    for (const model of [null, 0, false, [], {}]) {
+      assert.match(v({ [app]: { [name]: { provider, model } } }), /model 必须是字符串/);
+    }
+    for (const model of ['', 'custom-model']) assert.equal(v({ [app]: { [name]: { provider, model } } }), null);
+    assert.equal(v({ [app]: { [name]: { provider } } }), null, '省略模型继承默认,不是坏值');
+  }
 });
 
 test('validateSlotPut:dropTools 只接受非空字符串数组(坏值会静默失效,必须拦在入口)', () => {
@@ -415,12 +447,22 @@ test('slotsPublic:dropTools 缺省为空数组(不是 undefined,UI 直接 map �
   assert.deepEqual(pub.codex.find(e => e.name === 'worker').dropTools, []);
 });
 
-test('slotsPublic:Claude 落点模型回退到渠道 models[0],Codex 用渠道 model', () => {
-  const pub = T().slotsPublic(MAP());
-  assert.equal(pub.claude.find(e => e.name === 'opus').model, 'm-second', '槽里写的');
-  assert.equal(pub.codex.find(e => e.name === 'worker').model, 'gpt-5-codex', '渠道自带');
-  const empty = { claude: { opus: { provider: 'pa', model: '' } }, codex: {} };
-  assert.equal(T().slotsPublic(empty).claude.find(e => e.name === 'opus').model, 'm-first');
+test('slotsPublic:有效模型与显式覆盖分开返回,两组都能继承渠道默认', () => {
+  const t = T();
+  const map = { claude: { main: { provider: 'pa' }, opus: { provider: 'pa', model: 'm-second' } },
+    codex: { main: { provider: 'px', model: 'custom-model' }, worker: { provider: 'px', model: '' },
+      ghost: { provider: 'gone', model: 'kept-model' } } };
+  const pub = t.slotsPublic(map);
+  for (const [app, name, model, configured] of [
+    ['claude', 'main', 'm-first', ''], ['claude', 'opus', 'm-second', 'm-second'],
+    ['claude', 'subagent', '', ''], ['codex', 'main', 'custom-model', 'custom-model'],
+    ['codex', 'worker', 'gpt-5-codex', ''], ['codex', 'ghost', 'kept-model', 'kept-model'],
+  ]) {
+    const slot = pub[app].find(item => item.name === name);
+    assert.equal(slot.model, model);
+    assert.equal(slot.configured_model, configured);
+    if (slot.provider) assert.equal(t.resolveSlot(map, app, slot.alias).model, slot.model, '公开落点必须与实际解析一致');
+  }
 });
 
 test('slotsPublic:空表/undefined 不抛,仍返回五个 Claude 槽', () => {

@@ -469,6 +469,31 @@ test('Codex 池支持成员级模型覆盖(codex 渠道自带模型名)', async 
   assert.strictEqual(r.headers['x-mixrouter-model'], 'gpt-5.6-sol-override');
 });
 
+test('Codex Chat 槽模型覆盖贯穿 Responses 翻译与 Chat 直通', async () => {
+  const previous = _state.slotMap;
+  try {
+    const put = await rawRequest(uiPort, 'PUT', '/api/slots', { body: {
+      codex: { worker: { provider: 'k3', model: 'custom-chat-target' } },
+    } });
+    assert.strictEqual(put.status, 200);
+    const response = await callCodex('cx-chat-slot', { model: 'mixr-worker' });
+    assert.strictEqual(response.status, 200);
+    assert.strictEqual(response.hit.url, '/v1/chat/completions');
+    assert.strictEqual(response.hit.body.model, 'custom-chat-target');
+    assert.strictEqual(response.headers['x-mixrouter-model'], 'custom-chat-target');
+    const direct = await rawRequest(proxyPort, 'POST', '/v1/chat/completions', { body: {
+      model: 'mixr-worker', stream: false, messages: [{ role: 'user', content: 'hi' }],
+    } });
+    assert.strictEqual(direct.status, 200);
+    assert.strictEqual(mock.requests.at(-1).body.model, 'custom-chat-target');
+    const log = await lastLog();
+    assert.strictEqual(log.model_in, 'mixr-worker');
+    assert.strictEqual(log.model_out, 'custom-chat-target');
+    assert.strictEqual(log.slot, 'worker');
+    assert.strictEqual(_state.store.codex.find(provider => provider.id === 'k3').model, 'glm-5.3-flash');
+  } finally { _state.slotMap = previous; }
+});
+
 test('Claude 通路不受影响:规则仍只认 Claude 组,模型改写真常', async () => {
   setRoutes([{ id: 'rcl', match: 'opus', provider: 'p1', model: 'claude-opus-5[1M]', enabled: true }]);
   _state.sessions.clear();
@@ -568,7 +593,7 @@ test('Codex slot application validates bindings and syncs main/reviewer without 
   assert.strictEqual(missing.status, 400);
   assert.strictEqual(fs.readFileSync(f, 'utf8'), original);
   const put = await rawRequest(uiPort, 'PUT', '/api/slots', {
-    body: { codex: { main: { provider: 'k1' }, reviewer: { provider: 'k2' } } },
+    body: { codex: { main: { provider: 'k1', model: 'custom-main' }, reviewer: { provider: 'k1', model: 'custom-review' } } },
   });
   assert.strictEqual(put.status, 200);
   fs.writeFileSync(f, original.replace('approval_policy = "never"', 'approval_policy = "never"\nreview_model = "old-review"'));
@@ -584,6 +609,12 @@ test('Codex slot application validates bindings and syncs main/reviewer without 
   assert.ok(text.includes('[model_providers.custom]'));
   const r = await callCodex('cx-main-slot', { model: 'mixr-main' });
   assert.strictEqual(r.hit.headers.authorization, 'Bearer sk-k1');
+  assert.strictEqual(r.hit.body.model, 'custom-main');
+  const reviewer = await callCodex('cx-main-slot', { model: 'mixr-reviewer' });
+  assert.strictEqual(reviewer.hit.headers.authorization, 'Bearer sk-k1');
+  assert.strictEqual(reviewer.hit.body.model, 'custom-review');
+  assert.strictEqual(liveState().codex.main.target, 'custom-main');
+  assert.strictEqual(liveState().codex.reviewer.target, 'custom-review');
   await rawRequest(uiPort, 'PUT', '/api/slots', { body: { codex: { main: null, reviewer: null } } });
   fs.writeFileSync(f, original);
 });
@@ -613,6 +644,96 @@ test('路由模式 API:库里没有该组渠道时拒绝切换', async () => {
   const ok = await rawRequest(uiPort, 'POST', '/api/router/claude');
   assert.strictEqual(ok.status, 200);
   assert.strictEqual(JSON.parse(ok.text).app, 'claude');
+});
+
+test('Codex 渠道注册模型 CRUD:清单与默认独立,公开回读及冷启动均保留', async () => {
+  const beforeClient = fs.readFileSync(process.env.MIXR_CODEX_CONFIG, 'utf8');
+  const created = await rawRequest(uiPort, 'POST', '/api/providers', { body: {
+    app: 'codex', name: 'registered-models', base_url: `http://127.0.0.1:${mockPort}`,
+    api_key: 'registry-test-key', model: ' independent-default ',
+    models: [' custom-one ', 'custom-two', 'custom-one', ' ', 'independent-default'],
+  } });
+  assert.strictEqual(created.status, 200, created.text);
+  const id = JSON.parse(created.text).id;
+  const findPublic = async () => JSON.parse((await rawRequest(uiPort, 'GET', '/api/state')).text)
+    .providers.codex.find(provider => provider.id === id);
+  let provider = await findPublic();
+  assert.deepStrictEqual(provider.models, ['custom-one', 'custom-two', 'independent-default']);
+  assert.strictEqual(provider.model, 'independent-default');
+  assert.ok(!JSON.stringify(provider).includes('registry-test-key'));
+  let result = await rawRequest(uiPort, 'PUT', '/api/providers/' + id, { body: { note: 'list omitted' } });
+  assert.strictEqual(result.status, 200);
+  assert.deepStrictEqual((await findPublic()).models, provider.models);
+  result = await rawRequest(uiPort, 'PUT', '/api/providers/' + id, { body: { models: [' selected-target ', 'selected-target'] } });
+  assert.strictEqual(result.status, 200);
+  provider = await findPublic();
+  assert.strictEqual(provider.model, 'independent-default');
+  assert.deepStrictEqual(provider.models, ['selected-target']);
+  const { spawnSync } = require('node:child_process');
+  const child = spawnSync(process.execPath, ['-e', `
+    const router = require(${JSON.stringify(path.resolve(__dirname, '../mixrouter.js'))});
+    const provider = router._state.store.codex.find(item => item.id === ${JSON.stringify(id)});
+    console.log(JSON.stringify({ model: provider.model, models: provider.models }));
+  `], { env: process.env, encoding: 'utf8', timeout: 10000 });
+  assert.strictEqual(child.status, 0, child.stderr);
+  assert.deepStrictEqual(JSON.parse(child.stdout), { model: 'independent-default', models: ['selected-target'] });
+  await rawRequest(uiPort, 'PUT', '/api/slots', { body: { codex: { worker: { provider: id, model: 'selected-target' } } } });
+  const forwarded = await callCodex('cx-registry-slot', { model: 'mixr-worker' });
+  assert.strictEqual(forwarded.status, 200);
+  assert.strictEqual(forwarded.hit.body.model, 'selected-target');
+  result = await rawRequest(uiPort, 'PUT', '/api/providers/' + id, { body: { models: [] } });
+  assert.strictEqual(result.status, 200);
+  provider = await findPublic();
+  assert.deepStrictEqual(provider.models, []);
+  assert.strictEqual(provider.model, 'independent-default', '清注册列表不能抹掉默认');
+  assert.strictEqual(fs.readFileSync(process.env.MIXR_CODEX_CONFIG, 'utf8'), beforeClient);
+  assert.strictEqual((await rawRequest(uiPort, 'DELETE', '/api/providers/' + id)).status, 200);
+});
+
+test('Codex 默认模型拒绝空白且规范化两端空格,不会让清单补位或改客户端', async () => {
+  const file = path.join(TMP, 'providers.json');
+  const beforeStore = structuredClone(_state.store);
+  const beforeDisk = fs.readFileSync(file, 'utf8');
+  const beforeClient = fs.readFileSync(process.env.MIXR_CODEX_CONFIG, 'utf8');
+  for (const model of ['', ' ', '\t\n']) {
+    for (const [method, endpoint, body] of [
+      ['POST', '/api/providers', { app: 'codex', name: 'blank-default', base_url: 'https://example.test',
+        api_key: 'test-key', model, models: ['not-a-default'] }],
+      ['PUT', '/api/providers/k1', { name: 'should-not-write', enabled: false, model, models: ['not-a-default'] }],
+    ]) {
+      const result = await rawRequest(uiPort, method, endpoint, { body });
+      assert.strictEqual(result.status, 400, result.text);
+      assert.ok(JSON.parse(result.text).error.includes('模型名'));
+      assert.deepStrictEqual(_state.store, beforeStore);
+      assert.strictEqual(fs.readFileSync(file, 'utf8'), beforeDisk);
+    }
+  }
+  const updated = await rawRequest(uiPort, 'PUT', '/api/providers/k1', { body: { model: ' trimmed-default ' } });
+  assert.strictEqual(updated.status, 200);
+  assert.strictEqual(_state.store.codex.find(provider => provider.id === 'k1').model, 'trimmed-default');
+  assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).codex.find(provider => provider.id === 'k1').model, 'trimmed-default');
+  assert.strictEqual(fs.readFileSync(process.env.MIXR_CODEX_CONFIG, 'utf8'), beforeClient);
+  assert.strictEqual((await rawRequest(uiPort, 'PUT', '/api/providers/k1', { body: { model: beforeStore.codex.find(provider => provider.id === 'k1').model } })).status, 200);
+});
+
+test('Codex 注册模型列表拒绝非字符串数组,POST/PUT 整份请求均不写入', async () => {
+  const beforeStore = structuredClone(_state.store);
+  const beforeDisk = fs.readFileSync(path.join(TMP, 'providers.json'), 'utf8');
+  const beforeClient = fs.readFileSync(process.env.MIXR_CODEX_CONFIG, 'utf8');
+  for (const models of ['a,b', null, {}, 7, true, ['ok', 7], ['ok', null], ['ok', {}], ['ok', []], ['ok', false]]) {
+    for (const [method, endpoint, body] of [
+      ['POST', '/api/providers', { app: 'codex', name: 'rejected-models', base_url: 'https://example.test',
+        api_key: 'test-key', model: 'default', models }],
+      ['PUT', '/api/providers/k1', { name: 'should-not-write', enabled: false, model: 'should-not-write', models }],
+    ]) {
+      const result = await rawRequest(uiPort, method, endpoint, { body });
+      assert.strictEqual(result.status, 400, `${method} must reject ${JSON.stringify(models)}: ${result.text}`);
+      assert.ok(JSON.parse(result.text).error.includes('模型列表'));
+      assert.deepStrictEqual(_state.store, beforeStore);
+      assert.strictEqual(fs.readFileSync(path.join(TMP, 'providers.json'), 'utf8'), beforeDisk);
+      assert.strictEqual(fs.readFileSync(process.env.MIXR_CODEX_CONFIG, 'utf8'), beforeClient);
+    }
+  }
 });
 
 test('writeCodexConfig 全新文件:补顶层键并写 section(不再依赖旧函数)', () => {

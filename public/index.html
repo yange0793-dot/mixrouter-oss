@@ -256,6 +256,7 @@
           </div>
           <div class="liveinfo" id="liveinfo"><div class="empty"><b>正在读取客户端配置</b>连接本地控制台后展示实际配置，不代表上游连通性。</div></div>
           <div class="codex-models" id="codex-models" hidden>
+            <p class="hint">路由槽位分别选择渠道与落点模型；保存不改渠道默认模型或 Codex 配置，点「应用到 Codex」才写入别名。</p>
             <div class="model-fields" id="codex-model-fields"></div>
             <div class="model-actions"><button class="small" id="codex-model-apply" onclick="applySlotsClaude()">应用到 Codex</button><span id="codex-model-status" role="status"></span></div>
             <div id="codex-config-details"></div>
@@ -453,7 +454,11 @@
           <p class="muted">选 Responses / Chat 后请求在本进程内翻译后发出、响应翻回 Anthropic，不用再挂本地转换代理。</p>
         </div>
         <div id="m-codex-fields" style="display:none">
-          <label for="m-model">模型 <span aria-hidden="true">*</span></label><input type="text" id="m-model" placeholder="如 gpt-5.6-sol" spellcheck="false">
+          <label for="m-model">默认模型 <span aria-hidden="true">*</span></label><input type="text" id="m-model" placeholder="如 gpt-5.6-sol" spellcheck="false">
+          <label>候选模型列表（可选）</label>
+          <div id="m-codex-models-list"></div>
+          <button type="button" class="small" onclick="addModelDraft()">＋ 添加模型</button>
+          <p class="muted">候选供槽位的「落点模型」下拉选择。添加、删除或排序不更改上方默认模型；默认模型仍需单独填写。</p>
           <label for="m-wire">上游协议（wire_api）</label><select id="m-wire"><option value="responses">Responses（推荐，新网关）</option><option value="chat">Chat Completions（兼容）</option></select>
           <label class="chk" for="m-dropimg"><input type="checkbox" id="m-dropimg">纯文本渠道：转发时将 Responses 图片替换为文字说明</label>
         </div>
