@@ -45,6 +45,32 @@ command = "keep"
 const catalogFile = path.join(root, 'mixrouter-model-catalog.json');
 const catalog = () => JSON.parse(fs.readFileSync(catalogFile, 'utf8'));
 const activeSlots = () => ({ main: { provider: 'native', model: 'target-a' }, reviewer: { provider: 'native', model: 'target-r' } });
+const nativeContext = () => ({ session: 'cx:preview-same-session', ua: 'codex_desktop/0.162.1', token: router.ROUTER_TOKEN });
+const nativeSend = (model, headers = {}, input = 'preview task') => request(proxy, '/v1/responses', { model, input, stream: false },
+  'POST', { 'session-id': 'preview-same-session', 'user-agent': 'codex_desktop/0.162.1',
+    authorization: 'Bearer ' + router.ROUTER_TOKEN, ...headers });
+async function previewMatchesResolver(model, context) {
+  const input = { app: 'codex', model, kind: 'responses', ...(context === undefined ? {} : { context }) };
+  const direct = router.explainRoute(input);
+  const result = await request(ui, '/api/routing/preview', input);
+  assert.equal(result.status, direct.ok ? 200 : direct.error.httpStatus);
+  assert.deepEqual(result.body, direct, 'HTTP preview must return the production explainer result');
+  const truth = router.resolveRoute(model, { ...context,
+    bodyText: context?.bodyText ? () => context.bodyText : undefined }, 'codex');
+  assert.equal(direct.matched.via, truth.content ? 'content' : truth.slot ? 'slot' : truth.rule ? 'rule' : 'default');
+  assert.equal(direct.matched.ruleId, truth.rule?.id || null);
+  assert.equal(direct.matched.slot, truth.slot || null);
+  assert.deepEqual(direct.candidates.map(member => [member.providerId, member.model]),
+    truth.members.map(member => [member.provider.id, member.model]));
+  return direct;
+}
+function fileSnapshot(dir = root, prefix = '') {
+  return fs.readdirSync(dir).sort().flatMap(name => {
+    const full = path.join(dir, name), relative = path.join(prefix, name), stat = fs.statSync(full);
+    return stat.isDirectory() ? fileSnapshot(full, relative)
+      : [{ file: relative, text: fs.readFileSync(full, 'utf8'), mode: stat.mode, mtime: stat.mtimeMs }];
+  });
+}
 before(async () => {
   upstream = http.createServer((req, res) => {
     const chunks = [];
@@ -77,10 +103,163 @@ beforeEach(() => {
   router._state.current = { claude: null, codex: '@router', zcode: null };
   router._state.routes = { rules: [], default: { provider: 'native', model: 'ordinary-fallback' } };
   router._state.sessions.clear();
+  router._state.cooldowns = {};
+  router._state.resetPools();
 });
 after(async () => {
   await Promise.all([ui, proxy, upstream].map(server => new Promise(resolve => server.close(resolve))));
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('Codex legacy preview is credential-safe and leaves production state, diagnostics, files and upstream untouched', async () => {
+  assert.equal((await put(activeSlots())).status, 200);
+  router._state.sessions.set('cx:stale-preview', Object.freeze({ providerId: 'native', lastUsed: 0 }));
+  router._state.cooldowns = { native: 0 };
+  router._state.resetPools();
+  router._state.pools['slot:codex/main'] = 7;
+  router._state.pools.__w_preview = [{ provider: { id: 'chat' }, weight: 2, current: 5 }];
+  const state = () => JSON.stringify({ sessions: [...router._state.sessions], cooldowns: router._state.cooldowns,
+    pools: router._state.pools, slots: router._state.slotMap, store: router._state.store, routes: router._state.routes });
+  const before = state(), files = fileSnapshot();
+  const logs = (await request(ui, '/api/logs?limit=50', undefined, 'GET')).body.logs;
+  const attempts = (await request(ui, '/api/attempts', undefined, 'GET')).body.requests;
+  assert.deepEqual(logs, [], 'this preview-only case must run before any real proxy request');
+  assert.deepEqual(attempts, []);
+  for (const model of ['old-native', 'old-review', 'old-native']) {
+    const result = await previewMatchesResolver(model, nativeContext());
+    assert.equal(result.ok, true);
+    assert.equal(result.matched.slot, model === 'old-review' ? 'reviewer' : 'main');
+    const text = JSON.stringify(result);
+    for (const hidden of [router.ROUTER_TOKEN, nativeContext().ua, nativeContext().session, 'api_key', 'base_url']) {
+      assert.equal(text.includes(hidden), false, 'preview must not echo request credentials, raw UA or private configuration');
+    }
+  }
+  assert.equal(state(), before, 'preview must not prune, bind, touch, rotate or rewrite live state');
+  assert.deepEqual(fileSnapshot(), files, 'preview must not create or rewrite logs, sessions or client configuration');
+  assert.deepEqual((await request(ui, '/api/logs?limit=50', undefined, 'GET')).body.logs, logs);
+  assert.deepEqual((await request(ui, '/api/attempts', undefined, 'GET')).body.requests, attempts);
+  assert.equal(hits.length, 0, 'preview must not contact upstream');
+});
+
+test('Codex legacy main/reviewer preview follows production resolver and native HTTP across hot slot edits', async () => {
+  assert.equal((await previewMatchesResolver('old-native', nativeContext())).matched.via, 'default');
+  assert.equal((await put(activeSlots())).status, 200);
+  const compare = async (model, expected, slot, ua = nativeContext().ua) => {
+    const result = await previewMatchesResolver(model, { ...nativeContext(), ua });
+    assert.equal(result.matched.via, 'slot');
+    assert.equal(result.matched.slot, slot);
+    assert.equal(result.selection.predicted.model, expected);
+    const actual = await nativeSend(model, { 'user-agent': ua });
+    assert.equal(actual.status, 200);
+    assert.equal(actual.headers['x-mixrouter-model'], expected);
+    assert.equal(actual.headers['x-mixrouter-provider'], result.selection.predicted.providerName);
+    assert.equal(router._state.sessions.has(nativeContext().session), true, 'native session-id must normalize to the preview cx: identity');
+    assert.equal(hits.at(-1).body.model, expected);
+  };
+  await compare('old-native', 'target-a', 'main');
+  await compare('old-review', 'target-r', 'reviewer');
+  assert.equal((await put({ main: { provider: 'native', model: 'preview-main-b' },
+    reviewer: { provider: 'chat', model: 'preview-review-b' } })).status, 200);
+  await compare('old-review', 'preview-review-b', 'reviewer');
+  assert.equal(hits.at(-1).url, '/v1/chat/completions');
+  for (const ua of ['codex_desktop/0.162.1', 'codex_cli_rs/0.162.1', 'codex_exec/0.162.1', 'codex/0.162.1', 'codex 0.162.1']) {
+    await compare('old-native', 'preview-main-b', 'main', ua);
+  }
+  assert.equal(hits.at(-1).url, '/v1/responses');
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, 'mixrouter-model-catalog.source.json'), 'utf8')).legacy_models,
+    { 'old-native': 'mixr-main', 'old-review': 'mixr-reviewer' }, 'hot edits must not register new or fuzzy legacy IDs');
+});
+
+test('Codex legacy preview requires exact ID and supplied native context, without inventing request identity', async () => {
+  assert.equal((await put(activeSlots())).status, 200);
+  router._state.routes.rules = [{ id: 'ordinary-legacy', app: 'codex', enabled: true, match: 'old-native', when: {},
+    provider: 'chat', model: 'ordinary-rule', pool: [], priority: 0 }];
+  const cases = [
+    ['old-native-extra', {}, {}, 'ordinary-rule'], ['OLD-NATIVE', {}, {}, 'ordinary-rule'],
+    ['unknown-native-id', {}, {}, 'ordinary-fallback'],
+    ['old-native', { token: '' }, { authorization: '' }, 'ordinary-rule'],
+    ['old-native', { token: 'wrong-local-token' }, { authorization: 'Bearer wrong-local-token' }, 'ordinary-rule'],
+    ['old-native', { session: 'cxf:fingerprint-preview' }, { 'session-id': '' }, 'ordinary-rule'],
+    ...['codex_desktop_evil/0.162.1', 'codex_other/0.162.1', 'codex_desktop', 'openai-python/1.0']
+      .map(ua => ['old-native', { ua }, { 'user-agent': ua }, 'ordinary-rule']),
+  ];
+  for (const [model, patch, headers, expected] of cases) {
+    const result = await previewMatchesResolver(model, { ...nativeContext(), ...patch });
+    assert.equal(result.matched.slot, null, model + ': incomplete or unrelated context must not become native');
+    assert.equal(result.selection.predicted.model, expected);
+    assert.equal((await nativeSend(model, headers)).headers['x-mixrouter-model'], expected);
+  }
+  const fingerprint = router.sessionIdentity({ headers: {} }, { input: 'preview task' }, 'codex');
+  assert.match(fingerprint.key, /^cxf:/);
+  assert.equal((await previewMatchesResolver('old-native', { ...nativeContext(), session: fingerprint.key })).matched.via, 'rule');
+  for (const context of [undefined, {}, { session: nativeContext().session },
+    { ...nativeContext(), session: '' }, { ...nativeContext(), ua: '' }, { ...nativeContext(), token: undefined },
+    { ...nativeContext(), session: 'preview-same-session' }, { ...nativeContext(), session: 'cc:preview-same-session' }]) {
+    assert.equal((await previewMatchesResolver('old-native', context)).selection.predicted.model, 'ordinary-rule');
+  }
+  const noContext = await request(ui, '/api/routing/preview', { app: 'codex', model: 'old-native' }, 'POST', {
+    'session-id': 'preview-same-session', 'user-agent': nativeContext().ua, authorization: 'Bearer ' + router.ROUTER_TOKEN });
+  assert.equal(noContext.body.matched.via, 'rule', 'HTTP preview must not infer native context from its own transport headers');
+});
+
+test('Codex legacy preview falls back when router management or catalog provenance is absent', async () => {
+  assert.equal((await put(activeSlots())).status, 200);
+  const managed = fs.readFileSync(file, 'utf8');
+  for (const text of ['', 'profile = "other"\n' + managed,
+    managed.replace(router.ROUTER_TOKEN, 'external-token'),
+    managed.replace('model_catalog_json = "mixrouter-model-catalog.json"', 'model_catalog_json = "other.json"')]) {
+    fs.writeFileSync(file, text);
+    const result = await previewMatchesResolver('old-native', nativeContext());
+    assert.equal(result.matched.via, 'default');
+    assert.equal((await nativeSend('old-native')).headers['x-mixrouter-model'], 'ordinary-fallback');
+  }
+  fs.writeFileSync(file, managed);
+  router._state.current.codex = 'native';
+  assert.equal((await previewMatchesResolver('old-native', nativeContext())).matched.via, 'default');
+  router._state.current.codex = '@router';
+  const sourceFile = path.join(root, 'mixrouter-model-catalog.source.json');
+  const source = fs.readFileSync(sourceFile, 'utf8');
+  fs.unlinkSync(sourceFile);
+  assert.equal((await previewMatchesResolver('old-native', nativeContext())).matched.via, 'default');
+  fs.writeFileSync(sourceFile, 'not-json');
+  assert.equal((await previewMatchesResolver('old-review', nativeContext())).matched.via, 'default');
+  fs.writeFileSync(sourceFile, source);
+  fs.unlinkSync(file);
+  assert.equal((await previewMatchesResolver('old-native', nativeContext())).matched.via, 'default');
+});
+
+test('Codex legacy preview preserves removed/disabled slot errors and content-rule precedence', async () => {
+  assert.equal((await put(activeSlots())).status, 200);
+  const bodyText = 'content-routing-needle';
+  router._state.routes.rules = [{ id: 'content-before-legacy', app: 'codex', enabled: true, match: 'old-native',
+    when: { body: bodyText }, provider: 'chat', model: 'content-target', pool: [], priority: -5 }];
+  const content = await previewMatchesResolver('old-native', { ...nativeContext(), bodyText });
+  assert.equal(content.matched.via, 'content');
+  assert.equal(content.selection.predicted.model, 'content-target');
+  assert.equal((await nativeSend('old-native', {}, bodyText)).headers['x-mixrouter-model'], 'content-target');
+  router._state.routes.rules = [];
+  assert.equal((await put({ main: null })).status, 200);
+  const missing = await previewMatchesResolver('old-native', nativeContext());
+  assert.equal(missing.ok, false);
+  assert.equal(missing.matched.slot, 'main');
+  assert.equal(missing.error.code, 'no_route_error');
+  assert.equal(missing.error.httpStatus, 503);
+  let count = hits.length;
+  const removed = await nativeSend('old-native');
+  assert.equal(removed.status, 503);
+  assert.equal(removed.body.error.code, missing.error.code);
+  assert.equal(hits.length, count);
+  assert.equal((await request(ui, '/api/providers/native', { enabled: false }, 'PUT')).status, 200);
+  const disabled = await previewMatchesResolver('old-review', nativeContext());
+  assert.equal(disabled.ok, false);
+  assert.equal(disabled.matched.slot, 'reviewer');
+  assert.equal(disabled.error.code, 'provider_disabled_error');
+  assert.equal(disabled.error.httpStatus, 503);
+  count = hits.length;
+  const actual = await nativeSend('old-review');
+  assert.equal(actual.status, 503);
+  assert.equal(actual.body.error.code, disabled.error.code);
+  assert.equal(hits.length, count);
 });
 
 test('Codex PUT automatically synchronizes aliases/catalog and preserves unrelated configuration', async () => {

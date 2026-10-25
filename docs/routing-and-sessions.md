@@ -409,6 +409,32 @@ Claude Code 磁盘配置里的 `autoCompactWindow`,可选**三层**:
 ./mixctl explain --input body.json                         # 文件名写 - 则读 stdin
 ```
 
+预览 Codex 旧登记默认 ID 时,兼容映射沿用 §2 的**全部门槛**,不改变匹配顺序。输入须显式提供
+`context.ua`(该次请求的原生 Codex 标识)、`context.token`(本地路由凭据)与 `context.session`
+(归一化后带 `cx:` 前缀的完整可靠会话键);本机受管配置与目录登记仍须符合要求。
+裸 `./mixctl explain codex 旧默认ID` **不会命中兼容映射**,仍按普通规则与兜底判断;
+预览不会自动填入本机凭据或伪造请求身份。
+
+带凭据的输入用 `--input` 文件或 stdin,不要把凭据放进 argv 或 shell 历史。JSON 结构如下,
+占位值须换成该次真实请求的值;输入文件按凭据文件保护(`0600`),不要公开贴出:
+
+```json
+{
+  "app": "codex",
+  "model": "registered-old-default-id",
+  "context": {
+    "ua": "codex_desktop/request-version",
+    "token": "local-router-token",
+    "session": "cx:full-session-id"
+  }
+}
+```
+
+```bash
+./mixctl explain --input preview.json --json
+./mixctl explain --input - --json < preview.json
+```
+
 三条边界最容易被误读:
 
 - **只解释当前快照,不是承诺**。首选渠道是"此刻这条请求会落到哪",不保证上游成功。
