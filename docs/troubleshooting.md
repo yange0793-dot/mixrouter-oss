@@ -53,6 +53,9 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8788/
 看到 `The requested item was created under a different Azure OpenAI resource` 时,不是本机
 session ID 坏了。含完整原生 Responses input、无服务器历史引用且尚未提交输出的请求,
 会投影一次并在原预算内同落点重发;日志尝试数包含恢复调用,诊断过程标记 `resource_binding_recovery`。
+Codex 原生工具结果的资源 `id` 一并移除,但 `call_id`、结果内容、加密推理和 nullable 推理内容原样保留;
+不需要另接独立代理,也不改写会话存档。若历史校验阻止恢复,日志 `resource_recovery_skipped`
+会给出固定分类,例如 `server_history_reference`、`invalid_tool_pair` 或 `invalid_history_item`。
 
 - 客户端只给服务器引用或工具配对不完整:保留原始上游错误,不猜测删除历史。需由客户端重发
   完整历史或新开会话,不要手工删 `call_id`、工具结果或加密推理来凑通过。
