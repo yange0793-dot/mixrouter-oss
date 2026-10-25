@@ -245,6 +245,8 @@ function childEnv(ports, dirs) {
     MIXR_CLAUDE_SETTINGS: path.join(dirs.home, '.claude', 'settings.json'),
     MIXR_CODEX_CONFIG: path.join(dirs.home, '.codex', 'config.toml'),
     MIXR_ZCODE_CONFIG: path.join(dirs.home, '.zcode', 'v2', 'config.json'),
+    DSH_HOME: path.join(dirs.home, '.dsh'),
+    MIXR_HARNESS_PROFILE: path.join(dirs.home, '.dsh', 'profiles', 'desktop', 'cordis.patch.yml'),
     MIXR_UPSTREAM_PROXY: '',                           // 明确的空值:不回落到调用方 shell 的隧道
     MIXR_SESSION_LABEL: '0',
     MIXROUTER_PORT: String(ports.proxy),
@@ -555,6 +557,30 @@ async function main() {
       const body = fs.readFileSync(f, 'utf8');
       must(!body.includes(KEY_CLAUDE_A), 'requests.jsonl 里落进了原始 Key');
       must(body.trim().split('\n').length >= 5, 'requests.jsonl 行数偏少');
+    });
+    await step('Harness 独立模型池:保存不写客户端,跨协议组 Messages 转译可用', async () => {
+      const originalSlots = JSON.stringify(state0.slots);
+      const state = JSON.parse((await req(uiPort, 'GET', '/api/harness')).text);
+      const saved = await req(uiPort, 'PUT', '/api/harness', { headers: anthHeaders, body: {
+        expected_revision: state.revision, main: { provider: 'c-resp', model: 'gpt-smoke' },
+        pool: [{ provider: 'p-auth', model: 'up-model-a' }],
+      } });
+      eq(saved.status, 200, 'Harness save status');
+      const configured = JSON.parse(saved.text);
+      must(configured.pool.length === 2, '主模型应自动纳入池');
+      must(!/sk-smoke/.test(saved.text), 'Harness state 不能回显 Key');
+      const response = await req(proxyPort, 'POST', '/harness/v1/messages', { headers: anthHeaders,
+        body: { ...NOSTREAM, model: 'mixr-harness-main' } });
+      eq(response.status, 200, 'Harness Messages status');
+      must(JSON.parse(response.text).content.some(block => block.text === MOCK_PREFIX + 'gpt-smoke'), 'Harness 主模型没有落到 Codex 组的准确模型');
+      const after = JSON.parse((await req(uiPort, 'GET', '/api/state')).text);
+      eq(JSON.stringify(after.slots), originalSlots, 'Harness 不改其他客户端槽位');
+      must(fs.existsSync(path.join(dirs.data, 'harness.json')), '池只保存到隔离数据目录');
+      must(!fs.existsSync(path.join(dirs.home, '.dsh')), '普通保存与请求不能创建 Harness profile');
+    });
+    await step('Harness 关键静态资源随运行包交付', async () => {
+      for (const asset of ['/js/harness.js', '/styles/harness.css'])
+        eq((await req(uiPort, 'GET', asset)).status, 200, asset);
     });
     await step('临时 HOME 里的哨兵客户端配置原样未动(本次跑没有触发客户端配置写入)', () => {
       eq(fs.readFileSync(claudeCfg, 'utf8'), sentinelBefore, '哨兵 settings.json 内容被改了');

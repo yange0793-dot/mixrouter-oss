@@ -11,6 +11,7 @@
 <link rel="stylesheet" href="/styles/readiness.css">
 <link rel="stylesheet" href="/styles/attempt-flow.css">
 <link rel="stylesheet" href="/styles/key-fallback.css">
+<link rel="stylesheet" href="/styles/harness.css">
 </head>
 <body data-connection="connecting">
   <a class="skip-link" href="#main">跳至主要内容</a>
@@ -38,6 +39,7 @@
     <nav class="nav-group" aria-label="工作区">
       <a href="#overview" data-view="overview" class="active" aria-current="page"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.5" y="2.5" width="5.2" height="5.2" rx="1.2"/><rect x="10.3" y="2.5" width="5.2" height="5.2" rx="1.2"/><rect x="2.5" y="10.3" width="5.2" height="5.2" rx="1.2"/><rect x="10.3" y="10.3" width="5.2" height="5.2" rx="1.2"/></svg><span>概览</span></a>
       <a href="#routes" data-view="routes"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="4" cy="9" r="1.8"/><circle cx="14" cy="4.5" r="1.8"/><circle cx="14" cy="13.5" r="1.8"/><path d="M5.8 9c2 0 3-4.5 6.4-4.5M5.8 9c2 0 3 4.5 6.4 4.5"/></svg><span>路由</span></a>
+      <a href="#harness" data-view="harness"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="6.5" y="2.5" width="5" height="5" rx="1.2"/><path d="M9 7.5v3M4 10.5h10M4 10.5v2M14 10.5v2"/><circle cx="4" cy="14" r="1.5"/><circle cx="14" cy="14" r="1.5"/></svg><span>Harness</span></a>
     </nav>
     <div class="nav-label">观测</div>
     <nav class="nav-group" aria-label="观测">
@@ -323,6 +325,34 @@
         <div class="panel"><h2>默认路由</h2><div class="hint">所有规则都未命中时使用，也可配置为渠道池。未绑定渠道时请求返回 503。</div><div id="def-box"></div></div>
       </section>
 
+      <section id="view-harness" style="display:none" aria-labelledby="harness-title">
+        <div class="head"><div><h1 id="harness-title">Harness</h1><div class="sub">主模型选定一个精确落点；普通子代理从你维护的候选池中自主选择。与 Claude / Codex 槽位独立。</div></div></div>
+        <div class="harness-layout">
+          <div class="panel" aria-labelledby="harness-main-title">
+            <h2 id="harness-main-title">主模型</h2>
+            <p class="hint">选择渠道及其已登记模型，不按模型名猜测供应商。</p>
+            <div class="harness-fields" id="harness-main"></div>
+          </div>
+          <div class="panel" aria-labelledby="harness-pool-title">
+            <h2 id="harness-pool-title">子代理候选池</h2>
+            <p class="hint">这里只维护可选模型，不分配固定角色。主模型保存后会自动纳入池中；池更新在新会话生效。</p>
+            <div id="harness-pool"></div>
+          </div>
+          <div class="harness-setup">
+            <p class="hint">普通 subagent 显式选模只能使用此白名单；fork / team 继承模型，不由此池重选。Workflow 的固定角色走另一条配置路径，不受此池管理。</p>
+            <p class="hint" id="harness-client-status">客户端状态尚未读取。</p>
+            <p class="hint">只检查配置文件，原生插件装载/实际请求仍待验证；池变动需重新接入并新开会话。</p>
+            <div class="savebar">
+              <button class="primary" type="button" id="harness-save" onclick="harnessSave()" disabled>保存主模型与候选池</button>
+              <button type="button" id="harness-reload" onclick="harnessReload()">重新读取</button>
+              <button type="button" id="harness-preview-button" onclick="harnessPreview()" disabled>预览客户端接入</button>
+            </div>
+            <p class="harness-status" id="harness-status" role="status" aria-live="polite">尚未读取 Harness 配置。</p>
+            <div class="harness-preview" id="harness-preview" aria-labelledby="harness-preview-title" hidden></div>
+          </div>
+        </div>
+      </section>
+
       <section id="view-sessions" style="display:none" aria-labelledby="sessions-title">
         <div class="head"><div><h1 id="sessions-title">会话绑定</h1><div class="sub">点「配置 Key / 槽位」给单个会话配独立的渠道与模型；没配的槽位继承全局。</div></div><div class="actions"><label for="f-sess-app" class="sr-only">会话协议组</label><select id="f-sess-app" onchange="sessApp=this.value;renderSessions()" style="width:auto"><option value="">全部协议组</option><option value="claude">Claude / Anthropic</option><option value="codex">Codex / OpenAI</option></select><button class="danger" onclick="clearSessions()">清空全部绑定</button></div></div>
         <div class="logbar sessbar">
@@ -476,5 +506,6 @@
 <script src="/js/readiness.js"></script>
 <script src="/js/attempt-flow.js"></script>
 <script src="/js/key-fallback.js"></script>
+<script src="/js/harness.js"></script>
 </body>
 </html>

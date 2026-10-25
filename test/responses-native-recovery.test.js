@@ -238,6 +238,41 @@ for (const mode of ['json-sse-mime', 'structured-sse', 'failed-sse']) test(`know
   assert.equal(Number(firstLength), seen[0].bytes.length); assert.equal(Number(nextLength), seen[1].bytes.length);
 });
 
+for (const shape of ['error', 'failed', 'type-less']) test(`held-open native HTTP400 complete ${shape} SSE recovers before EOF and releases old stream`, async () => {
+  const event = shape === 'failed' ? failure('invalid_request_error', azure.error.message) : { type: 'error', ...azure };
+  const raw = shape === 'type-less' ? `data: ${JSON.stringify(azure)}\n\n` : frame(event);
+  reply = (_req, res) => {
+    if (seen.length > 1) return answer(res);
+    res.writeHead(400, { 'Content-Type': 'text/event-stream' });
+    res.write(created); res.write(raw);
+  };
+  assertSuccess(await ask(), 2);
+  await waitFor(() => finished === 2, { label: 'held-open HTTP400 error stream released' });
+  assert.deepEqual(JSON.parse(seen[1].bytes), projectResponsesHistory(history()).body);
+});
+
+for (const tail of ['data: {"type":"response.output_text.delta","delta":"partial', 'data: {"type":"unknown","opaque":"output"}\n\n']) {
+  test(`HTTP400 complete error with unknown tail never replays (${tail.slice(0, 42)})`, async () => {
+    const raw = created + frame({ type: 'error', ...azure }) + tail;
+    reply = (_req, res) => answer(res, raw, 400);
+    const result = await ask(); assert.equal(seen.length, 1); assert.equal(result.status, 400); assert.equal(result.text, raw);
+  });
+}
+
+test('cancellation after held-open HTTP400 error during retry delay prevents second request', async () => {
+  let client;
+  reply = (_req, res) => {
+    res.writeHead(400, { 'Content-Type': 'text/event-stream' }); res.write(frame({ type: 'error', ...azure }));
+    setTimeout(() => client.destroy(), 2);
+  };
+  await new Promise((resolve, reject) => {
+    client = http.request({ hostname: '127.0.0.1', port: proxy.address().port, method: 'POST', path: '/v1/responses', headers: { 'Content-Type': 'application/json' } });
+    client.once('error', error => error.code === 'ECONNRESET' ? resolve() : reject(error)); client.once('close', resolve); client.end(JSON.stringify(history()));
+  });
+  await new Promise(resolve => setTimeout(resolve, 70)); assert.equal(seen.length, 1); assert.equal(lastLog().err_class, 'cancelled');
+  await waitFor(() => finished === 1, { label: 'cancelled held-open HTTP400 error released' });
+});
+
 test('repeated Azure error projects once, resends same bytes, returns last exact failure at shared cap', async () => {
   reply = (_req, res) => answer(res, JSON.stringify({ error: { ...azure.error, message: `${azure.error.message} attempt ${seen.length}` } }), 400, 'text/event-stream', { 'x-request-id': `last-${seen.length}` });
   const result = await ask(); assert.equal(seen.length, 5); assert.equal(result.status, 400);

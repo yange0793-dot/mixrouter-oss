@@ -1,0 +1,47 @@
+/* Harness 只使用 base.css 的主题 tokens，不改变控制台外壳或客户端槽位。 */
+#view-harness { min-width: 0; }
+.harness-layout { max-width: 960px; }
+.harness-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 16px; }
+.harness-layout .panel { margin-bottom: 18px; }
+.harness-layout .hint { max-width: 76ch; }
+.harness-members { list-style: none; padding: 0; margin: 0 0 12px; }
+.harness-member {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto;
+  gap: 10px 16px; align-items: end; min-width: 0;
+  padding: 14px 0; border-top: 1px solid var(--border-soft);
+}
+.harness-member:first-child { padding-top: 0; border-top: 0; }
+.harness-member .field { min-width: 0; }
+.harness-remove { min-height: 34px; }
+.harness-main-note { grid-column: 1 / -1; color: var(--accent-text); font-size: 12.5px; }
+.harness-setup { padding-top: 6px; }
+.harness-setup > .hint { color: var(--dim); font-size: 13.5px; margin: 0 0 12px; overflow-wrap: anywhere; }
+.harness-status { min-height: 1.55em; margin: 12px 0; font-size: 13.5px; color: var(--dim); overflow-wrap: anywhere; }
+.harness-status.err { color: var(--err-text); }
+.harness-preview { border-top: 1px solid var(--border); padding-top: 18px; margin-top: 18px; }
+.harness-preview h3 { font-size: 15px; margin-bottom: 8px; }
+.harness-preview .hint { font-size: 13.5px; color: var(--dim); margin-bottom: 12px; }
+.harness-profile { font-size: 13px; color: var(--dim); overflow-wrap: anywhere; margin-bottom: 12px; }
+.harness-changes { list-style: none; margin: 0; padding: 0; }
+.harness-changes li { border-top: 1px solid var(--border-soft); padding: 12px 0; }
+.harness-changes li > b { display: block; font-size: 13px; overflow-wrap: anywhere; margin-bottom: 6px; }
+.harness-changes li > div { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 12px; margin-top: 5px; }
+.harness-changes span { color: var(--dim); font-size: 12.5px; }
+.harness-changes pre {
+  min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere;
+  font: 12.5px/1.6 var(--mono); color: var(--text); background: var(--surface-2);
+  padding: 6px 10px; border-radius: 5px;
+}
+.harness-confirm { display: flex; align-items: flex-start; gap: 8px; margin: 12px 0; color: var(--text); font-size: 13.5px; }
+.harness-confirm input { margin-top: 3px; }
+@media (max-width: 600px) {
+  #view-harness .harness-fields, .harness-member { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .harness-layout .panel { padding: 16px; }
+  .harness-member { padding: 16px 0; }
+  .harness-remove { justify-self: end; }
+  .harness-changes li > div { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .harness-setup .savebar > button { flex: 1 1 auto; }
+}
+@media (forced-colors: active) {
+  .harness-preview, .harness-changes li, .harness-member { border-color: CanvasText; }
+}

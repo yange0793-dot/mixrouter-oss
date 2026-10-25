@@ -48,6 +48,8 @@ function testEnv(parent, root) {
     MIXR_CLAUDE_SETTINGS: path.join(home, '.claude', 'settings.json'),
     MIXR_CODEX_CONFIG: path.join(home, '.codex', 'config.toml'),
     MIXR_ZCODE_CONFIG: path.join(home, '.zcode', 'v2', 'config.json'),
+    DSH_HOME: path.join(home, '.dsh'),
+    MIXR_HARNESS_PROFILE: path.join(home, '.dsh', 'profiles', 'desktop', 'cordis.patch.yml'),
     MIXR_UPSTREAM_PROXY: '',
     MIXROUTER_PORT: '0',
     MIXUI_PORT: '0',

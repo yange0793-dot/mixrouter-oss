@@ -193,8 +193,8 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) refr
 window.addEventListener('offline', () => { setConnection(false, '网络连接已断开'); renderProviders(); });
 window.addEventListener('online', refresh);
 
-const VIEWS = ['overview', 'usage', 'providers', 'routes', 'sessions', 'diagnostics', 'settings'];
-const VIEW_LABELS = { overview: '概览', usage: '用量统计', providers: '渠道与 Key', routes: '路由', sessions: '会话', diagnostics: '诊断', settings: '设置与备份' };
+const VIEWS = ['overview', 'usage', 'providers', 'harness', 'routes', 'sessions', 'diagnostics', 'settings'];
+const VIEW_LABELS = { overview: '概览', usage: '用量统计', providers: '渠道与 Key', harness: 'DeepSeek Harness', routes: '路由', sessions: '会话', diagnostics: '诊断', settings: '设置与备份' };
 // 切视图只有这一条路径。原先 nav 的 onclick 里写着全部逻辑,gotoLogs() 只能去"点"那个 <a>
 // ——视图一改名,选择器返回 null,.click() 就当场抛 TypeError(会话页的「日志」按钮变成死按钮,
 // 而且没有任何提示)。抽成函数后,程序化切换不再依赖导航项是否存在。
@@ -215,6 +215,7 @@ function showView(name) {
   if (view === 'diagnostics') { loadLogs(); loadStats(); restartLogsTimer(); } else { clearInterval(logsTimer); logsTimer = null; }
   // 用量页自己管轮询与在途请求:离开时停表,回来时立刻拉一次(切页不重复初始化筛选)。
   if (typeof usageSetVisible === 'function') usageSetVisible(view === 'usage');
+  if (typeof harnessSetVisible === 'function') harnessSetVisible(view === 'harness');
   if (view === 'usage' && typeof renderUsage === 'function') renderUsage();
   if (view === 'providers') { renderProviders(); ensureHealth(); }
   if (view === 'sessions') renderSessions();

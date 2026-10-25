@@ -7,8 +7,8 @@
 
 #### 移除
 
-- 移除 DeepSeek Harness 控制台接入、配置同步与独立槽位路由模块。Harness 自行维护渠道、模型与
-  子任务配置;升级不会自动改写其配置,旧 Mixrouter 托管配置需手动解绑。
+- 移除旧 DeepSeek Harness 全配置托管、固定角色与子策略模块,旧 `/dsh/*`、`/api/dsh` 和
+  `dsh.json` 不恢复。新的轻量入口仅管理主模型与子代理白名单池,不会自动迁移旧配置。
 
 #### 修复
 
@@ -18,12 +18,18 @@
   按现有次数与总时限重试;正文、推理或工具事件一经转发便不重放。恢复尝试固定同一渠道、
   账号、模型与请求,不改变既有普通 HTTP 错误的可选多 Key 备用和路由故障转移。
 - 原生 Responses 保留 HTTP 错误的原始正文与响应头,不因 SSE MIME 把真实错误替换为
-  “缺少完整终态”。已确认的 Azure 跨资源错误仅在完整内联历史验证通过后移除受支持的
-  item ID,保留工具配对、推理和其余请求字段;普通 400 不盲目重试。
+  “缺少完整终态”。已确认的 Azure 跨资源错误仅在完整内联历史验证通过后投影一次,
+  移除受支持的 item ID,保留工具配对、推理和其余请求字段;重复故障只在原预算内重发
+  同一投影。含服务器历史引用、`/responses/compact`、普通 400 与未知协议签名不猜测性改写。
 - 原生 Responses 日志记录实际发送的推理档位;恢复成功后清理此前失败的错误分类。
 
 #### 新增
 
+- 独立「DeepSeek Harness」页,只提供主模型与子代理白名单池两个业务配置区;
+  路由保存到 `harness.json`,主模型自动纳入池,不影响其他客户端槽位与会话覆盖。
+  使用 Harness 原生普通子代理白名单验证显式选择,主模型可按任务自主选择池内模型。
+  预览并明确确认后才最小合并客户端字段与凭据引用,先备份、不重启;
+  池更新需重新接入并新开会话,不声称覆盖所有 workflow/fork/team 调用。
 - 新建 / 编辑渠道可根据 Base URL 和 API Key 获取上游模型列表,支持搜索选择、已有账号 Key
   及未保存的 Key。Claude 组去重追加且保留原主模型,Codex 组选定后填入模型字段;
   获取本身不保存渠道、不切换账号、不发送聊天请求。
@@ -68,6 +74,9 @@
 
 #### 接口
 
+- 新增 `GET/PUT /api/harness`、`POST /api/harness/{preview,connect}`,
+  以及隔离模型池路由 `/harness/v1/{models,messages,messages/count_tokens,responses,chat/completions}`;
+  未知别名和不兼容协议明确拒绝,不回落普通路由。
 - 新增 `GET /api/onboarding/<claude|codex|zcode>`、
   `POST /api/onboarding/<app>/{preview,apply,undo-preview,undo}`。
 - 新增 `POST /api/providers/import/{preview,apply}`、`POST /api/providers/<id>/compatibility`、

@@ -48,6 +48,25 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8788/
 
 ---
 
+## Azure 资源绑定错误 / Harness 模型池错误
+
+看到 `The requested item was created under a different Azure OpenAI resource` 时,不是本机
+session ID 坏了。含完整原生 Responses input、无服务器历史引用且尚未提交输出的请求,
+会投影一次并在原预算内同落点重发;日志尝试数包含恢复调用,诊断过程标记 `resource_binding_recovery`。
+
+- 客户端只给服务器引用或工具配对不完整:保留原始上游错误,不猜测删除历史。需由客户端重发
+  完整历史或新开会话,不要手工删 `call_id`、工具结果或加密推理来凑通过。
+- 重复的已知错误只重发同一投影;预算用完、已发送正文/推理/工具或未知签名错误时,
+  不会无限恢复或改用池内其他模型。
+- Harness 主模型保存后能热改路由,但白名单变动需再次预览/确认接入并新开会话。
+- `harness_model_not_found`:别名不在池里,不会回落默认模型。
+- `harness_route_unavailable`:配置里的渠道/Key/准确模型已失效,在 Harness 页面重新选择。
+- `harness_protocol_unsupported`:所选渠道不兼容该入口,接入使用通用 Messages 入口。
+- 接入报 409:预览已过期、文件外部变化或 YAML 无法安全局部合并;重新预览或在 Harness
+  原生配置中修正冲突,不通过整对象 `!!js` 覆盖来绕过。
+
+详见[Harness 接入与恢复边界](harness.md)。其他没有细节的上游错误并不属于本条修复。
+
 ## 1. 请求 503:先看错误码
 
 代理的错误码是分型的,`err_class` 与响应体里的 `error.type` 会直接告诉你该往哪查。
@@ -264,6 +283,22 @@ echo '{"app":"claude","model":"m","context":{"compactTexts":["…"]}}' | ./mixct
 `MIXR_CODEX_CONFIG`(`~/.codex/config.toml`)、`MIXR_ZCODE_CONFIG`(`~/.zcode/v2/config.json`)。
 每次改写前都会自动备份。
 
+### Codex 后台记忆任务报无路由
+
+启用 Codex 原生记忆功能后,提取与整理任务可能使用与主对话不同的内置默认模型。
+主对话正常不代表这些默认模型也有路由。先从日志确认实际失败模型,不要加全模型兜底。
+若已绑定 Codex 的 `main` 槽位,且当前 Codex 支持这两个配置键,可在现有 `[memories]` 表中
+仅补缺失的模型配置,让后台任务沿用该槽位:
+
+```toml
+[memories]
+extract_model = "mixr-main"
+consolidation_model = "mixr-main"
+```
+
+先备份文件;不要重复添加同名表,也不要覆盖用户已选的记忆模型、`generate_memories`、
+`use_memories` 或其他设置。新建会话后生效,不改变前台主模型、推理档位与子代理选模。
+
 ---
 
 ## 7. 端口被占 / 起不来
@@ -317,7 +352,7 @@ lsof -nP -iTCP:8788 -sTCP:LISTEN
 | `sticky` / `strategy` / `rule` | 是否走了会话粘性 / 用的策略 / 命中的规则 id |
 | `key_id` / `key_source` | 用的是哪把 Key(**非明文**的来源标记);多 Key 自动备用换号记为 `key_fallback` |
 | `request_id` | 本进程内尝试过程的 id,对应诊断页「实时尝试过程」与 `GET /api/attempts` |
-| `effort` | **真的发上去的那一档**思考强度(转换层报回来的),不是客户端想要的那档 |
+| `effort` | **真的发上去的那一档**思考强度(原生 Responses 读取出站 reasoning.effort,转换线读取转换结果),不是客户端想要的那档 |
 | `model_in` / `model_out` | 客户端说的模型 / 实际发给上游的模型 |
 | `bytes_in` | 客户端请求体字节数。首字慢但输出很快时先看这一栏:带截图的历史会让请求体涨到十几 MB,而这段时间上游面板里看不见 |
 | `think` / `reasoning` / `tools_dropped` | 排查上游 400 的关键证据 |
