@@ -691,7 +691,7 @@ const resolveRoute = createResolver({
 // 诊断只读装配:不经 /api/state、sessionList 或任何会剪枝/落盘的会话入口。
 const explainRoute = createExplainer({
   getRoutes: () => routes, storeOf: app => storeOf(app),
-  resolveSlot: (app, modelIn) => resolveSlot(app, modelIn), findProvider, providerApp,
+  resolveSlot: (app, modelIn) => resolveSlot(app, modelIn), findProvider, providerApp, codexLegacyAlias,
   slotExists: (app, modelIn) => {
     const raw = stripContextSuffix(modelIn);
     // 精确比较每个槽名的**全部**别名(Claude 组含 claude-mixr-* 兼容别名),
