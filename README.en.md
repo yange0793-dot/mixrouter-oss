@@ -52,7 +52,7 @@ Not a good fit:
   side.
 - **Session affinity, best effort.** Conversations from the same agent can use different keys
   on different providers, while a conversation is kept on one provider when possible. This is
-  not a hard guarantee: cooldowns, rebinding after failure, failover, manual pinning, and
+  not a hard guarantee: rebinding after failure, failover, manual pinning, and
   session overrides can all change the target.
 - **Slot routing and backup pools.** Bind a provider and model to a `mixr-<slot>` alias so the
   main chain and subagents can use separate accounts. Claude and Codex slots select the provider
@@ -233,7 +233,7 @@ The linked pages are in Chinese; the table says what each one covers.
 | [First-run and self-service recovery](docs/user-readiness.md) | Onboarding wizard, provider import, compatibility test, slot backup pools, error guidance and attempt traces, undo, diagnostic report, multi-key fallback, service and upgrade entries |
 | [CLI and runtime boundaries](docs/cli.md) | Every `mixctl` subcommand, ports and data directory, slots and sessions, logs and archives, backup/restore, read-only diagnostics, local self-check |
 | [Routing and sessions](docs/routing-and-sessions.md) | Match order, session identity, slots, pool strategies, session overrides, protocol translation |
-| [Troubleshooting](docs/troubleshooting.md) | Symptom-oriented: 503 classes, cooldowns and retries, invalid keys, affinity anomalies, log locations, onboarding/compatibility/upgrade failures, multi-key fallback |
+| [Troubleshooting](docs/troubleshooting.md) | Symptom-oriented: 503 classes, retries, invalid keys, affinity anomalies, log locations, onboarding/compatibility/upgrade failures, multi-key fallback |
 | [Reference](docs/reference.md) | Full mechanisms and fields, all environment variables, diagnostic limits |
 | [Upgrade and rollback](docs/upgrade-and-rollback.md) | Source upgrades and rollbacks, data directory, client config recovery, install-script boundaries |
 | [Offline run and acceptance](docs/offline-run-and-acceptance.md) | Keyless, network-free acceptance flow and what has actually been verified |

@@ -1,9 +1,9 @@
 'use strict';
 // 真实入口锁住终态判定与计数;仅使用本地桩和测试入口提供的隔离环境。
 //
-// 熔断器已删除:渠道可用性只由冷却表决定,而且冷却只是"优先挑选时的偏好",不是硬闸门。
+// 熔断器与渠道冷却都已删除:渠道可用性恒为 true,失败不会建立任何禁用时间。
 // 所以这里不再有"开路时零网络调用/半开探测名额"这类断言,改为钉住终态本身 ——
-// 一条响应到底算成功、失败还是取消,直接决定渠道会不会进冷却、日志里的 err_class 是什么。
+// 一条响应到底算成功、失败还是取消,决定日志里的 err_class 是什么,以及旧冷却表是否被写入。
 const { test, before, beforeEach, after } = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
@@ -117,7 +117,7 @@ test('200 后缺终态:记 stream_aborted,attempts 与真实调用一致', async
   assert.equal((await logs()).length, beforeLogs + 1);
 });
 
-test('上游 5xx:原样透传状态码,并按失败把渠道打进冷却', async () => {
+test('上游 5xx:原样透传状态码,不建立冷却记录', async () => {
   reply = (_req, res) => {
     res.writeHead(503, { 'Content-Type': 'application/json' });
     res.end('{"error":{"message":"fixture down"}}');
@@ -127,8 +127,8 @@ test('上游 5xx:原样透传状态码,并按失败把渠道打进冷却', async
   const log = await logFor();
   assert.equal(log.err_class, 'upstream_server');
   assert.equal(log.status, 503);
-  assert.ok(mod._state.cooldowns.p > Date.now(), '失败后渠道应进冷却');
-  assert.equal(mod.providerEligible('p'), false);
+  assert.deepEqual(mod._state.cooldowns, {}, '失败后不建立冷却记录');
+  assert.equal(mod.providerEligible('p'), true);
 });
 
 test('Responses 直通的 failed 终态是失败,不是成功', async () => {

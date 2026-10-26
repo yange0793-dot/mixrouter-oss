@@ -193,8 +193,9 @@ const SLOTS_FILE = path.join(DATA_DIR, 'slots.json');
 // 会话绑定空闲多久后失效(默认 12h);同一对话中途换渠道会打断 prompt 缓存,故给足
 const SESSION_TTL_MS = Number(process.env.MIXR_SESSION_TTL_MIN || 720) * 60 * 1000;
 const SESSION_MAX = Number(process.env.MIXR_SESSION_MAX || 1000);
-// 上游 429/5xx/连不上时把该渠道打入冷却:冷却只是软偏好,全池都在冷却时仍会退回全量候选。
-const COOLDOWN_MS = envInt('MIXR_COOLDOWN_SEC', 60, 0, 2147483) * 1000;
+// 渠道与 Key 的时间冷却已整体移除。常量只为 /api/health 的旧字段保留(恒为 0);
+// MIXR_COOLDOWN_SEC 不再读取,设了也不会重新启用冷却。
+const COOLDOWN_MS = 0;
 // MAX_ATTEMPTS also caps actual network attempts, including conversion retries.
 // 候选表按它循环填满(见 lib/proxy/prepare.js):单渠道时同一个渠道也会被重试,不是一次就放弃。
 const MAX_ATTEMPTS = envInt('MIXR_MAX_ATTEMPTS', 10, 1, 100);
@@ -524,11 +525,11 @@ const {
 } = identity;
 
 // ---------------------------------------------------------------- 会话绑定与渠道池
-// 绑定表、冷却表、轮转游标与"挑哪个渠道"的决定都在 lib/routing/sessions.js 的实例里
+// 绑定表、轮转游标与"挑哪个渠道"的决定都在 lib/routing/sessions.js 的实例里
 // (见该模块头部注释)。这里只把本进程的数据文件、TTL、上限与渠道可用性判断接进去。
 const sess = createSessionStore({
   sessionsFile: SESSIONS_FILE, ttlMs: SESSION_TTL_MS, max: SESSION_MAX,
-  cooldownMs: COOLDOWN_MS, loadJson, saveJson,
+  loadJson, saveJson,
   storeOf: app => storeOf(app), providerEligible: id => providerEligible(id),
   // 去抖落盘失败时的出口。库不自己写日志(它不该决定日志长什么样),这里接上本进程的格式,
   // 并且**接住**它 —— 不接就是一个 uncaughtException(实测过,见 mutateSessions 的注释)。
@@ -536,10 +537,12 @@ const sess = createSessionStore({
   onSaveError: e => console.error(`[sessions] 会话绑定落盘失败(本次改动会在下次落盘时重试): ${(e && e.message) || e}`),
 });
 
-// 渠道可用性只看冷却表(由 lib/routing/sessions.js 持有):它不拒绝请求,只在挑首选时降权。
+// 渠道可用性恒为 true:时间冷却已移除,渠道是否启用由各调用点自己判断。
+// inCooldown / markCooldown 保留同名薄包装,供控制台旧字段与既有测试调用 —— 它们不保存
+// 任何状态,也不会让请求被拒或改变首选顺序。
 const inCooldown = id => sess.inCooldown(id);
-const providerEligible = id => !inCooldown(id);
-const markCooldown = (providerId, status) => sess.markCooldown(providerId);
+const providerEligible = () => true;
+const markCooldown = () => {};
 const pruneSessions = () => sess.prune();
 
 // 立即落盘(退出路径)
@@ -595,7 +598,7 @@ function healthStatus() {
     max_upstream_calls: Math.max(1, MAX_ATTEMPTS) + Math.max(0, CONV_RETRIES),
     cooldown_ms: COOLDOWN_MS, retry_delay_ms: RETRY_DELAY_MS },
   providers: ['claude', 'codex'].flatMap(app => storeOf(app).map(p => ({ provider: p.id, app,
-    enabled: p.enabled !== false, cooldown_until: inCooldown(p.id) ? sess.cooldowns[p.id] : 0,
+    enabled: p.enabled !== false, cooldown_until: 0,
     eligible: p.enabled !== false && providerEligible(p.id) }))) };
 }
 
@@ -699,7 +702,7 @@ const explainRoute = createExplainer({
     return Object.keys(slotMap[app] || {})
       .some(name => slotAliases(app, name).includes(raw));
   },
-  listPools: () => sess.pools, inCooldown, healthEligible: () => true,
+  listPools: () => sess.pools, healthEligible: () => true,
   sessionSnapshot: () => ({ bindings: sess.sessions, now: Date.now(), ttlMs: SESSION_TTL_MS, max: SESSION_MAX }),
   uiPort: UI_PORT,
 });
@@ -881,7 +884,7 @@ const attemptDeps = {
   wireOf, upstreamPathOf, joinUpstreamPath,
   buildUpstreamHeaders, buildOpenAiHeaders, applyModel, toolFilter,
   safeHeader, hasCtlChar, transportAgent, createResponseArchive, channelSecrets, clientToken,
-  errorClass, retryableStatus, markCooldown,
+  errorClass, retryableStatus,
   settleRequest: (flight, patch) => sess.settleRequest(flight, patch),
   sha256: text => crypto.createHash('sha256').update(text).digest('hex'),
   wireResponses, wireChat, wireOpenai,
@@ -1363,7 +1366,7 @@ const readinessApi = createReadinessApi({
 const apiHandler = createConsoleHandler({
   // 常量
   VERSION, PROXY_PORT, UI_PORT, CODE_REVISION, ROUTER_ID, ROUTER_URL, ROUTER_TOKEN,
-  BACKUP_KEEP, SESSION_TTL_MS, COOLDOWN_MS, BODY_LIMIT, HOST, PUBLIC_DIR, ENDPOINTS, ROOT,
+  BACKUP_KEEP, SESSION_TTL_MS, BODY_LIMIT, HOST, PUBLIC_DIR, ENDPOINTS, ROOT,
   maskKey,                       // 主入口的公开导出,工厂只用不改
   // 活状态:读用 getter;整份替换的那几个另有 setter
   getStore: () => store,
@@ -1493,7 +1496,7 @@ module.exports = {
   normalizeChannelSlots, CLAUDE_SLOT_KEYS, claudeSplitPatch, configureClaudeSplit, altPorts,
   // v3.2 渠道池主备策略
   pickMember, markCooldown, inCooldown,
-  // v3.4 上游健康(冷却/超时与重试配置)
+  // v3.4 上游健康(超时与重试配置;冷却已移除,cooldown_ms/cooldown_until 仅为旧客户端恒 0)
   healthStatus, errorClass, providerEligible,
   ROUTER_ID, ROUTER_URL, ROUTER_TOKEN, ROUTER_SECTION,
   _state: {

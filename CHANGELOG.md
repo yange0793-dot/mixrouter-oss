@@ -9,6 +9,12 @@
 
 - 移除旧 DeepSeek Harness 全配置托管、固定角色与子策略模块,旧 `/dsh/*`、`/api/dsh` 和
   `dsh.json` 不恢复。新的轻量入口仅管理主模型与子代理白名单池,不会自动迁移旧配置。
+- 移除渠道与 Key 的时间冷却:429/4xx/5xx/网络失败不再建立禁用窗口,也不按 `Retry-After`
+  追加等待。`MIXR_COOLDOWN_SEC` 不再生效。同一渠道多 Key 变坏时只在**本次请求**内排除
+  失败 Key,重试次数、间隔与总预算沿用 `MIXR_MAX_ATTEMPTS` / `MIXR_RETRY_DELAY_MS` /
+  `MIXR_TOTAL_DEADLINE_MS`,全部失败如实收尾,不拒绝新请求。控制台与 `mixctl` 不再展示
+  冷却倒计时;`/api/health` 的 `cooldown_until`、`/api/state` 的 `cooldowns`/`cooldown_s`、
+  会话记录的 `cooldown`、`/api/keys/health` 的 `until` 作为旧客户端兼容字段恒为 0/空/false。
 
 #### 修复
 

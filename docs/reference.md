@@ -44,13 +44,12 @@ Claude Code / Codex 入口的判定顺序是固定的四段,唯一定义在 `lib
 | 策略 | 行为 | 适合 |
 | --- | --- | --- |
 | `round_robin` | 新对话依次落到下一个成员;游标按规则 id 跨请求保留 | 均摊额度,最好预料 |
-| `weighted` | 平滑加权轮询(nginx 式),按成员 `weight` 比例;冷却恢复的成员会重新进入轮转 | 主力渠道多分点 |
+| `weighted` | 平滑加权轮询(nginx 式),按成员 `weight` 比例;失败不改变成员的轮转资格 | 主力渠道多分点 |
 | `least_used` | 优先给当前挂载对话最少的成员 | 成员额度不等 |
 | `random` | 随机 | 无特殊要求 |
 | `priority` | 永远取池序里第一个可用渠道,主渠道不可用才落到下一个 | 主备降级 |
 
-冷却中的成员不参与挑选;全池都不可用时退回全量候选(宁可再试也不死锁),请求照常发出。
-冷却只影响挑选顺序,**不会拒绝请求**(见第 5 节)。
+渠道和 Key 均不再进行时间冷却。失败不改变后续请求的成员选择;普通重试仍受次数、间隔与总预算约束。
 
 ### 渠道字段
 
@@ -138,12 +137,12 @@ Anthropic `has_more` / `last_id` 分页通过同一端点的 `after_id` 继续�
 显式改绑与覆盖也会改变落点。
 
 相关变量:`MIXR_SESSION_TTL_MIN`(默认 720)、`MIXR_SESSION_MAX`(1000)、
-`MIXR_COOLDOWN_SEC`(60)、`MIXR_MAX_ATTEMPTS`(10)、`MIXR_SESSION_LABEL=0`。
+`MIXR_MAX_ATTEMPTS`(10)、`MIXR_SESSION_LABEL=0`。
 
 ### 手动钉定与解绑
 
 - **手动改绑(钉定)**压过策略,且允许指定池外的渠道;`POST /api/sessions/:key/pin`
-  传空 `provider` = 解除钉定,下次请求重新按策略分配。钉定会清掉该渠道的冷却。
+  传空 `provider` = 解除钉定,下次请求重新按策略分配。
 - 钉定属于**显式配置**,不会被空闲 TTL 或容量上限自动回收;代价是长跑实例里会长期留在
   会话表,受 `MIXR_SESSION_MAX` 约束。
 - **解除钉定**只清钉定,保留这条会话的 Key / 槽位覆盖;
@@ -325,7 +324,7 @@ Claude Code / Codex 的全局槽位表存在 `<MIXR_DATA_DIR>/slots.json`(`{vers
 
 ---
 
-## 5. 上游健康:超时、冷却、重试
+## 5. 上游健康:超时、重试
 
 已知 Azure 输出项资源绑定错误使用协议限定投影:只有不含服务器历史引用、工具类型配对完整的
 原生 Responses input 才移除受支持的 message/reasoning/function_call `id`,保持 `call_id`、
@@ -344,12 +343,10 @@ Claude Code / Codex 的全局槽位表存在 `<MIXR_DATA_DIR>/slots.json`(`{vers
   `MIXR_STREAM_IDLE_TIMEOUT_MS`(流式两次数据之间的最大间隔)、
   `MIXR_NONSTREAM_TOTAL_TIMEOUT_MS`(非流式从头到 body 结束)。
   另有 `MIXR_TOTAL_DEADLINE_MS` 作端到端总预算。
-- **冷却**:429/5xx/连不上 → 打冷板凳 `MIXR_COOLDOWN_SEC`(默认 60 秒),冷却期内不被选中。
-  4xx 算 rejected:它证明渠道连通,只是这次请求有问题,处理和 5xx 一样——只进冷却。
+- **不设冷却**:429、4xx、5xx 与网络失败均不建立渠道或 Key 的禁用时间。旧 `MIXR_COOLDOWN_SEC` 参数不再生效。
 - **重试**:一次请求最多打 `MIXR_MAX_ATTEMPTS` 次上游(默认 10),每次重试前等待
   `MIXR_RETRY_DELAY_MS`(默认 1000,范围 0–60000 毫秒)。同一个渠道也会被重复尝试,
-  `MIXR_MAX_ATTEMPTS` 封顶的是**上游调用次数**,不是候选渠道数。冷却中的渠道通常不参与挑选;
-  全池都不可用时退回全量候选,请求照常发出,不会因为冷却被拒绝。
+  `MIXR_MAX_ATTEMPTS` 封顶的是**上游调用次数**,不是候选渠道数。失败后的渠道仍可参与后续请求,不需要等待恢复。
 - **端到端总预算优先**:`MIXR_TOTAL_DEADLINE_MS` 用尽后不再重试,在途请求按超时收尾。
 - **错误分型** `err_class`:`authentication`(401/403)、`rate_limit`(429)、
   `upstream_server`(5xx)、`upstream_request`(其余 4xx)、`timeout`、网络错误码、
@@ -357,9 +354,12 @@ Claude Code / Codex 的全局槽位表存在 `<MIXR_DATA_DIR>/slots.json`(`{vers
   `err_class` + `failover` 标记。
 - **客户端断开**(取消/进程退出):代理立刻掐掉在途的上游请求,落一条 `err_class: cancelled`
   的日志(状态 499),**不算**渠道失败。
-- **只读健康视图** `GET /api/health`:三段超时、重试与冷却配置,以及每个渠道的
+- **只读健康视图** `GET /api/health`:三段超时与重试配置,以及每个渠道的
   `{provider, app, enabled, eligible, cooldown_until}`。`eligible` 是此刻是否可被挑选,
-  `cooldown_until` 是冷却截止时间,不在冷却时为 `0`。
+  `cooldown_until` 为旧客户端保留,恒为 `0`;`settings.cooldown_ms` 同样恒为 `0`。
+- **其他兼容字段**:`GET /api/state` 的 `cooldowns` 恒为空数组、`cooldown_s` 恒为 `0`;
+  会话列表每条记录的 `cooldown` 恒为 `false`;`/api/keys/health` 每行的 `until` 恒为 `0`
+  (`state` 只有 `failed`,成功即删除该行)。这些字段不再参与任何挑选或重试决定。
 
 已知限制:流式响应被掐断时只结束连接,**不补发**协议内 error 事件,客户端看到的是截断的
 SSE。一次请求的上游调用总上界是 `MIXR_MAX_ATTEMPTS` + `MIXR_CONV_RETRIES`(默认 13);
@@ -449,7 +449,7 @@ echo '{"app":"claude","model":"m","context":{"bodyText":"…"}}' | ./mixctl expl
 - **只解释当前快照,不是承诺**。首选渠道是"此刻这条请求会落到哪",不保证上游成功,
   也不代表重试之后的落点。`random` 策略只给候选、不预测;`round_robin`/`weighted` 给的是
   当前游标下的下一位,预览不消耗它们。
-- **零副作用**。不写日志、不建会话、不动冷却表、不发上游请求、不改槽位与游标;
+- **零副作用**。不写日志、不建会话、不发上游请求、不改槽位与游标;
   已有会话粘性与 `least_used` 计数都在副本上重算。
 - **不回显敏感内容**。渠道字段走白名单(`id/name/model/models/wire_api/ua/enabled/slots`),
   `base_url`、`api_key`、`keys`、`active_key`、请求头原文一律不出现;`when.token`
@@ -688,7 +688,7 @@ require 之后再改不生效。
 | `MIXR_STREAM_IDLE_TIMEOUT_MS` | 90000 | 流式两次数据之间的最大间隔 |
 | `MIXR_NONSTREAM_TOTAL_TIMEOUT_MS` | 180000 | 非流式响应从头到 body 结束 |
 | `MIXR_SSE_KEEPALIVE_MS` | 15000 | 已提交给客户端的流补 SSE 注释的间隔;`0` 关掉 |
-| `MIXR_COOLDOWN_SEC` | 60 | 429/5xx 打冷板凳的时长 |
+| `MIXR_COOLDOWN_SEC` | 不再生效 | 历史参数;渠道与 Key 已移除时间冷却 |
 | `MIXR_MAX_ATTEMPTS` / `MIXR_CONV_RETRIES` | 10 / 3 | 一次请求最多打多少次上游(同一渠道也会被重复尝试)/ 同渠道内换 cache 代际重试次数 |
 | `MIXR_RETRY_DELAY_MS` | 1000 | 每次重试前的等待毫秒数(0–60000) |
 | `MIXR_SESSION_TTL_MIN` / `MIXR_SESSION_MAX` | 720 / 1000 | 会话绑定空闲失效时间(分钟)/ 会话表上限 |

@@ -24,7 +24,7 @@ let online = false, lastSync = null, refreshTask = null, activeDialog = null, re
 let codexSlotRevision = 0;
 let codexCompactDraft = null, codexCompactEditRevision = 0, savingCodexCompact = false, codexCompactLoadTask = null, codexCompactLoadSequence = 0;
 let codexCompactError = '', codexCompactMessage = '', codexCompactStateRevision = 0, codexCompactReadError = '';
-// /api/health 的最近一次只读快照(渠道页的冷却/可用性徽标与设置页共用)。它是**独立**的一次
+// /api/health 的最近一次只读快照(渠道页的可用性徽标与设置页共用)。它是**独立**的一次
 // fetch:读失败只让徽标与设置页那一块显示"未读取",绝不阻断 /api/state 的整页刷新。
 let liveHealth = null, healthError = '', healthTask = null;
 const providerGroup = () => curApp === 'zcode' ? (zcodeWire === 'anthropic' ? 'claude' : 'codex') : curApp;
@@ -150,7 +150,7 @@ function renderOverview() {
   $('metric-tokens').textContent = stats.inTok == null || stats.outTok == null ? '—' : fmtTok(stats.inTok + stats.outTok);
   $('metric-tokens-hint').textContent = `输入 ${fmtTok(stats.inTok)} / 输出 ${fmtTok(stats.outTok)}`;
   $('metric-sessions').textContent = state.sessions?.length ?? '—';
-  $('metric-sessions-hint').textContent = `${state.cooldowns?.length ?? 0} 个渠道冷却中 · 按协议归组`;
+  $('metric-sessions-hint').textContent = '按协议归组 · 失败后仍可重试';
   for (const app of Object.keys(APPS)) {
     const count = app === 'zcode' ? ps.length : providers(app).length;
     $('count-' + app).textContent = count;
@@ -300,7 +300,6 @@ function overviewTodo() {
   const ps = allProviders();
   const disabledProviders = ps.filter(p => p.enabled === false);
   const disabledKeys = ps.flatMap(p => (p.keys || []).filter(k => k.enabled === false).map(k => ({ provider: p, key: k })));
-  const cooldowns = state.cooldowns || [];
   // 路由里的僵尸引用:池成员或单选目标指向已删除的渠道。主入口启动时也会告警,
   // 但真正致命的是"命中即 503",用户得在界面上看得见、能跳去改。
   const ghosts = [];
@@ -314,7 +313,6 @@ function overviewTodo() {
 
   if (disabledProviders.length) items.push({ text: `${disabledProviders.length} 个渠道已停用：${disabledProviders.map(p => p.name).join('、')}`, view: 'providers', action: '去渠道与 Key' });
   if (disabledKeys.length) items.push({ text: `${disabledKeys.length} 把 Key 已停用：${disabledKeys.map(({ provider, key }) => `${provider.name} · ${key.label || key.id}（${key.id}）`).join('、')}`, view: 'providers', action: '去渠道与 Key' });
-  if (cooldowns.length) items.push({ text: `${cooldowns.length} 个渠道冷却中：${cooldowns.map(c => c.name || c.provider).join('、')}`, view: 'providers', action: '去渠道与 Key' });
   if (ghosts.length) items.push({ text: `路由里有失效引用，命中即 503：${ghosts.join('；')}`, view: 'routes', action: '去路由' });
   if (staleSessions) items.push({ text: `${staleSessions} 个会话的 Key / 槽位覆盖里存在已失效的引用`, view: 'sessions', action: '去会话' });
 
@@ -346,7 +344,7 @@ function renderOverviewPage() {
   $('ov-reqs').textContent = fmtTok(stats.reqs);
   $('ov-tokens').textContent = `输入 ${fmtTok(stats.inTok)} / 输出 ${fmtTok(stats.outTok)}`;
   $('ov-sessions').textContent = state.sessions?.length ?? '—';
-  $('ov-cooldowns').textContent = `${state.cooldowns?.length ?? 0} 个渠道冷却中`;
+  $('ov-cooldowns').textContent = '按协议归组 · 失败后仍可重试';
 
   $('overview-todo').innerHTML = overviewTodo();
 
@@ -467,9 +465,8 @@ function renderProviders() {
   if ($('liveinfo').innerHTML !== liveHtml && !$('liveinfo').contains(document.activeElement))
     $('liveinfo').innerHTML = liveHtml;
   const lv = state.live?.[curApp], curId = state.current?.[curApp];
-  // 冷却与可用性按渠道 id 索引一次,卡片里按 id 取。两者都只读:
-  // 冷却来自 /api/state(会话页也在用),可用性来自 /api/health(liveHealth,可能还没回来或读失败)。
-  const cooldownById = new Map((state.cooldowns || []).map(c => [c.provider, c]));
+  // 可用性按渠道 id 索引一次,卡片里按 id 取。只读,来自 /api/health
+  // (liveHealth 可能还没回来或读失败;冷却已移除,/api/state 的 cooldowns 恒为空表)。
   const healthById = new Map((liveHealth?.providers || []).map(h => [h.provider, h]));
   let warning = '';
   if (isZcode && !zcodeSupported()) warning = '当前后端尚未提供 ZCode 集成状态，已禁用接入操作以免旧接口误写其他客户端。共享渠道仍可管理；请接入支持 ZCode 的后端后重试。';
@@ -477,9 +474,8 @@ function renderProviders() {
   else if (online && lv && curId && lv.match === false) warning = `${APPS[curApp].label} 配置与库内选择不一致。${isZcode ? '可重新「接入 ZCode」或「接入路由」，然后在模型选择器选择对应模型。' : '可通过渠道「重新写入」或重新启用路由模式恢复，写入前自动备份。'}`;
   $('drift-banner').classList.toggle('show', !!warning); $('drift-text').textContent = warning;
   // 健康端点挂了不能把整页拖垮:读不到就只显示一句"健康状态未读取",其余卡片照常渲染。
-  // 冷却徽标来自 /api/state,与健康端点无关,所以它不受这一条影响。
   $('prov-health').hidden = !!liveHealth;
-  $('prov-health').textContent = liveHealth ? '' : (healthError ? `健康状态未读取（${healthError}）：渠道可用性暂时不可用，冷却状态仍然准确。` : '健康状态尚未读取；进入「设置与备份」页可读取渠道可用性。');
+  $('prov-health').textContent = liveHealth ? '' : (healthError ? `健康状态未读取（${healthError}）：渠道可用性暂时不可用。` : '健康状态尚未读取；进入「设置与备份」页可读取渠道可用性。');
   const html = shown.map(p => {
     const isCur = curId === p.id, drift = isCur && lv?.match === false;
     const verified = online && !lv?.error && isCur && lv?.match === true && !lv.router;
@@ -494,12 +490,10 @@ function renderProviders() {
     // 只报 label 与 id —— 明文 Key 从不进入任何渲染路径(见 renderKeyDraft 的密码框与卡片下拉)。
     const keys = p.keys || [];
     const deadKeys = keys.filter(k => k.enabled === false);
-    const cool = cooldownById.get(p.id);
     const hp = healthById.get(p.id);
     const healthBits = [];
-    if (cool) healthBits.push(`<span class="badge drift" title="冷却中">冷却至 ${esc(new Date(cool.until).toLocaleTimeString('zh-CN', { hour12: false }))}</span>`);
     // enabled !== false 才算可用:渠道停用或按健康快照不可达都会让池跳过它,提前说出来免得用户以为它在用
-    if (hp && hp.eligible === false && !cool && p.enabled) healthBits.push('<span class="badge off" title="按健康状态不可用">暂不可用</span>');
+    if (hp && hp.eligible === false && p.enabled) healthBits.push('<span class="badge off" title="按健康状态不可用">暂不可用</span>');
     // 卡片分四块:身份(头像 + 名称 + 状态徽标)、内容(地址/协议/模型/告警)、账号与测试结果、
     // 动作。旧类名 .card/.top/.foot/.tags 保留,新增的 provider-* 只负责分区;动作按钮与 data-*
     // 原样不动,样式层按这套区块做 grid/list 两种排布。
@@ -1876,14 +1870,12 @@ function renderSessions() {
   const pinned = list.filter(s => boundSourceOf(boundOf(s)) === 'manual').length;
   const withRouting = list.filter(s => routingDescribeOf(groupOfSession(s), s.routing).length).length;
   const mismatched = list.filter(s => actualDiffers(s)).length;
-  const cool = state.cooldowns || [];
   $('sess-chips').innerHTML = [
     ['活跃对话', list.length],
     ['Anthropic / OpenAI', `${all.filter(s => (s.app || 'claude') === 'claude').length} / ${all.filter(s => s.app === 'codex').length}`],
     ['手动钉定', pinned],
     ['实际 ≠ 绑定', mismatched],
     ['会话级 Key / 槽位', withRouting],
-    ['冷却中渠道', cool.length],
   ].map(([k, v]) => `<div class="chip">${k}<b>${esc(String(v))}</b></div>`).join('');
 
   $('sess-body').innerHTML = list.map(s => {
@@ -1905,7 +1897,6 @@ function renderSessions() {
             <label class="field" for="session-${esc(s.short)}">仅用于非槽位、非内容分流请求<select id="session-${esc(s.short)}" class="pin-sel" onchange="pinSession(${handlerArg(s.key)}, this.value)" ${!online ? 'disabled' : ''}>
               <option value="" ${b.provider ? '' : 'selected'}>(未绑定)</option>${opts}</select></label>
             <div class="bind-src"><span class="badge ${srcCls}">${srcText}</span></div>
-            ${s.cooldown ? '<div class="cool">⚠ 渠道冷却中</div>' : ''}
             ${hasPool ? '' : '<div class="rt-note">不在任何池内</div>'}
           </details></td>
       <td>${actualCell(s, b)}</td>
@@ -2542,7 +2533,7 @@ function routingCell(s) {
 // ---------------- 设置与备份(只读) ----------------
 // 这一页把后端早就存在、前端此前零引用的四个端点接出来。四条都是**只读**:
 //   /api/backups        备份清点(只有文件名/大小/时间/摘要,响应里没有任何配置正文或密钥)
-//   /api/health         渠道冷却/可用性与超时、重试配置
+//   /api/health         渠道可用性与超时、重试配置(cooldown_* 是兼容旧客户端的恒 0 字段)
 //   /api/routing/preview 路由解释(预测,不消耗游标、不写绑定)
 //   /api/metrics        Prometheus 文本,可导出
 // 全部走 api(),不新增任何写请求。这里没有任何"恢复"入口:真正的恢复写入不在本期。
@@ -2588,15 +2579,15 @@ async function loadHealth() {
       ['总预算(ms)', s.total_deadline_ms], ['首字节(ms)', s.first_header_timeout_ms],
       ['流式首字节(ms)', s.stream_first_header_timeout_ms], ['流式空闲(ms)', s.stream_idle_timeout_ms],
       ['非流式总超时(ms)', s.nonstream_total_timeout_ms], ['最大尝试', s.max_attempts],
-      ['单请求上游调用上界', s.max_upstream_calls], ['冷却(ms)', s.cooldown_ms],
+      ['单请求上游调用上界', s.max_upstream_calls],
       ['重试间隔(ms)', s.retry_delay_ms],
     ].filter(([, v]) => v !== undefined);
     $('health-body').innerHTML = `<dl class="config-facts">${facts.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(String(v))}</dd></div>`).join('')}</dl>`
       + (Array.isArray(h.providers) && h.providers.length
-        ? `<div class="table-wrap"><table><caption class="sr-only">各渠道可用性</caption><thead><tr><th scope="col">渠道</th><th scope="col">协议组</th><th scope="col">启用</th><th scope="col">可用</th><th scope="col">冷却至</th></tr></thead><tbody>${h.providers.map(p => `<tr><td class="mono">${esc(p.provider)}</td><td>${esc(p.app || '')}</td><td>${p.enabled ? '是' : '否'}</td><td>${p.eligible ? '是' : '否'}</td><td class="mono">${p.cooldown_until ? esc(new Date(p.cooldown_until).toLocaleTimeString('zh-CN', { hour12: false })) : '—'}</td></tr>`).join('')}</tbody></table></div>`
+        ? `<div class="table-wrap"><table><caption class="sr-only">各渠道可用性</caption><thead><tr><th scope="col">渠道</th><th scope="col">协议组</th><th scope="col">启用</th><th scope="col">可用</th></tr></thead><tbody>${h.providers.map(p => `<tr><td class="mono">${esc(p.provider)}</td><td>${esc(p.app || '')}</td><td>${p.enabled ? '是' : '否'}</td><td>${p.eligible ? '是' : '否'}</td></tr>`).join('')}</tbody></table></div>`
         : '');
     box.textContent = '已读取;这是各渠道当前可用性视图,不改任何状态。';
-    // 渠道页的卡片也要跟着更新(冷却/可用性徽标);拿不到健康不影响卡片渲染。
+    // 渠道页的卡片也要跟着更新(可用性徽标);拿不到健康不影响卡片渲染。
     if (view === 'providers') renderProviders();
   } catch (e) {
     liveHealth = null; healthError = e.message;
@@ -2631,7 +2622,7 @@ async function loadPreview() {
         <div><dt>命中规则</dt><dd>${esc(m.ruleId || '未命中(走默认路由)')}</dd></div>
         <div><dt>分配策略</dt><dd>${esc(m.strategy || '未提供')}</dd></div>
         <div><dt>预测首选</dt><dd>${esc(chosen || '无法确定(如随机策略)')}</dd></div></dl>`
-      + (cands.length ? `<div class="table-wrap"><table><caption class="sr-only">候选渠道</caption><thead><tr><th scope="col">候选</th><th scope="col">模型</th><th scope="col">协议</th><th scope="col">可用</th></tr></thead><tbody>${cands.map(c => `<tr><td class="mono">${esc(c.providerName || c.providerId)}</td><td class="mono">${esc(c.model || '透传')}</td><td>${esc(c.wire || '')}</td><td>${c.eligible ? '是' : (c.cooldown ? '冷却中' : '否')}</td></tr>`).join('')}</tbody></table></div>` : '<p class="hint">没有候选渠道。</p>')
+      + (cands.length ? `<div class="table-wrap"><table><caption class="sr-only">候选渠道</caption><thead><tr><th scope="col">候选</th><th scope="col">模型</th><th scope="col">协议</th><th scope="col">可用</th></tr></thead><tbody>${cands.map(c => `<tr><td class="mono">${esc(c.providerName || c.providerId)}</td><td class="mono">${esc(c.model || '透传')}</td><td>${esc(c.wire || '')}</td><td>${c.eligible ? '是' : '否'}</td></tr>`).join('')}</tbody></table></div>` : '<p class="hint">没有候选渠道。</p>')
       + (Array.isArray(res.warnings) && res.warnings.length ? `<ul class="config-warnings">${res.warnings.map(w => `<li>${esc(w.message || w.code)}</li>`).join('')}</ul>` : '');
     box.textContent = res.ok ? '解释完成。'
       : `暂无可用落点：${esc((res.error && res.error.message) || '没有候选渠道')}`;

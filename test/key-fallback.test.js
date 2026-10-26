@@ -7,7 +7,14 @@ const { createKeyFallback } = require('../lib/routing/key-fallback');
 function fixture(options = {}) {
   let clock = 1_000_000;
   const fb = createKeyFallback({ now: () => clock, cooldownMs: 60000, maxEntries: 1000, ...options });
-  return { fb, advance: ms => { clock += ms; }, at: () => clock };
+  const failedKeys = new Set();
+  for (const method of ['select', 'failure']) {
+    const original = fb[method];
+    fb[method] = input => original({ failedKeys, ...input });
+  }
+  const success = fb.success;
+  fb.success = input => { const result = success(input); failedKeys.clear(); return result; };
+  return { fb, advance: ms => { clock += ms; failedKeys.clear(); }, at: () => clock };
 }
 
 const provider = (over = {}) => ({
@@ -41,23 +48,23 @@ test('默认关闭:所有入口原样返回,不记录状态', () => {
   assert.equal(fb.select({}), undefined);
 });
 
-test('单 Key 渠道:不换号,冷却期如实报告等待时间', () => {
+test('单 Key 渠道:不换号,失败后没有冷却等待', () => {
   const { fb, advance } = fixture();
   const p = provider({ keys: [{ id: 'k1', key: 'secret-1' }] });
   const c = choice(p);
   assert.equal(fb.select({ provider: p, keyChoice: c, sessionKey: 's1', model: 'm' }), c);
   const out = fb.failure({ provider: p, key_id: 'k1', model: 'm', status: 401 });
-  assert.deepEqual(out, { switchable: false, scope: 'account', wait_ms: 60000 });
+  assert.deepEqual(out, { switchable: false, scope: 'account', wait_ms: 0 });
   const cooling = fb.select({ provider: p, keyChoice: c, sessionKey: 's1', model: 'm' });
   assert.equal(cooling.key_id, 'k1');
-  assert.equal(cooling.fallback.reason, 'all_cooling');
-  assert.equal(cooling.fallback.wait_ms, 60000);
-  assert.deepEqual(fb.list().map(r => [r.key_id, r.state, r.scope]), [['k1', 'cooling', 'account']]);
+  assert.equal(cooling.fallback.reason, 'all_failed');
+  assert.equal(cooling.fallback.wait_ms, 0);
+  assert.deepEqual(fb.list().map(r => [r.key_id, r.state, r.scope]), [['k1', 'failed', 'account']]);
   advance(60000);
   assert.equal(fb.select({ provider: p, keyChoice: c, sessionKey: 's1', model: 'm' }), c);
 });
 
-test('401 凭据错误:账号级冷却,下一次尝试换到健康 Key,不改 active_key', () => {
+test('401 凭据错误:本请求换到备用 Key,不改 active_key', () => {
   const { fb } = fixture();
   const p = provider();
   const before = structuredClone(p);
@@ -79,12 +86,12 @@ test('401 凭据错误:账号级冷却,下一次尝试换到健康 Key,不改 ac
 
   const row = fb.list().find(r => r.key_id === 'k1');
   assert.equal(row.scope, 'account');
-  assert.equal(row.state, 'cooling');
+  assert.equal(row.state, 'failed');
   assert.equal(row.status, 401);
   assert.ok(!JSON.stringify(fb.list()).includes('secret-'));
 });
 
-test('402 额度耗尽:同样账号级;全 Key 冷却时给出最早可用时间', () => {
+test('402 额度耗尽:本请求跳过失败账号;全 Key 失败时不等待', () => {
   const { fb } = fixture();
   const p = provider();
   const c = choice(p);
@@ -98,13 +105,13 @@ test('402 额度耗尽:同样账号级;全 Key 冷却时给出最早可用时间
   fb.failure({ provider: p, key_id: 'k3', model: 'm', status: 402 });
   const last = fb.failure({ provider: p, key_id: 'k3', model: 'm', status: 402 });
   assert.equal(last.switchable, false);
-  assert.equal(last.wait_ms, 60000);
+  assert.equal(last.wait_ms, 0);
   const all = fb.select({ provider: p, keyChoice: c, sessionKey: 's1', model: 'm' });
-  assert.equal(all.fallback.reason, 'all_cooling');
-  assert.ok(all.fallback.wait_ms > 0 && all.fallback.wait_ms <= 60000);
+  assert.equal(all.fallback.reason, 'all_failed');
+  assert.equal(all.fallback.wait_ms, 0);
 });
 
-test('403/404 只做模型级冷却:同账号换模型仍可用,不能断言账号全坏', () => {
+test('403/404 只在本请求排除对应模型,同账号换模型仍可用', () => {
   const { fb } = fixture();
   const p = provider();
   const c = choice(p);
@@ -124,24 +131,24 @@ test('403/404 只做模型级冷却:同账号换模型仍可用,不能断言账�
   }
 });
 
-test('429 使用 Retry-After 并按模型级记账,总预算由调度层决定', () => {
+test('429 记录模型级失败,Retry-After 不建立冷却或等待', () => {
   const { fb, advance } = fixture();
   const p = provider({ keys: [{ id: 'k1', key: 'secret-1' }, { id: 'k2', key: 'secret-2' }] });
   const c = choice(p);
   fb.select({ provider: p, keyChoice: c, sessionKey: 's1', model: 'm' });
   assert.deepEqual(fb.failure({ provider: p, key_id: 'k1', model: 'm', status: 429, retryAfterMs: 5000 }),
     { switchable: true, scope: 'model', wait_ms: 0 });
-  assert.equal(fb.list()[0].until, 1_000_000 + 5000);
+  assert.equal(fb.list()[0].until, 0);
   const switched = fb.select({ provider: p, keyChoice: c, sessionKey: 's1', model: 'm' });
   assert.equal(switched.key_id, 'k2');
-  assert.equal(fb.failure({ provider: p, key_id: 'k2', model: 'm', status: 429, retryAfterMs: 3000 }).wait_ms, 3000);
+  assert.equal(fb.failure({ provider: p, key_id: 'k2', model: 'm', status: 429, retryAfterMs: 3000 }).wait_ms, 0);
   advance(3000);
-  assert.equal(fb.select({ provider: p, keyChoice: c, sessionKey: 's1', model: 'm' }).key_id, 'k2');
+  assert.equal(fb.select({ provider: p, keyChoice: c, sessionKey: 's1', model: 'm' }).key_id, 'k1');
 
-  // Retry-After 缺失/非法时退回统一冷却窗口
+  // Retry-After 缺失或非法都不产生截止时间
   const { fb: noHeader } = fixture();
   noHeader.failure({ provider: p, key_id: 'k1', model: 'm', status: 429, retryAfterMs: 'nope' });
-  assert.equal(noHeader.list()[0].until, 1_000_000 + 60000);
+  assert.equal(noHeader.list()[0].until, 0);
 });
 
 test('网络错误与 5xx 不轮换 Key、不误伤账号', () => {
@@ -205,7 +212,7 @@ test('会话粘性按 provider+session 隔离,不同会话互不影响', () => {
   assert.equal(fb.select({ provider: p, keyChoice: c, sessionKey: 's2', model: 'm' }).key_id, 'k2');
   fb.success({ provider: p, key_id: 'k2', model: 'm', sessionKey: 's1' });
   assert.equal(fb.select({ provider: p, keyChoice: c, sessionKey: 's1', model: 'm' }).key_id, 'k2');
-  // s2 没成功过,k1 冷却结束后回到自己的 active Key
+  // s2 没成功过:新实例里回到自己的 active Key
   const { fb: other } = fixture();
   other.select({ provider: p, keyChoice: c, sessionKey: 's2', model: 'm' });
   assert.equal(other.select({ provider: p, keyChoice: c, sessionKey: 's2', model: 'm' }), c);
@@ -282,9 +289,9 @@ test('粘性按完整会话键区分:前 N 字符相同的两个会话绝不互�
 
   // B 会话从未换过号:它不得继承 A 的粘性账号。截断实现下 B 会读到 A 的粘性并
   // 报 reason:'sticky';正确实现下它是自己挑的(reason:'fallback')。
-  const bChoice = fb.select({ provider: p, keyChoice: c, sessionKey: b, model: 'm' });
+  const bChoice = fb.select({ provider: p, keyChoice: c, sessionKey: b, model: 'm', failedKeys: new Set() });
   assert.notEqual(bChoice.fallback && bChoice.fallback.reason, 'sticky');
-  assert.equal(bChoice.fallback && bChoice.fallback.reason, 'fallback');
+  assert.equal(bChoice, c);
 });
 
 test('渠道之间状态隔离,渠道停用时不换 Key', () => {

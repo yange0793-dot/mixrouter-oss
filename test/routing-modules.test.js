@@ -375,10 +375,10 @@ test('resolveTarget:槽位备池按自己的策略选择,不复用对话粘性�
   }
 });
 
-test('会话 store:cooldowns 可整表替换,pools 可整体作废,sessions setter 拒收非 Map', () => {
+test('会话 store:旧冷却接口无效,pools 可整体作废,sessions setter 拒收非 Map', () => {
   const { store } = mkStore({ claude: [{ id: 'pa' }] });
   store.markCooldown('pa');
-  assert.equal(store.inCooldown('pa'), true);
+  assert.equal(store.inCooldown('pa'), false);
   store.markCooldown('');
   assert.equal(store.inCooldown(''), false);
   store.cooldowns = {};

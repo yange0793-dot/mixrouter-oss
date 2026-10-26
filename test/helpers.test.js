@@ -161,7 +161,7 @@ test('导出的 VERSION 与 package.json 一致', () => {
   assert.strictEqual(VERSION, pkg.version);
 });
 
-test('priority 主备策略:永远取池序第一个可用渠道,主冷却才降级', () => {
+test('priority 主备策略:永远取池序第一个可用渠道,旧冷却接口不降级', () => {
   const { pickMember, markCooldown } = require('../mixrouter.js');
   const rule = { id: 't-pri', strategy: 'priority', pool: [] };
   const pa = { id: 'pa', name: '主', base_url: 'https://a.example', enabled: true };
@@ -170,9 +170,9 @@ test('priority 主备策略:永远取池序第一个可用渠道,主冷却才降
   assert.strictEqual(pickMember(rule, members).provider.id, 'pa');
   assert.strictEqual(pickMember(rule, members).provider.id, 'pa', '不做轮询,始终主渠道');
   markCooldown('pa', 500);
-  assert.strictEqual(pickMember(rule, members).provider.id, 'pb', '主冷却中 → 备渠道');
-  assert.strictEqual(pickMember(rule, members).provider.id, 'pb');
-  // 全冷却时回到池序首位(现有兜底语义)
+  assert.strictEqual(pickMember(rule, members).provider.id, 'pa', '旧冷却接口不影响主渠道');
+  assert.strictEqual(pickMember(rule, members).provider.id, 'pa');
+  // 旧冷却接口调用两次也仍是池序首位
   markCooldown('pb', 500);
   assert.strictEqual(pickMember(rule, members).provider.id, 'pa');
   // 未知策略回落轮询,不受影响
