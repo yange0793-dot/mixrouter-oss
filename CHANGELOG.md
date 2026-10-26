@@ -56,9 +56,26 @@
   移除受支持的 item ID,保留工具配对、推理和其余请求字段;重复故障只在原预算内重发
   同一投影。含服务器历史引用、`/responses/compact`、普通 400 与未知协议签名不猜测性改写。
 - 原生 Responses 日志记录实际发送的推理档位;恢复成功后清理此前失败的错误分类。
+- Codex 经 Chat 上游收到 HTTP 200 SSE 的明确临时错误时,在输出前用最多 64KiB 的严格空
+  chunk 前缀门控恢复;延迟合成 `response.created`,避免转换器先输出而封死透明重试。
+  同落点重发共用既有次数与总时限,日志记 `retry_reason: chat_preoutput_retry`;
+  未知字段、部分帧、压缩前缀及已输出内容不重放,不删除 `response_format` 绕过格式限制。
+- Responses → Chat 回放可读推理时优先用 `content`,无可读 content 才回退 `summary`;
+  连续推理累积,空项或纯密文项不擦除已有可读内容,关联到 assistant 正文与同响应工具。
+  新 reasoning 不覆盖此前 assistant 的推理,用户/system/developer/工具结果边界清空关联。
+  只有密文的历史不能还原成 DeepSeek 明文,不伪造推理或补空字段;协议或格式不兼容仍失败。
+- Chat SSE 中不可恢复的 `data.error` 译为 Responses `failed` 终态,保留原 message 及字符串/
+  数字 code,缺少 code 才回退 `upstream_stream_error`,不冒称 `completed`。
 
 #### 新增
 
+- 官方 AgentRouter HTTPS 的原生 Responses 支持一次性加密 reasoning 有损降级:
+  仅在尚未输出、完整未压缩的 HTTP 400/2xx 错误精确匹配 `invalid_encrypted_content`、且完整
+  内联历史通过严格校验时,移除 reasoning 的密文及该项自身 `id`,保留可读推理和所有其他项
+  ID,省略纯密文项。重试共用现有次数与总时限,保持渠道、模型、Key 和会话身份;
+  响应带 `x-mixrouter-recovery: encrypted-reasoning-dropped`,日志记
+  `retry_reason: encrypted_reasoning_downgrade`。鉴权、额度耗尽、上下文长度错误、未知/不完整
+  历史或混合输出不触发降级,已输出内容不重放。这不是解密,未接入客户端 turn 自动续跑。
 - Codex 页面接入自动压缩阈值,支持自定义 token 数、`k` / `m` 和恢复模型默认;
   只改全局 `model_auto_compact_token_limit`,保留模型、推理强度、窗口和其它原生配置。
   保存前备份并检查 revision,默认/有效阈值按已同步目录与显式窗口推算,已知上限为窗口的 90%;
@@ -136,6 +153,8 @@
 
 #### 未验证范围
 
+- 请求内恢复与可读推理转换不保证所有跨协议历史兼容;纯密文推理不能还原为明文。
+  未接入客户端 turn 自动续跑,也没有真实 GUI 续跑验证。
 - 接入向导、兼容测试、撤销、服务与升级、多 Key 备用只在 **macOS + Node 24** 上跑过测试与
   离线 fixture;**没有对真实上游发起生成请求**;其他平台未实跑,也没有对应的 CI 通过结论。
 

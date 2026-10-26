@@ -287,7 +287,7 @@ Claude Code / Codex 的全局槽位表存在 `<MIXR_DATA_DIR>/slots.json`(`{vers
 | --- | --- | --- |
 | Anthropic → Responses | `system→instructions`、`tool_use→function_call`、`tool_result→function_call_output`、图片→`input_image`、`max_tokens→max_output_tokens` | Responses 的 JSON/SSE 译回 `message` / `message_start…message_stop`(明文 reasoning 保留为 thinking,usage 穿过翻译层) |
 | Claude → Chat Completions | system 进首条消息、`tool_use→tool_calls`、`tool_result→role:tool`、顶层图片转 `image_url` data URI、`reasoning_content→thinking` | chat SSE 译回 Anthropic SSE;工具参数攒齐再物化;没有终态不得补 `message_stop` |
-| Responses → Chat | `instructions→system`、`developer→system`、`function_call→assistant.tool_calls`、`function_call_output→role:tool`、`reasoning` item 丢弃、自动加 `stream_options.include_usage` | chat SSE 译回 responses SSE;**首个文本 delta 之前先发 `response.output_item.added`**;工具调用整包下发 `function_call` item |
+| Responses → Chat | `instructions→system`、`developer→system`、`function_call→assistant.tool_calls`、`function_call_output→role:tool`、可读 `reasoning` 关联为 assistant 的 `reasoning_content`、自动加 `stream_options.include_usage` | chat SSE 译回 responses SSE;**首个文本 delta 之前先发 `response.output_item.added`**;工具调用整包下发 `function_call` item |
 
 几条容易踩的实现约定:
 
@@ -296,6 +296,14 @@ Claude Code / Codex 的全局槽位表存在 `<MIXR_DATA_DIR>/slots.json`(`{vers
   不能同时塞两种字段,也不能删历史 thinking 规避校验;`[1M]` 后缀不改变这个选择。
 - **Chat → Responses 用量明细完整**:JSON 与流终态始终包含 `input_tokens_details.cached_tokens`
   和 `output_tokens_details.reasoning_tokens`;缺省补 0,保留上游已报告计数与扩展字段,不从正文推算。
+- **Responses → Chat 可读推理回放**:优先读取 reasoning 的可读 `content`,没有可读 content
+  才回退到 `summary`,不把两者拼成新推理。连续 reasoning 累积为 Chat `reasoning_content`,
+  空项或纯密文项不擦除已有可读内容;推理关联到随后的 assistant 正文及同响应工具调用。
+  新 reasoning 不覆盖此前 assistant 已绑定的推理,用户/system/developer/工具结果边界重置
+  关联。`encrypted_content` 无法解密成 DeepSeek 明文,不会伪造推理或补空 `reasoning_content`
+  使上游看起来接受了完整推理历史。
+- **格式要求不绕过**:Responses `text.format` 的 JSON 格式转为 Chat `response_format`,
+  不因上游不支持就删除该字段。跨协议或格式不兼容仍如实失败,推理回放修复不保证兼容所有历史。
 - **工具定义显式写 `strict: false`**。Responses 省略 `strict` 时上游可能把 schema 规范化成
   严格模式,要求 `properties` 每个键都在 `required` 里——结果是客户端工具调用的可选参数
   从未被省略。空占位清理器删不掉非空字符串,挡不住它。
@@ -337,6 +345,35 @@ Claude Code / Codex 的全局槽位表存在 `<MIXR_DATA_DIR>/slots.json`(`{vers
 原生 Responses 的输出前连接中断、纯生命周期 EOF、明确临时错误与 HTTP408 也共用原预算
 恢复。已提交正文/推理/工具、未知/部分帧或超过 64KiB 的前缀不重放;空 completed 不改成成功
 或额外重试。恢复开始后固定出站快照,普通 HTTP 错误的已有 Key 备用/路由故障转移不受影响。
+
+**加密 reasoning 有损降级**只在官方 AgentRouter HTTPS(`agentrouter.org` 或 `ps.air-outer.com`)
+的原生 Responses 请求上启用。HTTP 400 或 2xx 响应中的错误必须精确包含
+`code: invalid_encrypted_content`,且整个错误响应完整结束、未压缩、没有正文/推理/工具输出;
+不凭部分 SSE 错误帧提前改写历史,未知字段或混合输出也不触发降级。
+请求须带可严格校验的完整内联 `input`:无服务器历史引用、压缩项或未知项,工具调用与结果
+一一配对且顺序完整。校验失败、没有加密 reasoning 或移除后无可用输入时保留原错误。
+每请求最多降级一次:仅删除 reasoning 的 `encrypted_content` 和该 reasoning 自身 `id`,
+保留其中可读的 `summary`/`content` 及所有其他项 ID;只有密文、无可读推理的项整体省略。
+这是丢弃无法使用的密文,不是解密或无损恢复,不改写客户端会话存档。
+降级重试保持渠道、模型、Key 和会话身份,与其他恢复共用已有上游调用次数及端到端总时限,
+不另开预算。降级后的响应带 `x-mixrouter-recovery: encrypted-reasoning-dropped`,请求日志记
+`retry_reason: encrypted_reasoning_downgrade`。鉴权、额度耗尽、上下文长度错误不触发这条降级;
+已提交输出、截断或压缩错误不重放。上述能力仅在当前 HTTP 请求内恢复,
+未接入 Codex/Harness 客户端 turn 自动续跑。
+
+**Codex 的 Chat 输出前恢复**在 Chat → Responses 转换前最多暂存 64KiB SSE 前缀,
+只把严格校验为空的 Chat chunk 或注释视为尚未输出。HTTP 200 SSE 内明确的临时错误
+(包括已识别的限流/服务端临时错误)可在此窗口内同落点重试,不先发送合成 `response.created`
+封死窗口;日志记 `retry_reason: chat_preoutput_retry`。输出前连接中断或仅空 chunk 后提前 EOF
+也复用此窗口。重试固定渠道、模型、Key 与出站快照,共用既有尝试次数和总时限,不另开预算。
+一旦出现正文、推理、工具、终态、未知字段、压缩内容或超过前缀上限,不丢弃这些内容来
+重放;断开/结束时仍有未完成的部分帧也不重放。鉴权、格式不兼容等终态错误不改成成功。
+
+不可恢复的 Chat SSE `data.error` 转为 Responses `failed` 终态,保留原 `message` 及字符串/
+数字 `code`;没有 code 才用 `upstream_stream_error`,不伪装为 `completed`。
+
+验证边界:上述请求内恢复与可读推理转换不保证所有跨协议历史兼容;纯密文推理不能还原为
+明文。未接入客户端 turn 自动续跑,也没有真实 GUI 续跑验证。
 
 - **三段超时**,分别独立配置:
   `MIXR_FIRST_HEADER_TIMEOUT_MS`(发请求到收到响应头)、
@@ -517,6 +554,8 @@ MIXR_DATA_DIR=/absolute/path node scripts/diagnose-upstream.js --mode provider -
 | `attempts` / `failover` | 实际网络尝试次数 / 是否发生过失败转移 |
 | `request_id` | 本进程请求 ID，可关联有界内存尝试过程；旧日志没有此字段，过程过期不补造 |
 | `err` / `err_class` | 终态错误文本 / 错误分型 |
+| `retry_reason` | 恢复重试原因;`encrypted_reasoning_downgrade` 为加密推理有损降级,`unprojected_resource_retry` 为历史不改写的资源错误重投,`chat_preoutput_retry` 为 Codex Chat 输出前重试 |
+| `resource_recovery_skipped` | 资源 ID 投影被拒绝的固定分类;不表示历史已被投影 |
 | `bytes_in` | 客户端请求体字节数(不是 token)。大上下文/带截图时可达十几 MB,而首字延迟主要由它决定 —— 上游面板只从收完请求体开始计时 |
 | `ttfb_ms` | 请求开始 → 上游首个响应头到达的毫秒数(多次尝试取最终给出响应的那一发;全部失败记到收尾)。`0` 表示没测到(如本地估算的 count_tokens) |
 | `slot` | 命中的槽位;空槽记 `none`,缺字段的旧日志记 `unknown` |

@@ -195,6 +195,19 @@ CI 结果以 [Actions](https://github.com/yange0793-dot/mixrouter-oss/actions) �
 - **资源绑定错误恢复有边界**:共用错误识别,仅对完整原生 Responses 历史安全移除输出项的资源 `id`;
   每请求最多投影一次,后续重发同一投影,保持渠道、模型、Key 与会话身份,计入现有预算。保留工具配对与加密推理,
   不把任意 400 当成可重试,不清除 Anthropic/Chat 的工具 ID 或签名,也不恢复缺失的历史。
+- **加密推理降级是有损恢复**:仅官方 AgentRouter HTTPS 的原生 Responses,在尚未输出、完整未压缩
+  错误精确匹配 `invalid_encrypted_content` 且完整内联历史通过严格校验时,每请求最多移除一次
+  reasoning 的 `encrypted_content` 及该项自身 `id`,保留可读推理和所有其他项 ID;纯密文项省略。
+  共用已有尝试次数与总时限,响应带 `x-mixrouter-recovery: encrypted-reasoning-dropped`,
+  日志记 `retry_reason: encrypted_reasoning_downgrade`。鉴权、额度耗尽、上下文长度错误不触发
+  这条降级,已输出内容不重放;这不是解密,也未接入 Codex/Harness 客户端 turn 自动续跑。
+  详见[参考手册](docs/reference.md#5-上游健康超时重试)。
+- **Codex 经 Chat 上游的恢复与转换**:HTTP 200 SSE 中明确的临时错误仅在输出前、最多 64KiB
+  且前缀通过严格空 chunk 校验时透明重试,不提前发送合成 `response.created` 关闭恢复窗口;
+  同落点、同预算,日志记 `retry_reason: chat_preoutput_retry`,已输出不重放。
+  Responses 历史中的可读推理可回传为 Chat `reasoning_content`,仅有密文的旧推理不能还原成明文。
+  不删除 `response_format` 绕过格式限制;跨协议或格式不兼容仍如实失败。
+  不保证所有跨协议历史都兼容;未接入客户端 turn 自动续跑,也没有真实 GUI 续跑验证。
 - **只绑回环,字面量 Host**:代理与控制台只接受 `127.0.0.1:端口` 或 `[::1]:端口`,
   用 `localhost` 或自定义域名访问会得到 403。写请求拒绝跨站/异源来源,代理只收
   `Content-Type: application/json` 的 POST。这些防的是浏览器页面借你的本机服务消耗 Key
