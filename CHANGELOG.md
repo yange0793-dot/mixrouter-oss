@@ -12,6 +12,9 @@
 
 #### 修复
 
+- AgentRouter 原生 Responses 的特定 HTTP 400 `Upstream rejected the request as invalid`
+  在完整内联历史校验通过后复用资源 ID 投影恢复;仅匹配明确端点与错误结构,保持模型、账号、
+  内容和预算,不把内容拦截、普通字段错误或未知渠道的 400 当成资源错误。
 - 原生 Codex 的完整内联历史允许工具结果项携带资源 `id`,Azure 跨资源恢复时一并移除,
   兼容原生推理项的 `content: null`,保留 `call_id`、工具结果、命名空间、加密推理与请求档位;历史验证拒绝时记录
   `resource_recovery_skipped` 固定分类,不再无说明地跳过恢复。用户会话存档与客户端配置不改写。
