@@ -1,8 +1,8 @@
 'use strict';
 // v3.4 上游可靠性测试:错误分型、三段超时(首字节/流式空闲/非流式总)、客户端断开收尾、
-// 4xx 冷却、重试次数与间隔、default 路由策略、加权池冷却恢复、/api/health 视图。
+// 4xx 直通、重试次数与间隔、default 路由策略、加权池比例、/api/health 视图。
 //
-// 熔断器已整体删除(渠道可用性只由冷却表决定,冷却只是软偏好),所以这里不再测开路/半开;
+// 熔断器与渠道冷却都已整体删除(失败禁用渠道的行为不存在),所以这里不再测开路/半开;
 // 原来靠"熔断开路后不再打上游"表达的意图,改由「重试次数」与「上游调用上界」直接钉住。
 // mock 上游 + 临时数据目录,不触碰真实配置与真实上游
 const { test } = require('node:test');
@@ -314,7 +314,7 @@ test('客户端中途断开:掐掉上游、记一条 cancelled,不烧后台渠�
   assert.notStrictEqual(JSON.stringify(log), before, '取消也应有日志');
 });
 
-test('4xx 非重试错误:原样透传、进冷却、分型 authentication', async () => {
+test('4xx 非重试错误:原样透传、不进冷却、分型 authentication', async () => {
   setRoutes([{ id: 'r4', match: 'opus', pool: ['p401', 'pa'], strategy: 'priority', enabled: true }]);
   const r = await callWithSession('auth-1');
   assert.strictEqual(r.status, 401, '401 应原样透传给客户端');
@@ -322,8 +322,8 @@ test('4xx 非重试错误:原样透传、进冷却、分型 authentication', asy
   assert.strictEqual(log.err_class, 'authentication');
   assert.strictEqual(log.provider, 'auth401');
   const r2 = await callWithSession('auth-2');
-  assert.strictEqual(r2.status, 200);
-  assert.strictEqual(r2.headers['x-mixrouter-provider'], 'provA', '401 渠道应进冷却,新会话落到 pa');
+  assert.strictEqual(r2.status, 401);
+  assert.strictEqual((await lastLog()).provider, 'auth401', '失败不改变后续请求的 priority 首选');
 });
 
 test('default 路由也吃配置的策略:priority 不再退回轮转', async () => {
@@ -334,26 +334,26 @@ test('default 路由也吃配置的策略:priority 不再退回轮转', async ()
   assert.strictEqual(b.headers['x-mixrouter-provider'], 'provA', 'priority 应总是取第一个可用渠道');
   _state.cooldowns = { pa: Date.now() + 60000 };
   const c = await callWithSession('def-3');
-  assert.strictEqual(c.headers['x-mixrouter-provider'], 'provB', '首选进冷却后降级到下一个');
+  assert.strictEqual(c.headers['x-mixrouter-provider'], 'provA', '旧冷却表不改变 priority 首选');
 });
 
-test('加权池:冷却中的成员退出轮转,恢复后能重新进轮转', async t => {
+test('加权池:旧冷却表不改变 3:1 轮转比例', async t => {
   setRoutes([{ id: 'rw', match: 'opus', pool: [{ provider: 'pa', weight: 3 }, { provider: 'pb', weight: 1 }], strategy: 'weighted', enabled: true }]);
-  // 每次请求前续期,不要求多次 HTTP 都在几十毫秒内完成。
-  const keepCold = () => { _state.cooldowns = { pa: Date.now() + 60000 }; };
+  // 每次请求前都写一遍旧冷却表:它必须被忽略。
+  const seedOldTable = () => { _state.cooldowns = { pa: Date.now() + 60000 }; };
   const during = [];
   for (let i = 0; i < 4; i++) {
-    keepCold();
+    seedOldTable();
     during.push((await callWithSession(`w-c-${i}`)).headers['x-mixrouter-provider']);
   }
-  assert.ok(during.every(x => x === 'provB'), '冷却期内全部落到 pb');
-  // 明确置为已过期,仍通过真实路由的到期判断恢复成员。
+  assert.equal(during.filter(x => x === 'provA').length, 3, '旧冷却表不改变 3:1 加权比例');
+  // 写成已过期的值也一样:判定恒为不在冷却。
   _state.cooldowns = { pa: Date.now() - 1 };
-  assert.strictEqual(mod.inCooldown('pa'), false, '过期时间戳必须走冷却判定的恢复分支');
+  assert.strictEqual(mod.inCooldown('pa'), false, '旧冷却判定恒为 false');
   const after = [];
   for (let i = 0; i < 8; i++) after.push((await callWithSession(`w-r-${i}`)).headers['x-mixrouter-provider']);
   const nA = after.filter(x => x === 'provA').length;
-  assert.ok(nA >= 1, `冷却过期后 pa 应重新参与轮转,实际 ${JSON.stringify(after)}`);
+  assert.ok(nA >= 1, `pa 应参与轮转,实际 ${JSON.stringify(after)}`);
 });
 
 test('上游恒失败:同一渠道被重试到调用上界,整个过程不算故障转移', async () => {
@@ -382,11 +382,11 @@ test('上游恒失败:换渠道后 failover 只为真正的转移置位', async 
   assert.strictEqual(log.attempts, 2, '一次 pbad + 一次 pa');
 });
 
-test('冷却只做软偏好:全池都在冷却时仍退回全量候选,不会 502 甩锅', async () => {
+test('旧冷却表写满也照常转发,不会 502 甩锅', async () => {
   setRoutes([{ id: 'rcd', match: 'opus', pool: ['pa', 'pb'], strategy: 'priority', enabled: true }]);
   _state.cooldowns = { pa: Date.now() + 60000, pb: Date.now() + 60000 };
   const r = await callWithSession('all-cold-1');
-  assert.strictEqual(r.status, 200, '全池冷却也要照打,冷却不是硬闸门');
+  assert.strictEqual(r.status, 200, '旧冷却表不影响转发,请求照常发出');
   assert.ok(['provA', 'provB'].includes(r.headers['x-mixrouter-provider']));
 });
 
@@ -399,7 +399,7 @@ test('/api/health:只读视图带超时/重试配置与各渠道可用性', asyn
   assert.strictEqual(j.settings.first_header_timeout_ms, 1200);
   assert.strictEqual(j.settings.stream_idle_timeout_ms, 600);
   assert.strictEqual(j.settings.nonstream_total_timeout_ms, 800);
-  assert.strictEqual(j.settings.cooldown_ms, 60000);
+  assert.strictEqual(j.settings.cooldown_ms, 0);
   assert.strictEqual(j.settings.max_attempts, 3);
   assert.strictEqual(j.settings.retry_delay_ms, 0, '本进程把重试间隔关了(见文件头),视图要如实反映');
   assert.strictEqual(j.settings.max_upstream_calls, 3 + 3);
@@ -432,9 +432,9 @@ test('/api/health:只读视图带超时/重试配置与各渠道可用性', asyn
   // 冷却中的渠道 eligible 必须是 false(cooldown_until 是它唯一的依据)
   _state.cooldowns = { pa: Date.now() + 60000 };
   const cold = JSON.parse((await rawRequest(uiPort, 'GET', '/api/health')).text).providers.find(p => p.provider === 'pa');
-  assert.strictEqual(cold.eligible, false);
-  assert.ok(cold.cooldown_until > Date.now());
-  assert.strictEqual(mod.providerEligible('pa'), false, 'providerEligible 现在等价于"不在冷却中"');
+  assert.strictEqual(cold.eligible, true);
+  assert.strictEqual(cold.cooldown_until, 0);
+  assert.strictEqual(mod.providerEligible('pa'), true, '旧冷却状态不会禁用渠道');
   _state.cooldowns = {};
   assert.strictEqual(mod.providerEligible('pa'), true);
 });

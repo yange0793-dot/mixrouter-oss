@@ -244,11 +244,11 @@ test('路由诊断:固定快照与真实转发的直接对照', async t => {
     mod._state.sessions.set('cc:disabled', binding('b', { pinned: true }));
     await compare({ expected: 'a', session: 'cc:disabled' });
   });
-  await t.test('钉定渠道冷却后回到可用成员', async () => {
+  await t.test('旧冷却表不影响渠道钉定', async () => {
     reset();
     mod._state.cooldowns.b = Date.now() + 600000;
-    mod._state.sessions.set('cc:cooldown', binding('b', { pinned: true }));
-    await compare({ expected: 'a', session: 'cc:cooldown' });
+    mod._state.sessions.set('cc:cooldown', binding('b', { pinned: true, model: 'demo' }));
+    await compare({ expected: 'b', source: 'pinned', session: 'cc:cooldown' });
   });
   await t.test('槽位请求不被会话钉定劫持', async () => {
     reset();
@@ -329,7 +329,7 @@ test('路由诊断:固定快照与真实转发的直接对照', async t => {
   });
   await t.test('random 仅一个可用成员时有确定首选', async () => {
     reset({ strategy: 'random' });
-    mod._state.cooldowns.a = Date.now() + 600000;
+    mod._state.store.claude[0].enabled = false;
     await compare({ expected: 'b' });
   });
   await t.test('random 多候选不抽签,也不把首成员说成预测', () => {

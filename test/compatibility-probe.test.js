@@ -5,8 +5,8 @@
 //   1. 六条客户端→上游协议组合(Claude→anthropic/responses/chat、Codex Responses→
 //      responses/chat、ZCode chat→chat)都真的经过 createAttempt + createAttemptRunner +
 //      createRequestContext + production dispatchResponse,而不是只打 /v1/models;
-//   2. 隔离:注入的 storeOf / markCooldown / settleRequest 一旦被调用就抛错 ——
-//      探针必须只认识本次渠道,不写会话、不触发冷却、不碰真实渠道库;
+//   2. 隔离:注入的 storeOf / settleRequest 一旦被调用就抛错 ——
+//      探针必须只认识本次渠道,不写会话、不碰真实渠道库;
 //   3. 安全与预算:没有 confirm_run 零请求、一次 test 最多 3 次上游调用、401/403 分开、
 //      断流/缺终态/错误帧分开、输出与结果有上限、结果不含 Key 或上游正文。
 //
@@ -90,10 +90,10 @@ const convGens = new Map();
 const convBase = (sessionKey, providerId) => `${providerId}-${sessionKey || 'anon'}`.replace(/[^A-Za-z0-9_-]/g, '');
 const keyFallbackCalls = [];
 
-// 注入 storeOf / markCooldown / settleRequest 的桩**故意抛错**:探针必须在 buildRunner
+// 注入 storeOf / settleRequest 的桩**故意抛错**:探针必须在 buildRunner
 // 里用隔离版本覆盖它们。任何一条被调用都说明隔离失效,测试会直接红。
 function attemptDepsFixture() {
-  // 真实 keyFallback 实例是进程内的健康/冷却/粘性状态表:探针只要碰一次,用户的真实
+  // 真实 keyFallback 实例持有进程内的失败诊断与粘性状态:探针只要碰一次,用户的真实
   // 请求就可能被换号或误恢复。这里留一个会记账的替身,断言探针一次都没用到它。
   const keyFallback = {
     select: keyChoice => { keyFallbackCalls.push('select'); return keyChoice; },
@@ -125,7 +125,6 @@ function attemptDepsFixture() {
     },
     errorClass: router.errorClass,
     retryableStatus: status => status === 429 || status === 402 || status >= 500,
-    markCooldown: () => { throw new Error('probe must not cool down a provider'); },
     settleRequest: () => { throw new Error('probe must not settle a session'); },
     sha256: text => crypto.createHash('sha256').update(text).digest('hex'),
     wireResponses, wireChat, wireOpenai,
@@ -875,8 +874,8 @@ test('结果大小有硬上限:超长 model 名也会被裁剪', async () => {
 
 // ---------------------------------------------------------------- 隔离
 
-test('隔离依赖确实覆盖了注入的 store/冷却/会话结算入口', async () => {
-  // fixture 里的 storeOf / slotMapOf / markCooldown / settleRequest 全部一调用就抛错;
+test('隔离依赖确实覆盖了注入的 store/会话结算入口', async () => {
+  // fixture 里的 storeOf / slotMapOf / settleRequest 全部一调用就抛错;
   // 上面所有链路用例能通过,就证明探针走的是自己的隔离版本。
   mock.reset();
   const result = await normalRun();

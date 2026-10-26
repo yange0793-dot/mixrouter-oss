@@ -371,7 +371,7 @@ test('max_attempts 限制一次请求最多试几个渠道', async () => {
   assert.strictEqual((await lastLog()).attempts, 3);
 });
 
-// ---------------------------------------------------------------- 失败转移与冷却
+// ---------------------------------------------------------------- 失败转移与旧冷却表
 test('失败转移:池首选连不上时自动换下一个,并把会话重新绑到可用渠道', async () => {
   setRoutes([{ id: 'rf', match: 'opus', pool: ['pdead', 'pa'], strategy: 'round_robin', enabled: true }]);
   _state.sessions.clear();
@@ -403,16 +403,16 @@ test('5xx 上游也触发转移(趁还没给客户端写字节)', async () => {
   assert.strictEqual((await lastLog()).failover, true);
 });
 
-test('冷却:被打入冷却的渠道不会再被新会话选中', async () => {
+test('旧冷却表不会让新会话跳过渠道', async () => {
   setRoutes([{ id: 'rc', match: 'opus', pool: ['pa', 'pb'], strategy: 'round_robin', enabled: true }]);
   _state.sessions.clear();
   _state.cooldowns = { pa: Date.now() + 60000 }; // 手动把 pa 打进冷却
   const r = await callWithSession('co-1');
-  assert.strictEqual(r.key, 'sk-b', '唯一可用成员是 pb');
-  assert.strictEqual((await lastLog()).attempts, 1, '冷却成员不应被尝试');
+  assert.strictEqual(r.key, 'sk-a', '旧冷却表被忽略,轮询仍从 pa 开始');
+  assert.strictEqual((await lastLog()).attempts, 1);
 });
 
-test('全部成员都在冷却时仍会用冷却成员兜底(不死锁)', async () => {
+test('旧冷却表写满时仍照常选成员(不死锁)', async () => {
   setRoutes([{ id: 'rall', match: 'opus', pool: ['pa', 'pb'], strategy: 'round_robin', enabled: true }]);
   _state.sessions.clear();
   _state.cooldowns = { pa: Date.now() + 60000, pb: Date.now() + 60000 };
@@ -541,11 +541,11 @@ test('日志按会话过滤:只留该对话的请求', async () => {
   assert.ok(got.every(l => l.session_kind === 'header'));
 });
 
-test('/api/state 暴露会话数、冷却表与 TTL 参数', async () => {
+test('/api/state 暴露会话数、TTL 参数与恒空的兼容冷却字段', async () => {
   const s = JSON.parse((await rawRequest(uiPort, 'GET', '/api/state')).text);
   assert.ok(Array.isArray(s.sessions));
-  assert.ok(Array.isArray(s.cooldowns));
-  assert.strictEqual(typeof s.cooldown_s, 'number');
+  assert.deepStrictEqual(s.cooldowns, [], '冷却已移除,兼容字段恒为空表');
+  assert.strictEqual(s.cooldown_s, 0, '兼容字段恒为 0');
   assert.strictEqual(typeof s.session_ttl_min, 'number');
   // 会话数据绝不能带出密钥
   const blob = JSON.stringify(s.sessions);

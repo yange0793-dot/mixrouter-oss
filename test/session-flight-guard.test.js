@@ -2,8 +2,8 @@
 // 第二期:会话/池状态边界 + 在途请求 guard 的真实入口回归。
 //
 // 两件事在这里同时钉:
-//   1. 池运行状态(轮转游标 + 冷却表)从会话模块分出去之后,旧引用语义没变
-//      (sess.sessions / sess.pools / sess.cooldowns / resetPools / inCooldown / activeCount)。
+//   1. 池运行状态(轮转游标,以及冷却移除后保留的空壳 cooldowns)从会话模块分出去之后,
+//      旧引用语义没变(sess.sessions / sess.pools / sess.cooldowns / resetPools / inCooldown / activeCount)。
 //   2. 上游回得慢、控制台先动手(手动重绑 / 解绑 / 清空 / 保存覆盖)时,**先前那条在途
 //      请求的响应不能复活旧记录、不能覆盖新绑定或新配置**;仍在同一代上的并发请求
 //      必须各自照常结算,不能互相作废。
@@ -131,21 +131,21 @@ test('池运行状态与会话记录分开:sess.sessions / pools / cooldowns 三
   const sess = _state;
   assert.ok(sess.sessions instanceof Map, '绑定表仍是 Map');
   assert.equal(typeof sess.pools, 'object', '游标表仍可从 sess.pools 读');
-  assert.equal(typeof sess.cooldowns, 'object', '冷却表仍可从 sess.cooldowns 读');
-  // 冷却与游标都不再算作会话记录:写冷却表不会长出一条会话
+  assert.equal(typeof sess.cooldowns, 'object', '兼容冷却字段仍可从 sess.cooldowns 读');
+  // 兼容冷却字段与游标都不算会话记录:写它不会长出一条会话
   const before = sess.sessions.size;
   sess.cooldowns = { pz: Date.now() + 60000 };
-  assert.equal(sess.sessions.size, before, '写冷却表不得动绑定表');
+  assert.equal(sess.sessions.size, before, '写兼容冷却字段不得动绑定表');
   const inCooldown = require('../mixrouter.js').inCooldown;
-  assert.equal(inCooldown('pz'), true);
-  assert.equal(sess.cooldowns.pz > Date.now(), true);
+  assert.equal(inCooldown('pz'), false);
+  assert.deepEqual(sess.cooldowns, {});
   // 整份作废游标:getter 必须现取,不能是快照引用
   const poolsRef = sess.pools;
   sess.resetPools();
   assert.notEqual(sess.pools, poolsRef, 'resetPools 后 getter 必须指向新对象');
   assert.deepEqual(sess.pools, {});
   sess.cooldowns = { pz: 0 };
-  assert.equal(inCooldown('pz'), false, '到点的冷却自然失效');
+  assert.equal(inCooldown('pz'), false, '旧冷却判定恒为 false');
 });
 
 // ---------------------------------------------------------------- 在途请求 guard(模块级)

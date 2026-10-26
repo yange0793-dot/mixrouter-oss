@@ -36,7 +36,7 @@
   `wire_api: responses` 就翻 Responses,标 `wire_api: chat` 就翻 Chat Completions,
   客户端不用再挂第二个代理。
 - **会话粘性(尽力而为)**:同一 Agent 的多个对话可以落在不同渠道的不同 Key 上,并尽量
-  让一个对话留在同一渠道。这不是硬保证:渠道冷却、失效重绑定、失败转移,
+  让一个对话留在同一渠道。这不是硬保证:失效重绑定、失败转移,
   以及手动改绑与会话覆盖都可能改变落点。
 - **槽位路由与后备池**:把「渠道 @ 模型」绑到 `mixr-<槽名>` 别名,主链与子代理可以各用各的账号。
   Claude 与 Codex 槽位分别选择渠道和落点模型,支持自定义模型,不改渠道默认值。
@@ -177,7 +177,7 @@ CI 结果以 [Actions](https://github.com/yange0793-dot/mixrouter-oss/actions) �
 | [命令行与运行边界](docs/cli.md) | 全部 `mixctl` 子命令、端口与数据目录、槽位与会话、日志与归档、备份还原、只读诊断与本机自检 |
 | [路由与会话](docs/routing-and-sessions.md) | 匹配顺序、会话身份、槽位、池策略、会话级覆盖、协议互转 |
 | [Harness 接入](docs/harness.md) | 主模型、子代理白名单、预览接入与资源绑定错误恢复边界 |
-| [故障排查](docs/troubleshooting.md) | 按症状查:503 分型、冷却与重试、Key 失效、粘性异常、日志位置、接入/兼容测试/升级失败、多 Key 备用 |
+| [故障排查](docs/troubleshooting.md) | 按症状查:503 分型、失败重试、Key 失效、粘性异常、日志位置、接入/兼容测试/升级失败、多 Key 备用 |
 | [参考手册](docs/reference.md) | 完整机制与字段、全部环境变量、诊断参数上限 |
 | [升级与回退](docs/upgrade-and-rollback.md) | 源码升级/回退、数据目录、客户端配置恢复、安装脚本的边界 |
 | [离线运行与验收](docs/offline-run-and-acceptance.md) | 无 Key、不出网的验收流程与已验证范围 |

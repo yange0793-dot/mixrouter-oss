@@ -282,7 +282,7 @@ async function harness(data = fixture(), opts = {}) {
       // ---- 设置页的三条只读端点。造的是"能读到"的常态;失败注入由用例自己覆写 fetch。
       if (url === '/api/health') {
         if (failHealth) throw new Error('simulated health failure');
-        return { ok: true, json: async () => ({ settings: { total_deadline_ms: 300000, first_header_timeout_ms: 180000, stream_idle_timeout_ms: 120000, max_attempts: 3, cooldown_ms: 60000, retry_delay_ms: 500 },
+        return { ok: true, json: async () => ({ settings: { total_deadline_ms: 300000, first_header_timeout_ms: 180000, stream_idle_timeout_ms: 120000, max_attempts: 3, cooldown_ms: 0, retry_delay_ms: 500 },
           providers: [{ provider: 'a1', app: 'claude', enabled: true, eligible: true, cooldown_until: 0 }] }) };
       }
       if (url === '/api/backups') {
@@ -1810,7 +1810,7 @@ test('渠道卡片轮询:正在操作的下拉不被重建,失焦后下一轮刷
   const select = h.run('__cardSelect');
   assert.equal(h.document.activeElement, select);
   const writes = grid.htmlWrites;
-  h.data.cooldowns = [{ provider: 'a1', until: Date.UTC(2026, 0, 2, 3, 4, 5), name: 'Alpha' }];
+  h.data.providers.claude[0].name = 'Alpha Updated';
   await h.run('refresh()');
   assert.equal(grid.htmlWrites, writes, '焦点在卡片下拉上时不重建 DOM');
   assert.equal(h.document.activeElement, select);
@@ -1818,7 +1818,7 @@ test('渠道卡片轮询:正在操作的下拉不被重建,失焦后下一轮刷
   h.element('outside-cards').focus();
   await h.run('refresh()');
   assert.ok(grid.htmlWrites > writes, '失焦后的下一轮恢复刷新');
-  assert.match(grid.innerHTML, /冷却至/);
+  assert.match(grid.innerHTML, /Alpha Updated/);
   // 删除渠道后原按钮随卡片消失:焦点要落到还存在的「新建渠道」,不能掉回 body
   h.run("globalThis.__del = new document.body.constructor('del','button'); __del.dataset.provider = 'a2'; __del.dataset.action = 'delete'; __del.parentElement = document.getElementById('prov-grid'); __del.focus()");
   h.data.providers.claude.splice(1, 1);
@@ -2194,13 +2194,13 @@ test('概览的需处理事项:有问题时逐条列出并给跳转,没问题时
   assert.match(todo, /3 个渠道已停用/, '停用渠道要报总数');        // Disabled + Never Used + Chat gateway
   assert.match(todo, /Never Used/, '要能看出是哪些渠道');
   assert.match(todo, /1 把 Key 已停用/, '失效 Key 要报总数');       // a1 的 k-off
-  assert.match(todo, /1 个渠道冷却中/, '冷却渠道要报总数');
+  assert.doesNotMatch(todo, /渠道冷却中/, '不再展示冷却状态');
   assert.match(todo, /路由里有失效引用/, '僵尸引用要报');
   assert.match(todo, /pmu48wblh75h6/, '要把那个 id 露出来');
   assert.match(todo, /1 个会话的 Key \/ 槽位覆盖里存在已失效的引用/, '会话失效覆盖要报总数');
   // 每条都带一个跳到管它那一页的按钮,且只调 showView
   const jumps = [...todo.matchAll(/data-jump="([^"]+)"/g)].map(m => m[1]).sort();
-  assert.deepEqual(jumps, ['providers', 'providers', 'providers', 'routes', 'sessions']);
+  assert.deepEqual(jumps, ['providers', 'providers', 'routes', 'sessions']);
   const before = h.requests.filter(r => r.method !== 'GET').length;
   h.run("showView('routes')");
   assert.equal(h.run('view'), 'routes', '跳转按钮只切视图');
@@ -2216,7 +2216,7 @@ test('概览:版本/修订/进程/运行时长/客户端接入三行/接入地�
   assert.match(h.get('ov-pid').textContent, /4242/);
   assert.equal(h.get('ov-reqs').textContent, '12');
   assert.match(h.get('ov-tokens').textContent, /输入 100 \/ 输出 40/);
-  assert.equal(h.get('ov-cooldowns').textContent, '0 个渠道冷却中');
+  assert.equal(h.get('ov-cooldowns').textContent, '按协议归组 · 失败后仍可重试');
   // 三行客户端状态:复用 liveFacts 的口径(claude 夹具是已写入直连)
   const clients = h.get('overview-clients').innerHTML;
   for (const label of ['Claude Code', 'Codex', 'ZCode']) assert.match(clients, new RegExp(label));
@@ -2261,14 +2261,14 @@ test('渠道页:冷却状态从 /api/health 与 /api/state 读出,健康端点�
   data.cooldowns = [{ provider: 'a1', until: Date.UTC(2026, 0, 2, 3, 4, 5), name: 'Alpha' }];
   const h = await harness(data);
   h.run("view = 'providers'; renderProviders()");
-  assert.match(h.get('prov-grid').innerHTML, /冷却至/, '冷却中的渠道要在卡片上标出');
+  assert.doesNotMatch(h.get('prov-grid').innerHTML, /冷却至/, '旧冷却数据不进入卡片');
   await h.run('loadHealth()');
   // 卡片只保留冷却与可用性:健康快照里的 eligible 仍要进徽标,但不再有状态徽标
-  assert.match(h.get('prov-grid').innerHTML, /冷却至/);
+  assert.doesNotMatch(h.get('prov-grid').innerHTML, /冷却至/);
   assert.doesNotMatch(h.get('prov-grid').innerHTML, /熔断/, '渠道卡片不再展示熔断状态');
   assert.match(h.get('health-status').textContent, /已读取/);
   const healthBody = h.get('health-body').innerHTML;
-  assert.match(healthBody, /冷却至/, '健康表仍有冷却列');
+  assert.doesNotMatch(healthBody, /冷却至/, '健康表不再展示冷却列');
   assert.doesNotMatch(healthBody, /熔断/, '健康表不再有熔断列');
   assert.doesNotMatch(healthBody, /阈值/, '健康事实里不再有熔断阈值/恢复阈值');
   assert.match(healthBody, /重试间隔\(ms\)/, '重试间隔要跟着 /api/health 的 retry_delay_ms 显示');
@@ -2281,7 +2281,7 @@ test('渠道页:冷却状态从 /api/health 与 /api/state 读出,健康端点�
   await h2.run('loadHealth()');
   const grid = h2.get('prov-grid').innerHTML;
   assert.match(grid, /Alpha/, '健康挂了渠道卡片照样要有内容');
-  assert.match(grid, /冷却至/, '冷却来自 state,不受健康端点影响');
+  assert.doesNotMatch(grid, /冷却至/, '旧冷却数据不进入卡片');
   assert.match(h2.get('prov-health').textContent, /健康状态未读取/);
   assert.equal(h2.get('prov-health').hidden, false);
   assert.match(h2.get('health-status').textContent, /读取失败/);

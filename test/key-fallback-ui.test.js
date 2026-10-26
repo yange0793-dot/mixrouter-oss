@@ -4,7 +4,7 @@
 //   - 默认关闭、选渠道后开关状态与文案正确;
 //   - 新建渠道后下拉框必须跟上(app.js 每 5 秒重绘网格,面板不能停在首帧快照);
 //   - 离线时开关禁用且点击不发 PUT;
-//   - Key 状态有 3 秒有界轮询,冷却/恢复能自己刷出来,不用等用户点击;
+//   - Key 状态有 3 秒有界轮询,新失败/成功能自己刷出来,不用等用户点击;
 //   - 健康视图只出现 ID/枚举/时间,绝不出现 Key 正文或掩码。
 // 不碰真实网络与真实配置。
 const { test } = require('node:test');
@@ -172,8 +172,8 @@ const baseState = () => ({
 
 test('面板:选渠道开关、PUT 形状与脱敏健康视图', async () => {
   const h = harness(baseState());
-  h.setHealth([{ provider: 'p1', key_id: 'k1', state: 'cooling', scope: 'account', model: '',
-    status: 401, until: Date.now() + 60000, updated_at: Date.now(), failures: 2 }]);
+  h.setHealth([{ provider: 'p1', key_id: 'k1', state: 'failed', scope: 'account', model: '',
+    status: 401, until: 0, updated_at: Date.now(), failures: 2 }]);
   await wait(300);
 
   assert.ok(h.get('kf-health'), '面板应插入到渠道网格之后');
@@ -207,7 +207,7 @@ test('面板:选渠道开关、PUT 形状与脱敏健康视图', async () => {
   const text = rows.textContent;
   assert.match(text, /Alpha/);
   assert.match(text, /k1/);
-  assert.match(text, /冷却中/);
+  assert.match(text, /最近失败/);
   assert.match(text, /账号级/);
   assert.match(text, /HTTP 401/);
   assert.ok(!text.includes('sk-***'), '健康视图不得出现 Key 掩码/正文');
@@ -278,19 +278,19 @@ test('Key 状态有 3 秒有界轮询:故障与恢复都能自己刷出来', asy
   // 首次读取:面板挂载时读一次,没有记录
   assert.ok(h.calls.some(c => c.path === '/api/keys/health'));
 
-  // 后台出现一条冷却记录,用户不做任何操作
-  h.setHealth([{ provider: 'p1', key_id: 'k1', state: 'cooling', scope: 'account', model: '',
-    status: 402, until: Date.now() + 60000, updated_at: Date.now(), failures: 1 }]);
+  // 后台出现一条失败诊断记录,用户不做任何操作
+  h.setHealth([{ provider: 'p1', key_id: 'k1', state: 'failed', scope: 'account', model: '',
+    status: 402, until: 0, updated_at: Date.now(), failures: 1 }]);
   const before = h.calls.length;
   timer.fn();
   await wait(5);
   assert.ok(h.calls.length > before, '轮询必须真的发请求');
   assert.equal(h.get('kf-rows').children.length, 1);
-  assert.match(h.get('kf-rows').textContent, /冷却中/);
+  assert.match(h.get('kf-rows').textContent, /最近失败/);
 
-  // 冷却到点恢复:下一次轮询把那一行改成正常
+  // 后台成功后记录被删掉:下一次轮询把那一行改成正常(不是等时间到点)
   h.setHealth([{ provider: 'p1', key_id: 'k1', state: 'healthy', scope: 'account', model: '',
-    status: 402, until: Date.now() - 1, updated_at: Date.now(), failures: 1 }]);
+    status: 402, until: 0, updated_at: Date.now(), failures: 1 }]);
   timer.fn();
   await wait(5);
   assert.match(h.get('kf-rows').textContent, /正常/);

@@ -8,7 +8,7 @@
 //   · 换号重试打的是同一个渠道,**不扩大预算**(受 maxUpstreamCalls 约束);
 //   · 只改这一次请求的副本,绝不写回渠道的 active_key。
 //
-// 隔离:Key 冷却状态按 **provider + key_id** 记在进程内存里,所以每个用例用**自己的一对
+// 隔离:Key 失败诊断记录按 **provider + key_id** 记在进程内存里,所以每个用例用**自己的一对
 // Key**(k 池里按用例分组),互不影响;切换 primary 走控制台的 active_key 接口,与用户
 // 手动在卡片上选账号是同一条路径。改 providers.json 是没用的 —— 渠道库在 require 时就
 // 进了内存。
@@ -155,9 +155,9 @@ test('401 换号:同一渠道换到健康账号并成功,active_key 不被改写
   assert.strictEqual(provider.active_key, 'swap401-a', '换号只影响这一条请求,不得改写渠道当前生效 Key');
 
   const health = JSON.parse((await ui('GET', '/api/keys/health')).text).keys;
-  const cooling = health.find(k => k.key_id === 'swap401-a');
-  assert.ok(cooling, '账号1 应当被记为冷却');
-  assert.strictEqual(cooling.scope, 'account', '401 是账号级归因');
+  const failed = health.find(k => k.key_id === 'swap401-a');
+  assert.ok(failed, '账号1 应当留下失败诊断记录');
+  assert.strictEqual(failed.scope, 'account', '401 是账号级归因');
   const body = JSON.stringify(health);
   for (const [, [a, b]] of Object.entries(PAIRS)) {
     assert.ok(!body.includes(a) && !body.includes(b), '/api/keys/health 不得含 Key 正文');
@@ -182,7 +182,7 @@ test('403 / 404 只记模型级:同一账号换其它模型仍可用', async () 
   perKey.clear(); seen.length = 0;
   const other = await ask('m-ok-model403', 'session-model403b');
   assert.strictEqual(other.status, 200);
-  assert.deepStrictEqual(seen.map(s => s.key), [PAIRS.model403[0]], '模型级冷却不得波及同账号其它模型');
+  assert.deepStrictEqual(seen.map(s => s.key), [PAIRS.model403[0]], '模型级失败不得波及同账号其它模型');
 });
 
 test('404 同样只记模型级', async () => {
@@ -197,7 +197,7 @@ test('404 同样只记模型级', async () => {
   assert.ok(rec && rec.scope === 'model');
 });
 
-test('429 换号;没有 Retry-After 时不会被冷却窗口拖住', async () => {
+test('429 换号;不按 Retry-After 等待', async () => {
   await useKey('rate429');
   perKey.clear(); seen.length = 0;
   perKey.set(PAIRS.rate429[0], 429);
@@ -205,11 +205,11 @@ test('429 换号;没有 Retry-After 时不会被冷却窗口拖住', async () =>
   const r = await ask('m-429-rate429', 'session-429');
   assert.strictEqual(r.status, 200);
   assert.deepStrictEqual(seen.map(s => s.key), PAIRS.rate429);
-  // 默认冷却 60s:若把"所有 Key 冷却"的等待当成重试间隔,这条会挂满一分钟
-  assert.ok(Date.now() - started < 5000, `换号不该等冷却窗口(实际 ${Date.now() - started}ms)`);
+  // 冷却与 Retry-After 等待都已移除:换号应当立即发生
+  assert.ok(Date.now() - started < 5000, `换号不该等待冷却窗口(实际 ${Date.now() - started}ms)`);
 });
 
-test('网络错误与 5xx 不轮换 Key:账号没坏,只有渠道冷却', async () => {
+test('网络错误与 5xx 不轮换 Key:账号没坏,也不禁用渠道', async () => {
   await useKey('server500');
   perKey.clear(); seen.length = 0;
   perKey.set(PAIRS.server500[0], 500);
@@ -231,10 +231,35 @@ test('预算不因换号扩大:两把号都被拒时在 maxUpstreamCalls 处停�
   assert.strictEqual(r.status, 401, '没有可用账号时应当把上游的 401 交给客户端');
   assert.strictEqual(seen.length, 2, `上游调用数不得超过预算(MIXR_MAX_ATTEMPTS=2),实际 ${seen.length}`);
   assert.deepStrictEqual(seen.map(s => s.key), PAIRS.budget, '两次分别试了两把号,没有第三发');
-  assert.ok(Date.now() - started < 5000, '全部冷却时不得原地等冷却窗口');
+  assert.ok(Date.now() - started < 5000, '全部 Key 失败时不得原地等待');
   const entry = (await logs('?limit=1'))[0];
   assert.strictEqual(entry.attempts, 2);
   assert.strictEqual(entry.status, 401);
+});
+
+test('失败不跨请求保留:上一条请求两把号都被拒,下一条仍立刻用同一把号', async () => {
+  await useKey('budget');
+  perKey.clear(); seen.length = 0;
+  perKey.set(PAIRS.budget[0], 401);
+  perKey.set(PAIRS.budget[1], 401);
+  const failed = await ask('m-401-budget', 'session-budget-reset');
+  assert.strictEqual(failed.status, 401, '两把号都被拒时如实失败');
+
+  // 上游修好账号 1:新请求必须立刻打到它,不需要等任何恢复窗口。
+  perKey.clear(); seen.length = 0;
+  const started = Date.now();
+  const next = await ask('m-401-budget', 'session-budget-reset-2');
+  assert.strictEqual(next.status, 200, '新请求不该被上一条请求的失败挡住');
+  assert.deepStrictEqual(seen.map(s => s.key), [PAIRS.budget[0]], '仍从渠道当前生效账号开始,一次成功');
+  assert.ok(Date.now() - started < 5000, '新请求不该等冷却窗口');
+
+  // 诊断记录不参与选号:它仍留着上一条请求的失败事实,但不会改变这次落点。
+  const health = JSON.parse((await ui('GET', '/api/keys/health')).text).keys
+    .filter(k => String(k.key_id).startsWith('budget'));
+  for (const row of health) {
+    assert.strictEqual(row.until, 0, '失败记录不得带截止时间');
+    assert.strictEqual(row.state, 'failed', '记录只表示"最近失败"');
+  }
 });
 
 test('未开启 key_fallback:行为逐字不变(401 一次都不重试)', async () => {
@@ -277,13 +302,13 @@ test('钉死的 Key 不换号:会话点名 pinned-a 时即使 401 也不自动�
 test('粘性按完整会话键:一条会话换到的账号不会漏给另一条会话', async () => {
   await useKey('server500');
   perKey.clear(); seen.length = 0;
-  // 用**模型级**失败:账号1 只在 m-403 上冷却,换到账号2 并把这条会话粘住。
-  // 账号级(401)冷却会让"另一条会话也用账号2"变成必然,那样就分不清是粘性漏了还是冷却生效。
+  // 用**模型级**失败:账号1 只在 m-403 上留下失败记录,换到账号2 并把这条会话粘住。
+  // 账号级(401)失败会让"另一条会话也用账号2"变成必然,那样就分不清是粘性漏了还是账号被跳过。
   perKey.set(PAIRS.server500[0], 403);
   assert.strictEqual((await ask('m-403-server500', 'sess-shared-aaaa-0001')).status, 200);
   assert.deepStrictEqual(seen.map(s => s.key), PAIRS.server500);
 
-  // 会话二、**另一个模型**(账号1 在这个模型上没有冷却):它应当从渠道当前生效账号开始。
+  // 会话二、**另一个模型**(账号1 在这个模型上没有失败记录):它应当从渠道当前生效账号开始。
   // 两条会话 id 的**前 8 个字符完全相同**(日志用的短键 sessionKeyOf 只取前 8 位):
   // 若粘性表按短键存,这两条会话就会互相看到对方的换号结果 —— 这正是本用例要拦的。
   perKey.clear(); seen.length = 0;
@@ -292,7 +317,7 @@ test('粘性按完整会话键:一条会话换到的账号不会漏给另一条�
   assert.deepStrictEqual(seen.map(s => s.key), [PAIRS.server500[0]],
     '另一条会话不应继承上一条会话换号的结果');
 
-  // 会话一再来一次同一个模型:账号1 仍在冷却,而它的粘性已经是账号2 → 直接用账号2,
+  // 会话一再来一次同一个模型:它的粘性已经前移到账号2 → 直接用账号2,
   // 不必先撞一次 401/403。
   perKey.clear(); seen.length = 0;
   assert.strictEqual((await ask('m-403-server500', 'sess-shared-aaaa-0001')).status, 200);

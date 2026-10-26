@@ -226,13 +226,13 @@ test('预览:kind 与 app 不匹配 → kind_app_mismatch 400', () => {
 });
 
 // ---------------------------------------------------------------- 策略与"不承诺"
-test('预览:priority 取池序第一个可用,主渠道冷却时降到备', () => {
+test('预览:priority 取池序第一个可用,旧冷却表不影响首选', () => {
   const routes = { rules: [rule({ id: 'pp', match: 'x', pool: ['pa', 'pb'], strategy: 'priority' })], default: {} };
   const r1 = createExplainer(mkDeps({ routes }))({ app: 'claude', model: 'x' });
   assert.equal(r1.selection.deterministic, true);
   assert.equal(r1.selection.predicted.providerId, 'pa');
   const r2 = createExplainer(mkDeps({ routes, cooldowns: { pa: 1e9 } }))({ app: 'claude', model: 'x' });
-  assert.equal(r2.selection.predicted.providerId, 'pb');
+  assert.equal(r2.selection.predicted.providerId, 'pa');
 });
 
 test('预览:round_robin 预测当前游标的下一位,note 写明预览不消耗游标', () => {
@@ -329,9 +329,9 @@ test('零副作用:不标记冷却,也不改冷却表', () => {
   const r = createExplainer(deps)({ app: 'claude', model: 'x' });
   assert.equal(r.ok, true);
   assert.equal(touched, 0);
-  // 冷却只读地被用上:pa 在冷却 → eligible=false,priority 会绕开它
-  assert.equal(r.candidates.find(c => c.providerId === 'pa').cooldown, true);
-  assert.equal(r.candidates.find(c => c.providerId === 'pa').eligible, false);
+  // 冷却已移除:候选不再带 cooldown 字段,可用性只看 healthEligible
+  assert.equal('cooldown' in r.candidates.find(c => c.providerId === 'pa'), false);
+  assert.equal(r.candidates.find(c => c.providerId === 'pa').eligible, true);
   assert.deepEqual(deps._liveCooldowns, before, '冷却表不得被改写');
 });
 
@@ -565,11 +565,11 @@ test('预览:规则指向已删渠道 → no_route 503 且带 ghost 明细', () 
   assert.match(r.error.message, /不存在/);
 });
 
-test('预览:全员冷却时给出提示,但仍能预览(不锁死)', () => {
+test('预览:旧冷却表写满时仍能正常预览,不发"全部不可用"提示', () => {
   const routes = { rules: [rule({ id: 'r1', match: 'x', pool: ['pa', 'pb'] })], default: {} };
   const r = createExplainer(mkDeps({ routes, cooldowns: { pa: 1e9, pb: 1e9 } }))({ app: 'claude', model: 'x' });
   assert.equal(r.ok, true);
-  assert.ok(r.warnings.some(w => w.code === 'all_members_ineligible'));
+  assert.ok(!r.warnings.some(w => w.code === 'all_members_ineligible'));
 });
 
 // ---------------------------------------------------------------- 边界
@@ -797,7 +797,7 @@ function mkRealStore({ ttlMs = 1000, max = 50 } = {}) {
   });
   return s;
 }
-// 播种:一个"远古"会话 + 一个已过期冷却(0 <= now 恒真)
+// 播种:一个"远古"会话 + 一份旧冷却表(兼容 setter 现在不保存任何条目)
 function seedStale(s) {
   s.sessions = new Map([['陈旧会话', { app: 'claude', providerId: 'pa', model: '', ruleId: '', label: '',
     kind: 'header', created: 0, lastUsed: 0, reqs: 0, inTok: 0, outTok: 0, pinned: false }]]);
@@ -810,29 +810,28 @@ const depsFromStore = (s, opts = {}) => ({
   findProvider: id => STORE.claude.find(p => p.id === id) || null,
   providerApp: () => 'claude',
   listPools: () => s.pools,                       // 只读引用;浅拷贝由 explain 内部做
-  inCooldown: id => s.inCooldown(id),
   healthEligible: () => true,
   // ⛔ 刻意不传 s.list / s.resolveTarget —— 它们会调 prune()。见 explain.js 的 deps 注释。
   sessionCounts: () => { const o = {}; for (const v of s.sessions.values()) o[v.providerId] = (o[v.providerId] || 0) + 1; return o; },
   uiPort: 8788,
 });
 
-test('F3-1:预览不剪枝 —— 过期会话与过期冷却调用后仍在(先反证它们本会被剪掉)', () => {
+test('F3-1:预览不剪枝 —— 过期会话调用后仍在,旧冷却表不保存条目', () => {
   const s = mkRealStore();
   seedStale(s);
   assert.equal(s.sessions.has('陈旧会话'), true, '播种后应在');
 
-  // 反证:真正的 prune 入口会删掉它们。没有这一步,"还在"可能只因种子压根不过期(空转通过)。
+  // 反证:真正的 prune 入口会删掉过期会话。没有这一步,"还在"可能只因种子压根不过期(空转通过)。
   s.list({ findProvider: () => null, short: k => k });
   assert.equal(s.sessions.has('陈旧会话'), false, '反证失败:session 应按 TTL 被剪掉');
-  assert.equal('pa' in s.cooldowns, false, '反证失败:过期冷却应被剪掉');
+  assert.equal('pa' in s.cooldowns, false, '冷却已移除:旧冷却表的 setter 不保存条目');
 
-  // 正证:重置种子后走 explain,两者都必须原样保留
+  // 正证:重置种子后走 explain,会话必须原样保留,冷却表仍为空
   seedStale(s);
   const r = createExplainer(depsFromStore(s))({ app: 'claude', model: 'x' });
   assert.equal(r.ok, true);
   assert.equal(s.sessions.has('陈旧会话'), true, '预览不得顺手删用户的会话');
-  assert.equal('pa' in s.cooldowns, true, '预览不得顺手删冷却条目');
+  assert.equal('pa' in s.cooldowns, false, '旧冷却表不再保存条目');
 });
 
 test('F3-2:预览前后 store 的 pools 逐字节不变(round_robin 游标)', () => {
@@ -1010,7 +1009,7 @@ test('deps 名单:createExplainer 绝不解构会改会话表的键(resolveTarge
   }
   // 名单本身也钉住:新增 dep 必须显式改这条(而不是悄悄多一个能改状态的入口)
   assert.deepEqual(names.slice().sort(),
-    ['findProvider', 'getRoutes', 'healthEligible', 'inCooldown', 'listPools', 'providerApp',
+    ['findProvider', 'getRoutes', 'healthEligible', 'listPools', 'providerApp',
       'resolveSlot', 'sessionCounts', 'sessionSnapshot', 'storeOf', 'uiPort'].sort(),
     'deps 名单变了:请确认新入口是纯读的,再更新这条断言');
 

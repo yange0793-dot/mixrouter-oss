@@ -287,9 +287,8 @@
       who.textContent = `${providerLabel(row.provider)} · ${textOf(row.key_id) || '（无 Key ID）'}`;
 
       const state = document.createElement('span');
-      const cooling = row.state === 'cooling';
-      state.className = 'badge ' + (cooling ? 'drift' : 'on');
-      state.textContent = cooling ? '冷却中' : (row.state === 'healthy' ? '正常' : textOf(row.state) || '未知');
+      state.className = 'badge ' + (row.state === 'failed' ? 'off' : 'on');
+      state.textContent = row.state === 'failed' ? '最近失败' : (row.state === 'healthy' ? '正常' : textOf(row.state) || '未知');
 
       const scope = document.createElement('span');
       scope.className = 'kf-scope';
@@ -300,7 +299,7 @@
       const when = document.createElement('span');
       when.className = 'kf-when mono';
       const statusText = Number.isFinite(Number(row.status)) && Number(row.status) > 0 ? `HTTP ${Number(row.status)}` : '';
-      const timeText = cooling ? `至 ${fmtTime(row.until)}` : `更新 ${fmtTime(row.updated_at)}`;
+      const timeText = `更新 ${fmtTime(row.updated_at)}`;
       when.textContent = [statusText, timeText].filter(Boolean).join(' · ');
 
       li.append(who, state, scope, when);
@@ -393,8 +392,8 @@
     if (view) new MutationObserver(() => { if (providersVisible()) scheduleSync(); }).observe(view, { attributes: true, attributeFilter: ['style', 'hidden'] });
     window.addEventListener('hashchange', () => { if (providersVisible()) { healthAt = 0; scheduleSync(); } });
     document.addEventListener('visibilitychange', () => { if (!document.hidden && providersVisible()) scheduleHealth(true); });
-    // 失败状态会随时间自然恢复(冷却到点),只靠事件刷新会让面板一直停在旧状态:
-    // 三个秒的有界轮询,只在可见 + 在线 + 面板存在时发一次读请求;切走标签页即停。
+    // 失败诊断记录不随时间过期,但新失败/成功会在后台改变它:三秒的有界轮询,
+    // 只在可见 + 在线 + 面板存在时发一次读请求;切走标签页即停。
     startHealthPolling();
   }
 

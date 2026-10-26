@@ -15,7 +15,7 @@
 
 1. [快速开始](docs/quick-start.md):服务起不来、渠道/路由/客户端配置放在哪;
 2. [首次接入与自助恢复](docs/user-readiness.md):接入向导、渠道导入、兼容测试、撤销与诊断报告;
-3. [故障排查](docs/troubleshooting.md):503、冷却、Key 失效、会话粘性、日志位置、接入与升级失败;
+3. [故障排查](docs/troubleshooting.md):503、失败重试、Key 失效、会话粘性、日志位置、接入与升级失败;
 4. [命令行与运行边界](docs/cli.md):全部命令、备份还原、日志查询、只读诊断;
 5. [参考手册](docs/reference.md):字段、环境变量、超时与诊断上限。
 
