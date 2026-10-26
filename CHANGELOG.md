@@ -18,6 +18,12 @@
 
 #### 修复
 
+- 原生 Responses 历史含投影无法处理的**已完成**内置项(典型 `web_search_call`)时,原先在
+  `resource_recovery_skipped` 后直接放弃恢复。现在只要错误已判为可恢复(Azure 资源绑定或
+  官方 AgentRouter 的窄 400)、目标是官方 AgentRouter HTTPS、且历史完整可复核,就在既有的
+  次数与总预算、输出提交屏障内**原样**重投同一份字节:不删内置项 `id`、不改写历史,日志记
+  `retry_reason: unprojected_resource_retry` 与被跳过的分类。未知内置项形状、未完成项、
+  服务端历史引用、工具配对不全、已输出内容及非官方目标保持原有终态错误。
 - AgentRouter 原生 Responses 的特定 HTTP 400 `Upstream rejected the request as invalid`
   在完整内联历史校验通过后复用资源 ID 投影恢复;仅匹配明确端点与错误结构,保持模型、账号、
   内容和预算,不把内容拦截、普通字段错误或未知渠道的 400 当成资源错误。

@@ -122,8 +122,9 @@ test('白名单与代理源码的 entry 字段实际集合双向相等', () => {
   const extra = LOG_FIELDS.filter(f => !used.has(f)).sort();
   assert.deepEqual(missing, [], `白名单漏了源码里实际使用的字段: ${missing.join(', ')}`);
   assert.deepEqual(extra, [], `白名单里有源码根本没用的字段: ${extra.join(', ')}`);
-  // resource_recovery_skipped 只记录历史投影拒绝的固定分类,不含请求内容。
-  assert.equal(LOG_FIELDS.length, 34);
+  // resource_recovery_skipped 只记录历史投影拒绝的固定分类,不含请求内容;
+  // retry_reason 同理,只记固定枚举(例如 unprojected_resource_retry)。
+  assert.equal(LOG_FIELDS.length, 35);
   // 先建后挂的三个字段只能靠赋值扫出来(不在字面量里),这里单独钉住扫描有效性
   for (const f of ['think', 'reasoning', 'tools_dropped', 'effort']) {
     assert.ok(assigned.has(f), `${f} 应由赋值扫描命中(它是先建后挂的)`);
