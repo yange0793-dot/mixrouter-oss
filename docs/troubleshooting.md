@@ -56,6 +56,9 @@ session ID 坏了。含完整原生 Responses input、无服务器历史引用�
 Codex 原生工具结果的资源 `id` 一并移除,但 `call_id`、结果内容、加密推理和 nullable 推理内容原样保留;
 不需要另接独立代理,也不改写会话存档。若历史校验阻止恢复,日志 `resource_recovery_skipped`
 会给出固定分类,例如 `server_history_reference`、`invalid_tool_pair` 或 `invalid_history_item`。
+AgentRouter 明确端点上的特定 HTTP 400 `Upstream rejected the request as invalid`
+可复用同一历史投影与原预算重发,尝试过程标记 `native_history_recovery`;它不证明所有笼统 400
+都是 Azure 错误。未知端点、内容拦截、字段/权限错误及不完整历史仍保留原始失败。
 
 - 客户端只给服务器引用或工具配对不完整:保留原始上游错误,不猜测删除历史。需由客户端重发
   完整历史或新开会话,不要手工删 `call_id`、工具结果或加密推理来凑通过。
