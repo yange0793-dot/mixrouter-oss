@@ -101,6 +101,18 @@ test('请求上下文:预算是「总预算 + 按体积放宽」,上限是候选
   assert.equal(createRequestContext(big.deps).deadlineMs, 1000 + 600000);
 });
 
+test('optional upstream call cap only tightens the existing shared budget', () => {
+  const { createRequestContext } = require('../lib/proxy/context');
+  for (const [upstreamCallLimit, expected] of [
+    [50, 50], [1, 1], [100, 53], [undefined, 53], [0, 53], [-1, 53], [1.5, 53], ['50', 53],
+  ]) {
+    const { deps } = fakeContextDeps({ maxAttempts: 50, convRetries: 3, upstreamCallLimit });
+    const ctx = createRequestContext(deps);
+    assert.equal(ctx.maxUpstreamCalls, expected);
+    assert.match(ctx.capWhy, new RegExp(`\\(${expected} 次`));
+  }
+});
+
 test('请求上下文:finish 幂等,真实调用计数只加不减', () => {
   const { createRequestContext } = require('../lib/proxy/context');
   const a = fakeContextDeps();
