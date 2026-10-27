@@ -242,6 +242,9 @@ test('直连复用连接:同一个上游连发多次只建一条 TCP 连接(Node
   t.after(() => close(upstream));
   const url = `http://127.0.0.1:${upstream.address().port}/v1/messages`;
   const agent = directAgent('http:');
+  assert.equal(agent.options.autoSelectFamily, true);
+  assert.equal(agent.options.autoSelectFamilyAttemptTimeout, 1000);
+  assert.equal(directAgent('https:').options.autoSelectFamilyAttemptTimeout, 1000);
   for (let i = 0; i < 4; i++) assert.equal((await fetchThrough(url, agent)).text, 'ok');
   assert.equal(conns, 1, `4 次请求建了 ${conns} 条连接 —— 直连没有复用`);
 });

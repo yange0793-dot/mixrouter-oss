@@ -277,7 +277,9 @@ The linked pages are in Chinese; the table says what each one covers.
   in [CLI and runtime boundaries](docs/cli.md#5-压缩日志与归档) (Chinese).
 - **Upstreams are not provided by this project.** Forwarding uses only the `base_url` and keys
   you configure. No provider is promised to be available, free, or stable; providers can always
-  read request content in plaintext.
+  read request content in plaintext. Direct connections do not automatically follow the system
+  proxy or guarantee every CDN address is reachable. Initial DNS/TCP/TLS setup has a separate
+  15-second default limit; model first-response and streaming budgets remain independent.
 - **Source changes are not hot-reloaded.** Run the tests. A foreground `npm run local` has no
   pid file and is not managed by `mixctl`: stop it with Ctrl+C, rerun the same command, then run
   `npm run doctor` to confirm state. Only a background `./mixctl start` uses `./mixctl restart`;

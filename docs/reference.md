@@ -116,7 +116,15 @@ Anthropic `has_more` / `last_id` 分页通过同一端点的 `after_id` 继续�
 ### 出站直连
 
 渠道的 `direct: true` 只让这个渠道的转发与探活跳过进程内 HTTP CONNECT 隧道,直连连接
-仍复用 keep-alive。它不改客户端配置,也不能绕过操作系统 TUN/VPN。
+仍复用 keep-alive。它不改客户端配置,也不能绕过操作系统 TUN/VPN。未配置
+`MIXR_UPSTREAM_PROXY` 时本来就直连,不会自动跟随 macOS 系统代理或其他代理软件的规则。
+「直连」只决定路径,不保证 DNS 返回的每个 CDN 地址都可达。
+
+直连池显式启用多地址尝试,每个候选等待 1000ms 再切下一个,避免沿用 Node 部分版本的
+250ms 窗口而过早放弃高延迟地址。DNS、TCP 与 TLS 初次建连共用独立的 15 秒硬截止
+(`MIXR_UPSTREAM_CONNECT_TIMEOUT_MS`),超时销毁 socket 并进入既有请求重试,不另开调用预算。
+TCP/HTTPS 握手完成就清理建连计时器,后续首响应、推理等待、流空闲与复用连接不受它限制。
+不钉死 IP、不缓存地址健康、不自动改走代理;多地址全部不通或 HTTP 响应阶段卡住仍会失败。
 
 ---
 
@@ -730,6 +738,7 @@ require 之后再改不生效。
 | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | 未设 | 压缩窗口的环境覆盖,优先于磁盘设置 |
 | `MIXR_UPSTREAM_PROXY` / `MIXR_UPSTREAM_PROXY_BYPASS` | 空 | 出站 HTTP CONNECT 隧道;环回地址永不隧道 |
 | `MIXR_UPSTREAM_IDLE_MS` | 5000 | 出站空闲连接回收阈值;`0` = 关掉空闲计时 |
+| `MIXR_UPSTREAM_CONNECT_TIMEOUT_MS` | 15000 | 直连 DNS/TCP/TLS 初次建连硬截止,握手后清理;正整数 1–600000,非法值或 0 回默认;不改模型等待预算 |
 | `MIXR_BODY_LIMIT_MB` | 64 | 请求体上限 |
 | `MIXR_TOTAL_DEADLINE_MS` | 240000 | 端到端总预算 |
 | `MIXR_FIRST_HEADER_TIMEOUT_MS` | 120000 | 等上游响应头 |

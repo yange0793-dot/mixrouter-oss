@@ -223,7 +223,8 @@ CI 结果以 [Actions](https://github.com/yange0793-dot/mixrouter-oss/actions) �
 - **响应归档默认关闭**:只有显式开启 `MIXR_RESPONSE_ARCHIVE=on` 才会保存上游响应正文。
   容量上限与敏感内容边界见[命令行与运行边界](docs/cli.md#5-压缩日志与归档)。
 - **上游不是本项目提供的**:转发只使用你配置的 `base_url` 与 Key。不承诺任何渠道可用、
-  免费或稳定;上游服务商始终能读到明文请求内容。
+  免费或稳定;上游服务商始终能读到明文请求内容。直连不会自动跟随系统代理,也不保证每个
+  CDN 地址可达;初次 DNS/TCP/TLS 建连默认最多 15 秒,与模型首字和流式等待预算分开。
 - **源码修改不热加载**:改完先跑测试。前台 `npm run local` 没有 pid 文件,也不由
   `mixctl` 管理:请 Ctrl+C 退出原进程,再用同一命令重启,然后跑一次
   `npm run doctor` 确认状态。只有后台常驻(`./mixctl start`)才用 `./mixctl restart`,
