@@ -391,14 +391,16 @@ test('查询:默认全部区间,带 dashboard=1 与 offset/limit;筛选值进同
   assert.equal(h.get('usage-provider').value, '');
 });
 
-test('热力图:53 周 × 7 行、周一为首列、371 格,区间外/未覆盖/未来/真实 0 各标各的', async () => {
+test('热力图:按覆盖周裁剪、周一为首列,区间外/未覆盖/未来/真实 0 各标各的', async () => {
   const now = new Date(2026, 9, 19, 12); // 周一:本周剩余六天均为未来,不随执行日变化。
   const keyAgo = days => dateKey(addDays(now, -days));
   const h = harness({ now, response: usageFixture({ now }) });
   await h.run('loadUsage()');
   const html = h.get('usage-heatmap').innerHTML;
   const cells = cellsOf(html);
-  assert.equal(cells.length, 371, '53 周 × 7 天');
+  const visibleWeeks = 14; // 2026-07-21(周二)到 10-19(周一)跨 14 个日历周。
+  assert.equal(cells.length, visibleWeeks * 7, '90 天覆盖从 7 月 20 日起画,不强制补到 53 周');
+  assert.equal(cells[0]['data-date'], '2026-07-20');
   const first = new Date(cells[0]['data-date'] + 'T00:00:00');
   assert.equal((first.getDay() + 6) % 7, 0, '第一列是周一');
   assert.equal(cells[7]['data-date'], dateKey(addDays(first, 7)), '按列推进:每列一周');
@@ -408,7 +410,7 @@ test('热力图:53 周 × 7 行、周一为首列、371 格,区间外/未覆盖/
   assert.match(html, /heatmap-weekdays/);
   assert.match(html, /heatmap-legend/);
   assert.equal(h.get('usage-heatmap').attributes.role, 'group', '容器不能再是 img(否则格子从无障碍树里消失)');
-  assert.match(h.get('usage-heatmap').attributes['aria-label'], /53 周/);
+  assert.match(h.get('usage-heatmap').attributes['aria-label'], new RegExp(`${visibleWeeks} 周`));
 
   const today = dateKey(now);
   const todayCell = cellFor(h, today);
@@ -424,8 +426,9 @@ test('热力图:53 周 × 7 行、周一为首列、371 格,区间外/未覆盖/
   assert.equal(zeroCell['data-active'], 'true');
   assert.equal(zeroCell['data-coverage'], 'inside');
 
-  // 覆盖窗口(90 天)之外:未覆盖,同样不能画成 0
-  const outside = cellFor(h, keyAgo(120));
+  // 起始周的周一在覆盖边界之前:仍然是未覆盖,不能画成真实 0。
+  assert.equal(cellFor(h, keyAgo(120)), undefined, '更早的空白历史已裁掉');
+  const outside = cellFor(h, '2026-07-20');
   assert.equal(outside['data-coverage'], 'outside');
   assert.equal(outside['data-level'], '0');
   assert.equal(outside['data-active'], 'false');
@@ -451,7 +454,7 @@ test('热力图:53 周 × 7 行、周一为首列、371 格,区间外/未覆盖/
   const dailyRows = h.get('usage-daily-rows').innerHTML;
   assert.match(dailyRows, new RegExp(`<td>${keyAgo(5)}</td><td>0</td>`), '真实的 0 要出现在按日表里');
   assert.match(dailyRows, new RegExp(`<td>${today}</td>`));
-  assert.match(h.get('usage-calendar-summary').textContent, /最近 53 周/);
+  assert.match(h.get('usage-calendar-summary').textContent, new RegExp(`最近 ${visibleWeeks} 周`));
   assert.match(h.get('usage-calendar-summary').textContent, /共 42 次请求 · 20\.0k tokens/, '摘要要有区间总量');
   assert.doesNotMatch(html, /¥|cost|price/i, '热力图不带金额折算');
 });
@@ -462,14 +465,14 @@ test('热力图:周日已到本周末,没有未来格也不显示未来图例', 
   await h.run('loadUsage()');
   const html = h.get('usage-heatmap').innerHTML;
   const cells = cellsOf(html);
-  assert.equal(cells.length, 371);
+  assert.equal(cells.length, 13 * 7, '2026-07-27 到 10-25 正好 13 周,不强制补到 53 周');
   assert.equal(cells.at(-1)['data-date'], dateKey(now), '最后一格就是今天');
   assert.equal(cells.filter(cell => cell['data-future'] === 'true').length, 0);
   assert.doesNotMatch(html, /未来/, '没有未来日期时不需要未来图例');
   assert.equal(cellFor(h, dateKey(now))['data-active'], 'true');
 });
 
-test('切换区间:热力图仍是 53 周,但区间外的日子标成「不在区间」而不是零历史', async () => {
+test('切换区间:热力图按覆盖范围裁剪,区间外的日子标成「不在区间」而不是零历史', async () => {
   const h = harness({ response: usageFixture({ scopeDays: 7 }) });
   await h.run('loadUsage()');
   const old = cellFor(h, dayKeyAgo(30));
@@ -488,6 +491,26 @@ test('切换区间:热力图仍是 53 周,但区间外的日子标成「不在�
   assert.match(h.requests.at(-1).url, /range=30d/);
   assert.equal(h.get('usage-range-select').value, '30d');
   assert.equal(h.get('usage-calendar-expand').hidden, true, '近 30 天没有更早的选中日期');
+});
+
+test('短覆盖只画 13 周,而长历史封顶 53 周且可继续展开', async () => {
+  const now = new Date(2026, 9, 25, 12);
+  const short = harness({ now, response: usageFixture({ now, coverageDays: 14, scopeDays: 14 }) });
+  await short.run('loadUsage()');
+  const cells = cellsOf(short.get('usage-heatmap').innerHTML);
+  assert.equal(cells.length, 91);
+  assert.equal(cells[0]['data-date'], '2026-07-27');
+  assert.equal(cellFor(short, '2026-10-10')['data-coverage'], 'outside');
+  assert.equal(cellFor(short, '2026-10-11')['data-coverage'], 'inside');
+  assert.equal(short.get('usage-calendar-expand').hidden, true);
+
+  const long = harness({ now, response: usageFixture({ now, coverageDays: 800, scopeDays: 800 }) });
+  await long.run('loadUsage()');
+  assert.equal(cellsOf(long.get('usage-heatmap').innerHTML).length, 371);
+  assert.equal(long.get('usage-calendar-expand').hidden, false);
+  long.run('expandUsageCalendar()');
+  assert.equal(cellsOf(long.get('usage-heatmap').innerHTML).length, 742);
+  assert.equal(long.get('usage-calendar-expand').hidden, false, '还存在未展示的更早记录');
 });
 
 test('展开更早的 53 周:只在统计区间伸到当前块之前时出现,点击后加一块', async () => {
@@ -685,8 +708,9 @@ test('读取失败:报错清楚、旧数据标 stale 且明说不是当前筛选
 });
 
 test('空区间:给出明确空态,热力图仍然如实画出覆盖与零,不伪造历史', async () => {
-  const h = harness();
-  const empty = usageFixture();
+  const now = new Date(2026, 9, 19, 12);
+  const h = harness({ now });
+  const empty = usageFixture({ now });
   empty.totals = { reqs: 0, ok_rate: null, cache_hit_rate: null, tokens_total: null, speed_tps: null, ttfb_p50_ms: null };
   empty.by_provider = [];
   empty.by_model = [];
@@ -697,13 +721,13 @@ test('空区间:给出明确空态,热力图仍然如实画出覆盖与零,不�
   assert.equal(h.get('usage-chart-empty').hidden, false);
   assert.match(h.get('usage-chart-empty').textContent, /这个区间里没有请求/);
   const cells = cellsOf(h.get('usage-heatmap').innerHTML);
-  assert.equal(cells.length, 371, '空区间也保留完整日历骨架');
+  assert.equal(cells.length, 14 * 7, '空区间也保留覆盖周的日历骨架');
   assert.ok(cells.every(cell => cell['data-level'] === '0'));
   assert.equal(h.get('usage-rows').innerHTML.includes('没有记录'), true);
   assert.match(h.get('usage-count').textContent, /0 条请求/);
 
   // 完全没有日志:所有格子都是「未覆盖」,不能宣称历史为零
-  const blank = usageFixture();
+  const blank = usageFixture({ now });
   blank.totals = { reqs: 0, ok_rate: null, cache_hit_rate: null, tokens_total: null };
   blank.dashboard.daily = [];
   blank.dashboard.records = { rows: [], total: 0, offset: 0, limit: 50, has_more: false };
@@ -793,13 +817,14 @@ test('日志内容进入表格前转义:供应商/错误文本不能当 HTML 插
 });
 
 test('旧后端没有 dashboard:从 series 按天兜底画热力图,明细表如实说明不可用', async () => {
-  const h = harness();
-  const legacy = usageFixture();
+  const now = new Date(2026, 9, 19, 12);
+  const h = harness({ now });
+  const legacy = usageFixture({ now });
   delete legacy.dashboard;
   h.setResponse(legacy);
   await h.run('loadUsage()');
-  assert.equal(cellsOf(h.get('usage-heatmap').innerHTML).length, 371);
-  const today = cellFor(h, dateKey(new Date()));
+  assert.equal(cellsOf(h.get('usage-heatmap').innerHTML).length, 14 * 7, '旧后端按统计区间裁剪');
+  const today = cellFor(h, dateKey(now));
   assert.ok(Number(today['data-level']) > 0, 'series 里的今天仍有色阶');
   assert.match(h.get('usage-rows').innerHTML, /未返回请求明细/);
   h.run("setUsageTab('providers')");
@@ -877,7 +902,7 @@ test('来源说明:只说「当前可用日志」,不冒充完整保留期;首�
   assert.equal(h.get('usage-source').hidden, true);
 });
 
-test('默认区间全部、热力图默认 53 周;日期键原样回显,不做 UTC 平移', async () => {
+test('默认区间全部、热力图按覆盖周显示;日期键原样回显,不做 UTC 平移', async () => {
   const h = harness();
   await h.run('loadUsage()');
   assert.equal(h.state.range, 'all');

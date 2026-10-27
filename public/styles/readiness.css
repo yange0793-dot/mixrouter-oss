@@ -5,17 +5,42 @@
  */
 
 /* ---- 渠道页 / 概览页入口 --------------------------------------------------- */
-.readiness-overview-jump { margin-top: 0; }
-.readiness-entry { border-color: var(--border); }
+/* 一条紧凑提示条:标题、状态、入口在同一行,不抢渠道列表的首屏位置。 */
+.readiness-overview-jump { margin-top: 0; padding: 12px 14px; }
+.readiness-entry { border-color: var(--border-soft); padding: 9px 14px; margin-bottom: 12px; }
 .readiness-entry-row {
-  display: flex; align-items: flex-start; justify-content: space-between;
-  gap: 20px; flex-wrap: wrap;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px 16px; flex-wrap: wrap;
 }
-.readiness-entry-copy { min-width: 0; flex: 1 1 420px; }
-.readiness-entry-copy h2 { font-size: 16px; margin-bottom: 6px; }
-.readiness-entry-copy .hint { margin-bottom: 0; max-width: 720px; }
-.readiness-entry-actions { display: flex; gap: 8px; flex-wrap: wrap; flex-shrink: 0; }
-#readiness-entry-status { margin: 12px 0 0; }
+.readiness-entry-copy {
+  min-width: 0; flex: 1 1 420px;
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 10px;
+}
+.readiness-entry-copy h2 { font-size: 13px; font-weight: 650; margin: 0; letter-spacing: 0; }
+.readiness-entry-copy h2::before {
+  content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  margin-right: 7px; vertical-align: 1px; background: var(--accent);
+}
+.readiness-entry-copy .hint { margin: 0; max-width: 100%; font-size: 13px; line-height: 1.55; }
+.readiness-entry-actions { display: flex; gap: 8px; flex-wrap: wrap; flex-shrink: 0; margin-left: auto; }
+#readiness-entry-status { margin: 0; overflow-wrap: anywhere; }
+/* 已接入的客户端:入口不再抢注意力,主按钮降成普通按钮。 */
+.readiness-entry[data-connected="true"] { background: var(--panel); border-color: var(--border-soft); }
+.readiness-entry[data-connected="true"] .readiness-entry-copy h2::before { background: var(--border-strong); }
+.readiness-entry[data-connected="true"] #readiness-open:not(:hover) {
+  background: transparent; color: var(--text); border-color: var(--border);
+}
+.readiness-entry[data-connected="true"] #readiness-open:hover:not(:disabled) {
+  background: var(--surface-2); border-color: var(--border-strong);
+}
+/* 手机上状态文字占两行时,入口按钮紧随其后,不额外占一行标题。 */
+@media (max-width: 640px) {
+  .readiness-entry-copy { flex-basis: 100%; display: block; }
+  .readiness-entry-copy h2 { margin-bottom: 2px; }
+  #readiness-entry-status { font-size: 12.5px; }
+  .readiness-entry-actions { margin-left: 0; width: 100%; }
+  .readiness-entry-actions .primary { flex: 1 1 auto; }
+}
 
 /* ---- 向导弹窗 -------------------------------------------------------------- */
 .readiness-dialog {

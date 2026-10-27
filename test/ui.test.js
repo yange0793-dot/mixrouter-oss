@@ -881,6 +881,35 @@ test('日志页进入与五秒自动刷新都读取分槽统计，关闭刷新�
   assert.match(h.get('slot-stats-body').innerHTML, /subagent<\/th><td>29<\/td>/);
 });
 
+test('会话短 ID 相同时标签仍关联本行选择器,重绘与筛选不改变关联', async () => {
+  const data = fixture();
+  data.sessions[1].short = data.sessions[0].short;
+  const h = await harness(data);
+  h.run("view = 'sessions'; renderSessions()");
+  const selectors = () => [...h.get('sess-body').innerHTML.matchAll(/<select id="([^"]+)" class="pin-sel"/g)].map(m => m[1]);
+  const ids = selectors();
+  assert.equal(ids.length, 3);
+  assert.equal(new Set(ids).size, 3, '完整会话键不同,短 ID 相同也不能生成重复 id');
+  for (const id of ids) assert.ok(h.get('sess-body').innerHTML.includes(`for="${id}"`));
+  h.run('renderSessions()');
+  assert.deepEqual(selectors(), ids);
+  h.run('setSessQuery("重构压缩")');
+  assert.deepEqual(selectors(), [ids[1]], '筛选后仍指向同一会话,不能按显示序号重编号');
+});
+
+test('诊断表合并指标列后仍保留缓存读数、命中率与完整实际模型', async () => {
+  const h = await harness();
+  const logs = [{ ts: '2026-10-27T10:30:00Z', status: 200, app: 'codex', model_in: 'mixr-main',
+    model_out: 'fixture-model-with-a-long-name', in: 100, out: 11, cache_read: 300 }];
+  h.run(`fetch = async () => ({ ok: true, json: async () => ({ logs: ${JSON.stringify(logs)} }) })`);
+  await h.run('loadLogs()');
+  const row = h.get('logs-body').innerHTML;
+  assert.match(row, /tok-main[^>]*>100 \/ 11/);
+  assert.match(row, /tok-sub[^>]*>[^<]*300/);
+  assert.ok(row.includes(h.run('cacheHitText({in:100,cache_read:300})')));
+  assert.match(row, /class="mdl-out" title="fixture-model-with-a-long-name"/);
+});
+
 test('会话搜索按短 id / 完整 id / 对话名 / 渠道名子串过滤,并与协议组筛选叠加', async () => {
   const h = await harness();
   h.run("view = 'sessions'; renderSessions()");

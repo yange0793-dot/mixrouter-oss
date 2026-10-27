@@ -2,27 +2,28 @@
    只用 base.css 的既有 token,浅色 / 深色随系统与 <html data-theme> 走。 */
 
 .kf-panel {
-  margin-top: 16px;
-  padding: 14px 16px;
+  margin-top: 14px;
+  padding: 12px 16px;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 .kf-panel[hidden] { display: none; }
 
+/* Compact header: title + one-line explanation on the left, controls on the right. */
 .kf-head {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-start;
+  align-items: flex-end;
   justify-content: space-between;
-  gap: 10px 18px;
+  gap: 8px 18px;
 }
-.kf-intro { flex: 1 1 320px; min-width: 0; }
-.kf-intro h2 { margin: 0 0 4px; font-size: 15px; letter-spacing: -.1px; }
-.kf-intro .hint { margin: 0; }
+.kf-intro { flex: 1 1 300px; min-width: 0; }
+.kf-intro h2 { margin: 0 0 2px; font-size: 14.5px; letter-spacing: -.1px; }
+.kf-intro .hint { margin: 0; font-size: 12.5px; line-height: 1.55; }
 
 .kf-controls {
   display: flex;
@@ -33,25 +34,25 @@
 .kf-field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
   min-width: 0;
-  font-size: 13px;
+  font-size: 12.5px;
   color: var(--dim);
 }
-.kf-field select { min-width: 210px; max-width: 320px; min-height: 30px; font-size: 13px; }
-.kf-toggle { white-space: nowrap; }
+.kf-field select { min-width: 200px; max-width: 300px; min-height: 32px; font-size: 13px; }
+.kf-toggle { white-space: nowrap; min-height: 32px; }
 .kf-toggle.on {
   color: var(--accent-text);
   border-color: var(--accent-line);
   background: var(--accent-soft);
 }
-.kf-status { font-size: 13px; color: var(--dim); overflow-wrap: anywhere; }
+.kf-status { font-size: 12.5px; color: var(--dim); overflow-wrap: anywhere; }
 .kf-status:empty { display: none; }
 
-.kf-detail { margin: 0; }
+.kf-detail { margin: 0; font-size: 12.5px; line-height: 1.6; }
 
 .kf-health-body {
-  padding-top: 10px;
+  padding-top: 8px;
   border-top: 1px solid var(--border-soft);
 }
 .kf-health-head {
@@ -61,11 +62,13 @@
   justify-content: space-between;
   gap: 8px;
 }
-.kf-health-head h3 { margin: 0; font-size: 13.5px; }
+.kf-health-head h3 { margin: 0; font-size: 13px; }
+.kf-health-head .small { min-height: 30px; }
+#kf-health-status { font-size: 12.5px; }
 
 .kf-rows {
   list-style: none;
-  margin: 8px 0;
+  margin: 6px 0;
   padding: 0;
   display: flex;
   flex-direction: column;
@@ -75,7 +78,7 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 4px 12px;
-  padding: 7px 0;
+  padding: 6px 0;
   border-top: 1px solid var(--border-soft);
   font-size: 13px;
   line-height: 1.5;
@@ -83,6 +86,11 @@
 .kf-row:first-child { border-top: 0; }
 .kf-who { min-width: 0; overflow-wrap: anywhere; }
 .kf-scope, .kf-when { color: var(--dim); }
+.kf-more > summary {
+  font-size: 12.5px; padding: 4px 0; min-height: 32px;
+  display: inline-flex; align-items: center;
+}
+.kf-more > .hint { font-size: 12.5px; line-height: 1.65; margin: 6px 0 0; max-width: 900px; }
 
 @media (max-width: 720px) {
   .kf-panel { padding: 12px; }

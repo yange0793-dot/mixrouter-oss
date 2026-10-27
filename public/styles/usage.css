@@ -1,0 +1,266 @@
+/* Usage page (view-usage): toolbar, metric cards, heatmap, detail tables.
+   Owned by the usage page. Shared tokens come from base.css; do not redefine them here.
+   Everything below is an override on top of base.css — same specificity, later file wins. */
+
+/* ---- Topbar actions: one compact sync cluster ------------------------------ */
+/* 1440 宽度下顶栏原来有五个独立控件(立即同步 / 同步间隔 / 最近同步 / 数据来源),
+   换行后把按钮和下拉拆成两行。合成一组:按钮 + 间隔下拉 + 最近同步,一条读下来。 */
+#view-usage .usage-head-actions,
+#topbar-page-actions .usage-head-actions { flex-wrap: nowrap; gap: 6px; }
+.usage-sync-group {
+  display: inline-flex; align-items: center; gap: 6px; flex-wrap: nowrap;
+  padding: 2px 4px 2px 2px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--surface-2);
+}
+.usage-sync-group > button.small { min-height: 30px; background: var(--surface); }
+.usage-sync-group .rc-mini { gap: 0; }
+.usage-sync-group .rc-mini select {
+  width: auto; min-width: 0; max-width: none; min-height: 30px;
+  padding: 3px 6px; font-size: 12.5px; border-color: transparent; background: transparent;
+}
+.usage-sync-group .rc-mini select:hover { border-color: var(--border-strong); background: var(--surface); }
+.usage-sync-group .usage-last-sync {
+  font-size: 12.5px; color: var(--dim); white-space: nowrap;
+  padding: 0 6px 0 8px; border-left: 1px solid var(--border-soft); font-variant-numeric: tabular-nums;
+}
+#view-usage .usage-head-actions > #usage-source-toggle,
+#topbar-page-actions .usage-head-actions > #usage-source-toggle { min-height: 34px; }
+
+/* ---- Intro + filter bar ---------------------------------------------------- */
+.usage-intro { margin: -4px 0 16px; font-size: 13.5px; line-height: 1.65; max-width: 900px; }
+.usage-bar { align-items: flex-end; gap: 10px 14px; margin-bottom: 16px; }
+/* 协议组与四个下拉同一条底边对齐;标签不缩进,和相邻下拉的左边缘对齐。 */
+.usage-apps { align-self: flex-end; }
+.usage-apps button, .usage-apps .seg { min-height: 34px; padding: 5px 14px; font-size: 13.5px; }
+.usage-filters { gap: 10px 12px; }
+.usage-filter { gap: 4px; font-size: 12.5px; min-width: 0; }
+.usage-filter > span { padding-left: 0; }
+/* 下拉宽度定死:模型名很长,放任自然宽度会把整行挤到第二行。 */
+.usage-filter select {
+  width: 150px; min-width: 0; max-width: 100%; min-height: 34px; font-size: 13.5px;
+  text-overflow: ellipsis;
+}
+.usage-filter[for="usage-model"] select { width: 184px; }
+.usage-filters button { min-height: 34px; align-self: flex-end; }
+/* 「清除筛选」平时是安静的次要动作:没有筛选时降成链接式,有筛选才给边框与强调色。 */
+#usage-clear-filters {
+  min-height: 34px; background: transparent; border-color: transparent; color: var(--dim);
+  padding-inline: 8px;
+}
+#usage-clear-filters:hover:not(:disabled) { color: var(--text); border-color: var(--border); background: var(--surface-2); }
+#usage-clear-filters.is-active,
+#usage-clear-filters[data-empty="false"] {
+  color: var(--accent-text); border-color: var(--accent-line); background: var(--accent-soft);
+}
+#usage-clear-filters[data-empty="true"] { color: var(--dim); }
+
+/* ---- Metric cards ---------------------------------------------------------- */
+.usage-grid { gap: 14px; margin-bottom: 4px; }
+.usage-grid .metric { padding: 18px 20px; display: flex; flex-direction: column; }
+.usage-grid .metric-label {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 8px;
+  font-size: 13.5px; line-height: 1.4; min-height: 20px;
+}
+/* 大数字:四张卡同一字号层级,数字本身是这一屏的主角。 */
+.usage-grid .metric > b {
+  font: 650 clamp(26px, 2.4vw, 34px)/1.15 var(--sans);
+  letter-spacing: -.8px; margin-top: 8px; font-variant-numeric: tabular-nums;
+}
+.usage-grid .metric small { margin-top: auto; padding-top: 8px; font-size: 13px; line-height: 1.5; }
+/* 区间「2026-10-23 – 2026-10-27」在窄卡片里要整段折在破折号上,不能从日期中间的连字符断开
+   (base.css 的 overflow-wrap:anywhere 会断成「2026-10-」+「27」这种半截日期)。 */
+#view-usage #usage-request-hint { overflow-wrap: normal; text-wrap: balance; }
+/* 失败次数直接写在成功率旁边,不用心算;0 次时不出现。
+   `.metric b` 会命中卡里所有 b,所以这里要连着父级一起压回徽标尺寸。 */
+.usage-grid .metric-label { min-width: 0; }
+.usage-grid .metric-label > b.metric-fail,
+.metric .metric-fail {
+  margin-left: auto;
+  display: inline-flex; align-items: center; flex-shrink: 0;
+  font: 600 12px/1.4 var(--sans); letter-spacing: 0;
+  margin: 0; padding: 2px 8px; border-radius: 999px;
+  background: var(--err-soft); color: var(--err-text); border: 1px solid var(--err-line);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.metric .metric-fail[hidden] { display: none; }
+.usage-grid .metric > b.is-low { color: var(--warn-text); }
+.usage-grid .metric > b.is-bad { color: var(--err-text); }
+
+/* ---- More metrics ---------------------------------------------------------- */
+.usage-more-metrics { margin: 10px 0 18px; }
+.usage-more-metrics > summary { padding: 6px 2px; font-size: 12.5px; }
+.usage-more-metrics .usage-more-grid { margin-top: 8px; gap: 10px; }
+.usage-more-grid > div { padding: 12px 14px; border-radius: var(--radius); }
+.usage-more-grid > div > b { font-size: 19px; }
+
+/* ---- Heatmap card: calendar + window stats --------------------------------- */
+/* 单一版式:标题 → 窗口概览横条 → 日历 → 脚注。周数少时只是格子变小,整张卡不会
+   因为数据只有几周就在右边空出一大块。 */
+.usage-chart {
+  display: grid; align-items: start;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "head" "side" "body" "foot";
+  padding: 18px 20px 16px;
+}
+.usage-chart-head { grid-area: head; margin-bottom: 12px; }
+#usage-chart-holder { grid-area: body; min-width: 0; }
+.usage-chart-side { grid-area: side; }
+.usage-chart-foot { grid-area: foot; }
+/* 窄屏横向滚动时锚在最近一周:不用 RTL 翻面(base.css 那套会把星期标签甩到滚动区外),
+   改成 LTR + usage.js 渲染后把滚动位置推到最右,星期标签靠 sticky 留在原位。 */
+#usage-chart-holder { direction: ltr; }
+.usage-chart-head h2 { font-size: 15px; }
+#usage-range-label { font-size: 12.5px; margin-top: 3px; }
+.usage-tabs { padding: 2px; }
+.usage-tabs button { min-height: 32px; padding: 4px 12px; font-size: 12.5px; }
+
+/* 周数少(数据只覆盖几周)时:日历在左、窗口概览在右成栏,概览行距拉开,不开出一条空带。
+   1023px 以下卡片内宽放不下「日历 + 概览栏」两列(概览数字会挤成两行),回到单列横条。 */
+.usage-chart:has(#usage-heatmap[data-density="compact"]) {
+  grid-template-columns: max-content minmax(0, 1fr);
+  grid-template-areas: "head head" "body side" "foot foot";
+  column-gap: clamp(18px, 3vw, 34px);
+}
+.usage-chart:has(#usage-heatmap[data-density="compact"]) .usage-chart-side {
+  display: flex; flex-direction: column; justify-content: center; gap: 0;
+  align-items: stretch;
+  margin: 0; padding: 2px 0 2px 26px; align-self: stretch;
+  border-top: 0; border-bottom: 0; border-left: 1px solid var(--border-soft);
+}
+.usage-chart:has(#usage-heatmap[data-density="compact"]) .usage-side-row {
+  justify-content: space-between; align-items: baseline; gap: 18px; padding: 13px 0;
+  border-top: 1px solid var(--border-soft); max-width: min(440px, 100%);
+}
+.usage-chart:has(#usage-heatmap[data-density="compact"]) .usage-side-row:first-child { border-top: 0; padding-top: 0; }
+.usage-chart:has(#usage-heatmap[data-density="compact"]) .usage-side-row > b { font-size: 18px; letter-spacing: -.3px; }
+.usage-chart:has(#usage-heatmap[data-density="compact"]) .usage-chart-foot { grid-column: 1 / -1; }
+
+/* 窗口概览:只用热力图已有的格子算,数字都来自同一批格子,不新增查询。 */
+.usage-chart-side {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 28px;
+  margin: 0 0 12px; padding: 9px 0 10px;
+  border-top: 1px solid var(--border-soft); border-bottom: 1px solid var(--border-soft);
+}
+.usage-side-row { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.usage-side-row > span { font-size: 12.5px; color: var(--dim); white-space: nowrap; }
+.usage-side-row > b {
+  font: 600 15px/1.25 var(--sans); color: var(--text); font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.heatmap-weekdays { width: 26px; }
+.heatmap-months { font-size: 11.5px; }
+/* 紧凑窗口(周数少):格子边长随视口在 24–34px 之间伸缩,行高与列宽共用同一个值,
+   所以格子始终是正方形;超出时轨道对齐到起点,不会把最后一列拉宽。 */
+#usage-heatmap[data-density="compact"] { --usage-cell: clamp(24px, 2.4vw, 36px); }
+#usage-heatmap[data-density="compact"] .heatmap-grid { --heat-gap: 4px; }
+#usage-heatmap[data-density="compact"] .heatmap-grid {
+  grid-auto-columns: var(--usage-cell);
+  grid-template-rows: repeat(7, var(--usage-cell));
+  justify-content: start;
+}
+#usage-heatmap[data-density="compact"] .heatmap-weekdays {
+  grid-template-rows: repeat(7, var(--usage-cell));
+}
+#usage-heatmap[data-density="compact"] .heatmap-layout { justify-content: start; }
+#usage-heatmap[data-density="compact"] .heatmap-months {
+  grid-auto-columns: var(--usage-cell);
+  justify-content: start;
+}
+
+/* 满 53 周:列宽随容器均分,月份刻度也跟着同一套列宽走。 */
+#usage-heatmap[data-density="dense"] .heatmap-grid,
+#usage-heatmap[data-density="dense"] .heatmap-months { grid-auto-columns: minmax(9px, 1fr); }
+.heatmap-cell { border-radius: 2.5px; }
+
+.usage-chart-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-top: 12px; }
+#usage-calendar-summary { font-size: 12.5px; line-height: 1.6; margin: 0; }
+.heatmap-legend { font-size: 12px; gap: 5px 7px; }
+.heatmap-legend-swatch, .heatmap-legend [data-level] { width: 11px; height: 11px; }
+#usage-calendar-expand { min-height: 32px; margin-left: auto; }
+
+/* ---- Daily table, detail tabs, pagination ---------------------------------- */
+.usage-trend-table { margin-bottom: 18px; }
+.usage-trend-table > summary { padding: 10px 16px; font-size: 13px; }
+.usage-note { font-size: 13px; line-height: 1.6; margin-bottom: 12px; }
+.usage-detail-head { margin: 6px 0 10px; }
+.usage-detail-tabs button { min-height: 38px; padding: 7px 14px; font-size: 14px; }
+.usage-table th { font-size: 12.5px; font-weight: 600; color: var(--dim); }
+.usage-table td { font-size: 13.5px; padding: 10px 14px; }
+.usage-pagination { margin: 6px 0 18px; }
+#usage-page-label { font-size: 12.5px; color: var(--dim); }
+.usage-pagination button { min-height: 32px; }
+
+/* ---- Narrow widths --------------------------------------------------------- */
+@media (max-width: 1280px) and (min-width: 641px) {
+  /* 1024 一带四张卡挤成一排时数字和徽标会互相顶:提前两列排,卡片回到能读的宽度。 */
+  .usage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* 下拉收窄一点,「清除筛选」才不会被挤到下一行单独立着。 */
+  .usage-filter select { width: 128px; }
+  .usage-filter[for="usage-model"] select { width: 152px; }
+}
+@media (max-width: 1080px) {
+  .usage-chart-side { gap: 6px 20px; }
+}
+@media (max-width: 1023px) {
+  /* 窄屏:概览与图例回到日历上方的横条,日历自己横向滚动。 */
+  .usage-chart,
+  .usage-chart:has(#usage-heatmap[data-density="compact"]) {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "head" "side" "body" "foot";
+  }
+  .usage-chart-side,
+  .usage-chart:has(#usage-heatmap[data-density="compact"]) .usage-chart-side {
+    display: flex; flex-flow: row wrap; align-items: baseline; gap: 6px 22px;
+    padding: 9px 0 10px; margin: 0 0 12px; min-height: 0;
+    border-left: 0; border-top: 1px solid var(--border-soft); border-bottom: 1px solid var(--border-soft);
+  }
+  .usage-chart:has(#usage-heatmap[data-density="compact"]) .usage-side-row {
+    align-items: baseline; justify-content: flex-start; gap: 8px; padding: 0; border-top: 0;
+  }
+  .usage-chart:has(#usage-heatmap[data-density="compact"]) .usage-side-row > b { font-size: 14px; }
+  .usage-side-row,
+  .usage-chart:not(:has(#usage-heatmap[data-density="compact"])) .usage-side-row {
+    flex-direction: row; gap: 8px;
+  }
+  .usage-side-row > b,
+  .usage-chart:not(:has(#usage-heatmap[data-density="compact"])) .usage-side-row > b { font-size: 14px; }
+  #view-usage .usage-head-actions,
+  #topbar-page-actions .usage-head-actions { flex-wrap: wrap; gap: 6px; }
+  .usage-grid { gap: 12px; }
+  .usage-grid .metric { padding: 16px; }
+  .usage-grid .metric > b { font-size: 28px; }
+}
+@media (max-width: 640px) {
+  /* 手机上格子保持可点的大小,整块日历在自己的滚动区里横向滚动(默认锚在最近一周);
+     铺满整行会把格子压到 20px 以下,手指点不准。星期标签黏在滚动区左边,不跟着滚走。 */
+  #usage-heatmap[data-density="compact"] { --usage-cell: 26px; }
+  .heatmap-weekdays {
+    position: sticky; left: 0; z-index: 1;
+    background: var(--surface); padding-right: 6px;
+  }
+  /* 四个筛选下拉两列并排:一到手机上就四行全宽,会把卡片推到两屏之外。 */
+  .usage-bar { gap: 10px; }
+  .usage-filters { gap: 8px 10px; }
+  .usage-filter { flex: 1 1 calc(50% - 5px); min-width: 0; }
+  .usage-filter select, .usage-filters select { width: 100%; min-width: 0; }
+  /* 手机上筛选排成两列后「清除筛选」落到下一行:靠右收,别把次要动作顶在左边像主按钮。 */
+  #usage-clear-filters { flex: 0 0 auto; margin-left: auto; }
+  .usage-chart { padding: 14px 14px 12px; }
+  .usage-chart-side { gap: 6px 18px; }
+  .usage-grid .metric > b { font-size: 26px; }
+  .usage-intro { font-size: 13px; }
+  /* 手机上四张卡两列:一列会把热力图推到第三屏,四张卡加起来比热力图还高。 */
+  .usage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .usage-grid .metric { padding: 14px 14px 12px; }
+  .usage-grid .metric-label { font-size: 12.5px; }
+  .usage-grid .metric > b { font-size: 24px; letter-spacing: -.5px; }
+  .usage-grid .metric small { font-size: 12px; }
+  /* 徽标在 24px 数字旁边要更小,否则会把「成功率」标签挤到第二行。 */
+  .usage-grid .metric-label > b.metric-fail { font-size: 11px; padding: 1px 7px; }
+}
+@media (max-width: 560px) {
+  .usage-sync-group .usage-last-sync { display: none; }
+  .usage-sync-group { padding-right: 2px; }
+  .usage-detail-tabs button { padding: 8px 10px; min-height: 36px; font-size: 13.5px; }
+}

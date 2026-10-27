@@ -99,10 +99,11 @@ Not a good fit:
   card views for providers, and expand model slots when needed. Fetch upstream models using a Base URL
   and API key while creating or editing a provider,
   then search and select models to add; manual entry remains available.
-  System/light/dark themes,
+  A collapsible desktop sidebar, mobile navigation drawer, system/light/dark themes,
   `⌘K` / `Ctrl+K` quick navigation, and page deep links are supported.
   The usage page shares one set of filters across request/token totals, cache and success rates,
-  a calendar heatmap, and request/provider/model table tabs. It counts currently available logs
+  a calendar heatmap, and request/provider/model table tabs. The heatmap initially spans 13–53 weeks
+  based on log coverage, with older data available by expanding it. It counts currently available logs
   and never converts usage into money.
 
 ![Local console, Claude Code providers page: client entries in the sidebar, provider rows, enablement and connection status, account switching, and layout switch](docs/images/console-providers.jpg)

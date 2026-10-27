@@ -1,0 +1,335 @@
+/* Observe pages: sessions, diagnostics, harness.
+   Owned by the observe pages. Shared tokens come from base.css; do not redefine them here.
+
+   三页共用的两条结构问题在这里统一修：
+   1) 表格在容器内横向滚动，文字不再被挤断（「09:15:0 / 1」那种断字是 bug，不是布局选择）；
+   2) 数字/时间列一律 nowrap 且右对齐等宽，长文本列自己截断、保留 title。
+   颜色全部走 base.css 的既有 token，深浅两套都跟着变。 */
+
+/* ---------------------------------------------------------------- 会话页 */
+#view-sessions { min-width: 0; }
+
+/* 搜索框与右侧「清除搜索与筛选」原本各占一行还错位：.logbar 是 align-items:flex-end，
+   而按钮又被 margin-left:auto 推走。这里让两者同一行、共同基线，窄屏才分两行。 */
+#view-sessions .sessbar {
+  align-items: flex-end; gap: 10px 12px; margin-bottom: 14px;
+}
+#view-sessions .sessbar label { flex: 1 1 320px; max-width: 460px; }
+#view-sessions .sessbar button { margin-left: 0; flex: 0 0 auto; }
+
+/* 顶部五张统计卡：桌面始终一排（等分，不留下孤零零的第 5 张换行），窄屏再退到两列。 */
+#view-sessions .chips,
+#view-diagnostics .chips { gap: 10px; margin-bottom: 12px; }
+#view-sessions .chip,
+#view-diagnostics .chip {
+  flex: 1 1 0; min-width: 0;
+  padding: 10px 12px; border-radius: var(--radius); font-size: 12.5px; line-height: 1.3;
+}
+#view-sessions .chip b,
+#view-diagnostics .chip b { font-size: 20px; line-height: 1.25; margin-top: 3px; }
+/* 「实际 ≠ 绑定」是这一页唯一必须一眼看到的计数：有差异时染 warn，0 时保持安静。 */
+#view-sessions .chip.chip-alert { border-color: var(--warn-line); background: var(--warn-soft); color: var(--warn-text); }
+#view-sessions .chip.chip-alert b { color: var(--warn-text); }
+
+/* 说明从三行压到一行：次要细节在「配置 Key / 槽位」弹窗里已有完整解释。 */
+#view-sessions .sess-intro {
+  font-size: 13px; line-height: 1.6; margin: -2px 0 14px; max-width: 92ch;
+}
+
+/* --- 会话表 --------------------------------------------------------------- */
+#view-sessions .sess-table-wrap { margin-bottom: 12px; }
+/* fixed 布局 + 固定列宽:列不随内容跳动。min-width 取列宽之和,窄容器里整表横向滚动,
+   而不是把每列压窄再把文字挤断。 */
+#view-sessions .sess-table { table-layout: fixed; min-width: 1092px; width: 100%; }
+#view-sessions .sess-table th { padding: 9px 12px; font-size: 12.5px; }
+/* 「请求 / tokens 入出」两行表头:一行写不下就会在 1440 断成三行,把整列顶高。 */
+#view-sessions .sess-table th .th-note {
+  display: block; font-style: normal; font-weight: 400; font-size: 11px; color: var(--dim); line-height: 1.35;
+}
+#view-sessions .sess-table th.num { text-align: right; }
+#view-sessions .sess-table th.th-ops { text-align: left; }
+#view-sessions .sess-table td { padding: 10px 12px; vertical-align: top; font-size: 14px; max-width: none; overflow-wrap: normal; }
+/* 列宽用 colgroup 固定，视线从上到下不需要重新找列。九列合计 1092px —— 1440 视口的
+   内容区(1126px)刚好放得下,再窄就整表横向滚动,不压缩文字。 */
+#view-sessions .sc-id { width: 92px; }
+#view-sessions .sc-app { width: 76px; }
+#view-sessions .sc-label { width: 140px; }
+#view-sessions .sc-bind { width: 208px; }
+#view-sessions .sc-actual { width: 168px; }
+#view-sessions .sc-routing { width: 138px; }
+#view-sessions .sc-usage { width: 100px; }
+#view-sessions .sc-active { width: 84px; }
+#view-sessions .sc-ops { width: 112px; }
+
+#view-sessions .c-sess { white-space: nowrap; }
+#view-sessions .sess-kind { display: block; font-size: 11px; color: var(--dim); line-height: 1.4; margin-top: 2px; }
+#view-sessions .c-app { white-space: nowrap; }
+/* 对话名给一行，放不下就省略，title 里有全文。 */
+#view-sessions .c-label .lbl { display: block; max-width: 100%; }
+/* 数字列：不换行，右对齐，等宽数字。 */
+#view-sessions .c-usage { white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }
+#view-sessions .c-usage b { display: block; font-weight: 600; color: var(--text); }
+#view-sessions .c-usage span { display: block; font-size: 12.5px; color: var(--dim); margin-top: 1px; }
+#view-sessions .c-active { white-space: nowrap; color: var(--dim); font-variant-numeric: tabular-nums; font-size: 13.5px; }
+
+/* 当前绑定格：编辑入口与「来源 + 渠道」摘要同一行，展开时才铺满整列，
+   这样未展开的行只有两行高，不靠大留白撑开。 */
+#view-sessions .session-binding { white-space: normal; }
+#view-sessions .bind-row { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; min-width: 0; }
+#view-sessions .bind-row .session-pin { flex: 1 1 auto; min-width: 0; margin-top: 0; }
+/* 展开后表单要占满整列:让它换到下一行，下拉铺满格宽。 */
+#view-sessions .bind-row:has(.session-pin[open]) { flex-wrap: wrap; }
+#view-sessions .session-pin[open] { flex-basis: 100%; }
+#view-sessions .session-pin[open] .field { margin-top: 6px; }
+#view-sessions .session-pin[open] .pin-sel { width: 100%; min-width: 0; }
+#view-sessions .session-pin[open] .bind-src { margin-top: 6px; }
+#view-sessions .session-pin[open] .rt-note { font-size: 12px; color: var(--warn-text); margin-top: 4px; }
+/* 每行都有的同一个按钮:描边压到 border-soft，悬停才亮起来，不跟数值抢注意力。
+   标签不换行 —— 两行高的按钮会把整行撑高一倍。 */
+#view-sessions .sess-config {
+  flex: 0 0 auto; white-space: nowrap;
+  padding: 3px 8px; min-height: 32px;
+  font-size: 12.5px; border-color: var(--border-soft); color: var(--dim); background: transparent;
+}
+#view-sessions .sess-config:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); background: var(--surface-2); }
+#view-sessions .session-pin { margin-top: 0; }
+/* 摘要一行:来源标标 + 渠道名。与按钮同一行，不换行,渠道名超宽省略(title 里有全文)。 */
+#view-sessions .session-pin > summary {
+  display: flex; flex-wrap: nowrap; align-items: center; gap: 6px;
+  font: 13px/1.5 var(--sans); color: var(--text); cursor: pointer;
+  list-style: none; min-width: 0; min-height: 32px; padding: 4px 0;
+}
+#view-sessions .session-pin > summary .badge { flex: 0 0 auto; }
+#view-sessions .session-pin > summary::-webkit-details-marker { display: none; }
+#view-sessions .session-pin > summary::before {
+  content: ''; flex: 0 0 auto; width: 0; height: 0;
+  border-left: 4px solid var(--dim); border-top: 3.5px solid transparent; border-bottom: 3.5px solid transparent;
+}
+#view-sessions .session-pin[open] > summary::before { transform: rotate(90deg); }
+#view-sessions .session-pin > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+#view-sessions .bind-line { color: var(--text); font-family: var(--sans); font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#view-sessions .bind-meta {
+  margin-top: 2px; min-width: 0;
+  font: 12.5px/1.5 var(--mono); color: var(--dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* 打开的折叠里已有来源标标，summary 上那个是"闭合时也能看见"的那一份。 */
+#view-sessions .session-pin[open] > summary .badge { display: none; }
+
+/* 绑定来源标标：base.css 只给了 .badge.off，pin / auto 一直是裸文字。
+   「手动钉定」是要人一眼认出来的那个，给 accent；自动分配跟随 surface，不抢眼。 */
+#view-sessions .badge.pin { background: var(--accent-soft); color: var(--accent-text); border-color: var(--accent-line); }
+#view-sessions .badge.auto { background: var(--surface-2); color: var(--tag-text); border-color: var(--border-soft); }
+#view-sessions .badge.off { background: transparent; color: var(--dim); border-color: var(--border-soft); }
+
+/* 未绑定的行整体压暗：每行重复"未绑定"只是噪音。 */
+#view-sessions tr.sess-unbound .session-binding { opacity: .86; }
+
+/* --- 最近实际请求：三行固定结构，不换行 ---------------------------------- */
+#view-sessions .actual-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; white-space: nowrap; }
+#view-sessions .actual-cell .sum { display: flex; align-items: center; gap: 6px; color: var(--text); min-width: 0; }
+#view-sessions .actual-cell .sum > :first-child { overflow: hidden; text-overflow: ellipsis; }
+#view-sessions .actual-cell .sub { font-size: 12.5px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; }
+#view-sessions .actual-cell .meta { font-size: 11.5px; color: var(--dim); font-variant-numeric: tabular-nums; }
+#view-sessions .actual-cell .ac-status { font: 600 11.5px/1.4 var(--mono); padding: 0 5px; border-radius: 4px; border: 1px solid var(--border-soft); }
+#view-sessions .actual-cell .ac-status.st2 { color: var(--ok-text); border-color: var(--ok-line); background: var(--ok-soft); }
+#view-sessions .actual-cell .ac-status.st4,
+#view-sessions .actual-cell .ac-status.st5 { color: var(--err-text); border-color: var(--err-line); background: var(--err-soft); }
+/* "实际 ≠ 绑定"用 warn 色 + 左侧竖条，浅色下也够：warn-text 在浅色是 #7a5208，对比度 5.6:1。 */
+#view-sessions .actual-cell.diff { border-left: 2px solid var(--warn-line); padding-left: 8px; margin-left: -10px; }
+#view-sessions .actual-cell.diff .sum,
+#view-sessions .actual-cell.diff .sub,
+#view-sessions .actual-cell.diff .meta,
+#view-sessions .actual-cell.diff .why { color: var(--warn-text); }
+#view-sessions .actual-cell .why { font-size: 11.5px; font-weight: 600; }
+
+/* Key / 槽位列（原来是逐行展开的「配置 Key / 槽位」折叠）：两行摘要，超长省略。 */
+#view-sessions .routes-cell { gap: 1px; min-width: 0; white-space: nowrap; }
+#view-sessions .routes-cell .sum { font-size: 13px; }
+#view-sessions .routes-cell .sub {
+  font-size: 11.5px; color: var(--dim);
+  overflow: hidden; text-overflow: ellipsis;
+}
+#view-sessions .routes-cell .sub.warn { color: var(--warn-text); }
+
+/* 操作列两个按钮并排：竖排会独占两行高度，把整行撑高。 */
+#view-sessions .sess-acts { flex-direction: row; gap: 4px; align-items: center; }
+#view-sessions .sess-acts button { min-height: 32px; padding: 4px 8px; }
+
+/* ---------------------------------------------------------------- 诊断页 */
+#view-diagnostics { min-width: 0; }
+#view-diagnostics .chips { margin-bottom: 14px; }
+#view-diagnostics .logbar { gap: 10px 12px; margin-bottom: 12px; }
+#view-diagnostics .logbar label { font-size: 12.5px; flex: 1 1 150px; min-width: 138px; }
+#view-diagnostics .logbar input,
+#view-diagnostics .logbar select { width: 100%; min-width: 0; }
+#view-diagnostics .logbar button { margin-bottom: 0; }
+
+/* 日志表：固定布局 + 固定列宽，数字列 nowrap 右对齐，模型与错误列自己截断。
+   十列合计 1088px：1440 视口放得下，窄屏整表在容器里横向滚动。 */
+#view-diagnostics .log-table-wrap { margin-bottom: 12px; }
+#view-diagnostics .log-table { table-layout: fixed; min-width: 1088px; width: 100%; }
+#view-diagnostics .lc-time { width: 120px; }
+#view-diagnostics .lc-sess { width: 84px; }
+#view-diagnostics .lc-prov { width: 168px; }
+#view-diagnostics .lc-model { width: 176px; }
+#view-diagnostics .lc-tokens { width: 124px; }
+#view-diagnostics .lc-speed { width: 78px; }
+#view-diagnostics .lc-ttfb { width: 62px; }
+#view-diagnostics .lc-bytes { width: 80px; }
+#view-diagnostics .lc-status { width: 56px; }
+#view-diagnostics .lc-err { width: 140px; }
+#view-diagnostics .log-table th,
+#view-diagnostics .log-table td { padding: 9px 12px; }
+#view-diagnostics .log-table th .th-note {
+  display: block; font-style: normal; font-weight: 400; font-size: 11px; color: var(--dim); line-height: 1.35;
+}
+#view-diagnostics .log-table td { font-size: 13.5px; line-height: 1.45; vertical-align: top; max-width: none; }
+#view-diagnostics .log-table th.num,
+#view-diagnostics .log-table td.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+#view-diagnostics .log-table td.c-time { white-space: nowrap; color: var(--dim); font-variant-numeric: tabular-nums; }
+#view-diagnostics .log-table td.c-sess { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#view-diagnostics .log-table td.c-prov { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#view-diagnostics .log-table td.c-model { white-space: nowrap; overflow: hidden; }
+#view-diagnostics .log-table .mdl-in,
+#view-diagnostics .log-table .mdl-out {
+  display: block; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#view-diagnostics .log-table .mdl-out { font-size: 12px; color: var(--dim); }
+/* tokens 一格两行：上行入/出，下行缓存读与命中率。 */
+#view-diagnostics .log-table td.c-tok .tok-main { display: block; }
+#view-diagnostics .log-table td.c-tok .tok-sub { display: block; font-size: 11.5px; color: var(--dim); }
+/* 耗时与请求体同格两行。 */
+#view-diagnostics .log-table td.c-bytes .sub { display: block; font-size: 11.5px; color: var(--dim); }
+#view-diagnostics .log-table td.c-bytes > span { display: block; }
+/* 错误列是唯一可以换行的长文本：正文最多三行，全文在 title 里；失败分类标标单占一行。 */
+#view-diagnostics .log-table td.c-err { color: var(--err-text); }
+#view-diagnostics .log-table td.c-err .err-text {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3;
+  overflow: hidden; overflow-wrap: anywhere; font-size: 12.5px;
+}
+#view-diagnostics .log-table td.c-err .cool { display: block; font-size: 11.5px; }
+#view-diagnostics .log-table .dim { color: var(--dim); }
+#view-diagnostics .log-table tbody tr:hover { background: var(--surface-2); }
+
+/* 分槽用量挪到日志之后：它是明细视图，不是首屏主任务。字号收紧，范围说明一行一句。 */
+#view-diagnostics #slot-stats-panel { margin-top: 4px; }
+#view-diagnostics #slot-stats-panel h2 { font-size: 15px; }
+#view-diagnostics .diag-scope { font-size: 12.5px; line-height: 1.6; margin-bottom: 8px; }
+#view-diagnostics #slot-stats-table { margin-bottom: 0; border: 0; border-radius: 0; }
+#view-diagnostics #slot-stats-table table { min-width: 520px; }
+#view-diagnostics #slot-stats-table th,
+#view-diagnostics #slot-stats-table td { padding: 8px 12px; font-size: 13.5px; }
+#view-diagnostics #slot-stats-table th.num { text-align: right; }
+#view-diagnostics #slot-stats-status.stale { color: var(--warn-text); }
+
+/* 尝试过程面板（attempt-flow.js 用的类在 attempt-flow.css）：这里只调面板内的间距密度。
+   没有进行中也没有历史时，面板收成一行标题 + 一行状态，不占首屏高度。 */
+#view-diagnostics #attempt-flow { margin-top: 4px; }
+#view-diagnostics #attempt-flow h2 { font-size: 15px; }
+#view-diagnostics #attempt-flow[data-state="empty"] { padding: 12px 16px; margin-bottom: 12px; }
+#view-diagnostics #attempt-flow[data-state="empty"] h2 { margin-bottom: 2px; }
+#view-diagnostics #attempt-flow[data-state="empty"] #attempt-flow-hint { display: none; }
+#view-diagnostics #attempt-flow[data-state="empty"] .attempt-flow-status { margin: 0; font-size: 13px; }
+#view-diagnostics #attempt-flow[data-state="empty"] .attempt-flow-list { margin-top: 2px; }
+#view-diagnostics #attempt-flow[data-state="empty"] .attempt-flow-empty { margin: 0; font-size: 13px; color: var(--dim); }
+
+/* ---------------------------------------------------------------- Harness 页 */
+#view-harness .harness-fields { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+#view-harness .harness-setup { margin-bottom: 18px; }
+#view-harness .harness-setup .savebar { margin-top: 0; margin-bottom: 12px; }
+#view-harness .harness-status { margin: 0 0 10px; }
+#view-harness .harness-client {
+  font-size: 12.5px; line-height: 1.6; margin: 0 0 12px;
+  overflow-wrap: anywhere;
+}
+#view-harness .harness-help { margin-bottom: 4px; }
+/* display:flex 会吃掉默认的展开箭头:自己补一个,旋转跟随 open 状态。 */
+#view-harness .harness-help > summary {
+  cursor: pointer; color: var(--dim); font-size: 13px;
+  padding: 4px 0; min-height: 32px; display: flex; align-items: center; gap: 6px;
+  list-style: none;
+}
+#view-harness .harness-help > summary::-webkit-details-marker { display: none; }
+#view-harness .harness-help > summary::before {
+  content: ''; flex: 0 0 auto; width: 0; height: 0;
+  border-left: 5px solid currentColor; border-top: 4px solid transparent; border-bottom: 4px solid transparent;
+  transition: transform .15s ease;
+}
+#view-harness .harness-help[open] > summary::before { transform: rotate(90deg); }
+#view-harness .harness-help > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+#view-harness .harness-help[open] > summary { color: var(--text); }
+#view-harness .harness-help .hint { font-size: 12.5px; line-height: 1.6; margin: 4px 0 8px; }
+#view-harness .harness-help .hint:last-child { margin-bottom: 0; }
+
+/* 候选池：一行一组「渠道 → 模型」，标签只在列头出现一次；行间用细线分隔而不是大片留白。
+   第三列（移除按钮）两处都定宽，否则列头与行的第二列会错开。 */
+#view-harness .harness-pool-head,
+#view-harness .harness-member { grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr) 52px; }
+#view-harness .harness-pool-head {
+  display: grid; gap: 10px 16px; align-items: center;
+  padding: 0 0 6px; font-size: 12px; color: var(--dim);
+}
+#view-harness .harness-member { padding: 10px 0; align-items: center; }
+#view-harness .harness-member .field-compact { gap: 0; }
+#view-harness .harness-member select { width: 100%; min-width: 0; }
+#view-harness .harness-remove { width: 100%; }
+#view-harness .harness-main-note { grid-column: 1 / -1; margin-top: -2px; }
+
+@media (max-width: 600px) {
+  /* 手机上没有列头了,成员行自己把「渠道 / 模型」标签露回来。 */
+  #view-harness .harness-pool-head { display: none; }
+  #view-harness .harness-member { grid-template-columns: minmax(0, 1fr) auto; gap: 6px 10px; }
+  #view-harness .harness-member .field-compact { grid-column: 1; gap: 5px; }
+  #view-harness .harness-member .field-compact .sr-only {
+    position: static; width: auto; height: auto; margin: 0; overflow: visible;
+    clip-path: none; white-space: normal; font-size: 12.5px; color: var(--dim);
+  }
+  #view-harness .harness-member .harness-remove { grid-column: 2; grid-row: 1 / span 2; align-self: center; }
+  #view-harness .harness-main-note { grid-column: 1; margin-top: 0; }
+}
+
+/* 表格横向滚动的可见提示：滚动条不划就不出现时，表格看起来像被截断。
+   细滚动条常驻；再给窄屏一句文字提示，桌面放得下就不显示。 */
+#view-sessions .sess-table-wrap,
+#view-diagnostics .log-table-wrap { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+#view-sessions .sess-table-wrap::-webkit-scrollbar,
+#view-diagnostics .log-table-wrap::-webkit-scrollbar { height: 10px; }
+#view-sessions .sess-table-wrap::-webkit-scrollbar-thumb,
+#view-diagnostics .log-table-wrap::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 6px; }
+#view-sessions .sess-table-wrap::-webkit-scrollbar-track,
+#view-diagnostics .log-table-wrap::-webkit-scrollbar-track { background: transparent; }
+
+.table-scroll-hint {
+  display: none;
+  font-size: 12px; color: var(--dim); margin: -4px 0 6px;
+}
+
+@media (max-width: 1180px) {
+  #view-sessions .table-scroll-hint,
+  #view-diagnostics .table-scroll-hint { display: block; }
+}
+
+@media (max-width: 860px) {
+  #view-sessions .sessbar label { flex-basis: 100%; max-width: none; }
+  #view-sessions .sessbar button { width: 100%; }
+  #view-sessions .chip { flex: 1 1 calc(50% - 5px); min-width: 0; }
+  #view-diagnostics .logbar label { flex: 1 1 calc(50% - 12px); }
+  #view-diagnostics .chip { flex: 1 1 calc(50% - 5px); min-width: 0; }
+}
+
+@media (max-width: 600px) {
+  #view-harness .harness-fields { grid-template-columns: minmax(0, 1fr); }
+  #view-sessions .chip { flex: 1 1 calc(50% - 5px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #view-sessions .session-pin > summary,
+  #view-harness .harness-help > summary { transition: none; }
+}
+
+@media (forced-colors: active) {
+  #view-sessions .actual-cell.diff { border-left-color: CanvasText; }
+  #view-sessions .chip.chip-alert { border: 1px solid CanvasText; }
+}

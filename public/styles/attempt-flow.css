@@ -51,13 +51,19 @@
 /* 已结束:折叠在 <details> 里,默认不展开。 */
 .attempt-flow-done { margin-top: 16px; }
 .attempt-flow-done > summary {
+  display: flex; align-items: center; gap: 6px; min-height: 32px;
   cursor: pointer; color: var(--dim); font-size: 13.5px;
   padding: 4px 0; user-select: none;
 }
+.attempt-flow-done > summary::before {
+  content: ''; flex: 0 0 auto; width: 0; height: 0;
+  border-left: 4px solid currentColor; border-top: 3.5px solid transparent; border-bottom: 3.5px solid transparent;
+}
+.attempt-flow-done[open] > summary::before { transform: rotate(90deg); }
+.attempt-flow-done > summary::-webkit-details-marker { display: none; }
 .attempt-flow-done > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .attempt-flow-done[hidden] { display: none; }
 .attempt-flow-done > .attempt-flow-list { margin-top: 10px; }
-
 .attempt-toggle {
   background: transparent; border: 1px solid transparent; color: var(--dim);
   padding: 0 5px; min-width: 24px; font-size: 15px; line-height: 1.4; cursor: pointer;
@@ -73,7 +79,23 @@
   list-style: none; margin: 8px 0 10px; padding: 0;
   display: grid; gap: 4px; font-size: 13px;
 }
-.attempt-events li { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
+/* 状态码单独做成一个标标:和后面的元信息混在同一段文字里时,"502" 与模型名分不开。 */
+.attempt-card.done > header > .attempt-code {
+  font: 600 12px/1.5 var(--mono); padding: 0 6px; border-radius: 4px;
+  border: 1px solid var(--border-soft); background: var(--surface-2); color: var(--dim);
+  flex: 0 0 auto;
+}
+.attempt-card.done > header > .attempt-code.ok { color: var(--ok-text); border-color: var(--ok-line); background: var(--ok-soft); }
+.attempt-card.done > header > .attempt-code.err { color: var(--err-text); border-color: var(--err-line); background: var(--err-soft); }
+
+.attempt-events li { display: grid; grid-template-columns: 96px auto minmax(0, 1fr); gap: 8px; align-items: baseline; }
+.attempt-events li > b { white-space: nowrap; }
+.attempt-events li > .mono { overflow-wrap: anywhere; }
+
+@media (max-width: 720px) {
+  .attempt-events li { grid-template-columns: minmax(0, 1fr); gap: 1px; }
+}
+
 .attempt-events time { font: 12.5px var(--mono); color: var(--dim); font-variant-numeric: tabular-nums; }
 .attempt-events b { font-weight: 600; color: var(--text); }
 .attempt-events .mono {

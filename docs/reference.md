@@ -343,8 +343,10 @@ Claude Code / Codex 的全局槽位表存在 `<MIXR_DATA_DIR>/slots.json`(`{vers
 详见[资源绑定恢复边界](harness.md#资源绑定错误恢复)。
 
 原生 Responses 的输出前连接中断、纯生命周期 EOF、明确临时错误与 HTTP408 也共用原预算
-恢复。已提交正文/推理/工具、未知/部分帧或超过 64KiB 的前缀不重放;空 completed 不改成成功
-或额外重试。恢复开始后固定出站快照,普通 HTTP 错误的已有 Key 备用/路由故障转移不受影响。
+恢复。完整临时错误帧后同一批字节仅跟空生命周期、注释或严格的 `data: [DONE]` 标记时,
+不会因这段无输出尾部放弃重试。已提交正文/推理/工具、未知/部分帧或超过 64KiB 的前缀不重放;
+空 completed 不改成成功或额外重试。恢复开始后固定出站快照,
+普通 HTTP 错误的已有 Key 备用/路由故障转移不受影响。
 
 **加密 reasoning 有损降级**只在官方 AgentRouter HTTPS(`agentrouter.org` 或 `ps.air-outer.com`)
 的原生 Responses 请求上启用。HTTP 400 或 2xx 响应中的错误必须精确包含
@@ -365,8 +367,9 @@ Claude Code / Codex 的全局槽位表存在 `<MIXR_DATA_DIR>/slots.json`(`{vers
 只把严格校验为空的 Chat chunk 或注释视为尚未输出。HTTP 200 SSE 内明确的临时错误
 (包括已识别的限流/服务端临时错误)可在此窗口内同落点重试,不先发送合成 `response.created`
 封死窗口;日志记 `retry_reason: chat_preoutput_retry`。输出前连接中断或仅空 chunk 后提前 EOF
-也复用此窗口。重试固定渠道、模型、Key 与出站快照,共用既有尝试次数和总时限,不另开预算。
-一旦出现正文、推理、工具、终态、未知字段、压缩内容或超过前缀上限,不丢弃这些内容来
+也复用此窗口。临时错误后跟严格的 `data: [DONE]`、注释或空 chunk 仍可重试,
+不是把错误当作成功完成。重试固定渠道、模型、Key 与出站快照,共用既有尝试次数和总时限,
+不另开预算。一旦出现正文、推理、工具、带输出的终态、未知字段、压缩内容或超过前缀上限,不丢弃这些内容来
 重放;断开/结束时仍有未完成的部分帧也不重放。鉴权、格式不兼容等终态错误不改成成功。
 
 不可恢复的 Chat SSE `data.error` 转为 Responses `failed` 终态,保留原 `message` 及字符串/
@@ -554,8 +557,8 @@ MIXR_DATA_DIR=/absolute/path node scripts/diagnose-upstream.js --mode provider -
 | `attempts` / `failover` | 实际网络尝试次数 / 是否发生过失败转移 |
 | `request_id` | 本进程请求 ID，可关联有界内存尝试过程；旧日志没有此字段，过程过期不补造 |
 | `err` / `err_class` | 终态错误文本 / 错误分型 |
-| `retry_reason` | 恢复重试原因;`encrypted_reasoning_downgrade` 为加密推理有损降级,`unprojected_resource_retry` 为历史不改写的资源错误重投,`chat_preoutput_retry` 为 Codex Chat 输出前重试 |
-| `resource_recovery_skipped` | 资源 ID 投影被拒绝的固定分类;不表示历史已被投影 |
+| `retry_reason` | 最近一次已执行的恢复类型:`resource_binding_recovery` 为 Azure 资源 ID 投影,`native_history_recovery` 为官方 AgentRouter 窄历史错误投影,`projected_resource_retry` 为重复发送已投影历史;`unprojected_resource_retry` 为历史不改写的资源错误重投,`encrypted_reasoning_downgrade` 为加密推理有损降级,`chat_preoutput_retry` 为 Codex Chat 输出前重试 |
+| `resource_recovery_skipped` | 资源投影或恢复未执行的固定分类,多个不同原因按首次出现用 `+` 连接;可能与成功重投的 `retry_reason` 同时存在,不表示历史已被投影 |
 | `bytes_in` | 客户端请求体字节数(不是 token)。大上下文/带截图时可达十几 MB,而首字延迟主要由它决定 —— 上游面板只从收完请求体开始计时 |
 | `ttfb_ms` | 请求开始 → 上游首个响应头到达的毫秒数(多次尝试取最终给出响应的那一发;全部失败记到收尾)。`0` 表示没测到(如本地估算的 count_tokens) |
 | `slot` | 命中的槽位;空槽记 `none`,缺字段的旧日志记 `unknown` |
@@ -564,6 +567,11 @@ MIXR_DATA_DIR=/absolute/path node scripts/diagnose-upstream.js --mode provider -
 | `effort` | 真的发上去的思考强度档位 |
 | `model_in` / `model_out` | 客户端说的模型 / 实际发给上游的模型 |
 | `think` / `reasoning` / `tools_dropped` | 排查上游 400 的证据 |
+
+`resource_recovery_skipped` 保留历史校验分类(如 `unsupported_item_id`),并补充
+`no_native_state`、`response_committed`、`request_finished`、`client_closed`、`deadline_exceeded`。
+已识别资源错误但首次恢复就被重试预算拒绝时记 `retry_budget_exhausted`;若之前已执行过恢复,
+以 `retry_reason` 和 `attempts` 说明发生过什么。旧版本没有这些记录,不能用字段缺失推断恢复从未执行。
 
 日志**不含 Key 明文**,也不含会话标签;内容包括渠道名、模型名、会话键(哈希/ID 形态)
 与错误文本。

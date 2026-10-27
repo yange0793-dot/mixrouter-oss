@@ -24,7 +24,7 @@
   };
   // 渠道页的标题按客户端写:侧栏的三个客户端入口都落在同一个视图上,标题必须能说明现在看的是谁。
   const CLIENTS = { claude: 'Claude Code', codex: 'Codex', zcode: 'ZCode' };
-  const KEYS = { view: 'mixr.ui.view', app: 'mixr.ui.app', theme: 'mixr.ui.theme' };
+  const KEYS = { view: 'mixr.ui.view', app: 'mixr.ui.app', theme: 'mixr.ui.theme', rail: 'mixr.ui.rail' };
   const THEMES = ['system', 'light', 'dark'];
   const DEFAULT_THEME = 'system';
   const DEFAULT_VIEW = 'overview';
@@ -104,6 +104,31 @@
 
   // 在脚本解析时就落一次主题(此时还在 <head>,样式表尚未生效)。
   applyTheme(readPref(KEYS.theme) || DEFAULT_THEME, false);
+
+  // ---------------------------------------------------------------- 侧栏收起(桌面)
+
+  // 收起状态写在 <html data-sidebar="rail"> 上而不是 body:<head> 里就能落,刷新不闪。
+  // 窄屏由样式表忽略这个属性,那里侧栏是抽屉,由 setDrawer 管。
+  let rail = false;
+  function applyRail(value, persist) {
+    rail = !!value;
+    if (root) {
+      if (rail) root.setAttribute('data-sidebar', 'rail');
+      else root.removeAttribute('data-sidebar');
+    }
+    const collapse = el('sidebar-collapse');
+    if (collapse) {
+      collapse.setAttribute('aria-expanded', String(!rail));
+      collapse.setAttribute('aria-label', rail ? '展开侧栏' : '收起侧栏');
+      collapse.setAttribute('title', rail ? '展开侧栏' : '收起侧栏');
+    }
+    // 顶栏那个开关在桌面端只用来把收起的侧栏叫回来;标签跟着这个用途写,
+    // 窄屏仍由 setDrawer 按抽屉开合改写。
+    const toggle = el('sidebar-toggle');
+    if (toggle && !drawerOpen) toggle.setAttribute('aria-label', rail ? '展开侧栏' : '打开导航');
+    if (persist) writePref(KEYS.rail, rail ? '1' : '0');
+  }
+  applyRail(readPref(KEYS.rail) === '1', false);
 
   // ---------------------------------------------------------------- 路由
 
@@ -409,7 +434,8 @@
     const toggle = el('sidebar-toggle');
     if (toggle) {
       toggle.setAttribute('aria-expanded', String(drawerOpen));
-      toggle.setAttribute('aria-label', drawerOpen ? '关闭导航' : '打开导航');
+      // 桌面端这个按钮在收起侧栏后出现,它那时的用途是「展开侧栏」;窄屏才是抽屉开关。
+      toggle.setAttribute('aria-label', drawerOpen ? '关闭导航' : (rail && !isMobileDrawer() ? '展开侧栏' : '打开导航'));
     }
     const backdrop = el('sidebar-backdrop');
     if (backdrop) backdrop.hidden = !drawerOpen;
@@ -465,8 +491,16 @@
   function bindDrawer() {
     const toggle = el('sidebar-toggle');
     if (toggle) toggle.addEventListener('click', () => {
+      // 桌面端这个按钮只有在侧栏收起后才出现,那时点它就是展开;其余情况仍是抽屉开关。
+      if (rail && !isMobileDrawer()) { applyRail(false, true); focusFirstNav(); return; }
       if (drawerOpen) closeDrawer({ restoreFocus: true });
       else openDrawer();
+    });
+    const collapse = el('sidebar-collapse');
+    if (collapse) collapse.addEventListener('click', () => {
+      applyRail(true, true);
+      const reopen = el('sidebar-toggle');
+      if (reopen && typeof reopen.focus === 'function') reopen.focus();
     });
     const backdrop = el('sidebar-backdrop');
     if (backdrop) backdrop.addEventListener('click', () => closeDrawer({ restoreFocus: true }));
@@ -476,6 +510,11 @@
       if (media && typeof media.addEventListener === 'function') media.addEventListener('change', onChange);
       else if (media && typeof media.addListener === 'function') media.addListener(onChange);
     } catch { /* 没有 matchMedia 时抽屉仍可手动开关 */ }
+  }
+  // 展开后把焦点交给第一个导航项,键盘用户不用重新找位置。
+  function focusFirstNav() {
+    const first = all('nav a')[0];
+    if (first && typeof first.focus === 'function') first.focus();
   }
 
   // ---------------------------------------------------------------- 快速跳转

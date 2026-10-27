@@ -67,12 +67,15 @@
     return html + models.map(model => `<option value="${escape(model)}" ${model === selected ? 'selected' : ''}>${escape(model)}</option>`).join('');
   }
 
+  // 主模型只有一组,标签照常显示;候选池里每行都重复「渠道 / 模型」只是噪音,
+  // 池顶给一行列头,成员自己的标签改成只读屏的文字(可访问名不变)。
   function pairFields(pair, prefix, index) {
     const main = index == null;
     const action = main ? 'harnessPickMain' : `harnessPickPool.bind(null,${index})`;
     const disabled = !canEdit() ? 'disabled' : '';
-    return `<label class="field" for="${prefix}-provider">渠道<select id="${prefix}-provider" onchange="(${action})('provider',this.value)" ${disabled}>${providerOptions(pair.provider)}</select></label>
-      <label class="field" for="${prefix}-model">模型<select id="${prefix}-model" onchange="(${action})('model',this.value)" ${disabled || !modelsOf(pair.provider).length ? 'disabled' : ''}>${modelOptions(pair.provider, pair.model)}</select></label>`;
+    const tag = text => main ? text : `<span class="sr-only">${text}</span>`;
+    return `<label class="field${main ? '' : ' field-compact'}" for="${prefix}-provider">${tag('渠道')}<select id="${prefix}-provider" onchange="(${action})('provider',this.value)" ${disabled}>${providerOptions(pair.provider)}</select></label>
+      <label class="field${main ? '' : ' field-compact'}" for="${prefix}-model">${tag('模型')}<select id="${prefix}-model" onchange="(${action})('model',this.value)" ${disabled || !modelsOf(pair.provider).length ? 'disabled' : ''}>${modelOptions(pair.provider, pair.model)}</select></label>`;
   }
 
   function render() {
@@ -81,11 +84,7 @@
     if (!main || !pool) return;
     const draft = ui.draft || { main: copyPair(null), pool: [] };
     main.innerHTML = pairFields(draft.main, 'harness-main', null);
-    pool.innerHTML = `<ul class="harness-members">${draft.pool.map((member, index) => `<li class="harness-member">
-      ${pairFields(member, `harness-pool-${index}`, index)}
-      <button class="small danger harness-remove" type="button" id="harness-remove-${index}" onclick="harnessRemove(${index})" ${!canEdit() ? 'disabled' : ''} aria-label="移除候选 ${escape(member.model)}">移除</button>
-      ${samePair(member, draft.main) ? '<span class="harness-main-note">也是主模型</span>' : ''}
-      </li>`).join('')}</ul>
+    pool.innerHTML = `${draft.pool.length ? '<div class="harness-pool-head" aria-hidden="true"><span>渠道</span><span>模型</span><span></span></div>' : ''}<ul class="harness-members">${draft.pool.map((member, index) => `<li class="harness-member">${pairFields(member, `harness-pool-${index}`, index)}<button class="small danger harness-remove" type="button" id="harness-remove-${index}" onclick="harnessRemove(${index})" ${!canEdit() ? 'disabled' : ''} aria-label="移除候选 ${escape(member.model)}">移除</button>${samePair(member, draft.main) ? '<span class="harness-main-note">也是主模型</span>' : ''}</li>`).join('')}</ul>
       ${draft.pool.length ? '' : '<p class="hint">还没有候选模型。保存时主模型会自动加入池中。</p>'}
       <button class="small" type="button" id="harness-add" onclick="harnessAdd()" ${!canEdit() || !providers().some(p => p.enabled !== false && p.has_key && p.models.length) ? 'disabled' : ''}>添加候选模型</button>`;
     const preview = el('harness-preview');
