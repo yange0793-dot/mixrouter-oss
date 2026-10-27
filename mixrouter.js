@@ -196,10 +196,11 @@ const SESSION_MAX = Number(process.env.MIXR_SESSION_MAX || 1000);
 // 渠道与 Key 的时间冷却已整体移除。常量只为 /api/health 的旧字段保留(恒为 0);
 // MIXR_COOLDOWN_SEC 不再读取,设了也不会重新启用冷却。
 const COOLDOWN_MS = 0;
-// MAX_ATTEMPTS also caps actual network attempts, including conversion retries.
 // 候选表按它循环填满(见 lib/proxy/prepare.js):单渠道时同一个渠道也会被重试,不是一次就放弃。
 const MAX_ATTEMPTS = envInt('MIXR_MAX_ATTEMPTS', 10, 1, 100);
 const CONV_RETRIES = envInt('MIXR_CONV_RETRIES', 3, 0, 100);
+const MAX_UPSTREAM_CALLS = Math.min(MAX_ATTEMPTS + CONV_RETRIES,
+  envInt('MIXR_MAX_UPSTREAM_CALLS', MAX_ATTEMPTS + CONV_RETRIES, 1, 200));
 // 每次重试前的固定间隔:秒级 ECONNRESET 往往自己就恢复了,立刻重打只会连撞同一个故障窗口。
 const RETRY_DELAY_MS = envInt('MIXR_RETRY_DELAY_MS', 1000, 0, 60000);
 
@@ -593,9 +594,8 @@ function healthStatus() {
     stream_first_header_timeout_ms: STREAM_FIRST_HEADER_TIMEOUT_MS,
     stream_idle_timeout_ms: STREAM_IDLE_TIMEOUT_MS, sse_keepalive_ms: SSE_KEEPALIVE_MS,
     nonstream_total_timeout_ms: NONSTREAM_TOTAL_TIMEOUT_MS, max_attempts: MAX_ATTEMPTS, conversion_retries: CONV_RETRIES,
-    // 一次请求真正允许的上游调用总数:候选渠道数 + 换 key 重试数。
-    // 上界由实测得出(见 lib/proxy/context.js 的 maxUpstreamCalls),不是两个旋钮相乘
-    max_upstream_calls: Math.max(1, MAX_ATTEMPTS) + Math.max(0, CONV_RETRIES),
+    // 候选与转换配额之和,再受可选总调用硬上限约束。
+    max_upstream_calls: MAX_UPSTREAM_CALLS,
     cooldown_ms: COOLDOWN_MS, retry_delay_ms: RETRY_DELAY_MS },
   providers: ['claude', 'codex'].flatMap(app => storeOf(app).map(p => ({ provider: p.id, app,
     enabled: p.enabled !== false, cooldown_until: 0,
@@ -910,7 +910,7 @@ const prepareRequest = createPreparer({
 
 const proxyHandler = proxyHttp.createProxyHandler({
   VERSION, BODY_LIMIT, BODY_DRAIN_EXTRA, BODY_DRAIN_MS,
-  TOTAL_DEADLINE_MS, MAX_ATTEMPTS, CONV_RETRIES, SSE_KEEPALIVE_MS,
+  TOTAL_DEADLINE_MS, MAX_ATTEMPTS, CONV_RETRIES, MAX_UPSTREAM_CALLS, SSE_KEEPALIVE_MS,
   RESPONSE_ARCHIVE_ON, attemptTraces, activeRequests,
   onBodyDrainAbort: () => { bodyDrainAborts++; },
   onBodyDrainTimeout: () => { bodyDrainTimeouts++; },

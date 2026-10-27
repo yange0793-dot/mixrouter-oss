@@ -384,9 +384,9 @@ Claude Code / Codex 的全局槽位表存在 `<MIXR_DATA_DIR>/slots.json`(`{vers
   `MIXR_NONSTREAM_TOTAL_TIMEOUT_MS`(非流式从头到 body 结束)。
   另有 `MIXR_TOTAL_DEADLINE_MS` 作端到端总预算。
 - **不设冷却**:429、4xx、5xx 与网络失败均不建立渠道或 Key 的禁用时间。旧 `MIXR_COOLDOWN_SEC` 参数不再生效。
-- **重试**:一次请求最多打 `MIXR_MAX_ATTEMPTS` 次上游(默认 10),每次重试前等待
+- **重试**:一次请求有 `MIXR_MAX_ATTEMPTS` 个候选尝试配额(默认 10),每次重试前等待
   `MIXR_RETRY_DELAY_MS`(默认 1000,范围 0–60000 毫秒)。同一个渠道也会被重复尝试,
-  `MIXR_MAX_ATTEMPTS` 封顶的是**上游调用次数**,不是候选渠道数。失败后的渠道仍可参与后续请求,不需要等待恢复。
+  转换重试共用额外配额,总调用上限见下文。失败后的渠道仍可参与后续请求,不需要等待恢复。
 - **端到端总预算优先**:`MIXR_TOTAL_DEADLINE_MS` 用尽后不再重试,在途请求按超时收尾。
 - **错误分型** `err_class`:`authentication`(401/403)、`rate_limit`(429)、
   `upstream_server`(5xx)、`upstream_request`(其余 4xx)、`timeout`、网络错误码、
@@ -404,6 +404,8 @@ Claude Code / Codex 的全局槽位表存在 `<MIXR_DATA_DIR>/slots.json`(`{vers
 已知限制:流式响应被掐断时只结束连接,**不补发**协议内 error 事件,客户端看到的是截断的
 SSE。一次请求的上游调用总上界是 `MIXR_MAX_ATTEMPTS` + `MIXR_CONV_RETRIES`(默认 13);
 `MIXR_CONV_RETRIES` 计的是同渠道内的换 Key / 换 cache 代际重试。
+可用 `MIXR_MAX_UPSTREAM_CALLS` 进一步限制总次数(含首次调用),不扩大原有配额。
+例如同时设 `MIXR_MAX_ATTEMPTS=50`、`MIXR_MAX_UPSTREAM_CALLS=50`,总调用数不会因额外配额超过 50。
 
 ---
 
@@ -736,7 +738,8 @@ require 之后再改不生效。
 | `MIXR_NONSTREAM_TOTAL_TIMEOUT_MS` | 180000 | 非流式响应从头到 body 结束 |
 | `MIXR_SSE_KEEPALIVE_MS` | 15000 | 已提交给客户端的流补 SSE 注释的间隔;`0` 关掉 |
 | `MIXR_COOLDOWN_SEC` | 不再生效 | 历史参数;渠道与 Key 已移除时间冷却 |
-| `MIXR_MAX_ATTEMPTS` / `MIXR_CONV_RETRIES` | 10 / 3 | 一次请求最多打多少次上游(同一渠道也会被重复尝试)/ 同渠道内换 cache 代际重试次数 |
+| `MIXR_MAX_ATTEMPTS` / `MIXR_CONV_RETRIES` | 10 / 3 | 候选尝试配额(同一渠道可重复)/ 同渠道内换 cache 代际额外重试配额 |
+| `MIXR_MAX_UPSTREAM_CALLS` | 两项配额之和 | 可选的总调用硬上限(含首次),只收紧预算,范围 1–200 |
 | `MIXR_RETRY_DELAY_MS` | 1000 | 每次重试前的等待毫秒数(0–60000) |
 | `MIXR_SESSION_TTL_MIN` / `MIXR_SESSION_MAX` | 720 / 1000 | 会话绑定空闲失效时间(分钟)/ 会话表上限 |
 | `MIXR_SESSION_LABEL` | 开 | `0` 关掉会话标签采集 |
