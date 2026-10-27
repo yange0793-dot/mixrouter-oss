@@ -101,6 +101,8 @@ const REQUIRED_ENTRIES = [
   'public/js/readiness.js', 'public/js/attempt-flow.js', 'public/js/key-fallback.js',
   'public/styles/readiness.css', 'public/styles/attempt-flow.css', 'public/styles/key-fallback.css',
   'public/js/harness.js', 'public/styles/harness.css',
+  'public/styles/providers.css', 'public/styles/usage.css',
+  'public/styles/config.css', 'public/styles/observe.css',
 ];
 
 // 运行包的维护条目:解压后能验、能读、能报告问题。**不含 test/** —— 整套开发测试只在

@@ -1,0 +1,324 @@
+/* Providers page (view-providers): client state, provider library, provider dialog.
+   Owned by the providers page. Shared tokens come from base.css; do not redefine them here.
+   Load order: base.css → this file, so same-specificity rules here win.
+
+   Layout intent: the channel library is the page's main object. The wizard entry is a
+   single strip, the live client state is one summary line, and each channel row leads
+   with name + state + address. Secondary detail (model chips, note, account) is quieter,
+   and destructive actions are separated from the everyday ones. */
+
+/* ---- 1. First screen ------------------------------------------------------- */
+/* The sidebar already lists the three clients. Keep the in-page tabs only where that
+   list is not on screen: inside the drawer (narrow screens) or when the sidebar is
+   collapsed to a rail. ids/aria wiring stay untouched either way. */
+@media (min-width: 861px) {
+  #view-providers > .apptabs { display: none; }
+  :root[data-sidebar="rail"] #view-providers > .apptabs { display: inline-flex; }
+}
+
+/* Live client state: one summary line instead of a three-column information block. */
+#liveinfo { margin-bottom: 10px; }
+#liveinfo .current-config {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 22px;
+  margin: 0 0 6px; padding: 0 0 9px;
+  border-top: 0; border-bottom: 1px solid var(--border-soft);
+}
+#liveinfo .current-config > div {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 7px;
+  min-width: 0; padding: 0;
+}
+#liveinfo .current-config > div + div { border-left: 0; padding-left: 0; }
+#liveinfo .current-config dt { font-size: 13px; margin: 0; white-space: nowrap; }
+#liveinfo .current-config dd { font-size: 13.5px; font-weight: 600; min-width: 0; }
+#liveinfo .current-config dd.mono { font-size: 12.5px; }
+#liveinfo .current-config small { display: inline; margin: 0; font-size: 12.5px; white-space: nowrap; }
+#liveinfo .connection-details { margin-bottom: 8px; }
+#liveinfo .connection-details > summary { padding: 2px 0; font-size: 13px; }
+
+/* Channel library header: title and controls on one line, controls compact. */
+#view-providers .channel-toolbar { margin: 12px 0 10px; align-items: flex-end; gap: 10px 18px; }
+#view-providers .channel-toolbar h2 { font-size: 15px; letter-spacing: -.1px; }
+#view-providers .channel-toolbar p { font-size: 13px; margin-top: 2px; color: var(--dim); }
+#view-providers .filters label { font-size: 12.5px; color: var(--dim); }
+#view-providers .filters input,
+#view-providers .filters select { min-height: 32px; }
+#view-providers .layout-switch button { min-height: 32px; min-width: 34px; }
+#view-providers .filters input { width: 220px; }
+#view-providers .provider-summary { margin-top: 16px; }
+
+/* ---- 2. Shared channel-card anatomy ---------------------------------------- */
+#prov-grid .card { gap: 8px; padding: 13px 16px; }
+#prov-grid .provider-identity { align-items: center; }
+#prov-grid .provider-avatar { width: 28px; height: 28px; border-radius: 7px; }
+#prov-grid .provider-info { gap: 4px; }
+#prov-grid .provider-info .name { font-size: 14.5px; line-height: 1.35; }
+#prov-grid .provider-status { gap: 5px; }
+#prov-grid .badge { font-size: 12px; padding: 1px 7px; }
+
+/* State colors on cards: current = accent, enabled = green, disabled = neutral.
+   (Wizard/model-slot badges elsewhere keep base.css colors.) */
+#prov-grid .provider-status .badge.on {
+  background: var(--accent-soft); color: var(--accent-text); border-color: var(--accent-line);
+}
+#prov-grid .provider-status .badge.info {
+  background: var(--ok-soft); color: var(--ok-text); border-color: var(--ok-line);
+}
+#prov-grid .card.off .provider-info .name { color: var(--dim); }
+/* Selected in the library but not written to the client yet: a quieter accent mark than
+   the verified state, so "库里选的" and "客户端真在用" stay visually distinct. */
+/* "库里选的" is not the same claim as "客户端真在用": keep it neutral, with the
+   accent left bar on the row doing the pointing. */
+#prov-grid .provider-status .badge.sel {
+  background: var(--surface-3); color: var(--text); border-color: var(--border);
+}
+body[data-connection=offline] #prov-grid .provider-status .badge.on,
+body[data-connection=offline] #prov-grid .provider-status .badge.sel,
+body[data-connection=offline] #prov-grid .provider-status .badge.info {
+  background: var(--surface-2); color: var(--dim); border-color: var(--border-soft);
+}
+#prov-grid .card.sel { border-color: var(--accent-line); }
+#prov-grid:not([data-layout="grid"]) > .card.sel { border-color: var(--border-soft); box-shadow: inset 3px 0 0 var(--accent-line); }
+/* 离线时没有「当前在用」这回事:两种高亮一起收回普通行。 */
+body[data-connection=offline] #prov-grid:not([data-layout="grid"]) > .card.cur,
+body[data-connection=offline] #prov-grid:not([data-layout="grid"]) > .card.sel { box-shadow: none; }
+body[data-connection=offline] #prov-grid .card.cur,
+body[data-connection=offline] #prov-grid .card.sel { border-color: var(--border); }
+
+/* Address is reference, not a headline: one line, full URL in the title. */
+#prov-grid .endpoint { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#prov-grid .provider-content { gap: 5px; }
+#prov-grid .provider-models { gap: 4px; }
+#prov-grid .tag { font-size: 12px; padding: 0 6px; }
+#prov-grid .note { font-size: 12.5px; line-height: 1.6; }
+
+/* Account picker: label, select and account count stay on one line. */
+#prov-grid .provider-meta {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center; column-gap: 6px; row-gap: 4px;
+  font-size: 12.5px; white-space: nowrap;
+}
+#prov-grid .provider-meta .keypick {
+  width: 100%; max-width: 210px; min-height: 32px; padding: 2px 6px;
+  font: 12.5px/1.5 var(--mono); color: var(--text);
+}
+#prov-grid .provider-meta .keycount { font-size: 12px; color: var(--dim); }
+#prov-grid .provider-meta .testline { grid-column: 1 / -1; white-space: normal; text-align: right; }
+
+/* Actions: everyday operations first, delete separated and quiet until hovered. */
+#prov-grid .provider-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+#prov-grid .provider-actions button { min-height: 32px; padding: 4px 11px; font-size: 13px; }
+/* One filled call to action per row would be five blues on screen; the switch action
+   stays accent-outlined until hovered so the current channel keeps the only solid mark. */
+#prov-grid .provider-actions button.primary:not(:disabled) {
+  background: transparent; color: var(--accent-text); border-color: var(--accent-line);
+}
+#prov-grid .provider-actions button.primary:hover:not(:disabled) {
+  background: var(--accent-soft); border-color: var(--accent);
+}
+/* A disabled switch is not a call to action: drop the fill, keep it readable. */
+#prov-grid .provider-actions button.primary:disabled {
+  background: transparent; color: var(--dim); border-color: var(--border);
+}
+#prov-grid .card.cur .provider-actions button.primary:not(:disabled) {
+  background: var(--accent); color: var(--on-accent); border-color: var(--accent);
+}
+/* 当前渠道的「重新写入」在 accent-soft 行底上会糊成一片:给它一条 accent 边框。 */
+#prov-grid .provider-actions button.cur:not(:disabled) { border-color: var(--accent-line); color: var(--accent-text); }
+#prov-grid .provider-actions [data-action="delete"] {
+  margin-left: 4px; padding-left: 12px;
+  background: transparent; border-color: transparent; border-left-color: var(--border-soft);
+  color: var(--dim);
+}
+#prov-grid .provider-actions [data-action="delete"]:hover:not(:disabled) {
+  color: var(--err-text); background: var(--err-soft); border-color: var(--err-line);
+}
+
+/* ---- 3. List layout: ledger rows ------------------------------------------- */
+/* Row 1: identity (left) + account (right). Row 2: address/models/note across the
+   width (left) + actions (right). The note gets the row width instead of a narrow column.
+   Selectors mirror base.css's :has() form so these later rules win. */
+#prov-grid:not([data-layout="grid"]) { border-color: var(--border); }
+#prov-grid:not([data-layout="grid"]) > .card:has(.provider-identity) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "identity meta"
+    "content actions";
+  align-items: start;
+  gap: 7px 26px;
+  padding: 12px 18px;
+}
+#prov-grid:not([data-layout="grid"]) > .card:has(.provider-identity) .provider-identity { grid-area: identity; }
+#prov-grid:not([data-layout="grid"]) > .card:has(.provider-identity) .provider-info { flex-direction: row; align-items: center; flex-wrap: wrap; gap: 2px 10px; }
+#prov-grid:not([data-layout="grid"]) > .card:has(.provider-identity) .provider-content { grid-area: content; min-width: 0; }
+#prov-grid:not([data-layout="grid"]) > .card:has(.provider-identity) .provider-meta {
+  grid-area: meta; justify-self: end; align-self: center; max-width: none;
+}
+#prov-grid:not([data-layout="grid"]) > .card:has(.provider-identity) .provider-actions {
+  grid-area: actions; justify-self: end; align-self: end;
+}
+#prov-grid:not([data-layout="grid"]) > .card .foot { border-top: 0; padding-top: 0; margin-top: 0; }
+#prov-grid:not([data-layout="grid"]) > .card.cur { box-shadow: inset 3px 0 0 var(--accent); }
+
+/* ---- 4. Grid layout: cards ------------------------------------------------ */
+#prov-grid[data-layout="grid"] > .card { gap: 9px; }
+#prov-grid[data-layout="grid"] .provider-meta { margin-top: 2px; }
+#prov-grid[data-layout="grid"] .provider-meta .testline { text-align: left; }
+#prov-grid[data-layout="grid"] .provider-actions { margin-top: auto; padding-top: 10px; border-top: 1px solid var(--border-soft); }
+#prov-grid[data-layout="grid"] .provider-actions [data-action="delete"] { margin-left: auto; border-left-color: transparent; }
+
+/* ---- 5. Narrow screens ---------------------------------------------------- */
+/* Below this the sidebar (or the drawer's neighbours) squeeze the row enough that a
+   two-column ledger starts breaking notes into 3-4 character lines; stack instead. */
+@media (max-width: 1180px) {
+  #view-providers .channel-toolbar { align-items: flex-start; }
+  /* One control row: flexible search, fixed status select, layout switch at the end —
+     no ragged wrap into a third line. */
+  #view-providers .library-controls { display: flex; flex-wrap: nowrap; align-items: flex-end; gap: 8px; width: 100%; }
+  #view-providers .filters { display: flex; flex: 1 1 auto; flex-wrap: nowrap; gap: 8px; min-width: 0; }
+  #view-providers .filters label:first-child { flex: 1 1 180px; min-width: 0; }
+  #view-providers .filters input { width: 100%; }
+  #view-providers .filters select { width: 128px; flex: 0 0 auto; }
+  #view-providers .layout-switch { margin-left: 0; flex: 0 0 auto; }
+}
+@media (max-width: 1100px) {
+  #view-providers .channel-toolbar { margin-top: 10px; }
+  #prov-grid:not([data-layout="grid"]) > .card:has(.provider-identity) {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "identity" "content" "meta" "actions";
+    gap: 8px; padding: 12px 14px;
+  }
+  #prov-grid:not([data-layout="grid"]) > .card:has(.provider-identity) .provider-info { flex-direction: column; align-items: flex-start; gap: 4px; }
+  #prov-grid:not([data-layout="grid"]) > .card:has(.provider-identity) .provider-meta,
+  #prov-grid:not([data-layout="grid"]) > .card:has(.provider-identity) .provider-actions { justify-self: stretch; align-self: stretch; }
+  #prov-grid:not([data-layout="grid"]) > .card:has(.provider-identity) .provider-actions { justify-content: flex-start; }
+  /* Stacked rows: label, select and count hug together instead of stretching into a
+     form-field look; the select keeps a readable width. */
+  #prov-grid .provider-meta { display: flex; flex-wrap: wrap; align-items: center; column-gap: 6px; row-gap: 4px; }
+  #prov-grid .provider-meta .keypick { width: auto; min-width: 160px; max-width: min(260px, 100%); }
+  #prov-grid .provider-meta .testline { flex-basis: 100%; text-align: left; }
+  #prov-grid .provider-actions button { min-height: 34px; }
+}
+
+@media (max-width: 640px) {
+  /* Page actions sit beside 跳转/刷新 in the topbar and cannot wrap (shell sets nowrap),
+     so split the available width evenly instead of letting one button squash. */
+  body[data-view="providers"] #topbar-page-actions { flex: 1 1 auto; min-width: 0; }
+  body[data-view="providers"] #topbar-page-actions .actions {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%;
+  }
+  body[data-view="providers"] #topbar-page-actions .actions button { width: 100%; min-height: 36px; padding: 5px 8px; }
+
+  /* Library toolbar: search on its own row, filter + layout switch share the next. */
+  #view-providers .channel-toolbar { align-items: flex-start; }
+  #view-providers .library-controls {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end; gap: 8px 10px; width: 100%;
+  }
+  #view-providers .library-controls .filters { display: contents; }
+  #view-providers .library-controls .filters label[for="provider-search"] { grid-column: 1 / -1; }
+  #view-providers .library-controls .filters input,
+  #view-providers .library-controls .filters select { width: 100%; }
+  #view-providers .library-controls .layout-switch { margin-left: 0; justify-self: end; }
+
+  #liveinfo .current-config { gap: 2px 14px; }
+  #liveinfo .current-config > div { flex-basis: 100%; }
+  #liveinfo .current-config dt { min-width: 72px; }
+
+  /* Phone width: label, select and account count share one line; only test output wraps. */
+  #prov-grid .provider-meta { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; }
+  #prov-grid .provider-meta .keypick { width: 100%; min-width: 0; max-width: 100%; }
+  #prov-grid .provider-meta .testline { grid-column: 1 / -1; }
+
+  #prov-grid .provider-actions [data-action="delete"] { margin-left: auto; }
+}
+
+/* ---- 6. Provider dialog --------------------------------------------------- */
+/* The provider form is long; a slightly wider dialog keeps label/value on one line
+   instead of every field wrapping. Grouping comes from spacing + hairline dividers. */
+#mask .modal { width: 620px; }
+#provider-form { margin-top: 4px; }
+#provider-form > label,
+#provider-form .md-panel,
+#provider-form #m-claude-fields,
+#provider-form #m-codex-fields,
+#provider-form #m-keys-wrap { margin-top: 0; }
+#provider-form > label { margin: 14px 0 5px; }
+#provider-form input[type="text"],
+#provider-form input[type="password"],
+#provider-form select { width: 100%; }
+#provider-form .muted { font-size: 12.5px; line-height: 1.6; }
+#m-keys-wrap { padding-top: 2px; }
+#m-keys-wrap > label { display: block; margin: 16px 0 6px; }
+#m-keys .rc-line,
+#m-models-list .rc-line,
+#m-codex-models-list .rc-line { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+#m-keys .rc-line { grid-template-columns: minmax(120px, 0.8fr) minmax(0, 1.6fr) 32px; }
+#m-keys .rc-line .field,
+#m-models-list .rc-line .field,
+#m-codex-models-list .rc-line .field { margin: 0; }
+#m-keys .rc-line .iconbtn,
+#m-models-list .rc-line .iconbtn,
+#m-codex-models-list .rc-line .iconbtn { min-width: 32px; min-height: 32px; padding: 0; }
+#m-keys .rc-line, #m-models-list .rc-line, #m-codex-models-list .rc-line { margin-bottom: 6px; }
+#m-keys button.small, #m-claude-fields button.small, #m-codex-fields button.small { min-height: 32px; }
+
+/* Upstream model discovery panel: a bordered tool block inside the form. */
+#m-discovery { margin-top: 16px; }
+#m-discovery .md-head b { font-size: 12.5px; }
+#m-discovery .md-head .hint { font-size: 12.5px; }
+#m-discovery .md-controls > button { min-height: 32px; }
+#m-discovery .md-results:has(.md-list) { max-height: 190px; }
+#m-direct, #m-dropimg { margin-right: 6px; }
+#provider-form label.chk { margin: 12px 0 4px; line-height: 1.55; }
+
+@media (max-width: 640px) {
+  #mask .modal { width: 100%; padding: 18px 16px; }
+  #m-keys .rc-line { grid-template-columns: minmax(0, 1fr) 32px; }
+  #m-keys .rc-line .field:first-child { grid-column: 1 / -1; }
+  #m-discovery .md-controls { align-items: stretch; }
+  #m-discovery .md-controls > .md-search { flex-basis: 100%; }
+}
+
+/* ---- 7. Codex client panel on this page ----------------------------------- */
+/* Two slots, one threshold panel: title beside the controls, facts on one line,
+   explanation folded. Help text is reference material and opens on demand. */
+#view-providers .codex-models { gap: 10px; padding-bottom: 11px; margin-bottom: 10px; }
+#view-providers .codex-models > .hint { font-size: 12.5px; line-height: 1.55; }
+#view-providers .codex-compact {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "head controls"
+    "facts facts"
+    "help status";
+  gap: 6px 14px; align-items: center;
+  padding: 11px 13px;
+}
+#view-providers .codex-compact-head { grid-area: head; margin-bottom: 0; }
+#view-providers .codex-compact-controls { grid-area: controls; flex-wrap: nowrap; align-items: flex-end; gap: 6px 8px; }
+#view-providers .codex-compact-controls .field { flex: 0 1 170px; }
+#view-providers .codex-compact-controls button { white-space: nowrap; }
+#view-providers #codex-compact-facts { grid-area: facts; min-width: 0; }
+#view-providers .codex-compact .prov-help { grid-area: help; min-width: 0; }
+#view-providers #codex-compact-status { grid-area: status; justify-self: end; text-align: right; margin: 0; font-size: 12.5px; }
+#view-providers .codex-compact-facts dl { margin: 0; gap: 4px 18px; }
+#view-providers .codex-compact .prov-help > summary { font-size: 12.5px; padding: 0; }
+#view-providers .prov-help > summary {
+  font-size: 12.5px; padding: 4px 0; min-height: 32px;
+  display: inline-flex; align-items: center; gap: 4px;
+}
+#view-providers .prov-help > .hint { font-size: 12.5px; line-height: 1.65; margin: 6px 0 0; }
+#view-providers #codex-compact-warnings { font-size: 12.5px; }
+#view-providers #codex-config-details .config-facts { margin: 8px 0 0; }
+#view-providers #codex-config-details .config-warnings { font-size: 12.5px; line-height: 1.65; margin: 8px 0 0; padding-left: 18px; }
+
+@media (max-width: 860px) {
+  #view-providers .codex-compact {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "head" "controls" "facts" "help" "status";
+  }
+  #view-providers .codex-compact-controls { flex-wrap: wrap; }
+  #view-providers .codex-compact-controls .field { flex: 1 1 100%; }
+  #view-providers #codex-compact-status { justify-self: start; text-align: left; }
+}

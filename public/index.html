@@ -12,6 +12,10 @@
 <link rel="stylesheet" href="/styles/attempt-flow.css">
 <link rel="stylesheet" href="/styles/key-fallback.css">
 <link rel="stylesheet" href="/styles/harness.css">
+<link rel="stylesheet" href="/styles/providers.css">
+<link rel="stylesheet" href="/styles/usage.css">
+<link rel="stylesheet" href="/styles/config.css">
+<link rel="stylesheet" href="/styles/observe.css">
 </head>
 <body data-connection="connecting">
   <a class="skip-link" href="#main">跳至主要内容</a>
@@ -26,6 +30,11 @@
         </svg>
       </span>
       <div class="logo-text"><span class="logo-name">Mixrouter</span><small>本机 AI 网关</small></div>
+      <!-- 桌面端收起侧栏:收起后顶栏出现同一个开关(#sidebar-toggle)把它叫回来。
+           手机上不出现,那里它是抽屉开关。 -->
+      <button class="icon-button sidebar-collapse" id="sidebar-collapse" type="button" aria-label="收起侧栏" aria-expanded="true" aria-controls="sidebar" title="收起侧栏">
+        <svg class="icon" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M11 4.5 6.5 9l4.5 4.5"/><path d="M3 3.5v11"/></svg>
+      </button>
     </div>
     <!-- 客户端就是渠道页的三个入口:点它直接落到 #providers?app=…,只有当前客户端亮起。
          data-view 仍写 providers,app.js 的 data-view 逻辑不会失配。 -->
@@ -99,27 +108,29 @@
       <!-- 概览只读:不放任何输入/选择/保存控件,每项配置只在管它的那一页编辑。
            本页的按钮只有刷新与跳转,不发写请求。 -->
       <section id="view-overview" aria-labelledby="overview-title">
-        <div class="head"><div><h1 id="overview-title">概览</h1><div class="sub">只读页：服务与接入状态、需要你动手的事项。修改都去对应的页面做。</div></div></div>
+        <div class="head"><div><h1 id="overview-title">概览</h1><div class="sub">只读页：服务与接入状态、需要你动手的事项。修改都去对应的页面。</div></div></div>
         <div class="metrics" aria-label="服务概览">
           <div class="metric"><span class="metric-label">服务版本</span><b id="ov-version">—</b><small id="ov-revision">源码修订读取中</small></div>
           <div class="metric"><span class="metric-label">运行时长</span><b id="ov-uptime">—</b><small id="ov-pid">进程读取中</small></div>
           <div class="metric"><span class="metric-label">今日请求</span><b id="ov-reqs">—</b><small id="ov-tokens">输入 / 输出读取中</small></div>
           <div class="metric"><span class="metric-label">活跃会话</span><b id="ov-sessions">—</b><small id="ov-cooldowns">按协议归组</small></div>
         </div>
-        <div class="panel" aria-labelledby="overview-todo-title">
+        <!-- 没有事项时整块收成一条状态行(data-state 由 app.js 写),有事项才展开成卡片。
+             初次渲染前不写 data-state:那一瞬间还没读到状态,不该先摆出一条空的绿条。 -->
+        <div class="panel" id="overview-todo-panel" aria-labelledby="overview-todo-title">
           <h2 id="overview-todo-title">需处理事项</h2>
-          <p class="hint">只列出需要你动手的状态，数据来自只读状态接口；没有事项时会明确写出来。</p>
+          <p class="hint">来自只读状态接口，每项都能跳到管它的那一页。</p>
           <div id="overview-todo" role="status"></div>
         </div>
         <div class="overview-layout">
           <div class="panel" aria-labelledby="overview-client-title">
             <h2 id="overview-client-title">客户端接入状态</h2>
-            <p class="hint">按磁盘上的客户端配置判断，不代表上游连通性，也不代表某个正在跑的会话已经切过来了。接入动作在「渠道与 Key」页。</p>
+            <p class="hint">按磁盘配置判断，不代表上游连通性；写入在「渠道与 Key」页。</p>
             <div id="overview-clients"></div>
           </div>
           <div class="panel" aria-labelledby="overview-endpoint-title">
             <h2 id="overview-endpoint-title">客户端接入地址</h2>
-            <p class="hint">把客户端指向本机时填这些地址。直连渠道不需要它们。</p>
+            <p class="hint">把客户端指向本机时填这些地址；直连渠道不需要它们。</p>
             <div id="overview-endpoints"></div>
           </div>
         </div>
@@ -128,11 +139,17 @@
       <section id="view-usage" style="display:none" aria-labelledby="usage-title">
         <div class="head">
           <div><h1 id="usage-title">用量统计</h1></div>
-          <div class="actions">
-            <button class="small" id="usage-sync" onclick="loadUsage()">立即同步</button>
-            <label class="rc-mini" for="usage-interval">同步<select id="usage-interval" onchange="setUsageInterval(this.value)"><option value="30">每 30 秒</option><option value="60" selected>每 60 秒</option><option value="300">每 5 分钟</option><option value="0">关闭</option></select></label>
-            <span class="usage-last-sync" id="usage-last-sync" role="status">尚未同步</span>
-            <button class="small" type="button" id="usage-source-toggle" onclick="toggleUsageSource()" aria-expanded="false" aria-controls="usage-source">数据来源</button>
+          <div class="actions usage-head-actions">
+            <!-- 同步节奏与最近同步合成一个控件:顶栏在 1440 已经放不下五个独立控件。 -->
+            <div class="usage-sync-group" role="group" aria-label="同步">
+              <button class="small" id="usage-sync" onclick="loadUsage()">立即同步</button>
+              <label class="rc-mini" for="usage-interval" title="后台自动同步间隔">
+                <span class="sr-only">自动同步间隔</span>
+                <select id="usage-interval" aria-label="自动同步间隔" onchange="setUsageInterval(this.value)"><option value="30">每 30 秒</option><option value="60" selected>每 60 秒</option><option value="300">每 5 分钟</option><option value="0">关闭</option></select>
+              </label>
+              <span class="usage-last-sync" id="usage-last-sync" role="status">尚未同步</span>
+            </div>
+            <button class="small quiet" type="button" id="usage-source-toggle" onclick="toggleUsageSource()" aria-expanded="false" aria-controls="usage-source">数据来源</button>
           </div>
         </div>
         <!-- 一句话说明数据来自哪里、筛选作用于哪些区域:不点开「数据来源」也知道在看什么。 -->
@@ -168,7 +185,7 @@
             <div class="metric"><span class="metric-label">总请求数</span><b id="usage-reqs">—</b><small id="usage-request-hint">含成功与失败</small></div>
             <div class="metric"><span class="metric-label">真实消耗 Tokens</span><b id="usage-tokens">—</b><small id="usage-token-split">输入 / 输出 / 缓存</small></div>
             <div class="metric"><span class="metric-label">缓存命中率</span><b id="usage-cache">—</b><small id="usage-cache-hint">缓存读 / (新增输入 + 缓存读)</small></div>
-            <div class="metric"><span class="metric-label">成功率</span><b id="usage-success">—</b><small id="usage-ok-rate">按请求最终状态</small></div>
+            <div class="metric metric-rate"><span class="metric-label">成功率 <b class="metric-fail" id="usage-fail" hidden></b></span><b id="usage-success">—</b><small id="usage-ok-rate">按请求最终状态</small></div>
           </div>
           <details class="usage-more-metrics" id="usage-more-metrics">
             <summary>更多指标</summary>
@@ -185,6 +202,12 @@
                 <button class="seg" type="button" data-metric="tokens" onclick="setUsageMetric('tokens')">Tokens</button>
                 <button class="seg" type="button" data-metric="reqs" onclick="setUsageMetric('reqs')">请求</button>
               </div>
+            </div>
+            <!-- 窗口概览:只用热力图已有的格子算,不额外发请求。放在日历上方当横条,狭窄的日历右边也不留空洞。 -->
+            <div class="usage-chart-side" aria-label="窗口概览">
+              <div class="usage-side-row"><span>有请求的天</span><b id="usage-side-active">—</b></div>
+              <div class="usage-side-row"><span id="usage-side-daily-label">日均 Tokens</span><b id="usage-side-daily">—</b></div>
+              <div class="usage-side-row"><span>单日最高</span><b id="usage-side-peak">—</b></div>
             </div>
             <div class="chart-holder" id="usage-chart-holder">
               <!-- 几何由 usage.js 生成:月份/星期标签、7 行日历格子与键盘焦点都在 #usage-heatmap 里。
@@ -256,7 +279,7 @@
           </div>
           <div class="liveinfo" id="liveinfo"><div class="empty"><b>正在读取客户端配置</b>连接本地控制台后展示实际配置，不代表上游连通性。</div></div>
           <div class="codex-models" id="codex-models" hidden>
-            <p class="hint">分别选择渠道与落点模型；路由请求即时切换，Mixrouter 管理的 Codex 模型列表自动同步。不改渠道默认模型。</p>
+            <p class="hint">选择渠道与落点模型；路由请求即时切换，模型列表自动同步，不改渠道默认模型。</p>
             <div class="model-fields" id="codex-model-fields"></div>
             <div class="codex-compact" id="codex-compact-panel" aria-labelledby="codex-compact-title">
               <div class="codex-compact-head"><h3 id="codex-compact-title">自动压缩阈值</h3><span class="hint">只写全局阈值，不改上下文窗口</span></div>
@@ -267,9 +290,12 @@
                 <button class="small" id="codex-compact-reload" type="button" onclick="loadCodexCompact()" disabled>重新读取</button>
               </div>
               <div id="codex-compact-facts" class="codex-compact-facts"></div>
-              <p class="hint" id="codex-compact-help">支持整数或 k / m 简写；auto 只删除顶层 model_auto_compact_token_limit，不禁用自动压缩。Codex 会将阈值限制在上下文窗口的 90% 以内。</p>
-              <p class="hint" id="codex-compact-restart">磁盘保存不会热改正在运行的会话。需让 Codex 客户端重新读取配置（必要时重新打开）并新开会话；profile、项目配置或 CLI 参数可能覆盖全局值。</p>
-              <p class="hint" id="codex-compact-warnings"></p>
+              <details class="prov-help">
+                <summary>生效范围与格式说明</summary>
+                <p class="hint" id="codex-compact-help">支持整数或 k / m 简写；auto 只删除顶层 model_auto_compact_token_limit，不禁用自动压缩。Codex 会将阈值限制在上下文窗口的 90% 以内。</p>
+                <p class="hint" id="codex-compact-restart">磁盘保存不会热改正在运行的会话。需让 Codex 客户端重新读取配置（必要时重新打开）并新开会话；profile、项目配置或 CLI 参数可能覆盖全局值。</p>
+                <p class="hint" id="codex-compact-warnings"></p>
+              </details>
               <p id="codex-compact-status" class="hint" role="status" aria-live="polite">尚未读取磁盘阈值。</p>
             </div>
             <div class="model-actions"><span id="codex-model-status" role="status"></span></div>
@@ -309,34 +335,50 @@
 
       <section id="view-routes" style="display:none" aria-labelledby="routes-title">
         <div class="head"><div><h1 id="routes-title">路由规则</h1><div class="sub">按模型名子串匹配，逗号分隔、大小写不敏感。优先级大的先匹配，同优先级按从上到下。</div></div><div class="actions"><button onclick="reloadRoutes()">重新载入</button><button class="primary" id="save-routes" onclick="saveRoutes()" disabled>保存路由</button></div></div>
-        <div class="panel" id="compact-panel"><h2>压缩模型</h2>
-          <div class="hint">单独选择 Claude Code 压缩请求的渠道、模型和 Key；只更新两条压缩规则，不改普通主模型、子代理槽位或渠道当前 Key。保存会替换现有压缩备池为单一渠道。</div>
-          <div id="compact-current" class="hint" role="status">等待压缩路由配置</div>
-          <div class="rc-line"><label class="field">压缩渠道<select id="compact-provider" onchange="pickCompactProvider(this.value)"></select></label>
-            <label class="field">压缩模型<select id="compact-model" onchange="pickCompactModel(this.value)"></select><input id="compact-model-custom" type="text" placeholder="自定义模型名" hidden oninput="setCompactCustom(this.value)"></label>
-            <label class="field">压缩 Key<select id="compact-key" onchange="pickCompactKey(this.value)"></select></label></div>
-          <div id="compact-key-hint" class="hint">默认跟随渠道当前 Key；固定 Key 只影响压缩，不切换渠道当前账号。</div>
-          <div id="compact-status" class="split-status" role="status"></div>
-          <div class="savebar"><button id="reload-compact" onclick="reloadCompact()">重新载入压缩选择</button><button id="save-compact" class="primary" onclick="saveCompact()" disabled>保存压缩模型</button><span id="compact-msg" class="msg" role="status"></span></div>
-        </div>
-        <div class="panel" id="compact-window-panel"><h2>压缩上下文窗口</h2>
-          <div class="hint">只修改所选磁盘文件的 <code>autoCompactWindow</code>：全局只改全局，不会同步项目。填写项目绝对目录才能检查项目与本地层覆盖；不自动查找项目。<code>auto</code> 只删除所选层的键并继承下层，不关闭自动压缩，也不清除环境覆盖。</div>
-          <div class="rc-line"><label class="field" for="window-scope">配置层<select id="window-scope" onchange="selectWindowScope()"><option value="global">用户全局</option><option value="project">项目</option><option value="local">项目本地</option></select></label>
-            <label class="field" for="window-project">项目绝对目录<input id="window-project" type="text" placeholder="/绝对路径/项目目录" oninput="windowProjectChanged()" spellcheck="false"></label>
-            <label class="field" for="window-value">窗口 token（auto 或 100k–1M）<input id="window-value" type="text" inputmode="text" placeholder="auto、300k、1m" oninput="setWindowValue(this.value)"></label></div>
-          <div id="window-current" class="hint" role="status">尚未读取磁盘配置</div>
-          <div id="window-coverage" class="banner show" role="status"><strong id="window-coverage-text">尚未检查配置层覆盖。</strong><button id="window-edit-override" class="small" hidden onclick="editWindowOverride()">编辑覆盖层</button></div>
-          <div id="window-status" class="split-status" role="status"></div>
-          <div id="window-layers" class="hint"></div>
-          <div id="window-warnings" class="hint" role="status">这里仅显示磁盘设置；不代表运行中会话的实际窗口或模型上限。</div>
-          <div id="window-restart" class="hint">外部保存不会热改运行中会话。项目层设置需新开会话，或退出后在该项目目录用 claude --continue 继续。当前会话可用 /autocompact &lt;值&gt; 调整，但它写用户层，仍可能被项目或环境覆盖；请核对窗口与 capped 提示。</div>
-          <div class="savebar"><button id="reload-window" onclick="loadCompactWindow()">读取所选配置层</button><button id="save-window" class="primary" onclick="saveCompactWindow()" disabled>保存压缩窗口</button><span id="window-msg" class="msg" role="status"></span></div>
-        </div>
-        <div class="panel"><h2>匹配与分流</h2><div class="hint">单渠道直达，或使用渠道池按会话分配不同 key；同一对话保持渠道粘性。目标模型留空 = 透传；<code>[1M]</code> 后缀会剥离并附加 context-1m beta 头。<br>仅有 Claude / Anthropic 与 Codex / OpenAI 两个协议组；ZCode 流量按所选协议归组，不单独识别 ZCode 会话。</div>
+        <div class="panel">
+          <div class="cfg-panel-head"><h2>匹配与分流</h2><span class="cfg-panel-hint">单渠道直达，或渠道池按会话分流；同一对话保持渠道粘性。</span></div>
           <div id="rules-box"><div class="empty"><b>等待路由配置</b>连接后即可编辑，自动刷新不会覆盖编辑草稿。</div></div>
           <div class="savebar"><button id="add-rule" onclick="addRule()" disabled>＋ 添加规则</button><span class="msg" id="save-msg" role="status">自动刷新不会覆盖编辑草稿</span></div>
+          <details class="cfg-more"><summary>匹配细节</summary>
+            <p class="hint">目标模型留空 = 透传请求模型；<code>[1M]</code> 后缀会剥离并附加 context-1m beta 头。一条规则的目标渠道必须在同一协议组，另一组请求会跳过它继续匹配；仅有 Claude / Anthropic 与 Codex / OpenAI 两个协议组，ZCode 流量按所选协议归组，不单独识别 ZCode 会话。</p>
+          </details>
         </div>
-        <div class="panel"><h2>默认路由</h2><div class="hint">所有规则都未命中时使用，也可配置为渠道池。未绑定渠道时请求返回 503。</div><div id="def-box"></div></div>
+        <div class="panel">
+          <div class="cfg-panel-head"><h2>默认路由</h2><span class="cfg-panel-hint">所有规则都未命中时使用；未绑定渠道时请求返回 503。</span></div>
+          <div id="def-box"></div>
+        </div>
+        <details class="cfg-group" id="compact-group">
+          <summary><span class="cfg-group-title">压缩设置</span><span class="cfg-group-meta" id="compact-summary">压缩模型与压缩上下文窗口</span></summary>
+          <div class="panel" id="compact-panel">
+            <div class="cfg-panel-head"><h2>压缩模型</h2><span class="cfg-panel-hint">只改两条压缩规则，不动主模型、子代理槽位与渠道当前 Key。</span></div>
+            <div id="compact-current" class="hint" role="status">等待压缩路由配置</div>
+            <div class="rc-line"><label class="field">压缩渠道<select id="compact-provider" onchange="pickCompactProvider(this.value)"></select></label>
+              <label class="field">压缩模型<select id="compact-model" onchange="pickCompactModel(this.value)"></select><input id="compact-model-custom" type="text" placeholder="自定义模型名" hidden oninput="setCompactCustom(this.value)"></label>
+              <label class="field">压缩 Key<select id="compact-key" onchange="pickCompactKey(this.value)"></select></label></div>
+            <div id="compact-key-hint" class="hint">默认跟随渠道当前 Key；固定 Key 只影响压缩，不切换渠道当前账号。</div>
+            <div id="compact-status" class="split-status" role="status"></div>
+            <div class="savebar"><button id="reload-compact" onclick="reloadCompact()">重新载入压缩选择</button><button id="save-compact" class="primary" onclick="saveCompact()" disabled>保存压缩模型</button><span id="compact-msg" class="msg" role="status"></span></div>
+            <details class="cfg-more"><summary>保存会改动什么</summary>
+              <p class="hint">保存会把现有压缩备池替换为所选单一渠道；普通主模型、普通路由、子代理槽位和渠道当前账号都不变。</p>
+            </details>
+          </div>
+          <div class="panel" id="compact-window-panel">
+            <div class="cfg-panel-head"><h2>压缩上下文窗口</h2><span class="cfg-panel-hint">只改所选磁盘层的 <code>autoCompactWindow</code>；全局只改全局，不同步项目。</span></div>
+            <div class="rc-line"><label class="field" for="window-scope">配置层<select id="window-scope" onchange="selectWindowScope()"><option value="global">用户全局</option><option value="project">项目</option><option value="local">项目本地</option></select></label>
+              <label class="field" for="window-project">项目绝对目录<input id="window-project" type="text" placeholder="/绝对路径/项目目录" oninput="windowProjectChanged()" spellcheck="false"></label>
+              <label class="field" for="window-value">窗口 token（auto 或 100k–1M）<input id="window-value" type="text" inputmode="text" placeholder="auto、300k、1m" oninput="setWindowValue(this.value)"></label></div>
+            <div id="window-current" class="hint" role="status">尚未读取磁盘配置</div>
+            <div id="window-coverage" class="banner show cfg-note" role="status"><strong id="window-coverage-text">尚未检查配置层覆盖。</strong><button id="window-edit-override" class="small" hidden onclick="editWindowOverride()">编辑覆盖层</button></div>
+            <div id="window-layers" class="hint"></div>
+            <div id="window-status" class="split-status" role="status"></div>
+            <div class="savebar"><button id="reload-window" onclick="loadCompactWindow()">读取所选配置层</button><button id="save-window" class="primary" onclick="saveCompactWindow()" disabled>保存压缩窗口</button><span id="window-msg" class="msg" role="status"></span></div>
+            <details class="cfg-more"><summary>生效范围与限制</summary>
+              <div id="window-warnings" class="hint" role="status">这里仅显示磁盘设置；不代表运行中会话的实际窗口或模型上限。</div>
+              <div id="window-restart" class="hint">外部保存不会热改运行中会话。项目层设置需新开会话，或退出后在该项目目录用 claude --continue 继续。当前会话可用 /autocompact &lt;值&gt; 调整，但它写用户层，仍可能被项目或环境覆盖；请核对窗口与 capped 提示。</div>
+              <p class="hint"><code>auto</code> 只删除所选层的键并继承下层，不关闭自动压缩，也不清除环境覆盖。填写项目绝对目录才能核对项目与本地层覆盖；不自动查找项目。</p>
+            </details>
+          </div>
+        </details>
       </section>
 
       <section id="view-harness" style="display:none" aria-labelledby="harness-title">
@@ -353,15 +395,18 @@
             <div id="harness-pool"></div>
           </div>
           <div class="harness-setup">
-            <p class="hint">普通 subagent 显式选模只能使用此白名单；fork / team 继承模型，不由此池重选。Workflow 的固定角色走另一条配置路径，不受此池管理。</p>
-            <p class="hint" id="harness-client-status">客户端状态尚未读取。</p>
-            <p class="hint">只检查配置文件，原生插件装载/实际请求仍待验证；池变动需重新接入并新开会话。</p>
             <div class="savebar">
               <button class="primary" type="button" id="harness-save" onclick="harnessSave()" disabled>保存主模型与候选池</button>
               <button type="button" id="harness-reload" onclick="harnessReload()">重新读取</button>
               <button type="button" id="harness-preview-button" onclick="harnessPreview()" disabled>预览客户端接入</button>
             </div>
             <p class="harness-status" id="harness-status" role="status" aria-live="polite">尚未读取 Harness 配置。</p>
+            <p class="hint harness-client" id="harness-client-status">客户端状态尚未读取。</p>
+            <details class="harness-help">
+              <summary>生效范围与验证方式</summary>
+              <p class="hint">普通 subagent 显式选模只能使用此白名单；fork / team 继承模型，不由此池重选。Workflow 的固定角色走另一条配置路径，不受此池管理。</p>
+              <p class="hint">只检查配置文件，原生插件装载/实际请求仍待验证；池变动需重新接入并新开会话。</p>
+            </details>
             <div class="harness-preview" id="harness-preview" aria-labelledby="harness-preview-title" hidden></div>
           </div>
         </div>
@@ -371,31 +416,38 @@
         <div class="head"><div><h1 id="sessions-title">会话绑定</h1><div class="sub">点「配置 Key / 槽位」给单个会话配独立的渠道与模型；没配的槽位继承全局。</div></div><div class="actions"><label for="f-sess-app" class="sr-only">会话协议组</label><select id="f-sess-app" onchange="sessApp=this.value;renderSessions()" style="width:auto"><option value="">全部协议组</option><option value="claude">Claude / Anthropic</option><option value="codex">Codex / OpenAI</option></select><button class="danger" onclick="clearSessions()">清空全部绑定</button></div></div>
         <div class="logbar sessbar">
           <label>搜索会话<input type="search" id="sess-search" placeholder="会话短 id / 完整 id / 对话名 / 渠道名" oninput="setSessQuery(this.value)"></label>
-          <button class="small" type="button" onclick="clearSessionFilters()">清除搜索与筛选</button>
+          <button class="small quiet" type="button" onclick="clearSessionFilters()">清除搜索与筛选</button>
         </div>
         <div class="chips" id="sess-chips"></div>
-        <p class="sess-intro">保存只影响该会话后续新请求，不改全局槽位与客户端配置；请求需使用槽位别名，内容分流（含压缩）仍优先。Key 顺序：该槽位指定 → 本会话该渠道 Key → 渠道当前 Key。普通请求的渠道钉定在「当前绑定」里展开设置。</p>
-        <div class="table-wrap" tabindex="0" role="region" aria-label="会话绑定表，可横向滚动"><table><caption class="sr-only">按协议分组的会话绑定</caption><thead><tr><th scope="col">会话</th><th scope="col">协议组</th><th scope="col">对话</th><th scope="col">当前绑定（可改）</th><th scope="col">最近实际请求</th><th scope="col">模型</th><th scope="col">命中规则</th><th scope="col">请求</th><th scope="col">tokens 入 / 出</th><th scope="col">最近活跃</th><th scope="col">Key / 槽位</th><th scope="col">操作</th></tr></thead><tbody id="sess-body"></tbody></table></div>
+        <p class="sess-intro">保存只影响该会话后续新请求。Key 顺序：槽位指定 → 本会话渠道 Key → 渠道当前 Key。</p>
+        <!-- 九列：模型与命中规则并进「当前绑定」，时间与数字列 nowrap，表格在自己容器里横向滚动。 -->
+        <p class="table-scroll-hint" aria-hidden="true">表格可横向滚动 →</p>
+        <div class="table-wrap sess-table-wrap" id="sess-table" tabindex="0" role="region" aria-label="会话绑定表，可横向滚动"><table class="sess-table"><caption class="sr-only">按协议分组的会话绑定</caption>
+          <colgroup><col class="sc-id"><col class="sc-app"><col class="sc-label"><col class="sc-bind"><col class="sc-actual"><col class="sc-routing"><col class="sc-usage"><col class="sc-active"><col class="sc-ops"></colgroup>
+          <thead><tr><th scope="col">会话</th><th scope="col">协议组</th><th scope="col">对话</th><th scope="col">当前绑定（可改）</th><th scope="col">最近实际请求</th><th scope="col">Key / 槽位</th><th scope="col" class="num">请求 <span class="th-note">tokens 入 / 出</span></th><th scope="col" class="num">最近活跃</th><th scope="col" class="th-ops">操作</th></tr></thead><tbody id="sess-body"></tbody></table></div>
         <div class="empty" id="sess-empty" style="display:none"><b id="sess-empty-title">还没有匹配的会话</b><span id="sess-empty-hint">通过本地路由发起对话后，会话绑定会出现在所属协议组；也可以调整分组筛选。</span><code id="sess-empty-why" hidden></code><button id="sess-empty-action" class="primary" hidden onclick="clearSessionFilters()">显示全部协议组</button></div>
       </section>
 
       <section id="view-diagnostics" style="display:none" aria-labelledby="logs-title">
-        <div class="head"><div><h1 id="logs-title">诊断</h1><div class="sub">请求日志与分槽用量。内存保留最近 500 条，落盘 logs/requests.jsonl（UTC按天/5MiB轮转，默认保留 30 天）；统计为内存窗口全量聚合。ZCode 请求按 Anthropic 或 OpenAI 协议归组。</div></div><div class="actions"><label class="rc-mini"><input type="checkbox" id="logs-auto" checked>自动刷新（5 秒）</label></div></div>
+        <div class="head"><div><h1 id="logs-title">诊断</h1><div class="sub">请求日志与分槽用量：内存最近 500 条，按协议组归组；统计为内存窗口聚合，不是费用。</div></div><div class="actions"><label class="rc-mini"><input type="checkbox" id="logs-auto" checked>自动刷新（5 秒）</label></div></div>
         <div class="banner" id="logs-error" role="status"></div>
         <div class="chips" id="stat-chips"></div>
-        <div class="panel" aria-labelledby="slot-stats-title">
-          <h2 id="slot-stats-title">分槽用量</h2>
-          <p class="hint" id="slot-stats-scope">当前内存窗口，统计范围等待服务端提供；不是全天用量，也不是费用。与下方日志筛选独立。</p>
-          <p class="hint" id="slot-stats-status" role="status">尚未读取分槽统计</p>
-          <div class="table-wrap" id="slot-stats-table" hidden tabindex="0" role="region" aria-label="分槽用量表，可横向滚动"><table><caption class="sr-only">当前窗口分槽请求与 token 用量</caption><thead><tr><th scope="col">槽位</th><th scope="col">请求数</th><th scope="col">输入 tokens</th><th scope="col">输出 tokens</th><th scope="col">缓存读 tokens</th></tr></thead><tbody id="slot-stats-body"></tbody></table></div>
-        </div>
+        <!-- 首屏主任务是把最近的请求（尤其是失败的）看清楚：筛选与日志表排在统计明细之前。 -->
         <div class="logbar">
           <label>协议组<select id="f-app"><option value="">全部</option><option value="claude">Claude / Anthropic</option><option value="codex">Codex / OpenAI</option></select></label>
           <label>渠道<input type="text" id="f-provider" placeholder="渠道名子串"></label><label>模型<input type="text" id="f-model" placeholder="模型名子串"></label><label>会话<input type="text" id="f-session" placeholder="会话短 id"></label>
           <label>状态<select id="f-status"><option value="">全部</option><option value="ok">仅成功（2xx/3xx）</option><option value="err">仅失败（4xx/5xx/断连）</option></select></label><label>失败分类<select id="f-errclass"><option value="">全部</option><option value="stream_aborted">断流（status 记 200）</option><option value="cancelled">客户端取消</option><option value="econnreset">连接被重置</option><option value="upstream_server">上游故障</option><option value="upstream_request">上游拒绝</option><option value="budget_exhausted">额度耗尽</option><option value="rate_limit">限流</option><option value="authentication">认证失败</option><option value="network_error">网络错误</option></select></label><button class="small" onclick="loadLogs()">应用</button><button class="small" onclick="clearFilters()">清空</button>
         </div>
-        <div class="table-wrap" tabindex="0" role="region" aria-label="请求日志表，可横向滚动"><table><caption class="sr-only">最近请求日志</caption><thead><tr><th scope="col">时间</th><th scope="col">会话</th><th scope="col">渠道 / 协议组</th><th scope="col">模型 入 → 出</th><th scope="col">输入</th><th scope="col">输出</th><th scope="col">缓存命中</th><th scope="col">速度</th><th scope="col">首字</th><th scope="col">请求体</th><th scope="col">耗时</th><th scope="col">状态</th><th scope="col">错误</th></tr></thead><tbody id="logs-body"></tbody></table></div>
+        <p class="table-scroll-hint" aria-hidden="true">表格可横向滚动 →</p>
+        <div class="table-wrap log-table-wrap" id="logs-table" tabindex="0" role="region" aria-label="请求日志表，可横向滚动"><table class="log-table"><caption class="sr-only">最近请求日志</caption>
+          <colgroup><col class="lc-time"><col class="lc-sess"><col class="lc-prov"><col class="lc-model"><col class="lc-tokens"><col class="lc-speed"><col class="lc-ttfb"><col class="lc-bytes"><col class="lc-status"><col class="lc-err"></colgroup>          <thead><tr><th scope="col">时间</th><th scope="col">会话</th><th scope="col">渠道 / 协议组</th><th scope="col">模型 入 → 出</th><th scope="col" class="num">tokens <span class="th-note">入 / 出 · 缓存</span></th><th scope="col" class="num">速度</th><th scope="col" class="num">首字</th><th scope="col" class="num">耗时 <span class="th-note">请求体</span></th><th scope="col" class="num">状态</th><th scope="col">错误</th></tr></thead><tbody id="logs-body"></tbody></table></div>
         <div class="empty" id="logs-empty" style="display:none"><b>暂无请求</b>通过本地路由发起调用后，请求会显示在这里。</div>
+        <div class="panel" id="slot-stats-panel" aria-labelledby="slot-stats-title">
+          <h2 id="slot-stats-title">分槽用量</h2>
+          <p class="hint diag-scope" id="slot-stats-scope">当前内存窗口，统计范围等待服务端提供；不是全天用量，也不是费用。与下方日志筛选独立。</p>
+          <p class="hint diag-scope" id="slot-stats-status" role="status">尚未读取分槽统计</p>
+          <div class="table-wrap" id="slot-stats-table" hidden tabindex="0" role="region" aria-label="分槽用量表，可横向滚动"><table><caption class="sr-only">当前窗口分槽请求与 token 用量</caption><thead><tr><th scope="col">槽位</th><th scope="col" class="num">请求数</th><th scope="col" class="num">输入 tokens</th><th scope="col" class="num">输出 tokens</th><th scope="col" class="num">缓存读 tokens</th></tr></thead><tbody id="slot-stats-body"></tbody></table></div>
+        </div>
       </section>
 
       <!-- 设置与备份:接的是 /api/backups、/api/health、/api/routing/preview、/api/metrics 四个只读端点。
@@ -403,20 +455,21 @@
       <section id="view-settings" style="display:none" aria-labelledby="settings-title">
         <div class="head"><div><h1 id="settings-title">设置与备份</h1><div class="sub">备份清点、运行健康、路由解释与脱敏导出。全部只读，这里没有恢复按钮；恢复写入不在当前版本提供。</div></div><div class="actions"><button onclick="loadBackups()">重新清点备份</button><button onclick="loadHealth()">重新读取健康</button></div></div>
         <div class="panel" aria-labelledby="settings-backup-title">
-          <h2 id="settings-backup-title">备份清点</h2>
-          <p class="hint">只列文件名、大小、时间与摘要，不含任何配置正文或密钥。保留上限外的备份会在下一次写入时按名字顺序被删掉。</p>
+          <div class="cfg-panel-head"><h2 id="settings-backup-title">备份清点</h2><span class="cfg-panel-hint">每个池按名字顺序保留最近几份，超出上限的在下次写入时删掉。</span></div>
           <div id="backup-status" class="hint" role="status">正在清点备份…</div>
           <div id="backup-dirs"></div>
+          <details class="cfg-more"><summary>什么情况下会删备份</summary>
+            <p class="hint">只有写入配置触发新备份时才会轮换：池满则删掉文件名排序最老的那几份（每个池上方已标出"下一次备份会删"）。目录读不到只影响清点，不会删任何文件。</p>
+          </details>
         </div>
         <div class="panel" aria-labelledby="settings-health-title">
-          <h2 id="settings-health-title">运行健康</h2>
-          <p class="hint">渠道启用状态与超时/重试配置，属只读视图，调整要改服务端启动参数。</p>
+          <div class="cfg-panel-head"><h2 id="settings-health-title">运行健康</h2><span class="cfg-panel-hint">渠道启用状态与超时/重试配置；调整要改服务端启动参数。</span></div>
           <div id="health-status" class="hint" role="status">正在读取健康状态…</div>
           <div id="health-body"></div>
         </div>
         <div class="panel" aria-labelledby="settings-preview-title">
-          <h2 id="settings-preview-title">路由解释</h2>
-          <p class="hint">按当前快照预测某个模型会落到哪个候选渠道。<strong>这是预测，不是实际落点</strong>：不消耗轮询游标，也不改任何绑定；真实落点看「会话」页的最近实际请求列。</p>
+          <div class="cfg-panel-head"><h2 id="settings-preview-title">路由解释</h2><span class="cfg-panel-hint">按当前快照预测某个模型会落到哪个候选渠道；只读，不改任何绑定。</span></div>
+          <p class="hint"><strong>这是预测，不是实际落点</strong>：不消耗轮询游标，也不改任何绑定；真实落点看「会话」页的最近实际请求列。</p>
           <div class="rc-line"><label class="field">协议组<select id="preview-app" onchange="loadPreview()"><option value="claude">Claude / Anthropic</option><option value="codex">Codex / OpenAI</option></select></label>
             <label class="field">模型名<input type="text" id="preview-model" placeholder="如 claude-opus-4-8；留空会得到「暂无可用落点」" spellcheck="false" onkeydown="if(event.key==='Enter'){event.preventDefault();loadPreview()}"></label>
             <button class="small" onclick="loadPreview()">解释一次</button></div>
@@ -424,8 +477,8 @@
           <div id="preview-body"></div>
         </div>
         <div class="panel" aria-labelledby="settings-export-title">
-          <h2 id="settings-export-title">脱敏诊断导出</h2>
-          <p class="hint">Prometheus 文本格式的运行指标(内存窗口，非累计)。标签集固定，不含会话、渠道、模型名或任何密钥，可直接交给别人排查。</p>
+          <div class="cfg-panel-head"><h2 id="settings-export-title">脱敏诊断导出</h2><span class="cfg-panel-hint">Prometheus 文本格式的运行指标(内存窗口，非累计)。</span></div>
+          <p class="hint">标签集固定，不含会话、渠道、模型名或任何密钥，可直接交给别人排查。</p>
           <div class="savebar"><button class="small" id="metrics-export" onclick="exportMetrics()">下载指标文本</button><span class="msg" id="metrics-msg" role="status"></span></div>
         </div>
       </section>

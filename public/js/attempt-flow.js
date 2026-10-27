@@ -174,12 +174,15 @@
     const TAIL = 12;
     const tail = events.slice(-TAIL);
     const hiddenCount = events.length - tail.length;
+    // 状态码单独染一个基调:一眼能分出成功与失败,不用逐字读数字。
+    const code = Number(trace.status);
+    const codeCls = !code ? '' : code >= 400 ? ' err' : ' ok';
     return `<article class="attempt-card done${open ? ' open' : ''}" data-id="${esc(trace.id)}">
       <header>
         <button type="button" class="attempt-toggle" aria-expanded="${open ? 'true' : 'false'}"
           aria-label="${open ? '收起这条尝试过程' : '展开这条尝试过程'}"
           data-attempt-toggle="${esc(trace.id)}">${open ? '▾' : '▸'}</button>
-        <b>${esc(trace.status || '-')}</b>
+        <b class="attempt-code${codeCls}">${esc(trace.status || '-')}</b>
         <span class="mono">${esc(metaLine(trace).join(' · '))}</span>
         <span class="attempt-time">${esc(ms(trace.duration_ms))}</span>
         ${trace.code ? `<span class="cool">${esc(trace.code)}</span>` : ''}
@@ -209,6 +212,9 @@
 
     const live = state.traces.filter(t => !t.terminal).slice(0, ACTIVE_MAX);
     const done = state.traces.filter(t => t.terminal).slice(0, TERMINAL_MAX);
+    // 面板在"什么都没有"时收成三行,不拿一整块空白把下面的日志表推下去;
+    // 有进行中或有历史时才铺开提示文案。
+    el.dataset.state = live.length ? 'live' : done.length ? 'history' : 'empty';
     const activeEl = el.querySelector('#attempt-flow-active');
     activeEl.innerHTML = live.length
       ? live.map(activeCard).join('')

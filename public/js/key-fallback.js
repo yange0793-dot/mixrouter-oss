@@ -131,7 +131,7 @@
       <div class="kf-head">
         <div class="kf-intro">
           <h2 id="kf-title">多 Key 自动备用</h2>
-          <p class="hint" id="kf-hint">默认关闭。开启后，同一渠道的多把 Key 在账号、额度或模型权限失败时自动换号；会话固定 Key 与压缩专用 Key 永远不换，也不改渠道当前生效的 Key。</p>
+          <p class="hint" id="kf-hint">同一渠道的多把 Key 在账号、额度或模型权限失败时自动换号。默认关闭。</p>
         </div>
         <div class="kf-controls">
           <label class="kf-field" for="kf-provider">渠道<select id="kf-provider"></select></label>
@@ -147,7 +147,10 @@
         </div>
         <p class="hint" id="kf-health-status" role="status">尚未读取。</p>
         <ul class="kf-rows" id="kf-rows"></ul>
-        <p class="hint">只显示渠道 ID、Key ID、状态与时间；不显示 Key 正文，也没有删除操作。状态仅保存在本进程内存，服务重启后清零。</p>
+        <details class="kf-more">
+          <summary>启用条件与数据范围</summary>
+          <p class="hint">会话固定 Key 与压缩专用 Key 永远不换，也不改渠道当前生效的 Key。这里只显示渠道 ID、Key ID、状态与时间；不显示 Key 正文，也没有删除操作。状态仅保存在本进程内存，服务重启后清零。</p>
+        </details>
       </div>`;
     const empty = document.getElementById('prov-empty');
     if (empty && empty.parentNode === grid.parentNode) empty.insertAdjacentElement('afterend', panel);

@@ -187,6 +187,8 @@ function setup(options = {}) {
   add('skip-link', 'a');
   add('sidebar', 'aside');
   add('sidebar-toggle', 'button');
+  // 桌面端收起按钮:只在 ≥861px 显示,页面上在品牌行右端。
+  add('sidebar-collapse', 'button');
   add('sidebar-backdrop', 'div', { hidden: true });
   add('quick-nav-open', 'button');
   add('quick-nav-kbd', 'kbd');
@@ -719,6 +721,71 @@ test('抽屉打开时 Tab 在抽屉链接与开关之间循环,不落到遮罩�
   const free = desktop.documentKeydown({ key: 'Tab' });
   assert.equal(free.defaultPrevented, false, '桌面端不许拦 Tab');
   assert.equal(desktop.doc.activeElement, abroad);
+});
+
+// ---------------------------------------------------------------- 桌面侧栏收起
+
+test('桌面侧栏收起/展开:状态落在 <html data-sidebar>,偏好落盘,焦点跟着开关走', () => {
+  const h = setup();
+  h.boot();
+  const collapse = h.get('sidebar-collapse');
+  const toggle = h.get('sidebar-toggle');
+
+  assert.equal(h.doc.documentElement.hasAttribute('data-sidebar'), false, '默认是展开的');
+  assert.equal(collapse.getAttribute('aria-expanded'), 'true');
+  assert.equal(collapse.getAttribute('aria-label'), '收起侧栏');
+  assert.equal(toggle.getAttribute('aria-label'), '打开导航');
+
+  collapse.click();
+  // 属性写在 <html> 上而不是 body:workspace.js 在 <head> 里就落它,刷新不会先闪完整侧栏。
+  assert.equal(h.doc.documentElement.getAttribute('data-sidebar'), 'rail');
+  assert.equal(h.storage.dump()['mixr.ui.rail'], '1', '收起偏好要落盘');
+  assert.equal(collapse.getAttribute('aria-expanded'), 'false');
+  assert.equal(collapse.getAttribute('aria-label'), '展开侧栏');
+  assert.equal(toggle.getAttribute('aria-label'), '展开侧栏', '桌面端顶栏开关这时只用来把侧栏叫回来');
+  assert.equal(h.doc.activeElement, toggle, '收起后焦点交给那个能展开它的开关');
+  assert.equal(h.doc.body.classList.contains('nav-open'), false, '桌面收起不是抽屉,不许加 nav-open');
+
+  toggle.click();
+  assert.equal(h.doc.documentElement.hasAttribute('data-sidebar'), false, '再点一次就是展开');
+  assert.equal(h.storage.dump()['mixr.ui.rail'], '0');
+  assert.equal(h.doc.activeElement, h.navLinks[0], '展开后焦点进第一个导航项');
+  assert.equal(h.doc.body.classList.contains('nav-open'), false, '桌面端点它不能变成开抽屉');
+});
+
+test('存储被拒时桌面收起仍生效:当次不抛错,也不要求偏好写成功', () => {
+  // 隐私模式 / 配额满:localStorage 的 getter 直接抛。收起是纯界面状态,不能因此失效。
+  const h = setup({ denyStorage: true });
+  h.boot();
+  h.get('sidebar-collapse').click();
+  assert.equal(h.doc.documentElement.getAttribute('data-sidebar'), 'rail', '当次仍要收起');
+  assert.equal(h.get('sidebar-toggle').getAttribute('aria-label'), '展开侧栏');
+  h.get('sidebar-toggle').click();
+  assert.equal(h.doc.documentElement.hasAttribute('data-sidebar'), false, '没有存储也能再展开');
+});
+
+test('窄屏忽略桌面收起:偏好为 rail 时点开关仍是开抽屉,Tab 与 Escape 照常', () => {
+  // 偏好可能是上次在桌面存下的;窄屏里样式表忽略 data-sidebar,开关必须还是抽屉开关。
+  const h = setup({ mobile: true, storage: { 'mixr.ui.rail': '1' } });
+  h.boot();
+  assert.equal(h.doc.documentElement.getAttribute('data-sidebar'), 'rail', '读到的偏好照写,由样式表决定要不要理会');
+  assert.equal(h.get('sidebar').inert, true, '抽屉收着时仍要把侧栏摘出 Tab 序列');
+
+  const toggle = h.get('sidebar-toggle');
+  toggle.click();
+  assert.equal(h.doc.body.classList.contains('nav-open'), true, '窄屏点它必须开抽屉,不能当成「展开侧栏」');
+  assert.equal(h.get('sidebar').inert, false, '打开后菜单可键盘访问');
+  assert.equal(h.doc.activeElement, h.navLinks[0], '焦点进第一个导航项');
+
+  h.doc.activeElement = toggle;                 // 开关是循环里的最后一项
+  const wrap = h.documentKeydown({ key: 'Tab' });
+  assert.equal(wrap.defaultPrevented, true);
+  assert.equal(h.doc.activeElement, h.navLinks[0], 'Tab 从开关绕回首项');
+
+  h.documentKeydown({ key: 'Escape' });
+  assert.equal(h.doc.body.classList.contains('nav-open'), false);
+  assert.equal(h.get('sidebar').inert, true, '收起后重新 inert');
+  assert.equal(h.doc.activeElement, toggle, 'Escape 关闭后焦点回开关');
 });
 
 test('关掉渠道弹窗后,窄屏隐藏的侧栏立即回到 inert(焦点一移动就补回)', () => {

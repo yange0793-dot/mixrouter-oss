@@ -32,6 +32,13 @@ const providers = (group = providerGroup()) => state?.providers?.[group] || [];
 const allProviders = () => [...providers('claude'), ...providers('codex')];
 const zcodeSupported = () => !!state?.live && Object.hasOwn(state.live, 'zcode') && Object.hasOwn(state.current || {}, 'zcode');
 const handlerArg = value => esc(JSON.stringify(String(value))); // Escape both the JS string and its HTML attribute.
+// 会话下拉的 DOM id 必须由**完整 key** 推出来:短 id 只有 8 位,两个不同会话会撞同一个短 id
+// (实测 cx:01a178e0-… 与 cx:01a178e0-… 就是),用短 id 拼 id 会让 for/id 指错行。
+// 编码要可逆唯一:凡是 [A-Za-z0-9-] 之外的字符都换成 "_<codePoint 的 16 进制>_"。下划线
+// 本身也必须被编码(成 _5f_),否则 "_3a_" 既可能来自冒号也可能来自原样的下划线,两个键就
+// 会生成同一个 id;这样编码后产物一定是合法 HTML id,且不同 key 必然得到不同 id。
+const domIdOf = value => 'session-' + String(value ?? '').replace(/[^A-Za-z0-9-]/g,
+  ch => '_' + ch.codePointAt(0).toString(16) + '_');
 
 async function api(path, opt = {}) {
   const controller = new AbortController();
@@ -155,6 +162,16 @@ function renderOverview() {
     const count = app === 'zcode' ? ps.length : providers(app).length;
     $('count-' + app).textContent = count;
     $('tab-' + app).setAttribute('aria-label', `${APPS[app].label}，${count} 个${app === 'zcode' ? '共享' : ''}渠道`);
+  }
+}
+// 侧栏三个客户端入口的状态点:实心 = 已写入配置,空心环 = 还没接。只读 liveFacts,不另判一套。
+// 提示放在链接上而不是那个 aria-hidden 的点上——点对读屏是不可见的,提示挂那里等于没有。
+function syncClientDots() {
+  for (const link of document.querySelectorAll('nav a[data-app]')) {
+    const f = liveFacts(link.dataset.app);
+    const configured = !!(f.healthy && f.lv?.base_url);
+    link.dataset.conn = configured ? 'on' : 'off';
+    link.setAttribute('title', configured ? '已写入客户端配置' : '尚未接入客户端');
   }
 }
 // Polling updates status only: route editor DOM is initialized once, never rebuilt by refresh.
@@ -347,26 +364,55 @@ function renderOverviewPage() {
   $('ov-cooldowns').textContent = '按协议归组 · 失败后仍可重试';
 
   $('overview-todo').innerHTML = overviewTodo();
+  // 没有事项时把整块收成一条状态行(样式按 data-state),有事项才展开成卡片。
+  const todoPanel = $('overview-todo-panel');
+  if (todoPanel) todoPanel.dataset.state = $('overview-todo').innerHTML.includes('overview-todo-list') ? 'active' : 'clear';
 
   // 三行客户端状态:复用 liveFacts 的口径,不另造一套判断。
+  // 一行一件事:徽标说模式,有接入地址才写地址,配置文件路径跟在后面;
+  // 未接入的行给一个「去接入」——只切视图并发请求,已接入的行不给,免得整页都是按钮。
   $('overview-clients').innerHTML = Object.keys(APPS).map(app => {
     const f = liveFacts(app);
-    const wire = f.lv?.wire_api ? ` · 协议 ${esc(f.lv.wire_api)}` : '';
-    return `<div class="ov-row"><div class="ov-row-name">${esc(APPS[app].label)}</div>
-      <div class="ov-row-main"><span class="badge ${f.healthy && f.lv?.base_url ? 'on' : 'off'}">${esc(f.mode)}</span><span>${esc(f.stateLabel)}${wire}</span></div>
-      <div class="mono">${esc(f.lv?.base_url || '未配置接入地址')}</div>
-      <div class="mono">${esc(APPS[app].cfg)}</div></div>`;
+    const wire = f.lv?.wire_api ? `协议 ${esc(f.lv.wire_api)}` : '';
+    const configured = !!(f.healthy && f.lv?.base_url);
+    // 状态文案与徽标同义时不重复:未接入的三行曾经都写成「尚未配置 尚未配置」。
+    const state = f.stateLabel && f.stateLabel !== f.mode ? `<span class="ov-state">${esc(f.stateLabel)}</span>` : '';
+    const addr = f.lv?.base_url ? `<span class="mono ov-addr">${esc(f.lv.base_url)}</span>` : '';
+    const goto = configured ? '' : `<button class="ov-goto" type="button" data-app="${app}" onclick="overviewGoConnect(${handlerArg(app)})">去接入</button>`;
+    return `<div class="ov-row" data-app="${app}"><div class="ov-row-name">${esc(APPS[app].label)}</div>
+      <div class="ov-row-main"><span class="badge ${configured ? 'on' : 'off'}">${esc(f.mode)}</span>${state}${wire ? `<span class="ov-state">${wire}</span>` : ''}${addr}${goto}</div>
+      <div class="mono ov-cfg">${esc(APPS[app].cfg)}</div></div>`;
   }).join('');
 
   // 接入地址 = "我在哪里填什么"。zcode 缺 base 时退回 url(与 routerBase 同口径)。
+  // 完整端点清单默认收起:三行基址已经回答了「填什么」,这里只是备查。
   const r = state.router || {};
-  const endpoints = Array.isArray(r.endpoints) ? r.endpoints : [];
+  const endpoints = [...new Set(Array.isArray(r.endpoints) ? r.endpoints : [])];
   $('overview-endpoints').innerHTML = [
     ['Claude Code / Anthropic', r.claude_base || r.url || ''],
     ['Codex / OpenAI', r.codex_base || r.url || ''],
     ['ZCode', r.zcode_base || r.url || ''],
   ].map(([label, value]) => `<div class="ov-row"><div class="ov-row-name">${esc(label)}</div><div class="mono">${esc(value || '未提供')}</div></div>`).join('')
-    + (endpoints.length ? `<div class="ov-row"><div class="ov-row-name">端点</div><div class="mono">${endpoints.map(esc).join('<br>')}</div></div>` : '');
+    + (endpoints.length ? `<details class="ov-endpoints-more"><summary>全部端点（${endpoints.length}）</summary><div class="ov-endpoint-list">${endpoints.map(esc).join('<br>')}</div></details>` : '');
+
+  // 接入向导入口只在还有客户端没写入配置时露面;三个都接好了就没必要占首屏。
+  const ready = $('readiness-overview');
+  if (ready) ready.hidden = Object.keys(APPS).every(app => { const f = liveFacts(app); return !!(f.healthy && f.lv?.base_url); });
+  // 侧栏状态点与这里同源(都读 liveFacts),必须排在 setConnection 之后,
+  // 否则一次成功的刷新会先把点画成「未接入」。
+  syncClientDots();
+}
+// 「去接入」:切到渠道页并选中这个客户端,再聚焦向导入口;不写任何配置。
+function overviewGoConnect(app) {
+  const target = APPS[app] ? app : 'claude';
+  if (typeof window.workspaceNavigate === 'function') {
+    try { window.workspaceNavigate('providers', target); } catch (e) { console.error(e); }
+  } else {
+    if (typeof setApp === 'function') setApp(target);
+    if (typeof showView === 'function') showView('providers');
+  }
+  const entry = document.getElementById('readiness-open');
+  if (entry && typeof entry.focus === 'function') entry.focus();
 }
 
 function routerBase(app = curApp) {
@@ -501,17 +547,18 @@ function renderProviders() {
     const nameText = String(p.name || '?').trim();
     const avatar = (/^[\x20-\x7e]+$/.test(nameText) ? nameText.slice(0, 2) : nameText.slice(0, 1)).toUpperCase() || '?';
     const statusBadges = [
-      isCur ? `<span class="badge ${verified ? 'on' : 'off'}">${verified ? '已写入配置' : '库内选中'}</span>` : '',
+      isCur ? `<span class="badge ${verified ? 'on' : 'off sel'}">${verified ? '已写入配置' : '库内选中'}</span>` : '',
       drift && online ? '<span class="badge drift">配置不一致</span>' : '',
       `<span class="badge ${p.enabled ? 'info' : 'off'}">${p.enabled ? '启用' : '停用'}</span>`,
       deadKeys.length ? `<span class="badge off" title="有停用的 Key">${deadKeys.length} 把 Key 已停用</span>` : '',
       ...healthBits,
     ].join('');
     // 账号只露 label / 掩码,明文 Key 从不进入卡片(停用的 Key 也一样)。
+    // 账号数紧跟在同一个下拉后面,不让它自己换行成第二处信息。
     const account = keys.length
-      ? `<select class="keypick" data-provider="${esc(p.id)}" data-action="key" aria-label="${esc(p.name)} 当前账号" onchange="setActiveKey(${arg},this.value)">${keys.map(k => `<option value="${esc(k.id)}" ${k.id === p.active_key ? 'selected' : ''}>${esc(k.label)} · ${esc(k.key_masked)}${k.enabled === false ? ' · 已停用' : ''}</option>`).join('')}</select><span class="muted">（${keys.length} 个账号${deadKeys.length ? '，' + deadKeys.length + ' 把已停用' : ''}）</span>`
+      ? `<select class="keypick" data-provider="${esc(p.id)}" data-action="key" aria-label="${esc(p.name)} 当前账号" onchange="setActiveKey(${arg},this.value)">${keys.map(k => `<option value="${esc(k.id)}" ${k.id === p.active_key ? 'selected' : ''}>${esc(k.label)} · ${esc(k.key_masked)}${k.enabled === false ? ' · 已停用' : ''}</option>`).join('')}</select><span class="muted keycount">${keys.length} 个账号${deadKeys.length ? ' · ' + deadKeys.length + ' 把已停用' : ''}</span>`
       : esc(p.key_masked || '未配置');
-    return `<article class="card ${p.enabled ? '' : 'off'} ${verified ? 'cur' : ''}" data-provider="${esc(p.id)}">
+    return `<article class="card ${p.enabled ? '' : 'off'} ${verified ? 'cur' : ''} ${isCur && !verified ? 'sel' : ''}" data-provider="${esc(p.id)}">
       <header class="top provider-identity">
         <span class="provider-avatar" aria-hidden="true">${esc(avatar)}</span>
         <div class="provider-info"><h3 class="name">${esc(p.name)}</h3><div class="provider-status">${statusBadges}</div></div>
@@ -519,7 +566,7 @@ function renderProviders() {
       <div class="provider-content">
         <div class="mono endpoint" title="${esc(p.base_url)}">${esc(p.base_url)}</div>
         <div class="provider-models tags"><span class="tag">${esc(wire)}</span>${models.map(m => `<span class="tag">${esc(m)}</span>`).join('')}${p.drop_images ? '<span class="tag">纯文本</span>' : ''}${p.direct ? '<span class="tag">直连</span>' : ''}</div>
-        ${deadKeys.length ? `<p class="note">已停用的 Key：${deadKeys.map(k => `${esc(k.label || k.id)}（${esc(k.id)}）`).join('、')}。停用只影响固定选它的会话与压缩规则，不会自动改选其他 Key。</p>` : ''}${p.note ? `<p class="note">${esc(p.note)}</p>` : ''}
+        ${deadKeys.length ? `<p class="note">已停用的 Key：${deadKeys.map(k => `${esc(k.label || k.id)}（${esc(k.id)}）`).join('、')}。停用只影响固定选它的会话与压缩规则，不会自动改选其他 Key。</p>` : ''}${p.note ? `<p class="note" title="${esc(p.note)}">${esc(p.note)}</p>` : ''}
         ${isZcode && group === 'codex' && wire !== zcodeWire ? `<p class="note">此渠道按 ${esc(wire)} 协议接入，与上方路由协议选择不同。</p>` : ''}
       </div>
       <div class="provider-meta mono keyrow">API key · ${account}${tline}</div>
@@ -1039,7 +1086,7 @@ function renderCodexConfig() {
     ['上下文窗口', context ? `${Number(context).toLocaleString()} tokens${explicit ? '（显式配置）' : '（本地模型目录）'}` : '未声明，由 Codex 决定'],
   ];
   const warnings = (live.warnings || []).map(warning => `<li>${esc(warning)}</li>`).join('');
-  $('codex-config-details').innerHTML = `<dl class="config-facts">${facts.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join('')}</dl>${warnings ? `<ul class="config-warnings">${warnings}</ul>` : ''}<p class="hint">路由请求即时使用当前落点；已打开的 Codex 客户端会缓存模型标签，新客户端读取同步列表。命令行、profile 或项目配置可能覆盖全局默认。</p>`;
+  $('codex-config-details').innerHTML = `<details class="prov-help"><summary>上下文窗口与生效范围</summary><dl class="config-facts">${facts.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join('')}</dl>${warnings ? `<ul class="config-warnings">${warnings}</ul>` : ''}<p class="hint">路由请求即时使用当前落点；已打开的 Codex 客户端会缓存模型标签，新客户端读取同步列表。命令行、profile 或项目配置可能覆盖全局默认。</p></details>`;
 }
 // 阈值草稿绑定到用户开始编辑时读到的磁盘版本。轮询只更新事实,不能替草稿领取新 revision。
 function codexCompactGate() {
@@ -1327,6 +1374,12 @@ function renderCompactCurrent() {
   if (!c) { $('compact-current').textContent = '当前服务端不支持压缩选择'; return; }
   $('compact-current').innerHTML = (c.mode === 'mixed' ? '<b>当前为混合落点或未完整配置，不代表单一模型。</b><br>' : '')
     + (c.rules.map(r => `${esc(r.id)}${r.enabled ? '' : '（规则停用）'}：${r.targets.map(t => `${esc(t.name)} / ${esc(t.model || '透传请求模型')} / ${t.key_id ? '固定 Key ' + esc(t.key_label || t.key_id) + '（' + esc(t.key_id) + '）' : '跟随渠道当前 Key'}${t.key_available === false ? '（Key 不可用）' : ''}${t.enabled ? '' : '（渠道停用）'}`).join(' → ') || '无可用目标'}${r.has_pool ? '（渠道池）' : ''}`).join('<br>') || '尚无压缩规则；保存时创建两条规则。');
+  // 折叠着的那组也要能一眼看出当前压缩落点。
+  const summary = $('compact-summary');
+  if (summary) {
+    const first = c.rules.find(r => r.targets?.length)?.targets[0];
+    summary.textContent = first ? `${first.name} / ${first.model || '透传请求模型'}${c.rules.length > 1 ? ` 等 ${c.rules.length} 条规则` : ''}` : '尚未配置压缩落点';
+  }
 }
 function renderCompactEditor() {
   if (!compactDraft) return;
@@ -1378,20 +1431,28 @@ function updateCompactStatus() {
 }
 // 四段分开读:保存成功 / 已写盘 / 服务已加载 / 客户端需重开。没有状态时(还没保存过)
 // 只写一句"尚未保存",不假装任何一段已经成立。
-function splitStatusLine(label, ok, text) {
-  const cls = ok === true ? 'ok' : ok === false ? 'no' : 'na';
-  const mark = ok === true ? '✓' : ok === false ? '✗' : '·';
+// 「客户端需重开」的 false 是好事(不用重开),不能按 ✗ 红字读;这类反向项统一用中性色,
+// 由句子本身说"需要/不需要"。
+function splitStatusLine(label, ok, text, neg = false) {
+  const cls = neg ? 'na' : ok === true ? 'ok' : ok === false ? 'no' : 'na';
+  const mark = neg ? '·' : ok === true ? '✓' : ok === false ? '✗' : '·';
   return `<span class="ss-item ${cls}"><b aria-hidden="true">${mark}</b> ${esc(label)}：${esc(text)}</span>`;
+}
+// 还没保存过时整块收成一行灰字(仍逐段列出),保存过才升成一排带状态的 chips。
+function splitStatusBox(box, o) {
+  box.classList.toggle('has-outcome', !!o);
+  box.classList.toggle('is-pending', !o);
 }
 function renderSplitStatus() {
   const box = $('compact-status');
   if (!box) return;
   const o = compactOutcome;
-  box.innerHTML = '<div class="ss-title">保存结果(四件事分开看)</div><div class="ss-row">'
+  splitStatusBox(box, o);
+  box.innerHTML = '<span class="ss-title">保存结果</span><div class="ss-row">'
     + splitStatusLine('请求', o ? o.saved : null, o ? (o.saved ? '已成功返回' : o.error || '未成功') : '尚未保存过')
     + splitStatusLine('已写盘', o ? o.written : null, o ? (o.written ? '配置已写入服务端磁盘' : '未确认写盘') : '尚未保存过')
     + splitStatusLine('服务已加载', o ? o.loaded : null, o ? (o.loaded ? '运行中的服务按新压缩规则分发' : '未确认服务已加载') : '尚未保存过')
-    + splitStatusLine('客户端需重开', o ? o.restart : null, o ? '不需要：压缩落点在服务端，客户端下次请求即用新规则' : '尚未保存过')
+    + splitStatusLine('客户端需重开', o ? o.restart : null, o ? '不需要：压缩落点在服务端，客户端下次请求即用新规则' : '尚未保存过', true)
     + '</div>';
   renderWindowStatus();
 }
@@ -1402,11 +1463,12 @@ function renderWindowStatus() {
   const box = $('window-status');
   if (!box) return;
   const o = windowOutcome;
-  box.innerHTML = '<div class="ss-title">保存结果(四件事分开看)</div><div class="ss-row">'
+  splitStatusBox(box, o);
+  box.innerHTML = '<span class="ss-title">保存结果</span><div class="ss-row">'
     + splitStatusLine('请求', o ? o.saved : null, o ? (o.saved ? '已成功返回' : o.error || '未成功') : '尚未保存过')
     + splitStatusLine('已写盘', o ? o.written : null, o ? (o.written ? '已写入所选配置层文件' : '未确认写盘') : '尚未保存过')
     + splitStatusLine('服务已加载', null, '不适用：外面改磁盘不会热改运行中的会话')
-    + splitStatusLine('客户端需重开', o ? o.restart : null, o ? '需要：新开会话(或在该项目目录 claude --continue)才生效' : '尚未保存过')
+    + splitStatusLine('客户端需重开', o ? o.restart : null, o ? '需要：新开会话(或在该项目目录 claude --continue)才生效' : '尚未保存过', true)
     + '</div>';
 }
 function markCompactDirty() { compactDirty = true; compactRevision++; updateCompactStatus(); setConnection(online); }
@@ -1485,10 +1547,17 @@ async function saveCompact() {
 
 // ---------------- 压缩上下文窗口 ----------------
 const windowLabel = { global: '用户全局', project: '项目', local: '项目本地', auto: '下层继承' };
+// 覆盖提示分两档:真正的覆盖(项目/环境)才是警告色;"项目未检查"只是说明,
+// 常驻的红条会把整页语气拉成故障,实际什么都没坏。
+function coverageTone(box, { note, warn }) {
+  box.classList.toggle('offline', !!warn);
+  box.classList.toggle('cfg-note', !warn && !!note);
+}
 function invalidateWindowSelection(message) {
   windowSelectionRevision++; $('window-msg').textContent = message;
   $('window-coverage-text').textContent = '配置层或项目目录已变化，当前选择的覆盖情况尚未检查；请读取所选配置层。';
-  $('window-coverage').classList.add('offline'); $('window-edit-override').hidden = true; setConnection(online);
+  coverageTone($('window-coverage'), { note: true, warn: false });
+  $('window-edit-override').hidden = true; setConnection(online);
 }
 function windowProjectChanged() { invalidateWindowSelection('项目目录已变化，请读取所选配置层；未保存窗口值暂保留。'); }
 function selectWindowScope() { invalidateWindowSelection('配置层已变化，请读取所选配置层；未保存窗口值暂保留。'); }
@@ -1527,7 +1596,7 @@ function renderCompactWindow(w, preserveValue = false) {
   $('window-current').textContent = `所选 ${windowLabel[w.scope]}：${w.value} token · ${w.target}；磁盘配置优先层 ${windowLabel[w.configured.source] || w.configured.source}：${w.configured.value} token（非运行中会话实测）。`;
   $('window-coverage-text').textContent = windowCoverageText(w);
   const coverage = windowCoverage(w);
-  $('window-coverage').classList.toggle('offline', !coverage.project_checked || !!coverage.overridden_by || coverage.environment_override);
+  coverageTone($('window-coverage'), { note: !coverage.project_checked, warn: !!coverage.overridden_by || coverage.environment_override });
   $('window-edit-override').hidden = !coverage.overridden_by;
   $('window-layers').innerHTML = w.layers.map(layer => `${esc(windowLabel[layer.scope] || layer.scope)}：${esc(layer.value)} · ${esc(layer.file)}${layer.exists ? '' : '（文件不存在）'}${layer.env_override ? '（存在环境覆盖）' : ''}`).join('<br>');
   $('window-warnings').textContent = (w.warnings || []).join('\n') || '当前没有额外警告；这里只显示磁盘配置。';
@@ -1638,15 +1707,18 @@ function appOfRule(r) {
 }
 function ruleCard(r, i) {
   const app = appOfRule(r);
+  const conds = ['session', 'ua', 'token', 'body'].filter(key => r.when?.[key]);
   return `<div class="rulecard"><div class="rc-head"><span class="rc-idx">${i + 1}</span>
     <label class="field" for="rule-${i}-match">匹配模型<input id="rule-${i}-match" type="text" value="${esc(r.match)}" oninput="routesDraft.rules[${i}].match=this.value" placeholder="如 opus, claude-3-opus, gpt-5"></label>
-    <label class="rc-mini">适用<select id="rule-${i}-app" onchange="setRuleApp(${i},this.value)"><option value="" ${r.app ? '' : 'selected'}>两组通用</option><option value="claude" ${r.app === 'claude' ? 'selected' : ''}>Claude / Anthropic</option><option value="codex" ${r.app === 'codex' ? 'selected' : ''}>Codex / OpenAI</option></select></label>
+    <label class="rc-mini rc-app">适用<select id="rule-${i}-app" onchange="setRuleApp(${i},this.value)"><option value="" ${r.app ? '' : 'selected'}>两组通用</option><option value="claude" ${r.app === 'claude' ? 'selected' : ''}>Claude / Anthropic</option><option value="codex" ${r.app === 'codex' ? 'selected' : ''}>Codex / OpenAI</option></select></label>
     <label class="rc-mini">优先级<input type="number" value="${Number(r.priority) || 0}" oninput="routesDraft.rules[${i}].priority=Number(this.value)||0"></label>
-    <label class="rc-mini"><input type="checkbox" ${r.enabled ? 'checked' : ''} onchange="routesDraft.rules[${i}].enabled=this.checked">启用</label>
+    <label class="rc-mini rc-enable"><input type="checkbox" ${r.enabled ? 'checked' : ''} onchange="routesDraft.rules[${i}].enabled=this.checked">启用</label>
     <button class="iconbtn" onclick="delRule(${i})" aria-label="删除第 ${i + 1} 条规则">×</button></div>
-    <div class="rc-body">${ruleTargetBox(r, i, '目标')}<div class="rc-line"><span class="rc-tag">条件</span>
+    <div class="rc-body">${ruleTargetBox(r, i, '目标')}<details class="cfg-more rc-cond">
+    <summary>附加条件<span class="cfg-count">${conds.length ? conds.length + ' 项' : '可选'}</span></summary>
+    <div class="rc-line"><span class="rc-tag">条件</span>
     ${[['session', '会话 ID', '会话 id 含…'], ['ua', '客户端 UA', '客户端 UA 含…'], ['token', '客户端 token', '客户端 token 含…'], ['body', '请求内容', '请求体含…（内容分流，先于槽位）']].map(([key, label, placeholder]) => `<label class="field">${label}（可选）<input type="text" value="${esc(r.when?.[key] || '')}" oninput="setWhen(${i},'${key}',this.value)" placeholder="${placeholder}"></label>`).join('')}
-    </div>${ruleFacts(r, false)}<div class="pool-hint">目标渠道属于 ${GROUPS[app]} 协议组；另一组请求会跳过不兼容的目标继续匹配。ZCode 按所选协议归组。</div></div></div>`;
+    </div></details>${ruleFacts(r, false)}</div></div>`;
 }
 // 规则的"来源/协议/最近实际落点"一角。前两项是静态只读推导;最后一项**只认会话里的 actual**,
 // 没有真实请求记录就写「暂无」——绝不用 /api/routing/preview 的预测冒充实际落点(第二期硬要求)。
@@ -1870,13 +1942,14 @@ function renderSessions() {
   const pinned = list.filter(s => boundSourceOf(boundOf(s)) === 'manual').length;
   const withRouting = list.filter(s => routingDescribeOf(groupOfSession(s), s.routing).length).length;
   const mismatched = list.filter(s => actualDiffers(s)).length;
+  // 「实际 ≠ 绑定」是这一页唯一必须一眼看到的计数:非零时加 chip-alert 染 warn,为零时保持安静。
   $('sess-chips').innerHTML = [
-    ['活跃对话', list.length],
-    ['Anthropic / OpenAI', `${all.filter(s => (s.app || 'claude') === 'claude').length} / ${all.filter(s => s.app === 'codex').length}`],
-    ['手动钉定', pinned],
-    ['实际 ≠ 绑定', mismatched],
-    ['会话级 Key / 槽位', withRouting],
-  ].map(([k, v]) => `<div class="chip">${k}<b>${esc(String(v))}</b></div>`).join('');
+    ['活跃对话', list.length, false],
+    ['Anthropic / OpenAI', `${all.filter(s => (s.app || 'claude') === 'claude').length} / ${all.filter(s => s.app === 'codex').length}`, false],
+    ['手动钉定', pinned, false],
+    ['实际 ≠ 绑定', mismatched, mismatched > 0],
+    ['会话级 Key / 槽位', withRouting, false],
+  ].map(([k, v, alert]) => `<div class="chip${alert ? ' chip-alert' : ''}">${k}<b>${esc(String(v))}</b></div>`).join('');
 
   $('sess-body').innerHTML = list.map(s => {
     const app = s.app || 'claude';
@@ -1886,31 +1959,44 @@ function renderSessions() {
       .some(r => ((r.pool || []).some(m => (typeof m === 'string' ? m : m.provider) === b.provider)) || r.provider === b.provider);
     const opts = state.providers[app].map(p =>
       `<option value="${esc(p.id)}" ${p.id === b.provider ? 'selected' : ''}>${esc(p.name)}${p.enabled ? '' : '(停用)'}</option>`).join('');
-    return `<tr data-session="${esc(s.short)}">
-      <td><span class="sess-tag" title="${esc(s.key)}">${esc(s.short)}</span>
-        <div style="font-size:11px;color:var(--dim);font-family:inherit">${esc(KIND_LABEL[s.kind] || s.kind || '')}</div></td>
-      <td><span class="badge ${app === 'codex' ? 'info' : 'on'}">${app === 'codex' ? 'OpenAI' : 'Anthropic'}</span></td>
-      <td style="font-family:inherit"><span class="lbl" title="${esc(s.label || '')}">${esc(s.label || '-')}</span></td>
+    // 绑定列的摘要行:来源标标 + 渠道名。未绑定时只剩一个「未绑定」标标——
+    // 每行都喊一遍"普通请求渠道 · 未绑定"是噪音;那句说明留在展开后的字段名里。
+    const bindName = b.provider_name || b.provider || '';
+    return `<tr data-session="${esc(s.short)}"${src === 'none' ? ' class="sess-unbound"' : ''}>
+      <td class="c-sess"><span class="sess-tag" title="${esc(s.key)}">${esc(s.short)}</span>
+        <span class="sess-kind">${esc(KIND_LABEL[s.kind] || s.kind || '')}</span></td>
+      <td class="c-app"><span class="badge ${app === 'codex' ? 'info' : 'on'}">${app === 'codex' ? 'OpenAI' : 'Anthropic'}</span></td>
+      <td class="c-label"><span class="lbl" title="${esc(s.label || '')}">${esc(s.label || '-')}</span></td>
       <td class="session-binding">
-          <button class="small" onclick="openRouting(${handlerArg(s.key)})" ${online ? '' : 'disabled'} aria-label="配置会话 ${esc(s.short)} 的 Key 与槽位">配置 Key / 槽位</button>
-          <details class="session-pin"><summary>普通请求渠道 · ${esc(b.provider_name || b.provider || '未绑定')}</summary>
-            <label class="field" for="session-${esc(s.short)}">仅用于非槽位、非内容分流请求<select id="session-${esc(s.short)}" class="pin-sel" onchange="pinSession(${handlerArg(s.key)}, this.value)" ${!online ? 'disabled' : ''}>
+          <div class="bind-row">
+          <button class="small sess-config" onclick="openRouting(${handlerArg(s.key)})" ${online ? '' : 'disabled'} aria-label="配置会话 ${esc(s.short)} 的 Key 与槽位">配置 Key / 槽位</button>
+          <details class="session-pin"><summary><span class="badge ${srcCls}">${srcText}</span>${bindName ? `<span class="bind-line" title="${esc(bindName)}">${esc(bindName)}</span>` : ''}</summary>
+            <label class="field" for="${esc(domIdOf(s.key))}">普通请求渠道（非槽位、非分流请求）<select id="${esc(domIdOf(s.key))}" class="pin-sel" onchange="pinSession(${handlerArg(s.key)}, this.value)" ${!online ? 'disabled' : ''}>
               <option value="" ${b.provider ? '' : 'selected'}>(未绑定)</option>${opts}</select></label>
             <div class="bind-src"><span class="badge ${srcCls}">${srcText}</span></div>
             ${hasPool ? '' : '<div class="rt-note">不在任何池内</div>'}
-          </details></td>
+          </details>
+          </div>
+          ${bindName ? `<div class="bind-meta" title="${esc([b.model, b.rule].filter(Boolean).join(' · '))}">${esc(b.model || '-')}${b.rule ? ` · ${esc(b.rule)}` : ''}</div>` : ''}</td>
       <td>${actualCell(s, b)}</td>
-      <td>${esc(b.model || '-')}</td>
-      <td>${esc(b.rule || '-')}</td>
-      <td>${s.reqs || 0}</td>
-      <td>${fmtTok(s.inTok || 0)} / ${fmtTok(s.outTok || 0)}</td>
-      <td>${s.lastUsed ? new Date(s.lastUsed).toLocaleTimeString('zh-CN', { hour12: false }) : '-'}</td>
       <td>${routingCell(s)}</td>
+      <td class="c-usage"><b>${s.reqs || 0}</b><span>${fmtTok(s.inTok || 0)} / ${fmtTok(s.outTok || 0)}</span></td>
+      <td class="c-active">${sessTimeText(s.lastUsed)}</td>
       <td><div class="sess-acts">
         <button class="small" onclick="gotoLogs(${handlerArg(s.short)})">日志</button>
         <button class="small danger" onclick="unbindSession(${handlerArg(s.key)})" ${online ? '' : 'disabled'}>解绑</button>
       </div></td></tr>`;
   }).join('');
+}
+// 会话列表的时间:当天只给时分,跨天补上月-日,免得三天前的会话看起来像刚发生。
+function sessTimeText(ts) {
+  if (!ts) return '-';
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return '-';
+  const now = new Date();
+  const hm = d.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
+  const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  return sameDay ? hm : `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${hm}`;
 }
 // 「最近实际请求」这一格。没有记录就是明明白白的「暂无」——
 // 绝不拿绑定值或路由预览顶上来充数:用户看到渠道名就会当成真实落点,而 actual 只认真的发出去过的那次。
@@ -1922,16 +2008,18 @@ function actualCell(s, bound) {
   const expected = actualExpectedProvider(s, bound);
   const diff = !!a.provider && !!expected && a.provider !== expected;
   const statusCls = !a.status ? '' : a.status >= 400 ? 'st4' : 'st2';
+  // 三行各自不换行:渠道 + 状态 → 模型 → 槽位/粘性/时间。信息一条不少,但不再把渠道、
+  // 模型、状态、槽位、时间挤成同一段可换行文字(那会把行高撑到六七行)。
   const meta = [
-    a.status ? `<span class="${statusCls}">${esc(String(a.status))}</span>` : '',
     a.slot ? `槽位 ${esc(a.slot)}` : '',
     a.sticky ? '粘性' : '',
-    a.ts ? new Date(a.ts).toLocaleTimeString('zh-CN', { hour12: false }) : '',
-  ].filter(Boolean).join(' · ');
+    a.ts ? esc(sessTimeText(a.ts)) : '',
+  ].filter(Boolean);
   return `<span class="actual-cell${diff ? ' diff' : ''}">
-    <span class="sum">${esc(name)}</span>
-    <span class="sub">${esc(a.model || '-')}${meta ? ' · ' + meta : ''}</span>
-    ${diff ? '<span class="sub">与当前绑定不同</span>' : ''}</span>`;
+    <span class="sum">${esc(name)}${a.status ? `<span class="ac-status ${statusCls}">${esc(String(a.status))}</span>` : ''}</span>
+    <span class="sub">${esc(a.model || '-')}</span>
+    ${meta.length ? `<span class="meta">${meta.join(' · ')}</span>` : ''}
+    ${diff ? '<span class="sub why">与当前绑定不同</span>' : ''}</span>`;
 }
 // 槽位请求对照该槽的独立/全局配置,不能拿普通请求渠道把正常的主链/子代理分流标成异常。
 function actualExpectedProvider(s, bound = boundOf(s)) {
@@ -2525,9 +2613,9 @@ function routingCell(s) {
   for (const [name, v] of Object.entries(r.slots || {})) items.push(`槽位 ${name} → ${routingSlotTextOf(group, v)}`);
   return `<span class="routes-cell" data-session-routing="${esc(s.short)}">
     <span class="sum">${items.length ? items.length + ' 项覆盖' : '继承全局'}</span>
-    ${items.slice(0, 2).map(x => `<span class="sub">· ${esc(x)}</span>`).join('')}
+    ${items.slice(0, 2).map(x => `<span class="sub" title="${esc(x)}">· ${esc(x)}</span>`).join('')}
     ${items.length > 2 ? `<span class="sub">· 其余 ${items.length - 2} 项</span>` : ''}
-    ${stale.length ? `<span class="sub" style="color:var(--warn)">⚠ ${stale.length} 项引用已失效</span>` : ''}</span>`;
+    ${stale.length ? `<span class="sub warn">⚠ ${stale.length} 项引用已失效</span>` : ''}</span>`;
 }
 
 // ---------------- 设置与备份(只读) ----------------
@@ -2546,7 +2634,7 @@ async function loadBackups() {
     const dirs = Array.isArray(res.dirs) ? res.dirs : [];
     $('backup-dirs').innerHTML = dirs.length ? dirs.map(d => backupDirCard(d, res.keep)).join('') : '<div class="empty"><b>没有备份目标</b>当前后端没有可清点的备份池。</div>';
     const bad = dirs.filter(d => !d.ok).length;
-    box.textContent = `保留上限 ${res.keep ?? '未提供'} 份 · 共 ${dirs.length} 个备份池${bad ? ` · ${bad} 个目录读取失败` : ''}。这里只显示文件名与摘要，不含任何配置正文。`;
+    box.textContent = `保留上限 ${res.keep ?? '未提供'} 份 · 共 ${dirs.length} 个备份池${bad ? ` · ${bad} 个目录读取失败` : ''}。只显示文件名与摘要，不含任何配置正文。`;
     backupsLoaded = true;
   } catch (e) {
     // 端点挂了只影响这一块:其它页的草稿、其它面板都不受牵连(每个 fetch 各自 try/catch)。
@@ -2559,13 +2647,15 @@ function backupDirCard(d, keep) {
   const unparsable = Array.isArray(d.unparsable) ? d.unparsable : [];
   const nextDelete = Array.isArray(d.next_delete) ? d.next_delete : [];
   const rows = list.slice(0, 12).map(b => `<tr><td class="mono">${esc(b.name)}</td><td>${esc(b.size)}</td><td class="mono">${esc(b.iso || '')}</td><td class="mono">${esc(b.sha256_12 || '')}</td>${b.legacy ? '<td>旧格式</td>' : '<td></td>'}</tr>`).join('');
-  return `<div class="bk-dir">
+  // 读失败的池不能说"这个池里还没有备份"——那是另一件事,并排摆出来会互相打脸。
+  // 空池同理:上一行已经写了"共 0 份…",不再补一句同义的空话。
+  return `<div class="bk-dir ${d.ok ? '' : 'is-failed'}">
     <div class="bk-head"><b>${esc(d.label || d.id)}</b><span class="badge ${d.ok ? 'on' : 'off'}">${d.ok ? '已清点' : '读取失败'}</span>
       <span class="mono">${esc(d.dir || '')}</span></div>
     ${d.ok ? `<p class="hint">共 ${d.total ?? list.length} 份${d.legacy ? `，其中 ${d.legacy} 份旧格式` : ''}；下一次备份会删：${nextDelete.length ? nextDelete.map(esc).join('、') : '无(池未满)'}。保留上限 ${keep ?? '未提供'} 份。</p>`
       : `<p class="hint">这个目录没查成：${esc(d.error?.code || '未知原因')}。不是"零份备份"——是"没查成"。</p>`}
     ${unparsable.length ? `<p class="hint">名字像备份但解析不出时间的有 ${unparsable.length} 个：${unparsable.map(esc).join('、')}。它们照样占保留池名额。</p>` : ''}
-    ${rows ? `<div class="table-wrap"><table><caption class="sr-only">${esc(d.label || d.id)} 备份清单</caption><thead><tr><th scope="col">文件名</th><th scope="col">大小</th><th scope="col">时间</th><th scope="col">sha256(12)</th><th scope="col">备注</th></tr></thead><tbody>${rows}</tbody></table></div>${list.length > 12 ? `<p class="hint">只显示最近 12 份，共 ${list.length} 份。</p>` : ''}` : '<p class="hint">这个池里还没有备份。</p>'}
+    ${rows ? `<div class="table-wrap"><table><caption class="sr-only">${esc(d.label || d.id)} 备份清单</caption><thead><tr><th scope="col">文件名</th><th scope="col">大小</th><th scope="col">时间</th><th scope="col">sha256(12)</th><th scope="col">备注</th></tr></thead><tbody>${rows}</tbody></table></div>${list.length > 12 ? `<p class="hint">只显示最近 12 份，共 ${list.length} 份。</p>` : ''}` : ''}
   </div>`;
 }
 async function loadHealth() {
@@ -2621,11 +2711,15 @@ async function loadPreview() {
         <div><dt>命中方式</dt><dd>${esc(m.via || '未提供')}</dd></div>
         <div><dt>命中规则</dt><dd>${esc(m.ruleId || '未命中(走默认路由)')}</dd></div>
         <div><dt>分配策略</dt><dd>${esc(m.strategy || '未提供')}</dd></div>
-        <div><dt>预测首选</dt><dd>${esc(chosen || '无法确定(如随机策略)')}</dd></div></dl>`
-      + (cands.length ? `<div class="table-wrap"><table><caption class="sr-only">候选渠道</caption><thead><tr><th scope="col">候选</th><th scope="col">模型</th><th scope="col">协议</th><th scope="col">可用</th></tr></thead><tbody>${cands.map(c => `<tr><td class="mono">${esc(c.providerName || c.providerId)}</td><td class="mono">${esc(c.model || '透传')}</td><td>${esc(c.wire || '')}</td><td>${c.eligible ? '是' : '否'}</td></tr>`).join('')}</tbody></table></div>` : '<p class="hint">没有候选渠道。</p>')
+        <div><dt>预测首选</dt><dd>${esc(chosen || '无法确定(如随机策略)')}</dd></div>
+      </dl>`
+      + (cands.length
+        ? `<div class="table-wrap"><table><caption class="sr-only">候选渠道</caption><thead><tr><th scope="col">候选</th><th scope="col">模型</th><th scope="col">协议</th><th scope="col">可用</th></tr></thead><tbody>${cands.map(c => `<tr><td class="mono">${esc(c.providerName || c.providerId)}</td><td class="mono">${esc(c.model || '透传')}</td><td>${esc(c.wire || '')}</td><td>${c.eligible ? '是' : '否'}</td></tr>`).join('')}</tbody></table></div>`
+        : '<p class="hint">没有候选渠道。</p>')
       + (Array.isArray(res.warnings) && res.warnings.length ? `<ul class="config-warnings">${res.warnings.map(w => `<li>${esc(w.message || w.code)}</li>`).join('')}</ul>` : '');
+    // textContent 不再转义一次,否则服务端消息里的引号会原样显示成 &quot;。
     box.textContent = res.ok ? '解释完成。'
-      : `暂无可用落点：${esc((res.error && res.error.message) || '没有候选渠道')}`;
+      : `暂无可用落点：${(res.error && res.error.message) || '没有候选渠道'}`;
   } catch (e) {
     $('preview-body').innerHTML = '';
     box.textContent = '路由解释失败：' + e.message;
@@ -2728,17 +2822,26 @@ async function loadLogs() {
       const cls = l.status >= 500 || l.status === 0 || l.err ? 'st5' : l.status >= 400 ? 'st4' : 'st2';
       const sess = l.session
         ? `<span class="sess-tag" title="${esc(l.session_kind || '')}">${esc(l.session)}</span>`
-        : '<span style="color:var(--dim)">-</span>';
+        : '<span class="dim">-</span>';
       const fo = l.failover ? ' <span class="cool" title="首选渠道失败,已转移到当前渠道">↷转移</span>' : '';
       const tr = l.wire === 'chat' && (l.kind === 'responses') ? ' <span class="cool" title="responses→chat 协议翻译">⇄翻译</span>' : '';
       const appTag = l.app === 'codex' ? '<span class="badge info">OpenAI</span> ' : '<span class="badge info">Anthropic</span> ';
-      return `<tr><td>${esc(l.ts.slice(5, 19))}</td><td>${sess}</td>
-        <td style="font-family:inherit">${appTag}${esc(l.provider || '-')}${fo}${tr}</td>
-        <td>${esc(l.model_in)}${l.model_out && l.model_out !== l.model_in ? ' → ' + esc(l.model_out) : ''}</td>
-        <td>${l.in || '-'}</td><td>${l.out || '-'}</td><td>${l.cache_read || '-'}</td><td>${cacheHitText(l)}</td>
-        <td>${fmtRate(l)}</td><td>${fmtTtfb(l.ttfb_ms)}</td><td>${fmtBytes(l.bytes_in)}</td>
-        <td>${l.ms ? l.ms + 'ms' : '-'}</td><td class="${cls}">${l.status || '-'}</td>
-        <td style="color:var(--err)">${esc(l.err || '')}${l.err_class ? ` <span class="cool" title="失败分类 err_class">${esc(l.err_class)}</span>` : ''}</td></tr>`;
+      // 模型名常是长串:换行会把一列撑成三行,这里只做「入 → 出」两段,超宽由列宽截断。
+      // 两段都带 title —— 被省略掉的那半截才是排查时要读的原文。
+      const swap = l.model_out && l.model_out !== l.model_in
+        ? `<span class="mdl-out" title="${esc(l.model_out)}">→ ${esc(l.model_out)}</span>` : '';
+      const errText = l.err || l.err_class || '';
+      // tokens 与缓存合成一格(上行入/出,下行缓存读与命中率)。缓存读数不能只剩百分比 ——
+      // 「命中 300、占比 75%」是两个不同的量,少了读数就没法判断省了多少。cacheHitText 两者都给。
+      const tok = `<span class="tok-main">${l.in || '-'} / ${l.out || '-'}</span><span class="tok-sub">缓存 ${cacheHitText(l)}</span>`;
+      return `<tr><td class="c-time">${esc(String(l.ts || '').slice(5, 19).replace('T', ' '))}</td><td class="c-sess">${sess}</td>
+        <td class="c-prov">${appTag}${esc(l.provider || '-')}${fo}${tr}</td>
+        <td class="c-model"><span class="mdl-in" title="${esc(l.model_in || '')}">${esc(l.model_in || '-')}</span>${swap}</td>
+        <td class="num c-tok">${tok}</td>
+        <td class="num">${fmtRate(l)}</td><td class="num">${fmtTtfb(l.ttfb_ms)}</td>
+        <td class="num c-bytes"><span>${l.ms ? l.ms + 'ms' : '-'}</span><span class="sub">${fmtBytes(l.bytes_in)}</span></td>
+        <td class="num ${cls}">${l.status || '-'}</td>
+        <td class="c-err">${errText ? `<span class="err-text" title="${esc(errText)}">${esc(l.err || l.err_class || '')}</span>` : ''}${l.err && l.err_class ? `<span class="cool" title="失败分类 err_class">${esc(l.err_class)}</span>` : ''}</td></tr>`;
     }).join('');
     setLogError('logs', '');
   } catch (e) { if (sequence === logsSequence) setLogError('logs', '日志读取失败：' + e.message); }

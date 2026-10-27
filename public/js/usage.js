@@ -28,6 +28,11 @@ const USAGE_DETAIL_HEAD = {
 };
 const USAGE_WEEK_COUNT = 53;
 const USAGE_MAX_EXPAND = 8;
+// 裁剪后的最短窗口:日志只有几天时也留出一个季度(13 周),日历不至于缩成一根细条;
+// 有更多历史时按实际覆盖加长,不再无条件铺满 53 周 —— 首屏应该被有数据的部分占满。
+const USAGE_HEAT_MIN_WEEKS = 13;
+// 周数不超过这个值时格子用固定宽度(紧凑日历),超过就按卡片宽度均分,避免格子被拉成巨块。
+const USAGE_HEAT_CELL_CAP_WEEKS = 26;
 
 // 页面状态只在这里一处。`data` 是上次成功读取的响应;失败时保留旧数据并标 stale。
 const usageState = {
@@ -282,6 +287,14 @@ function usageSyncChrome() {
     // 用户正打开着下拉时不要动它的值,否则列表会跳。
     if (el && document.activeElement !== el) el.value = value;
   }
+  // 「清除筛选」平时只是个安静的次要动作,有筛选时才有边框和强调色:它不该和筛选控件抢注意力。
+  const clear = $('usage-clear-filters');
+  if (clear) {
+    const active = !!(usageState.app || usageState.provider || usageState.model || usageState.status);
+    clear.classList.toggle('is-active', active);
+    // data-empty 只驱动样式:按钮仍然可点、可聚焦,点空筛选本来就是无操作。
+    if (clear.dataset) clear.dataset.empty = active ? 'false' : 'true';
+  }
 }
 
 function usageInitControls() {
@@ -470,6 +483,22 @@ function usageRenderCards(data) {
   const rate = usageNum(totals.ok_rate);
   set('usage-success', rate === null ? '—' : rate.toFixed(1) + '%');
   set('usage-ok-rate', rate === null ? '暂无成功率样本' : `按日志状态判定 · ${usageInt(totals.reqs)} 次请求`);
+  // 成功率低于 95% 时把数字本身染成告警色:失败是这页唯一需要人动手看的数字。
+  const success = $('usage-success');
+  if (success && success.classList) {
+    success.classList.toggle('is-low', rate !== null && rate < 95);
+    success.classList.toggle('is-bad', rate !== null && rate < 85);
+  }
+  // 失败条数单独标出来:成功率要心算,失败次数直接给。「0 次」时不出徽标,免得抢注意力。
+  const failEl = $('usage-fail');
+  if (failEl) {
+    const failed = (reqs !== null && rate !== null) ? Math.max(0, Math.round(reqs * (100 - rate) / 100)) : null;
+    failEl.hidden = !failed;
+    failEl.textContent = failed ? `失败 ${usageInt(failed)} 次` : '';
+    if (failed && failEl.setAttribute) {
+      failEl.setAttribute('title', `区间内失败的请求 ${usageInt(failed)} 次;可以按「仅失败」筛选明细`);
+    }
+  }
   // 速度/首响应是补充指标,放在「更多指标」里;没有样本时也是「—」而不是 0。
   set('usage-speed', totals.speed_tps ? `${Math.round(Number(totals.speed_tps))} tok/s` : '—');
   const ttfb = $('usage-ttfb');
@@ -616,12 +645,7 @@ function usageHeatModel(data) {
   const rangeStartKey = usageLocalDayKey(scope.from) || todayKey;
   const rangeEndKey = usageLocalDayKey(scope.to) || todayKey;
   const anchor = usageDayDate(rangeEndKey) || todayDate;
-  const weeks = USAGE_WEEK_COUNT * (1 + Math.max(0, usageState.heatExpanded | 0));
   const weekStart = usageAddDays(anchor, -usageMondayIndex(anchor));
-  const gridStart = usageAddDays(weekStart, -(weeks - 1) * 7);
-  const gridEnd = usageAddDays(weekStart, 6);
-  const gridStartKey = usageDayKey(gridStart);
-  const gridEndKey = usageDayKey(gridEnd);
 
   const daily = usageDailyRows(data);
   const map = new Map(daily.map(row => [row.t, row]));
@@ -635,6 +659,24 @@ function usageHeatModel(data) {
   const covLastKey = covFirstKey
     ? (todayKey > covFirstKey ? todayKey : usageLocalDayKey(coverage.last_ts) || todayKey)
     : (hasDashboard ? null : rangeEndKey);
+
+  // 默认窗口从「数据真正覆盖到的第一周」开始,而不是永远铺满 53 周:日志只有最近几周时,
+  // 前面几十列全是「未覆盖」斜线,白占首屏。裁剪只决定画到哪一列,0 / 未覆盖 / 区间外的
+  // 判定都不变;「查看更早的 53 周」每点一次往前加一块,裁剪掉的部分仍然翻得到。
+  const expanded = Math.max(0, usageState.heatExpanded | 0);
+  const weeksCap = USAGE_WEEK_COUNT * (1 + expanded);
+  const dataStartKey = covFirstKey && covFirstKey > rangeStartKey ? covFirstKey : rangeStartKey;
+  const dataStart = usageDayDate(dataStartKey) || anchor;
+  const dataStartWeek = usageAddDays(dataStart, -usageMondayIndex(dataStart));
+  const weeksNeeded = Math.max(1, Math.round((weekStart - dataStartWeek) / (7 * 86400000)) + 1);
+  // 自动窗口 = 需要几列就画几列,但不少于一个季度的一半(USAGE_HEAT_MIN_WEEKS),
+  // 也不超过 53 周;展开后每块仍然往前加 53 周。
+  const autoWeeks = Math.min(USAGE_WEEK_COUNT, Math.max(weeksNeeded, USAGE_HEAT_MIN_WEEKS));
+  const weeks = Math.min(weeksCap, autoWeeks + USAGE_WEEK_COUNT * expanded);
+  const gridStart = usageAddDays(weekStart, -(weeks - 1) * 7);
+  const gridEnd = usageAddDays(weekStart, 6);
+  const gridStartKey = usageDayKey(gridStart);
+  const gridEndKey = usageDayKey(gridEnd);
 
   const cells = [];
   const byKey = new Map();
@@ -697,6 +739,7 @@ function usageHeatModel(data) {
     todayKey, cells, byKey, months, thresholds, activeDays, daysWithReqs, hasRequests,
     hasCoverage: !!covFirstKey,
     anyOutside, anyInactive, anyFuture,
+    // 往前翻的入口:统计区间本身伸到当前块之前(例如「全部」而数据比画出来的更早)。
     hasEarlier: rangeStartKey < gridStartKey,
     tabKey: latestActive ? latestActive.key : gridStartKey,
   };
@@ -806,10 +849,13 @@ function usageRenderHeat(data) {
 
   const root = $('usage-heatmap');
   const sig = usageHeatSignature(model);
+  // 周数少时格子给固定宽度(紧凑日历),周数多时按容器均分;样式表只认这一个开关。
+  const compact = model.weeks <= USAGE_HEAT_CELL_CAP_WEEKS;
   if (root && root.setAttribute) {
     // 外壳给的 role="img" 会把所有格子从无障碍树里抹掉;这里换成容器语义。
     root.setAttribute('role', 'group');
     root.setAttribute('data-weeks', String(model.weeks));
+    root.setAttribute('data-density', compact ? 'compact' : 'dense');
   }
   if (!root || sig === usageState.heatSig) return;
   usageState.heatSig = sig;
@@ -817,9 +863,12 @@ function usageRenderHeat(data) {
   usageRenderDailyTable(model);
 
   const tabKey = usageState.heatDate || model.tabKey;
-  const months = model.months.map(month => `<span class="heatmap-month" style="grid-column:${month.start + 1} / span ${month.span}">${month.month}月</span>`).join('');
-  // 七行固定周一到周日;只给奇数行写文字(一/三/五/日),其余留空占位。
-  const weekdays = [0, 1, 2, 3, 4, 5, 6].map(row => `<span>${row % 2 === 0 ? USAGE_WEEKDAY_CHARS[(row + 1) % 7] : ''}</span>`).join('');
+  // 月份标签:列数太少的月(窗口首尾常有 1 周残月)不写文字,只占位 —— 否则
+  // 「10月」会直接压到右边「11月」上。整月的 4–5 列永远够宽。
+  const months = model.months.map(month => `<span class="heatmap-month" style="grid-column:${month.start + 1} / span ${month.span}">${month.span >= 3 ? month.month + '月' : ''}</span>`).join('');
+  // 七行固定周一到周日。紧凑日历行高够写全七个字;53 周的满版行很窄,只标一/三/五/日。
+  const weekdays = [0, 1, 2, 3, 4, 5, 6]
+    .map(row => `<span>${compact || row % 2 === 0 ? USAGE_WEEKDAY_CHARS[(row + 1) % 7] : ''}</span>`).join('');
   const cells = model.cells.map(cell => {
     // 区间外的日期淡化显示:它既不是 0,也不该和真实 0 抢同一块底色。
     const ghosts = !cell.active && !cell.future;
@@ -840,12 +889,16 @@ function usageRenderHeat(data) {
   }).join('');
   const gridLabel = `按日用量热力图,${model.weeks} 周,周一为第一行;方向键逐日查看,点击或聚焦查看数值`;
   if (root.setAttribute) root.setAttribute('aria-label', gridLabel);
-  // 外层两列网格让星期标签与日历共用同一套行高;月份与格子同列,天然对齐。
-  const layout = '<div class="heatmap-layout" style="display:grid;grid-template-columns:auto minmax(0,1fr);column-gap:8px;row-gap:4px">'
+  // 格子尺寸完全交给样式表(按 data-density 决定),行内只放布局:窄屏要改成「铺满」
+  // 时样式表还能覆盖,不会被行内样式顶死。外层两列网格让星期标签与日历共用同一套行高。
+
+  // 紧凑窗口(周数少)整块按内容宽度居中;满 53 周的满版仍然让日历吃掉剩余宽度。
+  const columns = compact ? 'auto auto' : 'auto minmax(0,1fr)';
+  const layout = `<div class="heatmap-layout" style="display:grid;grid-template-columns:${columns};column-gap:8px;row-gap:4px">`
     + '<span aria-hidden="true"></span>'
-    + `<div class="heatmap-months" aria-hidden="true" style="grid-auto-columns:minmax(9px,1fr)">${months}</div>`
+    + `<div class="heatmap-months" aria-hidden="true">${months}</div>`
     + `<div class="heatmap-weekdays" aria-hidden="true">${weekdays}</div>`
-    + `<div class="heatmap-grid" style="grid-auto-columns:minmax(9px,1fr)">${cells}</div>`
+    + `<div class="heatmap-grid">${cells}</div>`
     + '</div>';
 
   // 图例:外壳已有就用它的色阶,只补文字说明;否则在热力图里自建一份。
@@ -859,6 +912,11 @@ function usageRenderHeat(data) {
   }
   root.innerHTML = layout + legend;
 
+  // 窄屏日历在自己的滚动区里横向滚动,重画后锚到最近一周(右边),而不是半年以前的旧数据。
+  const holder = $('usage-chart-holder');
+  if (holder && holder.scrollWidth > holder.clientWidth + 4) {
+    holder.scrollLeft = holder.scrollWidth;
+  }
   // 键盘读数时重画会把焦点冲掉:把焦点还给同一个日期。
   if (usageState.heatFocus && usageState.heatDate && root.querySelector) {
     const element = root.querySelector(`[data-date="${usageState.heatDate}"]`);
@@ -871,13 +929,17 @@ function usageRenderHeatSummary(model, data) {
   const summary = $('usage-calendar-summary');
   const metric = USAGE_METRIC_LABELS[usageState.metric] || usageState.metric;
   if (summary) {
-    const windowLabel = model.weeks === USAGE_WEEK_COUNT ? '最近 53 周' : `已展开 ${model.weeks} 周`;
+    // 窗口是「最近 N 周」,不是固定 53 周:默认按数据覆盖裁剪,展开后才变长。
+    const windowLabel = usageState.heatExpanded > 0
+      ? `已展开 ${model.weeks} 周`
+      : `最近 ${model.weeks} 周`;
     const totals = (data && data.totals) || {};
     const totalText = usageNum(totals.reqs) === null
       ? ''
       : ` · 共 ${usageInt(totals.reqs)} 次请求 · ${usageTok(totals.tokens_total)} tokens`;
     summary.textContent = `${windowLabel} · ${model.gridStartKey} – ${model.gridEndKey} · 窗口内 ${model.activeDays} 天,其中 ${model.daysWithReqs} 天有请求${totalText} · 按 ${metric} 着色`;
   }
+  usageRenderHeatSide(model);
   const expand = $('usage-calendar-expand');
   if (expand) {
     const capped = usageState.heatExpanded >= USAGE_MAX_EXPAND;
@@ -885,6 +947,27 @@ function usageRenderHeatSummary(model, data) {
     expand.disabled = !model.hasEarlier || capped;
     if (model.hasEarlier && capped) expand.textContent = '已展开到上限';
     else if (model.hasEarlier) expand.textContent = '查看更早的 53 周';
+  }
+}
+
+// 日历右侧的窗口概览:全部从已经画出来的格子里算,不发新的查询。
+function usageRenderHeatSide(model) {
+  const set = (id, text) => { const el = $(id); if (el) el.textContent = text; };
+  const active = model.cells.filter(cell => cell.active && cell.covered);
+  const withReqs = active.filter(cell => cell.reqs > 0);
+  const metric = usageState.metric === 'reqs' ? 'reqs' : 'tokens';
+  const value = cell => (metric === 'reqs' ? cell.reqs : cell.tokens);
+  const format = n => (metric === 'reqs' ? usageInt(n) + ' 次' : usageTok(n));
+  const total = withReqs.reduce((sum, cell) => sum + value(cell), 0);
+  const peak = withReqs.reduce((best, cell) => (!best || value(cell) > value(best) ? cell : best), null);
+  set('usage-side-active', active.length ? `${withReqs.length} / ${active.length} 天` : '—');
+  set('usage-side-daily-label', metric === 'reqs' ? '日均请求' : '日均 Tokens');
+  set('usage-side-daily', withReqs.length ? format(Math.round(total / withReqs.length)) : '—');
+  const peakEl = $('usage-side-peak');
+  if (peakEl) {
+    peakEl.textContent = peak ? format(Math.round(value(peak))) : '—';
+    // 峰值是哪一天要能一眼看到,但不要把日期塞进大数字里。
+    peakEl.title = peak ? `${peak.key} 单日最高` : '';
   }
 }
 

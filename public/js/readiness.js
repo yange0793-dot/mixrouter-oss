@@ -808,11 +808,23 @@
     }
     const el = rEl('readiness-entry-status');
     if (!el) return;
+    // 已经接入的客户端不需要再把向导摆在眼前:入口整体降一档,文案也改说它还能干什么。
+    // liveFacts 依赖已到的状态快照;首帧还没有快照时不猜,按原样显示。
+    let connected = false;
+    try {
+      const facts = typeof liveFacts === 'function' && typeof state !== 'undefined' && state
+        ? liveFacts(readinessState.app) : null;
+      connected = !!(facts && facts.healthy && facts.lv?.base_url);
+    } catch { connected = false; }
+    const entry = rEl('readiness-entry');
+    if (entry) entry.dataset.connected = connected ? 'true' : 'false';
     const fallback = !rOnline()
       ? (readinessNeverSynced()
         ? '正在读取控制台状态…（尚未拿到第一份状态快照）'
         : '控制台离线：不会读取或写入客户端配置。')
-      : `当前选择：${R_APPS[readinessState.app].label}。没有确认写入之前，向导不会改动任何配置文件。`;
+      : connected
+        ? `${R_APPS[readinessState.app].label} 已接入；需要换渠道、换模型或撤销上次写入时再打开。`
+        : `当前选择 ${R_APPS[readinessState.app].label}；确认写入前不会改动任何配置文件。`;
     el.textContent = readinessState.entryStatus || fallback;
   }
 
@@ -1628,17 +1640,17 @@
     entry.id = 'readiness-entry';
     entry.className = 'panel readiness-entry';
     entry.setAttribute('aria-labelledby', 'readiness-entry-title');
+    // 入口只是一条提示条:渠道列表才是这一页的主角,步骤说明留在向导弹窗里。
     entry.innerHTML = `<div class="readiness-entry-row">
         <div class="readiness-entry-copy">
           <h2 id="readiness-entry-title">接入向导</h2>
-          <p class="hint">从空渠道库接通一个客户端：选客户端、加渠道、挑模型、跑一次兼容测试、预览并确认写入。没确认之前不会改动配置；写入后可以从同一个入口撤销。</p>
+          <p class="hint" id="readiness-entry-status" role="status">读取客户端安装与配置状态后再开始。</p>
         </div>
         <div class="readiness-entry-actions">
-          <button class="primary" type="button" id="readiness-open" onclick="readinessOpen()">打开接入向导</button>
-          <button class="small" type="button" id="readiness-undo-open" onclick="readinessOpenUndo()">撤销上次写入</button>
+          <button class="small primary" type="button" id="readiness-open" onclick="readinessOpen()">打开接入向导</button>
+          <button class="small quiet" type="button" id="readiness-undo-open" onclick="readinessOpenUndo()">撤销上次写入</button>
         </div>
-      </div>
-      <p class="hint" id="readiness-entry-status" role="status">读取客户端安装与配置状态后再开始。</p>`;
+      </div>`;
     const tabs = view.querySelector('.apptabs');
     if (tabs && tabs.parentNode === view) view.insertBefore(entry, tabs);
     else view.appendChild(entry);
