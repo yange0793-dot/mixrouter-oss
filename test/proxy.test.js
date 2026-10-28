@@ -20,27 +20,15 @@ process.env.MIXR_RETRY_DELAY_MS = '0'; // 重试间隔在测试里没有意义,�
 
 const P1 = {
   id: 'p1', name: '测试渠道一', base_url: '', api_key: 'sk-test-p1', enabled: true,
-  models: ['claude-opus-5'],
+  // 落点由**已登记模型**精确决定;两个模型都登记在同一渠道上,不需要任何通用规则。
+  models: ['claude-opus-5', 'beta-target[1M]'],
 };
 const BETA = 'context-1m-2025-08-07';
 
 let mod, proxySrv, uiSrv, mockPort, proxyPort, uiPort;
-const routesBackup = [];
 
-// 临时把路由换成"指向某个临时渠道"的形状时,删掉那个渠道会让 DELETE 处理器把**当时的
-// 路由**写回 routes.json(它要清掉指向已删渠道的僵尸引用,这个行为本身是对的)。
-// 但测试换进去的是临时规则,直接 DELETE 就会拿临时规则覆盖磁盘上的真实规则,污染后续用例。
-// 所以这类"换路由 → 删渠道 → 还原"的用例,还原时必须把磁盘也写回原样。
-// 注意不能在 DELETE **之前**还原内存:那样引用该渠道的规则就查不到了,清理逻辑等于没被测到。
-async function swapRoutes(rules, def = { provider: '', model: '' }) {
-  const saved = mod._state.routes;
-  mod._state.routes = { rules, default: def };
-  return async () => {
-    mod._state.routes = saved;
-    await rawRequest(uiPort, 'PUT', '/api/routes', { body: { rules: saved.rules, default: saved.default } });
-  };
-}
-
+// 瘦身后没有"临时规则"这种夹具了:落点全靠渠道登记的模型名与槽位。测试要临时改落点时
+// 直接改渠道的 models[] / slotMap,并在用完后还原(下面的 swap* 助手负责)。
 function rawRequest(port, method, reqPath, { headers = {}, body } = {}) {
   return new Promise((resolve, reject) => {
     const data = body === undefined ? null : (typeof body === 'string' ? body : JSON.stringify(body));
@@ -65,14 +53,6 @@ test('setup:起 mock 上游与两个服务', async () => {
   P1.base_url = `http://127.0.0.1:${mockPort}`;
   fs.writeFileSync(path.join(TMP, 'providers.json'), JSON.stringify({
     version: 2, current: { claude: 'p1', codex: null }, claude: [P1], codex: [],
-  }));
-  fs.writeFileSync(path.join(TMP, 'routes.json'), JSON.stringify({
-    rules: [
-      { id: 'r1', match: 'opus', provider: 'p1', model: 'routed-opus', enabled: true },
-      { id: 'r2', match: 'sonnet', provider: 'p1', model: 'beta-target[1M]', enabled: true },
-      { id: 'r3', match: 'dead', provider: 'p1', model: '', enabled: false },
-    ],
-    default: { provider: 'p1', model: '' },
   }));
   mod = require('../mixrouter.js');
   proxySrv = await mod.listen(0, mod.proxyHandler);
@@ -104,7 +84,7 @@ test('请求体非 JSON 返回 400', async () => {
   assert.strictEqual(JSON.parse(r.text).error.type, 'invalid_request_error');
 });
 
-test('命中 opus 规则:转发改写后的模型,带鉴权头,响应附渠道标头', async () => {
+test('精确登记模型:原样转发该模型,带鉴权头,响应附渠道标头', async () => {
   const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {
     body: { model: 'claude-opus-5', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] },
     headers: { 'Content-Type': 'application/json', 'User-Agent': 'claude-cli/9.9 (test)' },
@@ -112,18 +92,18 @@ test('命中 opus 规则:转发改写后的模型,带鉴权头,响应附渠道�
   assert.strictEqual(r.status, 200);
   const seen = mock.requests.at(-1);
   assert.strictEqual(seen.url, '/v1/messages');
-  assert.strictEqual(seen.body.model, 'routed-opus');                       // 规则改写
+  assert.strictEqual(seen.body.model, 'claude-opus-5');                     // 登记即落点,不再改写
   assert.strictEqual(seen.headers['x-api-key'], 'sk-test-p1');
   assert.strictEqual(seen.headers['authorization'], 'Bearer sk-test-p1');
   assert.strictEqual(seen.headers['user-agent'], 'claude-cli/9.9 (test)');  // 客户端 UA 透传
   // 响应标头经 safeHeader 消洗:纯中文渠道名 → 空串(不崩进程即目的)
   assert.strictEqual(r.headers['x-mixrouter-provider'], '');
-  assert.ok(r.text.includes('mock-echo:routed-opus'));
+  assert.ok(r.text.includes('mock-echo:claude-opus-5'));
 });
 
-test('sonnet 规则目标带 [1M]:剥离后缀,合并 beta 头', async () => {
+test('登记模型带 [1M]:剥离后缀,合并 beta 头', async () => {
   const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {
-    body: { model: 'claude-sonnet-5', max_tokens: 8, stream: false, messages: [{ role: 'user', content: 'hi' }] },
+    body: { model: 'beta-target[1M]', max_tokens: 8, stream: false, messages: [{ role: 'user', content: 'hi' }] },
     headers: { 'anthropic-beta': 'feature-x' },
   });
   assert.strictEqual(r.status, 200);
@@ -149,7 +129,7 @@ test('流式请求:SSE 原样透传,usage 入日志', async () => {
   assert.strictEqual(r.status, 200);
   assert.ok(r.headers['content-type'].includes('text/event-stream'));
   assert.ok(r.text.includes('event: message_start'));
-  assert.ok(r.text.includes('mock-echo:routed-opus'));
+  assert.ok(r.text.includes('mock-echo:claude-opus-5'));
   const logs = JSON.parse((await rawRequest(uiPort, 'GET', '/api/logs')).text);
   const entry = logs.logs[0];
   assert.strictEqual(entry.stream, true);
@@ -173,30 +153,27 @@ test('count_tokens:转发到上游专用路径,usage 数值类型正确', async 
   assert.strictEqual(typeof logs.logs[0].in, 'number');
 });
 
-test('无命中且 default 无渠道时返回 503 + no_route_error', async () => {
-  // 规则指向一个根本不存在的渠道:报错必须点名是哪条规则的哪个目标没了,
-  // 而不是含混的"没有匹配的路由,或路由未绑定渠道"(控制台里那条规则显示着"已绑定")
-  routesBackup.push(mod._state.routes);
-  try {
-    mod._state.routes = { rules: [{ id: 'rx', match: 'opus', provider: 'ghost', model: '', enabled: true }],
-      default: { provider: '', model: '' } };
-    const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {
-      body: { model: 'claude-opus-5', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] },
-    });
-    assert.strictEqual(r.status, 503);
-    const j = JSON.parse(r.text);
-    assert.strictEqual(j.error.type, 'no_route_error');
-    assert.match(j.error.message, /rx/, '要指名是哪条规则');
-    assert.match(j.error.message, /ghost/, '要指名是哪个渠道');
-  } finally { mod._state.routes = routesBackup.pop(); }
+test('未登记模型返回 503 + no_route_error,并点名模型', async () => {
+  // 精确登记之后,"没有渠道登记这个模型"就是唯一含义:不再有规则/兜底可以藏。
+  const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {
+    body: { model: 'ghost-model', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] },
+  });
+  assert.strictEqual(r.status, 503);
+  const j = JSON.parse(r.text);
+  assert.strictEqual(j.error.type, 'no_route_error');
+  assert.match(j.error.message, /ghost-model/, '要指名是哪个模型没落点');
 });
 
 test('渠道停用时返回 503 + provider_disabled_error', async () => {
+  // 停用渠道不参与"已登记模型"命中,所以用精确槽位把它绑上来,才走得到 provider_disabled。
+  const saved = structuredClone(mod._state.slotMap);
+  mod._state.slotMap = { claude: { main: { provider: 'p1', model: 'claude-opus-5' } }, codex: {} };
   mod._state.store.claude[0].enabled = false; // store 里的对象经 JSON 往返,须就地改
   const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {
-    body: { model: 'claude-opus-5', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] },
+    body: { model: 'mixr-main', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] },
   });
   mod._state.store.claude[0].enabled = true;
+  mod._state.slotMap = saved;
   assert.strictEqual(r.status, 503);
   assert.strictEqual(JSON.parse(r.text).error.type, 'provider_disabled_error');
   assert.ok(JSON.parse(r.text).error.message.includes('已停用'));
@@ -327,14 +304,11 @@ test('base_url 带内嵌凭据时被拒(凭据会被静默丢弃,只剩一个没
 });
 
 test('上游拒绝连接时返回 502', async () => {
-  mod._state.store.claude.push({ id: 'pdown', name: '死渠道', base_url: 'http://127.0.0.1:1', api_key: 'sk-x', enabled: true });
-  routesBackup.push(mod._state.routes);
-  mod._state.routes = { rules: [{ id: 'rd', match: 'downmodel', provider: 'pdown', model: '', enabled: true }],
-    default: { provider: '', model: '' } };
+  mod._state.store.claude.push({ id: 'pdown', name: '死渠道', base_url: 'http://127.0.0.1:1', api_key: 'sk-x',
+    enabled: true, models: ['downmodel-1'] });
   const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {
     body: { model: 'downmodel-1', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] },
   });
-  mod._state.routes = routesBackup.pop();
   mod._state.store.claude = mod._state.store.claude.filter(p => p.id !== 'pdown');
   assert.strictEqual(r.status, 502);
   assert.strictEqual(JSON.parse(r.text).error.type, 'api_error');
@@ -384,10 +358,9 @@ test('控制台 API:渠道 CRUD 全流程,key 不出网', async () => {
 test('多 Key 渠道:清单只出掩码,切换生效 Key 后上游收到的就是新 Key', async () => {
   const created = await rawRequest(uiPort, 'POST', '/api/providers', {
     body: { app: 'claude', name: '多账号渠道', base_url: `http://127.0.0.1:${mockPort}`, api_key: 'sk-acct-one-0001',
-      models: ['claude-opus-5'], keys: [{ label: '账号1', key: 'sk-acct-one-0001' }, { label: '账号2', key: 'sk-acct-two-0002' }] },
+      models: ['mkprobe'], keys: [{ label: '账号1', key: 'sk-acct-one-0001' }, { label: '账号2', key: 'sk-acct-two-0002' }] },
   });
   const id = JSON.parse(created.text).id;
-  const restoreRoutes = await swapRoutes([{ id: 'rmk', match: 'mkprobe', provider: id, model: '', enabled: true }]);
 
   const state = JSON.parse((await rawRequest(uiPort, 'GET', '/api/state')).text);
   const p = state.providers.claude.find(x => x.id === id);
@@ -398,13 +371,13 @@ test('多 Key 渠道:清单只出掩码,切换生效 Key 后上游收到的就�
   const key2 = p.keys[1].id;
 
   // 第一个 Key 生效时:上游收到 api_key 对应的凭据
-  await rawRequest(proxyPort, 'POST', '/v1/messages', { body: { model: 'mkprobe-1', max_tokens: 4, messages: [{ role: 'user', content: 'hi' }] } });
+  await rawRequest(proxyPort, 'POST', '/v1/messages', { body: { model: 'mkprobe', max_tokens: 4, messages: [{ role: 'user', content: 'hi' }] } });
   assert.strictEqual(mock.requests.at(-1).headers['x-api-key'], 'sk-acct-one-0001');
 
   // 切换到第二个 Key:同一个渠道、同一批槽位/规则,转发立刻改用新 Key
   const sw = await rawRequest(uiPort, 'PUT', `/api/providers/${id}`, { body: { active_key: key2 } });
   assert.strictEqual(sw.status, 200);
-  await rawRequest(proxyPort, 'POST', '/v1/messages', { body: { model: 'mkprobe-2', max_tokens: 4, messages: [{ role: 'user', content: 'hi' }] } });
+  await rawRequest(proxyPort, 'POST', '/v1/messages', { body: { model: 'mkprobe', max_tokens: 4, messages: [{ role: 'user', content: 'hi' }] } });
   assert.strictEqual(mock.requests.at(-1).headers['x-api-key'], 'sk-acct-two-0002');
   const after = JSON.parse((await rawRequest(uiPort, 'GET', '/api/state')).text);
   const p2 = after.providers.claude.find(x => x.id === id);
@@ -421,16 +394,14 @@ test('多 Key 渠道:清单只出掩码,切换生效 Key 后上游收到的就�
   assert.deepStrictEqual(cleared.keys.map(k => [k.id, k.key_masked]), [['klegacy', 'sk-acc…0002']]);
   assert.strictEqual(cleared.active_key, 'klegacy');
   await rawRequest(uiPort, 'DELETE', `/api/providers/${id}`);
-  await restoreRoutes();
 });
 
 test('老式单 Key 渠道:控制台加第二把 Key 不会挤掉老 Key', async () => {
   // 只带 api_key 建渠道(等同控制台里"只填了上面那一行"的老渠道,磁盘上没有 keys 清单)
   const created = await rawRequest(uiPort, 'POST', '/api/providers', {
-    body: { app: 'claude', name: '老式单Key渠道', base_url: `http://127.0.0.1:${mockPort}`, api_key: 'sk-legacy-one-0001', models: ['claude-opus-5'] },
+    body: { app: 'claude', name: '老式单Key渠道', base_url: `http://127.0.0.1:${mockPort}`, api_key: 'sk-legacy-one-0001', models: ['lgprobe'] },
   });
   const id = JSON.parse(created.text).id;
-  const restoreRoutes = await swapRoutes([{ id: 'rlg', match: 'lgprobe', provider: id, model: '', enabled: true }]);
 
   // 控制台看到的是合成的一条「账号1」——老渠道也有清单可点,不是空白
   const before = JSON.parse((await rawRequest(uiPort, 'GET', '/api/state')).text).providers.claude.find(x => x.id === id);
@@ -448,27 +419,23 @@ test('老式单 Key 渠道:控制台加第二把 Key 不会挤掉老 Key', async
   assert.strictEqual(after.key_masked, 'sk-leg…0001', '老 Key 必须还在,且仍是生效那把');
 
   // 老 Key 真的还在转发里用:先确认上游收到老 Key,再切到账号2确认换成新 Key
-  await rawRequest(proxyPort, 'POST', '/v1/messages', { body: { model: 'lgprobe-1', max_tokens: 4, messages: [{ role: 'user', content: 'hi' }] } });
+  await rawRequest(proxyPort, 'POST', '/v1/messages', { body: { model: 'lgprobe', max_tokens: 4, messages: [{ role: 'user', content: 'hi' }] } });
   assert.strictEqual(mock.requests.at(-1).headers['x-api-key'], 'sk-legacy-one-0001');
   const key2 = after.keys.find(k => k.label === '账号2').id;
   assert.strictEqual((await rawRequest(uiPort, 'PUT', `/api/providers/${id}`, { body: { active_key: key2 } })).status, 200);
-  await rawRequest(proxyPort, 'POST', '/v1/messages', { body: { model: 'lgprobe-2', max_tokens: 4, messages: [{ role: 'user', content: 'hi' }] } });
+  await rawRequest(proxyPort, 'POST', '/v1/messages', { body: { model: 'lgprobe', max_tokens: 4, messages: [{ role: 'user', content: 'hi' }] } });
   assert.strictEqual(mock.requests.at(-1).headers['x-api-key'], 'sk-second-two-0002');
 
   await rawRequest(uiPort, 'DELETE', `/api/providers/${id}`);
-  await restoreRoutes();
 });
 
 test('日志过滤与统计聚合', async () => {
-  // 造一条失败记录
-  mod._state.store.claude.push({ id: 'pdown', name: '死渠道', base_url: 'http://127.0.0.1:1', api_key: 'sk-x', enabled: true });
-  routesBackup.push(mod._state.routes);
-  mod._state.routes = { rules: [{ id: 'rd', match: 'downmodel', provider: 'pdown', model: '', enabled: true }],
-    default: { provider: 'p1', model: '' } };
+  // 造一条失败记录(死渠道登记一个独有模型,精确命中即打过去)
+  mod._state.store.claude.push({ id: 'pdown', name: '死渠道', base_url: 'http://127.0.0.1:1', api_key: 'sk-x',
+    enabled: true, models: ['downmodel-2'] });
   await rawRequest(proxyPort, 'POST', '/v1/messages', {
     body: { model: 'downmodel-2', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] },
   });
-  mod._state.routes = routesBackup.pop();
   mod._state.store.claude = mod._state.store.claude.filter(p => p.id !== 'pdown');
 
   const errLogs = JSON.parse((await rawRequest(uiPort, 'GET', '/api/logs?status=err')).text);
@@ -512,24 +479,27 @@ test('日志过滤与统计聚合', async () => {
   assert.ok(stats.inTok >= 17 && stats.outTok >= 9, 'usage 应已被聚合');
 });
 
-test('控制台 API:PUT /api/routes 持久化并生效', async () => {
-  const fileRoutes = JSON.parse(fs.readFileSync(path.join(TMP, 'routes.json'), 'utf8')); // require 时装载的原始路由
+test('控制台 API:通用规则写入已删除,PUT /api/routes 固定 410 且不改内存/磁盘', async () => {
+  const before = JSON.stringify(mod._state.routes);
   const put = await rawRequest(uiPort, 'PUT', '/api/routes', {
     body: { rules: [{ id: 'n1', match: 'tiny', provider: 'p1', model: 'tiny-target', enabled: true }], default: { provider: 'p1', model: '' } },
   });
-  assert.strictEqual(JSON.parse(put.text).ok, true);
+  assert.strictEqual(put.status, 410);
+  assert.strictEqual(JSON.stringify(mod._state.routes), before, '410 之前不许改内存');
+  assert.strictEqual(fs.existsSync(path.join(TMP, 'routes.json')), false, '410 之前不许落盘');
+  // 那些规则不再影响转发:未登记模型照样 503
   const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {
     body: { model: 'a-tiny-model', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] },
   });
-  assert.strictEqual(mock.requests.at(-1).body.model, 'tiny-target');
-  // 还原为文件初始路由,保证测试幂等
-  const restore = await rawRequest(uiPort, 'PUT', '/api/routes', { body: fileRoutes });
-  assert.strictEqual(JSON.parse(restore.text).ok, true);
+  assert.strictEqual(r.status, 503);
+  assert.strictEqual(JSON.parse(r.text).error.type, 'no_route_error');
 });
 
 // ---- 槽位请求与会话绑定/手动改绑的相互作用(两条都在修 rebind 劫持)----
-const mkClaudeProvider = async (name, key) => JSON.parse((await rawRequest(uiPort, 'POST', '/api/providers', {
-  body: { app: 'claude', name, base_url: `http://127.0.0.1:${mockPort}`, api_key: key, models: ['claude-opus-5'] },
+// 这些渠道只经**精确槽位**使用,不登记模型:登记同一个模型名会让精确模型阶段变成 409 歧义,
+// 而那条路径在这些用例里并不想被触发。
+const mkClaudeProvider = async (name, key, models = []) => JSON.parse((await rawRequest(uiPort, 'POST', '/api/providers', {
+  body: { app: 'claude', name, base_url: `http://127.0.0.1:${mockPort}`, api_key: key, models },
 })).text).id;
 
 test('402 额度耗尽在多候选池里会换渠道重打(单候选时仍如实转发)', async () => {
@@ -538,14 +508,12 @@ test('402 额度耗尽在多候选池里会换渠道重打(单候选时仍如实
   // 修复前 402 不在重试条件里,池里明明有第二条渠道也不换,直接把 402 抛给客户端。
   const poolA = await mkClaudeProvider('额池渠道A', 'sk-402-a-0001');
   const poolB = await mkClaudeProvider('额池渠道B', 'sk-402-b-0002');
-  const rulesSave = mod._state.routes;
   const slotsSave = structuredClone(mod._state.slotMap);
   const mockSave = mock.requests.length;
-  // 优先级策略把 A 放前面,B 作后备。清掉槽位与会话,免得上一条用例的状态渗进来
-  mod._state.routes = { rules: [{ id: 'r402', match: 'q402probe',
-    pool: [{ provider: poolA, model: 'claude-opus-5' }, { provider: poolB, model: 'claude-opus-5' }],
-    strategy: 'priority', enabled: true }], default: { provider: '', model: '' } };
-  mod._state.slotMap = { claude: {}, codex: {} };
+  // 通用规则已删除:候选池只能来自**槽位备池**。优先级策略把 A 放前面,B 作后备。
+  // 清掉槽位与会话,免得上一条用例的状态渗进来。
+  mod._state.slotMap = { claude: { main: { provider: poolA, model: 'claude-opus-5',
+    pool: [{ provider: poolB, model: 'claude-opus-5' }], strategy: 'priority' } }, codex: {} };
   mod._state.resetPools();
   mod._state.sessions.delete('cc:q402probe1');
 
@@ -553,18 +521,17 @@ test('402 额度耗尽在多候选池里会换渠道重打(单候选时仍如实
   mock.setSseWrappedError(402, 'Budget pool quota has been exhausted.', 1);
   const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {
     headers: { 'Content-Type': 'application/json', 'x-claude-code-session-id': 'cc:q402probe1' },
-    body: { model: 'q402probe', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] },
+    body: { model: 'mixr-main', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] },
   });
   assert.strictEqual(r.status, 200, '402 应触发换渠道,客户端不该看到 402');
   const used = mock.requests.slice(mockSave).map(x => x.headers['x-api-key']);
   assert.ok(used.includes('sk-402-a-0001'), '第一条应打在被耗尽的渠道 A 上');
   assert.ok(used.includes('sk-402-b-0002'), '402 之后应换到渠道 B 重打');
   const logs = JSON.parse((await rawRequest(uiPort, 'GET', '/api/logs')).text);
-  const entry = logs.logs.find(l => l.model_in === 'q402probe');
+  const entry = logs.logs.find(l => l.model_in === 'mixr-main');
   assert.ok(entry, '这一轮要留下请求日志');
   assert.strictEqual(entry.failover, true, '日志要记下这次是失败转移来的');
 
-  mod._state.routes = rulesSave;
   mod._state.slotMap = slotsSave;
   mod._state.sessions.delete('cc:q402probe1');
   mod._state.resetPools();
@@ -576,28 +543,34 @@ const claudeSend = (model, sessionId) => rawRequest(proxyPort, 'POST', '/v1/mess
   body: { model, max_tokens: 4, messages: [{ role: 'user', content: 'hi' }] },
 });
 
-test('槽位请求不改写会话绑定:主模型仍留在原渠道', async () => {
+test('槽位请求不改写会话绑定:主槽位仍留在原渠道', async () => {
   const slotId = await mkClaudeProvider('槽位渠道', 'sk-slot-h-0003');
   const poolB = await mkClaudeProvider('池成员B', 'sk-pool-b-0002');
-  const rulesSave = mod._state.routes;
   const slotsSave = structuredClone(mod._state.slotMap);
-  mod._state.routes = { rules: [{ id: 'rpool', match: 'poolprobe', pool: [{ provider: 'p1' }, { provider: poolB }], strategy: 'round_robin', enabled: true }], default: { provider: '', model: '' } };
-  mod._state.slotMap = { claude: { haiku: { provider: slotId, model: 'haiku-target' } }, codex: {} };
+  // 主流量走 main 槽(带备池),另有一条 haiku 槽:这正是"同一对话里换槽请求"的形状。
+  // 主槽用 priority(主备):首选恒为池首的 p1,于是"haiku 请求有没有把对话挪走"能直接从
+  // 下一条 main 的落点看出来。若配 round_robin,main 自己会在两条渠道间轮转,断言就分不清
+  // 是槽位策略在轮转还是对话被劫持了。
+  mod._state.slotMap = { claude: {
+    main: { provider: 'p1', model: 'claude-opus-5', pool: [{ provider: poolB, model: 'claude-opus-5' }], strategy: 'priority' },
+    haiku: { provider: slotId, model: 'haiku-target' },
+  }, codex: {} };
   mod._state.resetPools();
   mod._state.sessions.delete('cc:slotstick1');
 
-  await claudeSend('poolprobe-1', 'slotstick1');
+  await claudeSend('mixr-main', 'slotstick1');
   const mainKey = mock.requests.at(-1).headers['x-api-key'];
-  assert.ok(['sk-test-p1', 'sk-pool-b-0002'].includes(mainKey), '主请求应落在池成员上');
+  assert.ok(['sk-test-p1', 'sk-pool-b-0002'].includes(mainKey), '主请求应落在主槽成员上');
   // 同一对话发一条槽位请求(Claude Code 每个对话开头都会发 haiku 档的起标题请求)
   await claudeSend('mixr-haiku', 'slotstick1');
   assert.strictEqual(mock.requests.at(-1).headers['x-api-key'], 'sk-slot-h-0003', '槽位请求要走槽位渠道');
   assert.strictEqual(mock.requests.at(-1).body.model, 'haiku-target', '槽位渠道收到的是槽位的落点模型');
-  // 关键:槽位请求不能把对话挪走,否则下一条主模型请求跟着跑偏、prompt 缓存被打破
-  await claudeSend('poolprobe-2', 'slotstick1');
-  assert.strictEqual(mock.requests.at(-1).headers['x-api-key'], mainKey, '槽位请求之后主模型仍走原渠道');
+  // 关键:槽位请求不能把对话挪走,否则下一条主槽请求跟着跑偏、prompt 缓存被打破
+  await claudeSend('mixr-main', 'slotstick1');
+  assert.strictEqual(mock.requests.at(-1).headers['x-api-key'], mainKey, '槽位请求之后主槽仍走原渠道');
+  assert.notStrictEqual(mod._state.sessions.get('cc:slotstick1').providerId, slotId,
+    '槽位请求不得把对话绑定改成那条槽位的渠道');
 
-  mod._state.routes = rulesSave;
   mod._state.slotMap = slotsSave;
   mod._state.sessions.delete('cc:slotstick1');
   mod._state.resetPools();
@@ -607,9 +580,7 @@ test('槽位请求不改写会话绑定:主模型仍留在原渠道', async () =
 
 test('被「手动改绑」的会话不劫持槽位请求', async () => {
   const slotId = await mkClaudeProvider('槽位渠道2', 'sk-slot-pin-0004');
-  const rulesSave = mod._state.routes;
   const slotsSave = structuredClone(mod._state.slotMap);
-  mod._state.routes = { rules: [{ id: 'rpin', match: 'pinprobe', provider: 'p1', model: '', enabled: true }], default: { provider: '', model: '' } };
   mod._state.slotMap = { claude: { haiku: { provider: slotId, model: 'haiku-target' } }, codex: {} };
   // 把该对话钉在 p1 上(控制台「改绑」),再发槽位别名
   mod._state.bindSession('cc:slotpin1', 'p1', { pinned: true });
@@ -618,7 +589,6 @@ test('被「手动改绑」的会话不劫持槽位请求', async () => {
   assert.strictEqual(mock.requests.at(-1).headers['x-api-key'], 'sk-slot-pin-0004', '钉定不该把槽位请求拽到被钉定的渠道');
   assert.strictEqual(mock.requests.at(-1).body.model, 'haiku-target');
 
-  mod._state.routes = rulesSave;
   mod._state.slotMap = slotsSave;
   mod._state.sessions.delete('cc:slotpin1');
   await rawRequest(uiPort, 'DELETE', `/api/providers/${slotId}`);
@@ -632,7 +602,7 @@ test('非流客户端直通:上游收到 stream:true,客户端收到攒出来的
   assert.ok(r.headers['content-type'].includes('application/json'), '非流客户端收整包 JSON,不是 SSE');
   const j = JSON.parse(r.text);
   assert.strictEqual(j.type, 'message');
-  assert.strictEqual(j.content[0].text, 'mock-echo:routed-opus');
+  assert.strictEqual(j.content[0].text, 'mock-echo:claude-opus-5');
   assert.strictEqual(j.stop_reason, 'end_turn');
   // usage 与流式同口径:message_start 的 0 被 message_delta 的终态值盖掉
   assert.deepStrictEqual(j.usage, { input_tokens: 17, output_tokens: 9, cache_read_input_tokens: 5 });

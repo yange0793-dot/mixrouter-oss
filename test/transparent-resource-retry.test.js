@@ -86,8 +86,8 @@ function configure({ host = HOSTS[0], wire = 'responses', other = false } = {}) 
     base_url: host === '127.0.0.1' ? `http://127.0.0.1:${upstream.address().port}/${id}` : `${host.startsWith('http://') ? 'http' : 'https'}://${host.replace(/^http:\/\//, '')}/${id}`,
     models: ['fixture-codex-model'] });
   mod._state.store = { claude: [], codex: [provider('fixture-primary'), ...(other ? [provider('fixture-secondary')] : [])] };
-  mod._state.routes = { rules: [], default: mod.normalizeRule({ pool: other
-    ? ['fixture-primary', 'fixture-secondary'] : ['fixture-primary'], strategy: 'priority' }) };
+  // 唯一登记模型:请求的 fixture-codex-model 只登记在 fixture-primary 上,精确命中它。
+  mod._state.routes = { rules: [] };
 }
 function reset() {
   fixtureId++; seen = []; mod._state.sessions.clear(); mod._state.cooldowns = {}; mod._state.resetPools(); configure();

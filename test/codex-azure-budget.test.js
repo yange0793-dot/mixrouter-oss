@@ -74,8 +74,10 @@ function configure() {
   mod._state.store = { claude: [], codex: [{ id: 'azure-fixture', name: 'AgentRouter', enabled: true,
     api_key: 'synthetic-fixture-key', wire_api: 'responses', base_url: 'https://ps.air-outer.com/v1',
     models: ['fixture-codex-model'] }] };
-  mod._state.routes = { rules: [], default: mod.normalizeRule({ provider: 'azure-fixture' }) };
-  mod._state.slotMap = { claude: {}, codex: { main: { provider: 'azure-fixture', model: 'fixture-codex-model' } } };
+  mod._state.routes = { rules: [] };
+  // 唯一登记模型:fixture-codex-model 只登记在 azure-fixture 上,请求模型精确命中它。
+  // 槽位表清空,避免别名通道干扰这条精确匹配路径。
+  mod._state.slotMap = { claude: {}, codex: {} };
 }
 function ask(body, session) {
   return new Promise((resolve, reject) => {

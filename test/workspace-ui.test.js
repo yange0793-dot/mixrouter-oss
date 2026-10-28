@@ -133,11 +133,11 @@ function storageFrom(seed = {}) {
 
 function setup(options = {}) {
   const elements = new Map();
-  const VIEW_NAMES = ['overview', 'providers', 'routes', 'harness', 'sessions', 'usage', 'diagnostics', 'settings'];
-  // 侧栏真实结构:七个普通视图入口 + 三个客户端入口(都指向 providers,靠 data-app 区分)。
+  const VIEW_NAMES = ['overview', 'providers', 'compact', 'sessions', 'usage', 'diagnostics', 'settings'];
+  // 侧栏真实结构:六个普通视图入口 + 两个客户端入口(都指向 providers,靠 data-app 区分)。
   const navLinks = VIEW_NAMES.filter(view => view !== 'providers')
     .map(view => { const link = new Element('a'); link.dataset.view = view; return link; });
-  for (const app of ['claude', 'codex', 'zcode']) {
+  for (const app of ['claude', 'codex']) {
     const link = new Element('a');
     link.dataset.view = 'providers';
     link.dataset.app = app;
@@ -337,22 +337,22 @@ function setup(options = {}) {
 }
 
 test('初始优先级:URL hash 胜过保存的视图,保存值胜过概览;主题先于样式落盘', () => {
-  const fromHash = setup({ hash: '#providers?app=zcode', storage: { 'mixr.ui.view': 'routes', 'mixr.ui.app': 'codex' } });
+  const fromHash = setup({ hash: '#providers?app=codex', storage: { 'mixr.ui.view': 'compact', 'mixr.ui.app': 'claude' } });
   // 主题在脚本解析时就该落到 <html>,不等 DOMContentLoaded(否则首帧会闪深色)。
   fromHash.get('theme-select').value = 'system';
   fromHash.boot();
-  assert.deepEqual(fromHash.appCalls, ['zcode'], 'URL 里的 app 覆盖保存值');
+  assert.deepEqual(fromHash.appCalls, ['codex'], 'URL 里的 app 覆盖保存值');
   assert.deepEqual(fromHash.showCalls, ['providers'], 'URL 里的视图覆盖保存值');
-  assert.equal(fromHash.hash(), '#providers?app=zcode', '规范化后不应改写有效深链');
-  assert.equal(fromHash.doc.title, 'ZCode 渠道 · Mixrouter', '标题要说明当前客户端');
+  assert.equal(fromHash.hash(), '#providers?app=codex', '规范化后不应改写有效深链');
+  assert.equal(fromHash.doc.title, 'Codex 渠道 · Mixrouter', '标题要说明当前客户端');
 
-  const fromStore = setup({ storage: { 'mixr.ui.view': 'routes', 'mixr.ui.app': 'codex', 'mixr.ui.theme': 'light' } });
+  const fromStore = setup({ storage: { 'mixr.ui.view': 'compact', 'mixr.ui.app': 'codex', 'mixr.ui.theme': 'light' } });
   assert.equal(fromStore.doc.documentElement.getAttribute('data-theme'), 'light', '样式表加载前就要带上主题');
   fromStore.boot();
-  assert.deepEqual(fromStore.showCalls, ['routes']);
+  assert.deepEqual(fromStore.showCalls, ['compact']);
   assert.deepEqual(fromStore.appCalls, ['codex']);
-  assert.equal(fromStore.hash(), '#routes');
-  assert.equal(fromStore.doc.title, '路由 · Mixrouter');
+  assert.equal(fromStore.hash(), '#compact');
+  assert.equal(fromStore.doc.title, '压缩设置 · Mixrouter');
   assert.equal(fromStore.get('theme-select').value, 'light');
 
   const fallback = setup();
@@ -390,32 +390,66 @@ test('移除的客户端视图:旧深链与偏好回概览,快速跳转不再提
   assert.doesNotMatch(SOURCE, /dsh:|view: 'dsh'/);
 });
 
-test('Harness 新入口:独立深链与偏好、快速跳转命中,不借用客户端槽位导航', () => {
+test('压缩设置成为独立视图:侧栏入口、深链与快速跳转都指向它', () => {
+  const h = setup({ hash: '#compact' });
+  h.boot();
+  assert.deepEqual(h.showCalls, ['compact']);
+  assert.equal(h.hash(), '#compact');
+  assert.equal(h.doc.title, '压缩设置 · Mixrouter');
+  const active = h.navLinks.filter(link => link.classList.contains('active'));
+  assert.equal(active.length, 1);
+  assert.equal(active[0].dataset.view, 'compact');
+  assert.equal(active[0].dataset.app, undefined);
+  h.get('quick-nav-open').click();
+  const input = h.get('quick-nav-input');
+  for (const query of ['压缩', 'compact']) {
+    input.value = query;
+    input.emit('input');
+    assert.equal(h.get('quick-nav-list').children.length, 1, `${query} 命中压缩设置入口`);
+    assert.equal(h.get('quick-nav-list').children[0].children[0].textContent, '压缩设置');
+  }
+  input.emit('keydown', { key: 'Enter' });
+  assert.equal(h.showCalls.at(-1), 'compact');
+  assert.equal(h.hash(), '#compact');
+  assert.equal(h.get('quick-nav-mask').open, false);
+  assert.match(INDEX, /href="#compact" data-view="compact"/);
+  assert.match(INDEX, /id="view-compact"/);
+});
+
+test('已删除的旧路径:#routes 归一为 #compact,#harness 与 zcode 客户端回合理默认', () => {
+  // 旧的通用路由编辑器没有了,但老书签仍应落到管压缩的那一页。
+  const legacy = setup({ hash: '#routes' });
+  legacy.boot();
+  assert.deepEqual(legacy.showCalls, ['compact']);
+  assert.equal(legacy.hash(), '#compact', '深链归一到新视图');
+
+  const storedLegacy = setup({ storage: { 'mixr.ui.view': 'routes' } });
+  storedLegacy.boot();
+  assert.deepEqual(storedLegacy.showCalls, ['overview'], '保存的旧视图名回概览');
+  assert.equal(storedLegacy.hash(), '#overview');
+
   for (const options of [{ hash: '#harness' }, { storage: { 'mixr.ui.view': 'harness', 'mixr.ui.app': 'codex' } }]) {
     const h = setup(options);
     h.boot();
-    assert.deepEqual(h.showCalls, ['harness']);
-    assert.equal(h.hash(), '#harness');
-    assert.equal(h.doc.title, 'Harness · Mixrouter');
-    const active = h.navLinks.filter(link => link.classList.contains('active'));
-    assert.equal(active.length, 1);
-    assert.equal(active[0].dataset.view, 'harness');
-    assert.equal(active[0].dataset.app, undefined);
-    h.get('quick-nav-open').click();
-    const input = h.get('quick-nav-input');
-    for (const query of ['DeepSeek Harness', 'harness']) {
-      input.value = query;
-      input.emit('input');
-      assert.equal(h.get('quick-nav-list').children.length, 1, `${query} 命中新 Harness 入口`);
-      assert.equal(h.get('quick-nav-list').children[0].children[0].textContent, 'Harness');
-    }
-    input.emit('keydown', { key: 'Enter' });
-    assert.equal(h.showCalls.at(-1), 'harness');
-    assert.equal(h.hash(), '#harness');
-    assert.equal(h.get('quick-nav-mask').open, false);
+    assert.deepEqual(h.showCalls, ['overview'], 'Harness 没有替代页,回概览');
+    assert.equal(h.hash(), '#overview');
+    h.resetHistory();
+    h.window.workspaceNavigate('harness');
+    h.window.workspaceViewChanged('harness');
+    assert.deepEqual(h.showCalls, [], '旧视图名不能重新进入导航');
+    assert.equal(h.hash(), '#overview');
   }
-  assert.match(INDEX, /href="#harness" data-view="harness"/);
-  assert.match(INDEX, /id="view-harness"/);
+
+  // 已删除客户端:URL 里还带 app=zcode 时按默认客户端打开,不崩也不停在无效 app。
+  const zcode = setup({ hash: '#providers?app=zcode' });
+  zcode.boot();
+  assert.deepEqual(zcode.appCalls, ['claude']);
+  assert.equal(zcode.hash(), '#providers', '无效 app 被归一掉');
+  assert.equal(zcode.doc.title, 'Claude Code 渠道 · Mixrouter');
+
+  assert.doesNotMatch(INDEX, /href="#routes"|data-view="routes"|id="view-routes"/);
+  assert.doesNotMatch(INDEX, /data-app="zcode"|id="view-harness"/);
+  assert.doesNotMatch(SOURCE, /routes: '|harness: '|zcode: '/);
 });
 
 test('存储被拒(隐私模式)时默认值照常生效,不抛错也不假持久化', () => {
@@ -455,9 +489,14 @@ test('hashchange 前进/后退:切换视图与客户端,非法视图回概览,�
   assert.equal(h.hash(), '#overview', 'URL 被改写,而不是停在旧 hash 上');
 
   // 后退到渠道页:客户端随后备 hash 里的 app 恢复
+  h.setHash('#providers?app=codex');
+  assert.equal(h.showCalls.at(-1), 'providers');
+  assert.equal(h.appCalls.at(-1), 'codex');
+
+  // 已删除客户端的旧链接:视图照常进入,客户端落到默认 Claude。
   h.setHash('#providers?app=zcode');
   assert.equal(h.showCalls.at(-1), 'providers');
-  assert.equal(h.appCalls.at(-1), 'zcode');
+  assert.equal(h.appCalls.at(-1), 'claude');
 });
 
 test('主题:浅色/深色写 data-theme 并持久化,跟随系统移除属性', () => {
@@ -494,7 +533,7 @@ test('快速跳转:按钮打开、过滤、方向键+回车跳转,关闭后焦�
   assert.equal(dialog.open, true, '用原生 showModal');
   assert.equal(dialog.hidden, false, '关闭态的 hidden 兜底要放开');
   assert.equal(h.doc.activeElement, input, '打开后焦点在搜索框');
-  assert.equal(h.get('quick-nav-list').children.length, 11, '八个页面 + 三个客户端入口');
+  assert.equal(h.get('quick-nav-list').children.length, 9, '七个页面 + 两个客户端入口');
 
   input.value = 'codex';
   input.emit('input');
@@ -606,7 +645,7 @@ test('窄屏下收起的侧栏从 Tab 序列里摘出去,桌面端不受影响',
   mobile.get('sidebar').inert = true;
   mobile.context.activeDialog = null;
   mobile.get('sidebar').inert = false;
-  mobile.window.workspaceViewChanged('routes');
+  mobile.window.workspaceViewChanged('compact');
   assert.equal(mobile.get('sidebar').inert, true);
 
   const desktop = setup();
@@ -813,12 +852,12 @@ test('app.js 钩子:视图与客户端偏好落盘,URL 只在渠道页带 app', 
   assert.equal(h.storage.dump()['mixr.ui.view'], 'diagnostics');
   assert.equal(h.doc.title, '诊断 · Mixrouter');
 
-  h.window.workspaceAppChanged('zcode');
+  h.window.workspaceAppChanged('codex');
   assert.equal(h.hash(), '#diagnostics', '非渠道页不把 app 写进 URL');
-  assert.equal(h.storage.dump()['mixr.ui.app'], 'zcode');
+  assert.equal(h.storage.dump()['mixr.ui.app'], 'codex');
 
   h.window.workspaceViewChanged('providers');
-  assert.equal(h.hash(), '#providers?app=zcode');
+  assert.equal(h.hash(), '#providers?app=codex');
 
   h.window.workspaceAppChanged('claude');
   assert.equal(h.hash(), '#providers', 'claude 是默认值,保持干净');
@@ -848,19 +887,19 @@ test('客户端导航:只有当前客户端亮起,标题与 body 状态跟着 ap
   h.boot();
 
   const active = h.navLinks.filter(link => link.classList.contains('active'));
-  assert.equal(active.length, 1, '三个客户端入口不能一起亮');
+  assert.equal(active.length, 1, '两个客户端入口不能一起亮');
   assert.equal(active[0].dataset.app, 'codex');
   assert.equal(active[0].getAttribute('aria-current'), 'page');
   assert.equal(h.get('breadcrumb-view').textContent, 'Codex 渠道', '标题必须说明当前客户端');
   assert.equal(h.doc.body.getAttribute('data-view'), 'providers');
   assert.equal(h.doc.body.getAttribute('data-app'), 'codex');
 
-  h.window.workspaceAppChanged('zcode');
+  h.window.workspaceAppChanged('claude');
   const next = h.navLinks.filter(link => link.classList.contains('active'));
   assert.equal(next.length, 1);
-  assert.equal(next[0].dataset.app, 'zcode');
-  assert.equal(h.get('breadcrumb-view').textContent, 'ZCode 渠道');
-  assert.equal(h.hash(), '#providers?app=zcode', '客户端切换要进 URL');
+  assert.equal(next[0].dataset.app, 'claude');
+  assert.equal(h.get('breadcrumb-view').textContent, 'Claude Code 渠道');
+  assert.equal(h.hash(), '#providers', 'claude 是默认值,URL 保持干净');
 
   h.setHash('#usage');
   const usageActive = h.navLinks.filter(link => link.classList.contains('active'));
@@ -871,10 +910,10 @@ test('客户端导航:只有当前客户端亮起,标题与 body 状态跟着 ap
 });
 
 test('顶栏搬运:当前页 .head > .actions 原样进顶栏,切页时放回自己的 head', () => {
-  const h = setup({ hash: '#routes' });
+  const h = setup({ hash: '#compact' });
   h.boot();
   const tray = h.get('topbar-page-actions');
-  const routes = h.sections.get('routes');
+  const routes = h.sections.get('compact');
   assert.equal(routes.actions.parentElement, tray, '当前页动作进顶栏');
   assert.deepEqual(tray.children, [routes.actions], '顶栏只放当前页那一组');
 
@@ -903,10 +942,10 @@ test('用量页隐藏全局刷新,外壳就绪后章节 h1 只留给读屏', () 
   assert.equal(h.get('refresh-btn').hidden, false, '其他页保留全局刷新');
 });
 
-test('index.html:侧栏直接给出三个客户端入口,顶栏接收页面动作', () => {
+test('index.html:侧栏直接给出两个客户端入口,顶栏接收页面动作', () => {
   const links = [...INDEX.matchAll(/<a\b[^>]*data-view="providers"[^>]*>/g)].map(match => match[0]);
-  assert.equal(links.length, 3, '渠道页入口就是三个客户端,不再另设一条「渠道与 Key」');
-  for (const [app, href] of [['claude', '#providers'], ['codex', '#providers?app=codex'], ['zcode', '#providers?app=zcode']]) {
+  assert.equal(links.length, 2, '渠道页入口就是两个客户端,不再另设一条「渠道与 Key」');
+  for (const [app, href] of [['claude', '#providers'], ['codex', '#providers?app=codex']]) {
     const link = links.find(tag => tag.includes(`data-app="${app}"`));
     assert.ok(link, `缺少 ${app} 入口`);
     assert.ok(link.includes(`href="${href}"`), `${app} 的深链必须是 ${href}`);
@@ -915,10 +954,27 @@ test('index.html:侧栏直接给出三个客户端入口,顶栏接收页面动�
   assert.ok(INDEX.includes('id="breadcrumb-view"'), '顶栏标题沿用 #breadcrumb-view');
   assert.ok(!INDEX.includes('breadcrumb-base'), '不再保留「工作区 /」面包屑');
   assert.ok(INDEX.includes('id="refresh-btn"'), 'app.js 依赖 #refresh-btn');
-  for (const view of ['overview', 'usage', 'providers', 'routes', 'sessions', 'diagnostics', 'settings']) {
+  for (const view of ['overview', 'usage', 'providers', 'compact', 'sessions', 'diagnostics', 'settings']) {
     assert.ok(INDEX.includes(`id="view-${view}"`), `缺少视图 ${view}`);
   }
   assert.ok(INDEX.indexOf('id="theme-select"') > INDEX.indexOf('class="sidebar-footer"'), '主题控件收进侧栏底部');
+});
+
+test('index.html:压缩设置是独立视图,控件默认展开且 DOM id 保持', () => {
+  const start = INDEX.indexOf('id="view-compact"');
+  const end = INDEX.indexOf('id="view-sessions"');
+  assert.ok(start > 0 && end > start, '压缩设置必须是独立 section');
+  const compact = INDEX.slice(start, end);
+  for (const id of ['compact-panel', 'compact-current', 'compact-provider', 'compact-model',
+    'compact-model-custom', 'compact-key', 'compact-key-hint', 'compact-status', 'compact-msg',
+    'reload-compact', 'save-compact', 'compact-window-panel', 'window-scope', 'window-project',
+    'window-value', 'window-current', 'window-coverage', 'window-coverage-text', 'window-layers',
+    'window-status', 'window-msg', 'reload-window', 'save-window']) {
+    assert.ok(compact.includes(`id="${id}"`), `压缩设置缺少 ${id}`);
+  }
+  // 不再被折进 <details> 组里:两个面板都是 section 的直接子节点。
+  assert.equal(compact.includes('id="compact-group"'), false, '压缩设置不再默认折叠');
+  assert.equal(compact.includes('id="compact-summary"'), false, '折叠组标题已随折叠组删除');
 });
 
 test('index.html:用量页 DOM 契约完整,且不再有面积图与费用', () => {

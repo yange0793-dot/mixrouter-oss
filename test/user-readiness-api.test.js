@@ -8,7 +8,7 @@ const http = require('node:http');
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'mixr-user-ready-'));
 Object.assign(process.env, { HOME: home, MIXR_DATA_DIR: home, MIXROUTER_PORT: '0', MIXUI_PORT: '0',
   MIXR_CLAUDE_SETTINGS: path.join(home, 'settings.json'), MIXR_CODEX_CONFIG: path.join(home, 'config.toml'),
-  MIXR_ZCODE_CONFIG: path.join(home, 'zcode.json'), MIXR_RESPONSE_ARCHIVE: 'off' });
+  MIXR_RESPONSE_ARCHIVE: 'off' });
 const mod = require('../mixrouter');
 let server;
 async function api(route, body, headers = {}) {
@@ -70,7 +70,7 @@ test('Codex 普通接入自动使用已有槽位,预览与实际写入一致且�
     mod._state.store = { claude: [], codex: [provider] };
     mod._state.slotMap = { claude: {}, codex: { main: { provider: provider.id },
       reviewer: { provider: provider.id, model: 'target-review' } } };
-    mod._state.current = { claude: '@router', codex: null, zcode: null };
+    mod._state.current = { claude: '@router', codex: null };
     const preview = await api('/api/onboarding/codex/preview', {});
     assert.equal(preview.status, 200);
     const expected = change => `${change.field}=${JSON.stringify(change.after ?? null)}`;
@@ -104,7 +104,7 @@ test('Codex 普通接入预览不补槽,确认后补齐且客户端撤销保留�
   try {
     mod._state.store = { claude: [], codex: [provider] };
     mod._state.slotMap = { claude: {}, codex: {} };
-    mod._state.current = { claude: '@router', codex: null, zcode: null };
+    mod._state.current = { claude: '@router', codex: null };
     const inspection = await api('/api/onboarding/codex');
     assert.equal(inspection.status, 200);
     assert.equal(inspection.body.codex_plan.ok, true);

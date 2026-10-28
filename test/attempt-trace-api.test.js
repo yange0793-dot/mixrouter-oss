@@ -56,10 +56,7 @@ test('setup:mock 上游 + 两个服务 + 一条可用路由', async () => {
       api_key: SENT_KEY, enabled: true, models: ['trace-model'] }],
     codex: [],
   }));
-  fs.writeFileSync(path.join(TMP, 'routes.json'), JSON.stringify({
-    rules: [{ id: 'r-trace', match: 'trace-model', provider: 'p-trace', model: 'trace-model', enabled: true }],
-    default: { provider: '', model: '' },
-  }));
+  fs.writeFileSync(path.join(TMP, 'routes.json'), JSON.stringify({ rules: [], default: {} }));
   fs.writeFileSync(path.join(TMP, 'slots.json'), JSON.stringify({ version: 1, claude: {}, codex: {} }));
   mod = require('../mixrouter.js');
   proxySrv = await mod.listen(0, mod.proxyHandler);
@@ -83,9 +80,8 @@ test('成功请求:过程有 start/attempt/response/finished,且与日志的 req
   assert.strictEqual(attempt.provider_id, 'p-trace');
   assert.strictEqual(attempt.model, 'trace-model');
   assert.strictEqual(t.metadata.model_in, 'trace-model');
-  assert.strictEqual(t.metadata.rule, 'r-trace');
-
   const logs = await logsOf('?limit=1');
+  assert.strictEqual(t.metadata.rule, logs[0].rule);
   assert.strictEqual(logs[0].request_id, t.id, '日志的 request_id 必须指向这条过程');
   assert.strictEqual(logs[0].status, 200);
 });

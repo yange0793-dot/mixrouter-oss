@@ -1,4 +1,4 @@
-/* Config pages: routes, settings and backups.
+/* Config pages: compact settings, settings and backups.
    Owned by the config pages. Shared tokens come from base.css; do not redefine them here. */
 
 /* ---- 面板头:标题与一句话说明同行,说明不再独占一整段 -------------------------- */
@@ -13,59 +13,33 @@
 .cfg-more > .hint, .cfg-more > .hint:first-of-type { margin: 6px 0 0; }
 .cfg-more > .hint + .hint { margin-top: 6px; }
 .cfg-more .cfg-count { margin-left: 6px; color: var(--dim); font-size: 12.5px; }
-.rc-cond { margin-top: 0; }
-/* 折叠标题已经写了「附加条件」,里面再摆一个"条件"标签只是重复。 */
-.rc-cond > .rc-line > .rc-tag { display: none; }
-.rc-cond > .rc-line { margin-top: 6px; }
-
-/* 压缩设置整组:收起时只占一行,给路由规则让出首屏。 */
-.cfg-group { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); margin-bottom: 20px; }
-.cfg-group > summary {
-  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px;
-  padding: 13px 22px; font-size: 14px; font-weight: 600; color: var(--text); border-radius: var(--radius-lg);
-}
-.cfg-group[open] > summary { border-bottom: 1px solid var(--border-soft); border-radius: var(--radius-lg) var(--radius-lg) 0 0; }
-.cfg-group > summary .cfg-group-meta { font-weight: 400; font-size: 13px; color: var(--dim); }
-.cfg-group > .panel { border: 0; border-radius: 0; margin: 0; background: transparent; padding: 18px 22px; }
-.cfg-group > .panel + .panel { border-top: 1px solid var(--border-soft); }
 
 /* ---- 保存结果:没保存过时收成一行灰字,保存后才升成 chips ---------------------- */
-#view-routes .split-status { margin-top: 14px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
-#view-routes .split-status .ss-title { margin: 0; font-size: 12.5px; }
-#view-routes .split-status .ss-row { display: flex; flex-wrap: wrap; gap: 4px 14px; }
-#view-routes .split-status.is-pending { border: 0; background: transparent; padding: 0; margin-top: 12px; }
-#view-routes .split-status.is-pending .ss-item { font-size: 12.5px; }
-#view-routes .split-status.has-outcome { padding: 8px 12px; }
-#view-routes .split-status.has-outcome .ss-item {
+#view-compact .split-status { margin-top: 14px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+#view-compact .split-status .ss-title { margin: 0; font-size: 12.5px; }
+#view-compact .split-status .ss-row { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+#view-compact .split-status.is-pending { border: 0; background: transparent; padding: 0; margin-top: 12px; }
+#view-compact .split-status.is-pending .ss-item { font-size: 12.5px; }
+#view-compact .split-status.has-outcome { padding: 8px 12px; }
+#view-compact .split-status.has-outcome .ss-item {
   font-size: 12.5px; border: 1px solid var(--border-soft); border-radius: 999px;
   padding: 2px 10px; background: var(--surface);
 }
-#view-routes .split-status.has-outcome .ss-item.ok { border-color: var(--ok-line); background: var(--ok-soft); }
-#view-routes .split-status.has-outcome .ss-item.no { border-color: var(--err-line); background: var(--err-soft); }
-#view-routes .split-status .ss-item.na { color: var(--dim); }
+#view-compact .split-status.has-outcome .ss-item.ok { border-color: var(--ok-line); background: var(--ok-soft); }
+#view-compact .split-status.has-outcome .ss-item.no { border-color: var(--err-line); background: var(--err-soft); }
+#view-compact .split-status .ss-item.na { color: var(--dim); }
 
 /* ---- 覆盖提示:说明常显但用中性色,只有真覆盖才是警告/错误色 ------------------- */
 /* 注意排除 .offline:同权重的选择器加了 id 会盖掉 base.css 里 .banner.offline 的错误色,
    真正的覆盖(项目层/环境)必须还能红。 */
-#view-routes .banner.cfg-note:not(.offline) {
+#view-compact .banner.cfg-note:not(.offline) {
   border-color: var(--border); background: var(--surface-2); color: var(--dim);
   margin-bottom: 12px; padding: 9px 12px; font-size: 13px;
 }
-#view-routes .banner.cfg-note:not(.offline) strong { font-weight: 500; color: var(--text); }
-#view-routes #window-coverage.banner { margin-bottom: 12px; }
-
-/* ---- 规则卡:事实行收成紧凑标签,长句说明不再逐卡重复 ------------------------- */
-#view-routes .rulecard:last-child { margin-bottom: 0; }
-#view-routes .rc-body { gap: 10px; }
-#view-routes .rulefacts {
-  display: flex; flex-wrap: wrap; gap: 4px 16px;
-  padding-top: 10px; border-top: 1px solid var(--border-soft); font-size: 12.5px;
-}
-#view-routes .rulefacts > div { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
-#view-routes .rulefacts .rf-label { display: inline; margin: 0; font-size: 12.5px; color: var(--dim); flex-shrink: 0; }
-#view-routes .rulefacts > div > span:last-child { color: var(--text); overflow-wrap: anywhere; }
-/* 删除按钮在触屏上也要够得着:32px 见方,不与数字输入框抢手势。 */
-#view-routes .rc-head > .iconbtn { min-width: 32px; min-height: 32px; display: inline-flex; align-items: center; justify-content: center; }
+#view-compact .banner.cfg-note:not(.offline) strong { font-weight: 500; color: var(--text); }
+#view-compact #window-coverage.banner { margin-bottom: 12px; }
+/* 两个面板之间留出与其它页一致的间距,最后一块不再多留。 */
+#view-compact .panel:last-child { margin-bottom: 0; }
 
 /* ---- 设置与备份 ---------------------------------------------------------------- */
 #view-settings .panel { margin-bottom: 16px; }
@@ -86,30 +60,10 @@
 #view-settings #preview-msg, #view-settings #preview-status { font-size: 13px; }
 #view-settings .config-warnings { margin: 10px 0 0; padding-left: 20px; font-size: 13px; color: var(--warn-text); }
 
-/* ---- 中等宽度:模型名独占一行,适用/优先级/启用/删除排下一行,
-       模型名输入框不再被几个小控件挤成半句宽。 ------------------------------- */
-@media (max-width: 1180px) {
-  #view-routes .rc-head > .field { flex: 1 1 100%; }
-  #view-routes .rc-head > .rc-idx { align-self: center; }
-}
-
 /* ---- 窄屏:表单行一律单列,控件不被挤成一半 -------------------------------- */
 @media (max-width: 860px) {
-  .cfg-group > .panel { padding: 16px; }
-  .cfg-group > summary { padding: 12px 16px; }
-  #view-routes .rc-line { flex-direction: column; align-items: stretch; }
-  #view-routes .rc-line > .field { min-width: 0; flex: 1 1 auto; }
-  #view-routes .rc-line > .rc-tag { width: auto; align-self: flex-start; text-align: left; padding: 2px 0; }
-  #view-routes .rulefacts > div { flex: 1 1 100%; }
-  /* 规则头:模型名独占一行,适用/优先级/启用/删除凑成两行,不再每个控件各占一行。 */
-  #view-routes .rc-head { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; align-items: start; gap: 10px 12px; }
-  #view-routes .rc-head > .rc-idx { grid-column: 1 / -1; justify-self: start; }
-  #view-routes .rc-head > .field { grid-column: 1 / -1; min-width: 0; }
-  #view-routes .rc-head > .rc-mini { flex-direction: column; align-items: stretch; gap: 4px; min-width: 0; font-size: 13px; }
-  #view-routes .rc-head > .rc-app { grid-column: 1 / -1; }
-  #view-routes .rc-head > .rc-mini select, #view-routes .rc-head > .rc-mini input[type=number] { width: 100%; max-width: none; }
-  #view-routes .rc-head > .rc-enable { flex-direction: row; align-items: center; align-self: center; gap: 6px; min-height: 32px; }
-  #view-routes .rc-head > .iconbtn { align-self: center; justify-self: start; }
+  #view-compact .rc-line { flex-direction: column; align-items: stretch; }
+  #view-compact .rc-line > .field { min-width: 0; flex: 1 1 auto; }
   #view-settings .bk-dir .bk-head .mono { margin-left: 0; flex-basis: 100%; }
   #view-settings .cfg-panel-hint { flex-basis: 100%; }
   /* 超时/重试这类短数字在手机上两列就放得下,八行竖排会把下面的表推出屏。 */

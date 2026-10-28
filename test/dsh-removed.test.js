@@ -1,5 +1,6 @@
 'use strict';
-// Retired Harness endpoints must not fall through to ordinary client routing.
+// 已退役的 Harness 与 ZCode 接入不得回落到普通客户端路由:
+// 端点、控制台 API、状态字段与配置文件一个都不该再出现。
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -60,8 +61,8 @@ before(async () => {
     models: ['ordinary-model'], wire_api, enabled: true, api_key: 'fixture-key',
     base_url: 'http://127.0.0.1:' + upstream.address().port });
   mod._state.store = { claude: [provider('cc', 'anthropic')], codex: [provider('cx', 'responses')] };
-  mod._state.current = { claude: 'cc', codex: 'cx', zcode: 'cc' };
-  mod._state.routes = { rules: [], default: mod.normalizeRule({ provider: 'cc', model: 'ordinary-model' }) };
+  mod._state.current = { claude: 'cc', codex: 'cx', zcode: 'cc' };   // 历史盘上数据:不再读取,也不写回
+  mod._state.routes = { rules: [] };
   mod._state.slotMap = { claude: {}, codex: {} };
   mod._state.sessions.clear();
   ui = await mod.listen(0, mod.apiHandler);
@@ -109,30 +110,32 @@ test('retired proxy paths return 404 before reading a body or using ordinary rou
   assert.equal(fs.existsSync(path.join(TMP, 'dsh.json')), false);
 });
 
-test('removed Harness console APIs return 404 and do not expose a client base URL', async () => {
+test('removed Harness and ZCode console APIs return 404 and expose no client base URL', async () => {
   const before = structuredClone({ store: mod._state.store, current: mod._state.current,
     routes: mod._state.routes, slots: mod._state.slotMap });
   for (const [endpoint, method] of [
     ['/api/dsh', 'GET'], ['/api/dsh', 'PUT'], ['/api/dsh', 'POST'], ['/api/dsh', 'DELETE'],
     ['/api/dsh/preview', 'POST'], ['/api/dsh/sync', 'POST'], ['/api/dsh/models', 'GET'],
+    ['/api/harness', 'GET'], ['/api/harness', 'PUT'],
+    ['/api/harness/preview', 'POST'], ['/api/harness/connect', 'POST'],
   ]) {
     const result = await request(ui, endpoint, method, method === 'GET' ? undefined : { confirm: true });
     assert.equal(result.status, 404, method + ' ' + endpoint);
   }
   const state = (await request(ui, '/api/state')).data;
   assert.equal(Object.hasOwn(state.router, 'dsh_base'), false);
-  assert.deepEqual(Object.keys(state.live).sort(), ['claude', 'codex', 'zcode']);
+  assert.equal(Object.hasOwn(state.router, 'zcode_base'), false);
+  assert.deepEqual(Object.keys(state.live).sort(), ['claude', 'codex'], '状态里只剩两组受管客户端');
+  assert.equal(Object.hasOwn(state, 'routes'), false, '/api/state 不再回整张路由表');
+  assert.equal(Object.hasOwn(state, 'routes_revision'), false);
   assert.equal(state.router.claude_base, mod.ROUTER_URL);
   assert.equal(state.router.codex_base, mod.ROUTER_URL + '/v1');
-  assert.equal(state.router.zcode_base, mod.ROUTER_URL);
   assert.deepEqual({ store: mod._state.store, current: mod._state.current,
-    routes: mod._state.routes, slots: mod._state.slotMap }, before);
+    routes: mod._state.routes, slots: mod._state.slotMap }, before, '这些只读接口不许改活状态');
   assert.equal(fs.existsSync(process.env.MIXR_DSH_CONFIG), false);
   assert.equal(fs.existsSync(path.join(TMP, 'dsh.json')), false);
-  const harness = await request(ui, '/api/harness');
-  assert.equal(harness.status, 200, 'new lightweight API is independent of retired /api/dsh');
-  assert.equal(harness.data.configured, false);
-  assert.equal(fs.existsSync(path.join(TMP, 'harness.json')), false);
+  assert.equal(fs.existsSync(path.join(TMP, 'harness.json')), false, 'Harness 运行数据不再生成');
+  assert.equal(fs.existsSync(process.env.MIXR_ZCODE_CONFIG), false, 'ZCode 配置文件不再被读写');
 });
 
 test('ordinary model listing and both health endpoints still work without a configured Harness pool', async () => {

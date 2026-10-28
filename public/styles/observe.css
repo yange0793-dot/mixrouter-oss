@@ -1,4 +1,4 @@
-/* Observe pages: sessions, diagnostics, harness.
+/* Observe pages: sessions, diagnostics.
    Owned by the observe pages. Shared tokens come from base.css; do not redefine them here.
 
    三页共用的两条结构问题在这里统一修：
@@ -235,61 +235,6 @@
 #view-diagnostics #attempt-flow[data-state="empty"] .attempt-flow-list { margin-top: 2px; }
 #view-diagnostics #attempt-flow[data-state="empty"] .attempt-flow-empty { margin: 0; font-size: 13px; color: var(--dim); }
 
-/* ---------------------------------------------------------------- Harness 页 */
-#view-harness .harness-fields { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-#view-harness .harness-setup { margin-bottom: 18px; }
-#view-harness .harness-setup .savebar { margin-top: 0; margin-bottom: 12px; }
-#view-harness .harness-status { margin: 0 0 10px; }
-#view-harness .harness-client {
-  font-size: 12.5px; line-height: 1.6; margin: 0 0 12px;
-  overflow-wrap: anywhere;
-}
-#view-harness .harness-help { margin-bottom: 4px; }
-/* display:flex 会吃掉默认的展开箭头:自己补一个,旋转跟随 open 状态。 */
-#view-harness .harness-help > summary {
-  cursor: pointer; color: var(--dim); font-size: 13px;
-  padding: 4px 0; min-height: 32px; display: flex; align-items: center; gap: 6px;
-  list-style: none;
-}
-#view-harness .harness-help > summary::-webkit-details-marker { display: none; }
-#view-harness .harness-help > summary::before {
-  content: ''; flex: 0 0 auto; width: 0; height: 0;
-  border-left: 5px solid currentColor; border-top: 4px solid transparent; border-bottom: 4px solid transparent;
-  transition: transform .15s ease;
-}
-#view-harness .harness-help[open] > summary::before { transform: rotate(90deg); }
-#view-harness .harness-help > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
-#view-harness .harness-help[open] > summary { color: var(--text); }
-#view-harness .harness-help .hint { font-size: 12.5px; line-height: 1.6; margin: 4px 0 8px; }
-#view-harness .harness-help .hint:last-child { margin-bottom: 0; }
-
-/* 候选池：一行一组「渠道 → 模型」，标签只在列头出现一次；行间用细线分隔而不是大片留白。
-   第三列（移除按钮）两处都定宽，否则列头与行的第二列会错开。 */
-#view-harness .harness-pool-head,
-#view-harness .harness-member { grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr) 52px; }
-#view-harness .harness-pool-head {
-  display: grid; gap: 10px 16px; align-items: center;
-  padding: 0 0 6px; font-size: 12px; color: var(--dim);
-}
-#view-harness .harness-member { padding: 10px 0; align-items: center; }
-#view-harness .harness-member .field-compact { gap: 0; }
-#view-harness .harness-member select { width: 100%; min-width: 0; }
-#view-harness .harness-remove { width: 100%; }
-#view-harness .harness-main-note { grid-column: 1 / -1; margin-top: -2px; }
-
-@media (max-width: 600px) {
-  /* 手机上没有列头了,成员行自己把「渠道 / 模型」标签露回来。 */
-  #view-harness .harness-pool-head { display: none; }
-  #view-harness .harness-member { grid-template-columns: minmax(0, 1fr) auto; gap: 6px 10px; }
-  #view-harness .harness-member .field-compact { grid-column: 1; gap: 5px; }
-  #view-harness .harness-member .field-compact .sr-only {
-    position: static; width: auto; height: auto; margin: 0; overflow: visible;
-    clip-path: none; white-space: normal; font-size: 12.5px; color: var(--dim);
-  }
-  #view-harness .harness-member .harness-remove { grid-column: 2; grid-row: 1 / span 2; align-self: center; }
-  #view-harness .harness-main-note { grid-column: 1; margin-top: 0; }
-}
-
 /* 表格横向滚动的可见提示：滚动条不划就不出现时，表格看起来像被截断。
    细滚动条常驻；再给窄屏一句文字提示，桌面放得下就不显示。 */
 #view-sessions .sess-table-wrap,
@@ -320,13 +265,11 @@
 }
 
 @media (max-width: 600px) {
-  #view-harness .harness-fields { grid-template-columns: minmax(0, 1fr); }
   #view-sessions .chip { flex: 1 1 calc(50% - 5px); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  #view-sessions .session-pin > summary,
-  #view-harness .harness-help > summary { transition: none; }
+  #view-sessions .session-pin > summary { transition: none; }
 }
 
 @media (forced-colors: active) {

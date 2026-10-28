@@ -8,7 +8,6 @@ const path = require('node:path');
 const { createClientOnboarding } = require('../lib/client-onboarding');
 const codexConfig = require('../lib/codex-config');
 const { planCodexSlots } = require('../lib/codex-router-plan');
-const zcodeConfig = require('../lib/zcode-config');
 
 const ROUTER_URL = 'http://127.0.0.1:8787';
 const ROUTER_TOKEN = 'mixrouter-local';
@@ -25,13 +24,11 @@ function workspace(t) {
     MIXR_DATA_DIR: path.join(dir, 'data'),
     MIXR_CLAUDE_SETTINGS: path.join(home, '.claude', 'settings.json'),
     MIXR_CODEX_CONFIG: path.join(home, '.codex', 'config.toml'),
-    MIXR_ZCODE_CONFIG: path.join(home, '.zcode', 'v2', 'config.json'),
   };
   return {
     dir, home, bin, env,
     claude: env.MIXR_CLAUDE_SETTINGS,
     codex: env.MIXR_CODEX_CONFIG,
-    zcode: env.MIXR_ZCODE_CONFIG,
     ledger: path.join(env.MIXR_DATA_DIR, 'client-managed.json'),
   };
 }
@@ -83,21 +80,6 @@ function codexStub(file, routerURL, routerToken, { slots = true } = {}) {
     });
     fs.writeFileSync(file, text);
     return { warnings: [] };
-  };
-}
-
-function zcodeStub(file, routerURL, routerToken) {
-  return () => {
-    const doc = readJson(file);
-    doc.provider = doc.provider || {};
-    doc.provider['mixrouter-managed'] = {
-      name: 'Mixrouter', kind: 'anthropic', source: 'custom', enabled: true,
-      options: { apiKey: routerToken, baseURL: routerURL, apiKeyRequired: true },
-      models: { m1: { name: 'Mixrouter · m1' } },
-      'x-mixrouter': { owner: 'mixrouter', version: 1, target: '@router',
-        wire_api: 'anthropic', model: 'm1', models: ['m1'] },
-    };
-    fs.writeFileSync(file, JSON.stringify(doc, null, 2) + '\n');
   };
 }
 
@@ -171,14 +153,14 @@ test('inspect 区分 missing / invalid / error(EACCES 不算 missing),安装检�
 test('PATH 里没有客户端时,仍能从常见安装目录找到并标出来源', t => {
   const ws = workspace(t);
   fs.mkdirSync(path.join(ws.home, '.local', 'bin'), { recursive: true });
-  fs.writeFileSync(path.join(ws.home, '.local', 'bin', 'zcode'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(ws.home, '.local', 'bin', 'codex'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   const onboarding = factory(ws, { applyRouter() {} });
 
-  const state = onboarding.inspect('zcode');
+  const state = onboarding.inspect('codex');
   assert.equal(state.binary.found, true);
   assert.equal(state.binary.executable, true);
   assert.equal(state.binary.source, 'known-dir');
-  assert.equal(state.binary.path, path.join(ws.home, '.local', 'bin', 'zcode'));
+  assert.equal(state.binary.path, path.join(ws.home, '.local', 'bin', 'codex'));
 
   // PATH 里能找到时来源如实写 path,不谎称来自固定目录。
   binary(ws, 'claude');
@@ -478,29 +460,26 @@ test('全局环境变量会覆盖配置文件:预览按变量名提示,值绝不
   assert.equal(JSON.stringify(codexPreview).includes('sk-openai-global'), false);
 });
 
-test('撤销在用户没有其它改动时逐字节还原三个客户端配置', t => {
+test('撤销在用户没有其它改动时逐字节还原两个客户端配置', t => {
   const ws = workspace(t);
   writeJson(ws.claude, { permissions: { allow: ['Read'] }, env: { ANTHROPIC_BASE_URL: 'https://old.example' } });
   fs.mkdirSync(path.dirname(ws.codex), { recursive: true });
   fs.writeFileSync(ws.codex, CODEX_ORIGINAL);
-  writeJson(ws.zcode, { theme: 'dark', provider: { other: { name: 'O', kind: 'anthropic', options: { baseURL: 'https://o.example', apiKey: 'o-key' } } } });
   const before = {
     claude: fs.readFileSync(ws.claude, 'utf8'),
     codex: fs.readFileSync(ws.codex, 'utf8'),
-    zcode: fs.readFileSync(ws.zcode, 'utf8'),
   };
   const onboarding = factory(ws, {
     applyRouter(app, options) {
       if (app === 'claude') return claudeStub(ws.claude, ROUTER_URL, ROUTER_TOKEN)(app, options);
-      if (app === 'codex') return codexStub(ws.codex, ROUTER_URL, ROUTER_TOKEN)(app, options);
-      return zcodeStub(ws.zcode, ROUTER_URL, ROUTER_TOKEN)(app, options);
+      return codexStub(ws.codex, ROUTER_URL, ROUTER_TOKEN)(app, options);
     },
   });
-  for (const app of ['claude', 'codex', 'zcode']) {
+  for (const app of ['claude', 'codex']) {
     const preview = onboarding.preview(app);
     onboarding.apply(app, { token: preview.token, confirm: true });
   }
-  for (const app of ['claude', 'codex', 'zcode']) {
+  for (const app of ['claude', 'codex']) {
     const undoPreview = onboarding.previewUndo(app);
     assert.equal(undoPreview.can_undo, true, `${app} 撤销预览应可执行`);
     onboarding.undo(app, { token: undoPreview.token, confirm: true });
@@ -577,20 +556,18 @@ test('Codex slots 预览:写 mixr-main / mixr-reviewer,撤销后恢复原 model 
   assert.equal(codexConfig.topLevel(fs.readFileSync(ws.codex, 'utf8'), 'review_model'), '');
 });
 
-test('预览的 after 与真实写入结果逐字段一致(Claude / Codex slots / ZCode)', t => {
+test('预览的 after 与真实写入结果逐字段一致(Claude / Codex slots)', t => {
   const ws = workspace(t);
   writeJson(ws.claude, { env: { ANTHROPIC_BASE_URL: 'https://old.example', ANTHROPIC_DEFAULT_HAIKU_MODEL: 'user-haiku' } });
   fs.mkdirSync(path.dirname(ws.codex), { recursive: true });
   fs.writeFileSync(ws.codex, CODEX_ORIGINAL);
-  writeJson(ws.zcode, { provider: {} });
   const onboarding = factory(ws, {
     applyRouter(app, options) {
       if (app === 'claude') return claudeStub(ws.claude, ROUTER_URL, ROUTER_TOKEN)(app, options);
-      if (app === 'codex') return codexStub(ws.codex, ROUTER_URL, ROUTER_TOKEN)(app, options);
-      return zcodeStub(ws.zcode, ROUTER_URL, ROUTER_TOKEN)(app, options);
+      return codexStub(ws.codex, ROUTER_URL, ROUTER_TOKEN)(app, options);
     },
   });
-  const cases = [['claude', { slots: true }], ['codex', {}], ['codex', { slots: true }], ['zcode', {}]];
+  const cases = [['claude', { slots: true }], ['codex', {}], ['codex', { slots: true }]];
   for (const [app, options] of cases) {
     const preview = onboarding.preview(app, options);
     const applied = onboarding.apply(app, { token: preview.token, confirm: true });
@@ -695,97 +672,43 @@ test('Codex 选择 profile 时预览直接拒绝;缺主槽位绑定也会拒绝'
     error => error.statusCode === 400 && /槽位/.test(error.message));
 });
 
-// ---------------------------------------------------------------- ZCode
+// ---------------------------------------------------------------- 已移除的 ZCode
+// ZCode 接入整体移除:向导只接 claude / codex。app 非法时在**本地**就拒绝(400),
+// 不落到任何读盘/写盘分支 —— 旧控制台或脚本仍可能带着 app=zcode 的请求过来。
 
-test('ZCode 接入:只写自有 provider 字段,撤销删除该 provider 并保留其它配置', t => {
+test('ZCode 不再是可接入客户端:inspect / preview / apply / 撤销一律按非法 app 拒绝', t => {
   const ws = workspace(t);
-  writeJson(ws.zcode, {
-    theme: 'dark',
-    provider: { other: { name: 'Other', kind: 'anthropic', options: { baseURL: 'https://other.example', apiKey: 'other-key' } } },
-  });
-  const onboarding = factory(ws, { applyRouter: zcodeStub(ws.zcode, ROUTER_URL, ROUTER_TOKEN) });
+  const onboarding = factory(ws, { applyRouter() { throw new Error('不该走到写入'); } });
+  for (const call of [() => onboarding.inspect('zcode'), () => onboarding.preview('zcode'),
+    () => onboarding.apply('zcode', { token: 'x', confirm: true }),
+    () => onboarding.previewUndo('zcode'), () => onboarding.undo('zcode', { token: 'x', confirm: true })]) {
+    assert.throws(call, error => error.statusCode === 400 && /claude 或 codex/.test(error.message));
+  }
+  assert.equal(fs.existsSync(ws.ledger), false, '拒绝时不能建账本');
+});
 
-  const preview = onboarding.preview('zcode');
-  assert.equal(preview.ok, true);
-  assert.ok(preview.changes.some(change => change.field === 'provider.mixrouter-managed'));
-  const serialized = JSON.stringify(preview);
-  assert.ok(!serialized.includes('other-key'));
-  assert.ok(!serialized.includes(ROUTER_TOKEN));
+test('旧账本里残留 app=zcode 的记录不影响 claude/codex 记账与撤销', t => {
+  const ws = workspace(t);
+  writeJson(ws.claude, { env: { ANTHROPIC_BASE_URL: 'https://old.example' } });
+  const onboarding = factory(ws, { applyRouter: claudeStub(ws.claude, ROUTER_URL, ROUTER_TOKEN) });
+  const preview = onboarding.preview('claude');
+  onboarding.apply('claude', { token: preview.token, confirm: true });
 
-  onboarding.apply('zcode', { token: preview.token, confirm: true });
-  let doc = readJson(ws.zcode);
-  assert.equal(doc.theme, 'dark');
-  assert.equal(doc.provider.other.options.apiKey, 'other-key');
-  assert.equal(doc.provider['mixrouter-managed'].options.baseURL, ROUTER_URL);
-  assert.equal(doc.provider['mixrouter-managed']['x-mixrouter'].target, '@router');
+  // 模拟升级前留下的 ZCode 账本:结构合法,但那条 app 已经没有对应客户端了。
+  const ledger = readJson(ws.ledger);
+  ledger.apps.zcode = { app: 'zcode', file: '/gone/.zcode/v2/config.json', mode: 'router',
+    applied_at: '2026-01-01T00:00:00.000Z', revision_before: null, revision_after: 'x',
+    entries: [{ kind: 'zcode-provider', path: ['provider', 'mixrouter-managed'], secret: false,
+      before_absent: true, before: null, after_absent: false, after: {} }] };
+  writeJson(ws.ledger, ledger);
 
-  const undoPreview = onboarding.previewUndo('zcode');
+  // 忽略而不是报错:一份历史账本不能让 claude 的撤销整份失效。
+  const undoPreview = onboarding.previewUndo('claude');
   assert.equal(undoPreview.can_undo, true);
-  onboarding.undo('zcode', { token: undoPreview.token, confirm: true });
-  doc = readJson(ws.zcode);
-  assert.equal(Object.hasOwn(doc.provider, 'mixrouter-managed'), false);
-  assert.equal(doc.provider.other.options.apiKey, 'other-key');
-  assert.equal(doc.theme, 'dark');
-});
-
-test('ZCode 原本没有 provider 段时,撤销会删掉自己建出来的空段', t => {
-  const ws = workspace(t);
-  writeJson(ws.zcode, { theme: 'light' });
-  const onboarding = factory(ws, { applyRouter: zcodeStub(ws.zcode, ROUTER_URL, ROUTER_TOKEN) });
-  const preview = onboarding.preview('zcode');
-  onboarding.apply('zcode', { token: preview.token, confirm: true });
-  assert.ok(readJson(ws.zcode).provider['mixrouter-managed']);
-  const undoPreview = onboarding.previewUndo('zcode');
-  onboarding.undo('zcode', { token: undoPreview.token, confirm: true });
-  const doc = readJson(ws.zcode);
-  assert.equal(Object.hasOwn(doc, 'provider'), false);
-  assert.equal(doc.theme, 'light');
-});
-
-test('ZCode 预览拦截与真实写入同组的拒绝条件:协议/上游变化或模型 ID 被他人占用', t => {
-  const ws = workspace(t);
-  // 自有 provider 里有一个"其它配置"塞进来的模型 other-model。
-  writeJson(ws.zcode, { provider: { 'mixrouter-managed': {
-    name: 'Mixrouter', kind: 'anthropic', source: 'custom', enabled: true,
-    options: { apiKey: ROUTER_TOKEN, baseURL: ROUTER_URL, apiKeyRequired: true },
-    models: { 'other-model': { name: '别人的模型' } },
-    'x-mixrouter': { owner: 'mixrouter', version: 1, target: '@router',
-      wire_api: 'anthropic', model: 'm1', models: ['m1'] },
-  } } });
-  const store = {
-    claude: [{ id: 'p1', name: 'P1', enabled: true, api_key: 'store-key', models: ['m1', 'other-model'] }],
-    codex: [{ id: 'c1', name: 'C1', enabled: true, api_key: 'codex-key', model: 'other-model', wire_api: 'responses' }],
-  };
-  const onboarding = factory(ws, { applyRouter: zcodeStub(ws.zcode, ROUTER_URL, ROUTER_TOKEN), getStore: () => store });
-
-  // 已有 foreign 模型,又要求换协议(responses)→ 预览就拒绝,不必等到写入。
-  assert.throws(() => onboarding.preview('zcode', { wire_api: 'responses' }),
-    error => error.statusCode === 400 && /其它模型/.test(error.message));
-  // 新模型 ID 与 foreign 模型同名 → 也会被拒绝。
-  assert.throws(() => onboarding.preview('zcode', { model: 'other-model' }),
-    error => error.statusCode === 400 && /占用/.test(error.message));
-  // 渠道库里没有那个 foreign 模型时,同样的配置预览照常通过。
-  const clean = factory(ws, { applyRouter: zcodeStub(ws.zcode, ROUTER_URL, ROUTER_TOKEN) });
-  assert.equal(clean.preview('zcode', { model: 'm1' }).ok, true);
-});
-
-test('ZCode 冲突:用户改了自有 provider 字段则拒绝撤销;非本集成的同名 provider 拒绝覆盖', t => {
-  const ws = workspace(t);
-  writeJson(ws.zcode, { provider: {} });
-  const onboarding = factory(ws, { applyRouter: zcodeStub(ws.zcode, ROUTER_URL, ROUTER_TOKEN) });
-  const preview = onboarding.preview('zcode');
-  onboarding.apply('zcode', { token: preview.token, confirm: true });
-
-  const undoPreview = onboarding.previewUndo('zcode');
-  const doc = readJson(ws.zcode);
-  doc.provider['mixrouter-managed'].options.baseURL = 'https://tampered.example';
-  writeJson(ws.zcode, doc);
-  assert.throws(() => onboarding.undo('zcode', { token: undoPreview.token, confirm: true }),
-    error => error.statusCode === 409 && error.conflicts.length > 0);
-
-  writeJson(ws.zcode, { provider: { 'mixrouter-managed': { name: '别人的', kind: 'anthropic' } } });
-  assert.throws(() => onboarding.preview('zcode'),
-    error => error.statusCode === 400 && /拒绝覆盖/.test(error.message));
+  onboarding.undo('claude', { token: undoPreview.token, confirm: true });
+  assert.equal(fs.readFileSync(ws.claude, 'utf8').includes('https://old.example'), true);
+  // 旧记录原样留着,不替用户删除他磁盘上的历史。
+  assert.ok(readJson(ws.ledger).apps.zcode, '旧 zcode 账本条目应原样保留');
 });
 
 // ---------------------------------------------------------------- 账本

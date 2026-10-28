@@ -28,7 +28,7 @@ const azure = { error: { type: 'invalid_request_error', message: 'The requested 
 const failure = (code, message = code) => ({ type: 'response.failed', response: { id: 'discard-failed',
   status: 'failed', output: [], error: { code, message } } });
 const transient = frame(failure('upstream_error', 'Upstream request failed'));
-const history = () => ({ model: 'fixture-model', stream: true, store: false, prompt_cache_key: 'native-cache',
+const history = () => ({ model: SLOT, stream: true, store: false, prompt_cache_key: 'native-cache',
   reasoning: { effort: 'max' }, metadata: { client: 'codex' }, tools: [{ type: 'function', name: 'sum', parameters: { type: 'object' }, strict: false }],
   input: [
     { role: 'user', content: 'continue native history' },
@@ -42,15 +42,20 @@ const history = () => ({ model: 'fixture-model', stream: true, store: false, pro
   ] });
 let upstream, proxy, reply, seen, finished, fixtureId = 0;
 const sockets = new Set();
-function configure({ pinned = false, other = false, override, keyFallback = false } = {}) {
+// 精确槽位:通用 match/default 规则删除后,多渠道(含备池)只能靠槽位别名 + 同一落点模型表达。
+const SLOT = 'mixr-main', SLOT_MODEL = 'fixture-model';
+// 出站体:槽位把请求别名换成落点模型,其余字节一律照抄客户端请求。
+const outbound = body => ({ ...structuredClone(body), model: SLOT_MODEL });
+function configure({ pinned = false, other = false, keyFallback = false } = {}) {
   const provider = id => ({ id, name: id, enabled: true, api_key: 'fixture-secret', wire_api: 'responses',
     base_url: `http://127.0.0.1:${upstream.address().port}/${id}`, models: ['fixture-model'], key_fallback: keyFallback, active_key: `key-a-${fixtureId}`,
     keys: [{ id: `key-a-${fixtureId}`, label: 'a', key: 'fixture-secret', enabled: true }, { id: `key-b-${fixtureId}`, label: 'b', key: 'alternate-secret', enabled: true }] });
   mod._state.store = { claude: [], codex: [provider('primary'), ...(other ? [provider('secondary')] : [])] };
-  mod._state.routes = { rules: [], default: mod.normalizeRule({
-    ...(pinned ? { provider: 'primary' } : { pool: other ? ['primary', 'secondary'] : ['primary'], strategy: 'priority' }),
-    ...(override === undefined ? {} : { upstream_stream: override }),
-  }) };
+  // 槽位钉定主渠道;备池只在需要换渠道的用例里加。上游流式开关已随规则一起废弃,
+  // 出站流式形态一律由协议默认(body.stream / Anthropic 恒流式)决定。
+  mod._state.slotMap = { claude: {}, codex: { main: { provider: 'primary', model: SLOT_MODEL,
+    ...(!pinned && other ? { pool: ['secondary'] } : {}) } } };
+  mod._state.routes = { rules: [] };
 }
 function answer(res, text = successBytes, status = 200, mime = 'text/event-stream', headers = {}) {
   res.writeHead(status, { 'Content-Type': mime, ...headers }); res.end(text);
@@ -226,8 +231,8 @@ for (const mode of ['json-sse-mime', 'structured-sse', 'failed-sse']) test(`know
     answer(res, created + frame(failure('invalid_request_error', azure.error.message)));
   };
   assertSuccess(await ask(body), 2); assert.deepEqual(body, original);
-  assert.deepEqual(JSON.parse(seen[0].bytes), original);
-  const projected = projectResponsesHistory(original); assert.equal(projected.ok, true);
+  assert.deepEqual(JSON.parse(seen[0].bytes), outbound(original));
+  const projected = projectResponsesHistory(outbound(original)); assert.equal(projected.ok, true);
   assert.deepEqual(JSON.parse(seen[1].bytes), projected.body);
   assert.equal(projected.body.input[2].encrypted_content, 'ENCRYPTED_REPLAY_BYTES');
   assert.equal(projected.body.input[5].id, 'tools-kept'); assert.equal(projected.body.input[6].id, 'custom-kept');
@@ -248,7 +253,7 @@ for (const shape of ['error', 'failed', 'type-less']) test(`held-open native HTT
   };
   assertSuccess(await ask(), 2);
   await waitFor(() => finished === 2, { label: 'held-open HTTP400 error stream released' });
-  assert.deepEqual(JSON.parse(seen[1].bytes), projectResponsesHistory(history()).body);
+  assert.deepEqual(JSON.parse(seen[1].bytes), projectResponsesHistory(outbound(history())).body);
 });
 
 for (const tail of ['data: {"type":"response.output_text.delta","delta":"partial', 'data: {"type":"unknown","opaque":"output"}\n\n']) {
@@ -316,7 +321,7 @@ test('native failed JSON Azure error also preserves encrypted history and projec
   const body = history(); body.stream = false;
   reply = (_req, res) => answer(res, JSON.stringify(seen.length === 1 ? failure('invalid_request_error', azure.error.message).response : complete), 200, 'application/json');
   const result = await ask(body); assert.equal(seen.length, 2); assert.match(result.text, /RECOVERY_OK/);
-  assert.deepEqual(JSON.parse(seen[1].bytes), projectResponsesHistory(body).body);
+  assert.deepEqual(JSON.parse(seen[1].bytes), projectResponsesHistory(outbound(body)).body);
 });
 
 for (const [status, error] of [[400, { code: 'invalid_request_error', message: 'Invalid input' }], [401, { code: 'invalid_api_key', message: 'Invalid API key' }], [403, { code: 'permission_denied', message: 'Access denied' }], [503, { code: 'content_policy_violation', message: 'Content policy blocked' }]]) {
@@ -354,7 +359,7 @@ test('client cancellation during native retry wait stops future calls and closes
 });
 
 test('shared native deadline does not restart after lifecycle-only failures', async () => {
-  const body = { model: 'fixture-model', stream: true, input: 'small' };
+  const body = { model: SLOT, stream: true, input: 'small' };
   reply = (_req, res) => { res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.write(created); };
   const started = Date.now(), result = await ask(body);
   assert.equal(result.status, 504); assert.equal(lastLog().err_class, 'timeout'); assert.ok(seen.length <= 5); assert.ok(Date.now() - started < 1500);
@@ -374,20 +379,24 @@ test('native selected credentials survive live provider changes on retry', async
   assert.equal(lastLog().err || '', '');
 });
 
-for (const override of [true, false]) test(`native adapted transient exhaustion retains actual last body (${override})`, async () => {
-  configure({ override });
-  const body = history(); body.stream = !override;
-  const raw = override ? transient : JSON.stringify(failure('upstream_error').response);
-  reply = (_req, res) => answer(res, raw, 200, override ? 'text/event-stream' : 'application/json');
+// 上游流式开关已废弃:出站形态由协议默认决定 —— 客户端要流就发流式(SSE),
+// 客户端非流就发非流(整包 JSON)。两种形状的瞬态耗尽都必须原样收尾。
+for (const [label, stream, raw, mime] of [
+  ['sse', true, transient, 'text/event-stream'],
+  ['json', false, JSON.stringify(failure('upstream_error').response), 'application/json'],
+]) test(`native adapted transient exhaustion retains actual last body (${label})`, async () => {
+  configure();
+  const body = history(); body.stream = stream;
+  reply = (_req, res) => answer(res, raw, 200, mime);
   const result = await ask(body); assert.equal(seen.length, 5); assert.equal(result.status, 200); assert.equal(result.text, raw);
   assert.doesNotMatch(result.text, /response.completed/);
 });
 
-for (const override of [true, false]) test(`native explicit upstream format override preserves successful effort (${override})`, async () => {
-  configure({ override });
-  const body = history(); body.stream = !override;
+for (const [label, stream] of [['sse', true], ['json', false]]) test(`native protocol-default transport preserves successful effort (${label})`, async () => {
+  configure();
+  const body = history(); body.stream = stream;
   reply = (_req, res) => {
-    if (override) answer(res, seen.length === 1 ? created : frame({ type: 'response.completed', response: complete }));
+    if (stream) answer(res, seen.length === 1 ? created : frame({ type: 'response.completed', response: complete }));
     else answer(res, JSON.stringify(seen.length === 1 ? failure('upstream_error').response : complete), 200, 'application/json');
   };
   const result = await ask(body); assert.equal(seen.length, 2); assert.match(result.text, /RECOVERY_OK/); assert.equal(lastLog().effort, 'max');

@@ -79,7 +79,9 @@ test('代理自己的配置类错误码:指向控制台具体页面,而不是"�
     assert.ok(h.target && INTERNAL.has(h.target), `${code} 必须指向一个内部控制台页面`);
     assert.doesNotMatch(h.title + h.impact, /上游失败|上游请求失败/, `${code} 不得笼统说成上游失败`);
   }
-  assert.equal(explainError({ code: 'no_route_error' }).target, TARGETS.routes);
+  assert.equal(explainError({ code: 'no_route_error' }).target, TARGETS.providers);
+  assert.doesNotMatch(explainError({ code: 'no_route_error' }).action, /补一条规则|「路由」/);
+  assert.ok(!Object.values(TARGETS).includes('#routes'));
   assert.equal(explainError({ code: 'provider_disabled_error' }).target, TARGETS.providers);
 });
 

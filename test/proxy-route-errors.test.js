@@ -128,7 +128,9 @@ async function rejected(endpoint, body, headers, status, type, expected = {}) {
 test('no-route Codex Desktop error is synchronously logged with safe native/local/reliable diagnostics', async () => {
   const { entry, response } = await rejected('/v1/responses', codexBody('desktop-unrouted'), nativeHeaders(), 503, 'no_route_error');
   assert.ok(entry.err.startsWith(diagnostic(true, true, true)), entry.err);
-  assert.match(response.body.error.message, /没有匹配的 Codex 渠道/);
+  // 新文案:精确登记之后不存在"没有匹配的渠道"这种含混说法,只可能是没渠道登记这个模型
+  assert.match(response.body.error.message, /没有渠道登记模型/);
+  assert.match(response.body.error.message, /desktop-unrouted/);
   assert.equal(entry.session_kind, 'header');
 });
 
@@ -170,18 +172,49 @@ test('unknown slot does not guess a provider/model or start an attempt', async (
   assert.ok(entry.err.startsWith(diagnostic(true, true, true)), entry.err);
 });
 
+test('two channels registering the same model fail explicitly with 409, never pick one by order', async () => {
+  mod._state.store.claude.push({ id: 'claude-b', name: 'Claude mock B', enabled: true, base_url: base,
+    api_key: PROVIDER_KEY, models: ['claude-target'] });
+  const { entry, response } = await rejected('/v1/messages', claudeBody('claude-target'),
+    { 'x-claude-code-session-id': 'ambiguous-session' }, 409, 'model_ambiguous_error');
+  assert.match(response.body.error.message, /Claude mock/);
+  assert.equal(entry.rule, '');
+});
+
+test('an explicit session pin resolves the ambiguity without writing a new binding', async () => {
+  mod._state.store.claude.push({ id: 'claude-b', name: 'Claude mock B', enabled: true, base_url: base,
+    api_key: 'route-error-provider-key-BBBB', models: ['claude-target'] });
+  mod._state.sessions.set('cc:pinned-ambiguous', { app: 'claude', providerId: 'claude-b', model: 'claude-target',
+    pinned: true, lastUsed: Date.now(), label: '', kind: 'header', created: Date.now(), reqs: 0, inTok: 0, outTok: 0 });
+  // 只比对**绑定相关**字段:reqs/用量/actual 是这次成功请求正常累加的,不是"改写绑定"。
+  const bindingOf = () => {
+    const v = mod._state.sessions.get('cc:pinned-ambiguous') || {};
+    return { providerId: v.providerId, model: v.model, pinned: v.pinned, ruleId: v.ruleId };
+  };
+  const before = bindingOf();
+  const r = await request(proxy, '/v1/messages', { ...claudeBody('claude-target'), stream: false },
+    { 'x-claude-code-session-id': 'pinned-ambiguous' });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(mock.requests.at(-1).headers['x-api-key'], 'route-error-provider-key-BBBB',
+    '钉定指向哪个渠道就必须打哪个渠道');
+  assert.deepEqual(bindingOf(), before, '钉定解析不得改写绑定字段');
+});
+
 for (const app of ['claude', 'codex']) test(`disabled ${app} target records the local error, not an invented upstream attempt`, async () => {
+  // 停用渠道不再参与"已登记模型"的唯一命中,必须由**精确槽位**绑上来,才会走到 provider_disabled。
   mod._state.store[app][0].enabled = false;
-  mod._state.routes.default = { provider: app, model: 'never-forwarded' };
+  mod._state.slotMap = app === 'claude'
+    ? { claude: { main: { provider: 'claude', model: 'never-forwarded' } }, codex: {} }
+    : { claude: {}, codex: { main: { provider: 'codex', model: 'never-forwarded' } } };
   const { entry } = await rejected(app === 'claude' ? '/v1/messages' : '/v1/responses',
-    app === 'claude' ? claudeBody('disabled-model') : codexBody('disabled-model'),
+    app === 'claude' ? claudeBody('mixr-main') : codexBody('mixr-main'),
     app === 'claude' ? { 'x-claude-code-session-id': 'disabled-claude-session' } : nativeHeaders(), 503, 'provider_disabled_error');
   assert.ok(!entry.err.includes('[Codex identity:'));
 });
 
 test('Codex chat/responses wire mismatch logs 400 and leaves routing/session/upstream untouched', async () => {
-  mod._state.routes.default = { provider: 'codex', model: 'never-forwarded' };
-  await rejected('/v1/chat/completions', { model: 'wire-mismatch', messages: [{ role: 'user', content: PROMPT }], stream: false },
+  // 精确登记模型落在 responses-only 渠道上,客户端却走 chat 端点 → 400
+  await rejected('/v1/chat/completions', { model: 'codex-target', messages: [{ role: 'user', content: PROMPT }], stream: false },
     nativeHeaders(), 400, 'wire_api_mismatch_error');
 });
 
@@ -228,8 +261,7 @@ for (const [name, endpoint, body, headers, status] of [
 test('successful request after local rejection writes one normal log and one real trace without double logging', async () => {
   await rejected('/v1/responses', codexBody('retry-configured'), nativeHeaders(), 503, 'no_route_error');
   const count = diskRows().length; const traceCount = (await tracesOf()).length;
-  mod._state.routes.default = { provider: 'codex', model: 'codex-target' };
-  const result = await request(proxy, '/v1/responses', { ...codexBody('retry-configured'), stream: false }, nativeHeaders());
+  const result = await request(proxy, '/v1/responses', { ...codexBody('codex-target'), stream: false }, nativeHeaders());
   assert.equal(result.status, 200, result.text); assert.equal(result.disk.length, count + 1);
   assert.equal((await logsOf()).length, count + 1);
   const entry = result.disk.at(-1);

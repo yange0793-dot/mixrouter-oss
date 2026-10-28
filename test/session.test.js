@@ -1,686 +1,273 @@
 'use strict';
-// v3 会话级渠道分发测试:身份识别 / 渠道池策略 / 会话粘性 / 失败转移 / 优先级 / when 条件 / 会话 API
-// mock 上游 + 临时数据目录,不触碰真实配置与真实上游
-const { test } = require('node:test');
-const assert = require('node:assert');
+// 会话身份、精确模型落点、槽位备用与会话 API;不使用通用匹配规则夹具。
+const { test, before, beforeEach, after } = require('node:test');
+const assert = require('node:assert/strict');
 const http = require('node:http');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-
-const { createMockUpstream } = require('./mock-upstream.js');
-const mock = createMockUpstream();
+const { createMockUpstream } = require('./mock-upstream');
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'mixr-session-'));
-process.env.MIXR_DATA_DIR = TMP;
-process.env.MIXR_CLAUDE_SETTINGS = path.join(TMP, 'settings.json');
-process.env.MIXR_CODEX_CONFIG = path.join(TMP, 'config.toml');
-process.env.MIXR_COOLDOWN_SEC = '60';
-process.env.MIXR_MAX_ATTEMPTS = '3';
-// 重试间隔默认 1s:这里数的是 attempts,不是节奏;死端口/5xx 用例不该每发都白等一秒
-process.env.MIXR_RETRY_DELAY_MS = '0';
+Object.assign(process.env, {
+  MIXR_DATA_DIR: TMP, MIXR_CLAUDE_SETTINGS: path.join(TMP, 'settings.json'),
+  MIXR_CODEX_CONFIG: path.join(TMP, 'config.toml'), MIXR_MAX_ATTEMPTS: '3', MIXR_RETRY_DELAY_MS: '0',
+});
+const mod = require('../mixrouter');
+const { sessionIdentity, sessionLabel, parseSessionId, buildUpstreamHeaders, clientToken, applyLabel, _state } = mod;
+const mock = createMockUpstream();
+let proxySrv, uiSrv, failSrv, proxyPort, uiPort, providers;
 
-const mod = require('../mixrouter.js');
-const {
-  sessionIdentity, sessionLabel, parseSessionId, matchWhen, normalizeRule, bodyRouteText,
-  strategyOf, buildUpstreamHeaders, clientToken, applyLabel, _state,
-} = mod;
-
-// 用来模拟"上游 5xx"的假上游
-function createFailingUpstream(status) {
-  const seen = [];
-  const server = http.createServer((req, res) => {
-    const cs = [];
-    req.on('data', c => cs.push(c));
-    req.on('end', () => {
-      seen.push(req.url);
-      res.writeHead(status, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: 'boom' } }));
-    });
+async function request(port, method, route, body) {
+  const response = await fetch(`http://127.0.0.1:${port}${route}`, {
+    method, headers: { 'content-type': 'application/json' },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  return { server, seen };
+  const text = await response.text();
+  return { status: response.status, body: JSON.parse(text), text };
 }
-
-const DEAD = { id: 'pdead', name: 'dead', base_url: 'http://127.0.0.1:1', api_key: 'sk-dead', enabled: true, models: [] };
-
-let proxySrv, uiSrv, proxyPort, uiPort, mockPort, failSrv, failPort;
-
-function rawRequest(port, method, reqPath, { headers = {}, body } = {}) {
-  return new Promise((resolve, reject) => {
-    const data = body === undefined ? null : (typeof body === 'string' ? body : JSON.stringify(body));
-    const creq = http.request({
-      hostname: '127.0.0.1', port, method, path: reqPath,
-      headers: { ...(data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {}), ...headers },
-    }, cres => {
-      const cs = [];
-      cres.on('data', c => cs.push(c));
-      cres.on('end', () => resolve({ status: cres.statusCode, headers: cres.headers, text: Buffer.concat(cs).toString('utf8') }));
-    });
-    creq.on('error', reject);
-    if (data) creq.write(data);
-    creq.end();
+const api = (method, route, body) => request(uiPort, method, route, body);
+async function call(session, model = 'session-model', extra = {}) {
+  const response = await fetch(`http://127.0.0.1:${proxyPort}/v1/messages`, {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-claude-code-session-id': session },
+    body: JSON.stringify({ model, max_tokens: 8, messages: [{ role: 'user', content: 'hi' }], ...extra }),
   });
+  const text = await response.text();
+  return { status: response.status, provider: response.headers.get('x-mixrouter-provider'), body: JSON.parse(text), text };
 }
-
-// 发一个带会话身份的代理请求,返回本次用掉的 x-api-key(即落到哪个渠道)
-// sessionId 传"裸"会话 id(就是 Claude Code 会带上来的那个);内部键是 'cc:' + id
-const keyOf = id => 'cc:' + id;
-const shortOf = id => id.slice(0, 8);
-async function callWithSession(sessionId, { model = 'claude-opus-5', headers = {}, body = {} } = {}) {
-  const before = mock.requests.length;
-  const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {
-    headers: { 'Content-Type': 'application/json', 'x-claude-code-session-id': sessionId, ...headers },
-    body: { model, max_tokens: 8, messages: [{ role: 'user', content: 'hi' }], ...body },
-  });
-  const used = mock.requests.length > before ? mock.requests.at(-1).headers['x-api-key'] : null;
-  return { status: r.status, key: used, provider: r.headers['x-mixrouter-provider'], text: r.text };
-}
-const lastLog = async () => JSON.parse((await rawRequest(uiPort, 'GET', '/api/logs?limit=1')).text).logs[0];
-
-function setRoutes(rules, def = { provider: '', model: '' }) {
-  _state.routes = { rules: rules.map(normalizeRule), default: normalizeRule(def) };
+const lastLog = async () => (await api('GET', '/api/logs?limit=1')).body.logs[0];
+function slot(primary, backups = []) {
+  _state.slotMap = { claude: { main: { provider: primary, model: 'primary-model',
+    pool: backups.map(provider => ({ provider, model: `backup-${provider}` })), strategy: 'priority' } }, codex: {} };
   _state.resetPools();
 }
 
-test('setup:mock 上游 + 代理/控制台', async () => {
-  await new Promise(ok => mock.server.listen(0, '127.0.0.1', ok));
-  mockPort = mock.server.address().port;
-  mock.server.unref();
-  const fail = createFailingUpstream(500);
-  await new Promise(ok => fail.server.listen(0, '127.0.0.1', ok));
-  failSrv = fail.server; failPort = fail.server.address().port;
-  failSrv.unref();
-
-  const base = `http://127.0.0.1:${mockPort}`;
-  const provs = [
-    { id: 'pa', name: 'provA', base_url: base, api_key: 'sk-a', enabled: true, models: ['claude-opus-5'], slots: {} },
-    { id: 'pb', name: 'provB', base_url: base, api_key: 'sk-b', enabled: true, models: ['claude-opus-5'], slots: {} },
-    { id: 'pc', name: 'provC', base_url: base, api_key: 'sk-c', enabled: true, models: ['claude-opus-5'], slots: {} },
-    DEAD,
-    { id: 'pbad', name: 'bad5xx', base_url: `http://127.0.0.1:${failPort}`, api_key: 'sk-bad', enabled: true, models: [] },
+before(async () => {
+  await new Promise(resolve => mock.server.listen(0, '127.0.0.1', resolve));
+  failSrv = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => { res.writeHead(500, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: { message: 'boom' } })); });
+  });
+  await new Promise(resolve => failSrv.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${mock.server.address().port}`;
+  providers = [
+    { id: 'pa', name: 'provA', base_url: base, api_key: 'sk-a', enabled: true, models: ['session-model'] },
+    { id: 'pb', name: 'provB', base_url: base, api_key: 'sk-b', enabled: true, models: ['other-model'] },
+    { id: 'pc', name: 'provC', base_url: base, api_key: 'sk-c', enabled: true, models: ['third-model'] },
+    { id: 'pdead', name: 'dead', base_url: 'http://127.0.0.1:1', api_key: 'sk-dead', enabled: true, models: [] },
+    { id: 'pbad', name: 'bad5xx', base_url: `http://127.0.0.1:${failSrv.address().port}`, api_key: 'sk-bad', enabled: true, models: [] },
   ];
-  fs.writeFileSync(path.join(TMP, 'providers.json'), JSON.stringify({ version: 2, current: { claude: null, codex: null }, claude: provs, codex: [] }));
-  fs.writeFileSync(path.join(TMP, 'routes.json'), JSON.stringify({ rules: [], default: { provider: '', model: '' } }));
-  // 强制重新装载 store(require 已完成,这里直接改内存态)
-  _state.store = { claude: provs, codex: [] };
-  _state.sessions.clear();
-  _state.cooldowns = {};
-
   proxySrv = await mod.listen(0, mod.proxyHandler);
   uiSrv = await mod.listen(0, mod.apiHandler);
-  proxyPort = proxySrv.address().port;
-  uiPort = uiSrv.address().port;
-  proxySrv.unref(); uiSrv.unref();
+  proxyPort = proxySrv.address().port; uiPort = uiSrv.address().port;
+});
+beforeEach(() => {
+  _state.store = { claude: structuredClone(providers), codex: [] };
+  _state.routes = { rules: [], default: {} };
+  _state.slotMap = { claude: {}, codex: {} };
+  _state.sessions.clear(); _state.cooldowns = {}; _state.resetPools();
+  mock.requests.length = 0;
+});
+after(async () => {
+  _state.sessions.clear();
+  for (const server of [proxySrv, uiSrv, failSrv, mock.server]) {
+    server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
+  }
+  fs.rmSync(TMP, { recursive: true, force: true });
 });
 
-// ---------------------------------------------------------------- 纯函数
-test('parseSessionId 支持裸 id 与 JSON 字符串两种形态', () => {
-  assert.strictEqual(parseSessionId('abc-123'), 'abc-123');
-  assert.strictEqual(parseSessionId('{"device_id":"d","session_id":"sess-9"}'), 'sess-9');
-  assert.strictEqual(parseSessionId('{"device_id":"d"}'), '');
-  assert.strictEqual(parseSessionId('   '), '');
-  assert.strictEqual(parseSessionId(null), '');
+test('parseSessionId 支持裸 id 与 JSON,缺失身份不猜测', () => {
+  assert.equal(parseSessionId('abc-123'), 'abc-123');
+  assert.equal(parseSessionId('{"device_id":"d","session_id":"sess-9"}'), 'sess-9');
+  for (const value of ['{"device_id":"d"}', '   ', null]) assert.equal(parseSessionId(value), '');
 });
 
-test('sessionIdentity 三级识别:官方头 > metadata > 内容指纹,全无则 anon', () => {
-  const H = { headers: { 'x-claude-code-session-id': 'uuid-1' } };
-  assert.deepStrictEqual(sessionIdentity(H, { metadata: { user_id: 'other' } }), { key: 'cc:uuid-1', kind: 'header' });
-
-  const onlyMeta = { headers: {} };
-  assert.deepStrictEqual(sessionIdentity(onlyMeta, { metadata: { user_id: '{"session_id":"uuid-2"}' } }), { key: 'cc:uuid-2', kind: 'metadata' });
-
-  const bare = { headers: {} };
-  assert.deepStrictEqual(sessionIdentity(bare, { metadata: { user_id: 'uuid-3' } }), { key: 'cc:uuid-3', kind: 'metadata' });
-
-  // 非 CC 客户端:同内容两次 → 同一指纹;不同内容 → 不同指纹
-  const bodyA = { system: 'be helpful', messages: [{ role: 'user', content: 'first question' }] };
-  const bodyB = { system: 'be helpful', messages: [{ role: 'user', content: 'another question' }] };
-  const a1 = sessionIdentity({ headers: {} }, bodyA);
-  const a2 = sessionIdentity({ headers: {} }, bodyA);
-  const b1 = sessionIdentity({ headers: {} }, bodyB);
-  assert.strictEqual(a1.kind, 'fingerprint');
-  assert.strictEqual(a1.key, a2.key, '同内容必须归到同一会话');
-  assert.notStrictEqual(a1.key, b1.key, '不同内容必须是不同会话');
-
-  assert.deepStrictEqual(sessionIdentity({ headers: {} }, {}), { key: 'anon', kind: 'anon' });
+test('会话身份优先头、其次 metadata,内容指纹稳定且两组不串号', () => {
+  assert.deepEqual(sessionIdentity({ headers: { 'x-claude-code-session-id': 'uuid-1' } }, { metadata: { user_id: 'other' } }), { key: 'cc:uuid-1', kind: 'header' });
+  assert.deepEqual(sessionIdentity({ headers: {} }, { metadata: { user_id: '{"session_id":"uuid-2"}' } }), { key: 'cc:uuid-2', kind: 'metadata' });
+  assert.deepEqual(sessionIdentity({ headers: {} }, { metadata: { user_id: 'uuid-3' } }), { key: 'cc:uuid-3', kind: 'metadata' });
+  const body = { system: 'be helpful', messages: [{ role: 'user', content: 'first question' }] };
+  const a = sessionIdentity({ headers: {} }, body);
+  assert.equal(a.kind, 'fingerprint');
+  assert.equal(sessionIdentity({ headers: {} }, body).key, a.key);
+  assert.notEqual(sessionIdentity({ headers: {} }, { ...body, messages: [{ role: 'user', content: 'other question' }] }).key, a.key);
+  assert.deepEqual(sessionIdentity({ headers: {} }, {}), { key: 'anon', kind: 'anon' });
+  assert.equal(sessionIdentity({ headers: { 'thread-id': 'uuid-1' } }, {}, 'codex').key, 'cx:uuid-1');
 });
 
-test('sessionLabel 取 system 里的工作目录,否则退回首条用户消息(跳过 system-reminder)', () => {
-  const withCwd = { system: [{ type: 'text', text: '<env>\nWorking directory: /Users/dev/proj/app\n</env>' }] };
-  assert.strictEqual(sessionLabel(withCwd), '~/proj/app');
-  const linux = { system: [{ type: 'text', text: '<env>\nWorking directory: /home/dev/work\n</env>' }] };
-  assert.strictEqual(sessionLabel(linux), '~/work');
-
-  const withMsg = { messages: [{ role: 'user', content: [
-    { type: 'text', text: '<system-reminder>\nnoise\n</system-reminder>' },
-    { type: 'text', text: '  帮我看下这个   路由问题 ' },
-  ] }] };
-  assert.strictEqual(sessionLabel(withMsg), '帮我看下这个 路由问题');
-
-  assert.strictEqual(sessionLabel({}), '');
+test('会话标签取工作目录或首条正文,内部通告不覆盖真标签', () => {
+  assert.equal(sessionLabel({ system: [{ type: 'text', text: '<env>\nWorking directory: /Users/dev/proj/app\n</env>' }] }), '~/proj/app');
+  assert.equal(sessionLabel({ system: [{ type: 'text', text: '<env>\nWorking directory: /home/dev/work\n</env>' }] }), '~/work');
+  assert.equal(sessionLabel({ messages: [{ role: 'user', content: [{ type: 'text', text: '<system-reminder>noise</system-reminder>' }, { type: 'text', text: '  帮我看下这个   问题 ' }] }] }), '帮我看下这个 问题');
+  assert.equal(sessionLabel({}), '');
+  const record = { label: '' };
+  applyLabel(record, '真正的问题'); applyLabel(record, '后来的标题');
+  assert.equal(record.label, '真正的问题');
+  const internal = { label: '<session> hi </session> Write the title in the language' };
+  applyLabel(internal, '真正的问题'); assert.equal(internal.label, '真正的问题');
+  const blank = { label: '' }; applyLabel(blank, ''); assert.equal(blank.label, '');
 });
 
-test('applyLabel:内部文案(起标题请求)不覆盖真正的对话标签', () => {
-  const s = { label: '' };
-  applyLabel(s, '帮我看下路由');
-  assert.strictEqual(s.label, '帮我看下路由');
-  applyLabel(s, '别的对话内容');
-  assert.strictEqual(s.label, '帮我看下路由', '已有正常标签不该被后续请求改写');
-  // 先被内部文案占位 → 之后来了正常标签要顶掉它
-  const t = { label: '' };
-  applyLabel(t, '<session> hi </session> Write the title in the language');
-  applyLabel(t, '真正的问题');
-  assert.strictEqual(t.label, '真正的问题');
-  // 空标签不写入
-  const u = { label: '' };
-  applyLabel(u, '');
-  assert.strictEqual(u.label, '');
+test('出站 UA 与凭据沿用渠道优先级,不由会话身份覆盖', () => {
+  const req = { headers: { 'user-agent': 'client/1', 'anthropic-beta': 'b1' } };
+  const custom = buildUpstreamHeaders({ api_key: 'k', ua: 'custom/9' }, req);
+  assert.equal(custom['User-Agent'], 'custom/9'); assert.equal(custom.Authorization, 'Bearer k');
+  assert.equal(custom['anthropic-beta'], 'b1');
+  assert.equal(buildUpstreamHeaders({ api_key: 'k' }, req)['User-Agent'], 'client/1');
+  assert.ok(buildUpstreamHeaders({ api_key: 'k' }, { headers: {} })['User-Agent'].startsWith('claude-cli/'));
+  assert.equal(clientToken({ headers: { authorization: 'Bearer tok-1' } }), 'tok-1');
+  assert.equal(clientToken({ headers: { 'x-api-key': 'tok-2' } }), 'tok-2');
+  assert.equal(clientToken({ headers: {} }), '');
 });
 
-test('matchWhen:空条件恒真,条件为子串且大小写不敏感', () => {
-  assert.strictEqual(matchWhen({}, { session: 'x', ua: 'y', token: 'z' }), true);
-  assert.strictEqual(matchWhen({ when: {} }, {}), true);
-  assert.strictEqual(matchWhen({ when: { session: 'special' } }, { session: 'cc:special-1' }), true);
-  assert.strictEqual(matchWhen({ when: { session: 'special' } }, { session: 'cc:normal' }), false);
-  assert.strictEqual(matchWhen({ when: { ua: 'CLAUDE-CLI' } }, { ua: 'claude-cli/2.1' }), true);
-  // 多个条件必须同时满足
-  assert.strictEqual(matchWhen({ when: { ua: 'claude-cli', token: 'tk1' } }, { ua: 'claude-cli/2', token: 'tk2' }), false);
-  // body 条件从 ctx.bodyText() 取文本(没有该函数就当空串,不抛错)
-  assert.strictEqual(matchWhen({ when: { body: 'DETAILED SUMMARY' } }, { bodyText: () => 'create a detailed summary of the conversation' }), true);
-  assert.strictEqual(matchWhen({ when: { body: 'detailed summary' } }, { bodyText: () => 'nothing here' }), false);
-  assert.strictEqual(matchWhen({ when: { body: 'x' } }, {}), false);
-  // body 与其它条件同时给出时为「与」
-  assert.strictEqual(matchWhen({ when: { body: 'summary', ua: 'claude-cli' } }, { ua: 'curl/8', bodyText: () => 'summary' }), false);
-});
-
-test('bodyRouteText:只拼 system/instructions 与最后一条消息,不碰历史', () => {
-  assert.strictEqual(bodyRouteText({}), '');
-  assert.strictEqual(bodyRouteText({ messages: [{ role: 'user', content: 'only' }] }), 'only');
-  assert.strictEqual(bodyRouteText({
-    system: 'SYS',
-    messages: [{ role: 'user', content: 'old mention of detailed summary' }, { role: 'user', content: 'last' }],
-  }), 'SYS\nlast');
-  assert.strictEqual(bodyRouteText({
-    system: [{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }],
-    messages: [{ role: 'user', content: [{ type: 'text', text: 'x' }] }],
-  }), 'a\nb\n[{"type":"text","text":"x"}]');
-  // Codex(Responses)形状:instructions + input 数组的最后一项
-  assert.strictEqual(bodyRouteText({
-    instructions: 'codex',
-    input: [{ type: 'message', content: [{ type: 'input_text', text: 'head' }] }, { type: 'message', content: [{ type: 'input_text', text: 'tail' }] }],
-  }), 'codex\n[{"type":"input_text","text":"tail"}]');
-});
-// 真实 Claude Code 2.1.270 压缩请求形状(抓包还原):指令以文本块拼在最后一条 user 消息里,
-// 其后还挂着 system 通告(ToolSearch 工具清单)——只看数组末尾会漏掉,必须补最后一条 user 消息
-test('bodyRouteText:末尾挂 system 通告的真实压缩请求形状也能命中,历史仍不进匹配文本', () => {
-  const realCompact = {
-    system: 'SYS',
-    messages: [
-      { role: 'user', content: '题目190486 开工,历史里的内容' },
-      { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }] },
-      { role: 'user', content: [
-        { tool_use_id: 't1', type: 'tool_result', content: 'xx' },
-        { type: 'text', text: 'CRITICAL: Your task is to create a detailed summary of the conversation so far' },
-      ] },
-      { role: 'system', content: 'The following deferred tools are now available via ToolSearch' },
-    ],
-  };
-  assert.ok(bodyRouteText(realCompact).includes('detailed summary of the conversation'),
-    '指令在最后一条 user 消息、末尾是 system 通告:必须命中');
-  assert.ok(!bodyRouteText(realCompact).includes('题目190486'), '历史消息依旧不进匹配文本');
-  const normalTail = { messages: [
-    { role: 'user', content: '历史' },
-    { role: 'user', content: [{ tool_use_id: 't', type: 'tool_result', content: 'res' }, { type: 'text', text: '当前轮正文' }] },
-    { role: 'system', content: 'The following deferred tools are now available via ToolSearch' },
-  ] };
-  assert.ok(bodyRouteText(normalTail).includes('当前轮正文'), '普通请求的当前轮正文也应参与匹配');
-});
-
-test('when.body 只看最后一条消息:历史里出现过触发短语,不再劫持后续请求', async () => {
-  setRoutes([
-    { id: 'rnorm', match: 'claude-opus-5', provider: 'pb', model: '', enabled: true },
-    { id: 'rcompact', match: '', provider: 'pa', model: 'deepseek-x', enabled: true, when: { body: 'detailed summary of the conversation' } },
-  ], { provider: 'pb', model: '' });
-
-  // 历史里引用了规则原文(实测踩过的形状:一条引用了 when.body 的报告进了对话)
-  const hist = await callWithSession('bodyhist1', { body: { messages: [
-    { role: 'user', content: '（引用）压缩走 rcompact:when.body = "detailed summary of the conversation"' },
-    { role: 'assistant', content: '收到' },
-    { role: 'user', content: '继续干活' },
-  ] } });
-  assert.strictEqual(hist.key, 'sk-b', '历史里的短语不该命中内容分流');
-  assert.strictEqual((await lastLog()).rule, 'rnorm');
-
-  // 真正的压缩请求:指令就在最后一条消息里,照旧命中
-  const real = await callWithSession('bodyhist2', { body: { messages: [
-    { role: 'user', content: '先前的上下文略' },
-    { role: 'user', content: 'Your task is to create a detailed summary of the conversation so far' },
-  ] } });
-  assert.strictEqual(real.key, 'sk-a', '压缩指令在最后一条消息里,必须照旧命中');
-  assert.strictEqual((await lastLog()).rule, 'rcompact');
-  assert.strictEqual(mock.requests.at(-1).body.model, 'deepseek-x');
-
-  // 真实 2.1.270 形状:指令拼在最后一条 user 消息、其后挂 system 通告,同样要命中内容分流
-  const realShape = await callWithSession('bodyhist3', { body: { messages: [
-    { role: 'user', content: '先前的上下文略' },
-    { role: 'user', content: [{ tool_use_id: 't', type: 'tool_result', content: 'xx' }, { type: 'text', text: 'Your task is to create a detailed summary of the conversation so far' }] },
-    { role: 'system', content: 'The following deferred tools are now available via ToolSearch' },
-  ] } });
-  assert.strictEqual(realShape.key, 'sk-a', '真实形状(指令在最后一条 user 消息、末尾是 system 通告)也要命中');
-  assert.strictEqual((await lastLog()).rule, 'rcompact');
-  assert.strictEqual(mock.requests.at(-1).body.model, 'deepseek-x');
-});
-
-test('normalizeRule:补默认值、剔除坏池成员、收敛枚举与类型', () => {
-  const r = normalizeRule({
-    match: 'opus', pool: ['pa', '', { provider: 'pb', model: 'm1', weight: 3 }, { provider: '' }, 42, { provider: 'pc', weight: -1 }, 'pdead'],
-    strategy: 'nonsense', priority: '7', when: { session: ' s1 ', ua: '', junk: 'x', body: ' detailed summary ' }, enabled: undefined,
-  });
-  assert.strictEqual(r.strategy, 'round_robin');            // 非法策略回落默认
-  assert.strictEqual(r.priority, 7);
-  assert.strictEqual(r.enabled, true);
-  assert.deepStrictEqual(r.pool, ['pa', { provider: 'pb', model: 'm1', weight: 3 }, { provider: 'pc' }, 'pdead']);
-  assert.deepStrictEqual(r.when, { session: 's1', body: 'detailed summary' });  // 只留认识的字段,值 trim
-  const empty = normalizeRule(null);
-  assert.strictEqual(empty.match, '');
-  assert.deepStrictEqual(empty.pool, []);
-  assert.ok(empty.id);
-});
-
-test('strategyOf 只认白名单', () => {
-  assert.strictEqual(strategyOf({ strategy: 'weighted' }), 'weighted');
-  assert.strictEqual(strategyOf({ strategy: 'least_used' }), 'least_used');
-  assert.strictEqual(strategyOf({ strategy: 'bogus' }), 'round_robin');
-  assert.strictEqual(strategyOf(null), 'round_robin');
-});
-
-test('buildUpstreamHeaders:渠道自定义 UA 优先于客户端 UA,最后兜底', () => {
-  const req = { headers: { 'user-agent': 'client/1.0', 'anthropic-version': '2023-06-01', 'anthropic-beta': 'b1' } };
-  const custom = buildUpstreamHeaders({ api_key: 'k', ua: 'custom-ua/9' }, req);
-  assert.strictEqual(custom['User-Agent'], 'custom-ua/9');
-  assert.strictEqual(custom['Authorization'], 'Bearer k');
-  assert.strictEqual(custom['anthropic-beta'], 'b1');
-  const noUa = buildUpstreamHeaders({ api_key: 'k' }, req);
-  assert.strictEqual(noUa['User-Agent'], 'client/1.0');
-  const noClientUa = buildUpstreamHeaders({ api_key: 'k' }, { headers: {} });
-  assert.ok(noClientUa['User-Agent'].startsWith('claude-cli/'));
-});
-
-test('clientToken 从 Authorization / x-api-key 取客户端凭据', () => {
-  assert.strictEqual(clientToken({ headers: { authorization: 'Bearer tok-1' } }), 'tok-1');
-  assert.strictEqual(clientToken({ headers: { 'x-api-key': 'tok-2' } }), 'tok-2');
-  assert.strictEqual(clientToken({ headers: {} }), '');
-});
-
-// ---------------------------------------------------------------- 渠道池与会话粘性
-test('round_robin:新会话依次落到不同渠道,同一会话始终粘一个', async () => {
-  setRoutes([{ id: 'r1', match: 'opus', pool: ['pa', 'pb', 'pc'], strategy: 'round_robin', enabled: true }]);
-  const a = await callWithSession('sess-a');
-  const b = await callWithSession('sess-b');
-  const c = await callWithSession('sess-c');
-  assert.deepStrictEqual([a.key, b.key, c.key], ['sk-a', 'sk-b', 'sk-c'], '三个新对话应分到三个渠道');
-
-  // 粘性:每个会话再问两次,还是原来那个渠道
-  assert.strictEqual((await callWithSession('sess-a')).key, 'sk-a');
-  assert.strictEqual((await callWithSession('sess-b')).key, 'sk-b');
-  assert.strictEqual((await callWithSession('sess-a')).key, 'sk-a');
-
+test('唯一登记模型建立会话绑定,后续请求复用且日志如实记账', async () => {
+  assert.equal((await call('sess-a')).status, 200);
+  assert.equal((await call('sess-a')).status, 200);
+  assert.deepEqual(mock.requests.map(r => r.headers['x-api-key']), ['sk-a', 'sk-a']);
   const log = await lastLog();
-  assert.strictEqual(log.session, 'sess-a');
-  assert.strictEqual(log.sticky, true, '复用绑定应标记 sticky');
-  assert.strictEqual(log.attempts, 1);
-  assert.strictEqual(log.failover, false);
+  assert.equal(log.session, 'sess-a'); assert.equal(log.sticky, true);
+  assert.equal(log.attempts, 1); assert.equal(log.failover, false);
 });
 
-test('least_used:优先分给当前挂载会话最少的渠道', async () => {
-  setRoutes([{ id: 'rl', match: 'opus', pool: ['pa', 'pb'], strategy: 'least_used', enabled: true }]);
-  _state.sessions.clear();
-  _state.bindSession('cc:busy-1', 'pa');
-  _state.bindSession('cc:busy-2', 'pa');
-  const r = await callWithSession('sess-free');
-  assert.strictEqual(r.key, 'sk-b', 'pa 已挂 2 个会话,pb 空闲应被选中');
+test('槽位备用带各自模型,失效主渠道不会被永久换掉', async () => {
+  slot('pdead', ['pa']);
+  const configured = JSON.stringify(_state.slotMap);
+  const first = await call('backup-session', 'mixr-main');
+  assert.equal(first.status, 200, first.text);
+  assert.equal(mock.requests.at(-1).body.model, 'backup-pa');
+  assert.equal((await lastLog()).attempts, 2); assert.equal((await lastLog()).failover, true);
+  assert.equal((await call('backup-session', 'mixr-main')).status, 200);
+  assert.equal((await lastLog()).attempts, 2, '后续仍从明确主渠道开始,不偷偷改槽位或粘到备用');
+  assert.equal(JSON.stringify(_state.slotMap), configured);
 });
 
-test('weighted:按权重比例分配(3:1 在 8 个新会话上呈现 6:2)', async () => {
-  setRoutes([{ id: 'rw', match: 'opus', pool: [{ provider: 'pa', weight: 3 }, { provider: 'pb', weight: 1 }], strategy: 'weighted', enabled: true }]);
-  _state.sessions.clear();
-  const got = [];
-  for (let i = 0; i < 8; i++) got.push((await callWithSession(`w-sess-${i}`)).key);
-  const count = k => got.filter(x => x === k).length;
-  assert.strictEqual(count('sk-a'), 6);
-  assert.strictEqual(count('sk-b'), 2);
+test('槽位多次失败共享 attempts 预算,5xx 可在输出前转备用', async () => {
+  slot('pdead', ['pbad', 'pb']);
+  const response = await call('attempts', 'mixr-main');
+  assert.equal(response.status, 200, response.text);
+  assert.equal(mock.requests.at(-1).headers['x-api-key'], 'sk-b');
+  assert.equal(mock.requests.at(-1).body.model, 'backup-pb');
+  assert.equal((await lastLog()).attempts, 3);
 });
 
-test('池成员带独立目标模型:各成员用自己的模型名', async () => {
-  setRoutes([{ id: 'rm', match: 'opus', pool: [{ provider: 'pa', model: 'model-for-a' }, { provider: 'pb', model: 'model-for-b' }], strategy: 'round_robin', enabled: true }]);
-  _state.sessions.clear();
-  await callWithSession('m-1');
-  await callWithSession('m-2');
-  const b1 = mock.requests.at(-2).body.model;
-  const b2 = mock.requests.at(-1).body.model;
-  assert.deepStrictEqual([b1, b2].sort(), ['model-for-a', 'model-for-b']);
-});
-
-test('max_attempts 限制一次请求最多试几个渠道', async () => {
-  setRoutes([{ id: 'ra', match: 'opus', pool: ['pdead', 'pbad', 'pb'], strategy: 'round_robin', enabled: true }]);
-  _state.sessions.clear();
-  _state.cooldowns = {};
-  const r = await callWithSession('at-1');
-  assert.strictEqual(r.status, 200);
-  assert.strictEqual(r.key, 'sk-b', '两个坏渠道后落到 pb');
-  assert.strictEqual((await lastLog()).attempts, 3);
-});
-
-// ---------------------------------------------------------------- 失败转移与旧冷却表
-test('失败转移:池首选连不上时自动换下一个,并把会话重新绑到可用渠道', async () => {
-  setRoutes([{ id: 'rf', match: 'opus', pool: ['pdead', 'pa'], strategy: 'round_robin', enabled: true }]);
-  _state.sessions.clear();
-  _state.cooldowns = {};
-  const first = await callWithSession('fo-1');
-  assert.strictEqual(first.status, 200, '首选渠道挂了也不该把请求打回客户端');
-  assert.strictEqual(first.key, 'sk-a', '应转移到 pa');
-  const log = await lastLog();
-  assert.strictEqual(log.failover, true);
-  assert.strictEqual(log.attempts, 2);
-  assert.strictEqual(log.provider, 'provA');
-
-  // 会话已被重绑到 pa:下一个请求直接成功,不再试死渠道
-  const second = await callWithSession('fo-1');
-  assert.strictEqual(second.key, 'sk-a');
-  const log2 = await lastLog();
-  assert.strictEqual(log2.attempts, 1);
-  assert.strictEqual(log2.failover, false);
-  assert.strictEqual(log2.sticky, true);
-});
-
-test('5xx 上游也触发转移(趁还没给客户端写字节)', async () => {
-  setRoutes([{ id: 'r5', match: 'opus', pool: ['pbad', 'pb'], strategy: 'round_robin', enabled: true }]);
-  _state.sessions.clear();
-  _state.cooldowns = {};
-  const r = await callWithSession('f5-1');
-  assert.strictEqual(r.status, 200);
-  assert.strictEqual(r.key, 'sk-b');
-  assert.strictEqual((await lastLog()).failover, true);
-});
-
-test('旧冷却表不会让新会话跳过渠道', async () => {
-  setRoutes([{ id: 'rc', match: 'opus', pool: ['pa', 'pb'], strategy: 'round_robin', enabled: true }]);
-  _state.sessions.clear();
-  _state.cooldowns = { pa: Date.now() + 60000 }; // 手动把 pa 打进冷却
-  const r = await callWithSession('co-1');
-  assert.strictEqual(r.key, 'sk-a', '旧冷却表被忽略,轮询仍从 pa 开始');
-  assert.strictEqual((await lastLog()).attempts, 1);
-});
-
-test('旧冷却表写满时仍照常选成员(不死锁)', async () => {
-  setRoutes([{ id: 'rall', match: 'opus', pool: ['pa', 'pb'], strategy: 'round_robin', enabled: true }]);
-  _state.sessions.clear();
+test('旧冷却表不影响主槽选择', async () => {
+  slot('pa', ['pb']);
   _state.cooldowns = { pa: Date.now() + 60000, pb: Date.now() + 60000 };
-  const r = await callWithSession('all-1');
-  assert.strictEqual(r.status, 200);
-  assert.ok(['sk-a', 'sk-b'].includes(r.key));
+  const response = await call('old-cooldowns', 'mixr-main');
+  assert.equal(response.status, 200, response.text);
+  assert.equal(mock.requests.at(-1).headers['x-api-key'], 'sk-a');
+  assert.equal((await lastLog()).attempts, 1);
 });
 
-test('池里的代理全挂时返回 502,并带上最后一条错误', async () => {
-  setRoutes([{ id: 'rd', match: 'opus', pool: ['pdead'], strategy: 'round_robin', enabled: true }]);
-  _state.sessions.clear();
-  _state.cooldowns = {};
-  const r = await callWithSession('dead-1');
-  assert.strictEqual(r.status, 502);
-  assert.strictEqual(JSON.parse(r.text).error.type, 'api_error');
-  assert.strictEqual((await lastLog()).failover, false, '没有后备可选时不算转移');
+test('槽位唯一目标不可连接时如实返回错误,不假记失败转移', async () => {
+  slot('pdead');
+  const response = await call('all-failed', 'mixr-main');
+  assert.equal(response.status, 502, response.text);
+  assert.equal(response.body.error.type, 'api_error');
+  assert.equal((await lastLog()).failover, false);
 });
 
-// ---------------------------------------------------------------- 路由策略优化
-test('priority:数值大的规则先匹配,压过数组顺序', async () => {
-  setRoutes([
-    { id: 'low', match: 'opus', provider: 'pa', priority: 0, enabled: true },
-    { id: 'high', match: 'opus', provider: 'pb', priority: 10, enabled: true },
-  ]);
-  _state.sessions.clear();
-  assert.strictEqual((await callWithSession('pr-1')).key, 'sk-b');
-  assert.strictEqual((await lastLog()).rule, 'high');
+test('普通旧规则和默认回退不能把未登记模型送到其它渠道', async () => {
+  _state.routes = { rules: [{ id: 'legacy', match: 'unknown', provider: 'pb', model: 'changed-model', enabled: true }], default: { provider: 'pa' } };
+  const response = await call('legacy-rejected', 'unknown-model');
+  assert.equal(response.status, 503, response.text);
+  assert.equal(mock.requests.length, 0);
 });
 
-test('同优先级时保持数组顺序(稳定)', async () => {
-  setRoutes([
-    { id: 'first', match: 'opus', provider: 'pa', priority: 5, enabled: true },
-    { id: 'second', match: 'opus', provider: 'pb', priority: 5, enabled: true },
-  ]);
-  _state.sessions.clear();
-  assert.strictEqual((await callWithSession('pr-2')).key, 'sk-a');
+test('会话列表、显式钉定解开同名模型歧义、解除后恢复明确失败', async () => {
+  const key = 'cc:api-sess-1';
+  // 先打一条唯一模型的请求,让会话在列表里有一条真实记录(歧义请求本身不建档)
+  assert.equal((await call('api-sess-1')).status, 200);
+  const mine = (await api('GET', '/api/sessions')).body.sessions.find(s => s.key === key);
+  assert.ok(mine); assert.equal(mine.short, 'api-sess');
+  _state.store.claude.find(p => p.id === 'pc').models.push('dual-model');
+  _state.store.claude.find(p => p.id === 'pa').models.push('dual-model');
+  const before = mock.requests.length;
+  const ambiguous = await call('api-sess-1', 'dual-model');
+  assert.equal(ambiguous.status, 409, ambiguous.text);
+  assert.equal(ambiguous.body.error.type, 'model_ambiguous_error');
+  assert.equal(mock.requests.length, before, '歧义不得擅自选一家渠道');
+  const pinned = await api('POST', `/api/sessions/${encodeURIComponent(key)}/pin`, { provider: 'pc' });
+  assert.equal(pinned.status, 200, pinned.text);
+  const resolved = await call('api-sess-1', 'dual-model');
+  assert.equal(resolved.status, 200, resolved.text);
+  assert.equal(mock.requests.at(-1).headers['x-api-key'], 'sk-c', '显式钉定解开歧义');
+  assert.equal((await api('POST', `/api/sessions/${encodeURIComponent(key)}/pin`, { provider: 'ghost' })).status, 404);
+  assert.equal((await api('POST', `/api/sessions/${encodeURIComponent(key)}/pin`, { provider: '' })).body.session.pinned, false);
+  const again = await call('api-sess-1', 'dual-model');
+  assert.equal(again.status, 409, '解除钉定后歧义重新明确失败');
+  assert.equal((await api('DELETE', `/api/sessions/${encodeURIComponent(key)}`)).status, 200);
+  assert.ok(!(await api('GET', '/api/sessions')).body.sessions.some(s => s.key === key));
+  assert.equal((await api('DELETE', `/api/sessions/${encodeURIComponent(key)}`)).status, 404);
 });
 
-test('when.session:按会话把请求分流到指定渠道', async () => {
-  setRoutes([
-    { id: 'special', match: 'opus', provider: 'pc', priority: 5, when: { session: 'vip' }, enabled: true },
-    { id: 'rest', match: 'opus', provider: 'pa', priority: 0, enabled: true },
-  ]);
-  _state.sessions.clear();
-  assert.strictEqual((await callWithSession('vip-1')).key, 'sk-c');
-  assert.strictEqual((await callWithSession('plain-1')).key, 'sk-a');
-});
-
-test('when.ua / when.token:按客户端类型或携带的凭据分流', async () => {
-  setRoutes([
-    { id: 'byua', match: 'opus', provider: 'pb', priority: 5, when: { ua: 'my-fork' }, enabled: true },
-    { id: 'bytok', match: 'opus', provider: 'pc', priority: 4, when: { token: 'tok-team' }, enabled: true },
-    { id: 'rest', match: 'opus', provider: 'pa', priority: 0, enabled: true },
-  ]);
-  _state.sessions.clear();
-  assert.strictEqual((await callWithSession('ua-1', { headers: { 'User-Agent': 'my-fork/1.0' } })).key, 'sk-b');
-  assert.strictEqual((await callWithSession('tk-1', { headers: { Authorization: 'Bearer tok-team' } })).key, 'sk-c');
-  assert.strictEqual((await callWithSession('tk-2')).key, 'sk-a');
-});
-
-test('default 也能配池:未命中任何规则时按池分发', async () => {
-  setRoutes([], { pool: ['pa', 'pb'], strategy: 'round_robin' });
-  _state.sessions.clear();
-  const r1 = await callWithSession('dflt-1', { model: 'claude-unknown-9' });
-  const r2 = await callWithSession('dflt-2', { model: 'claude-unknown-9' });
-  assert.deepStrictEqual([r1.key, r2.key], ['sk-a', 'sk-b']);
-  assert.strictEqual((await lastLog()).rule, 'default');
-});
-
-// ---------------------------------------------------------------- 会话 API
-test('会话 API:列表可见、可手动改绑、可解绑', async () => {
-  setRoutes([{ id: 'rs', match: 'opus', pool: ['pa', 'pb'], strategy: 'round_robin', enabled: true }]);
-  _state.sessions.clear();
-  const key = keyOf('api-sess-1');
-  await callWithSession('api-sess-1');
-  const listed = JSON.parse((await rawRequest(uiPort, 'GET', '/api/sessions')).text).sessions;
-  const mine = listed.find(s => s.key === key);
-  assert.ok(mine, '会话应出现在列表里');
-  assert.strictEqual(mine.short, 'api-sess');
-  assert.strictEqual(mine.provider_name, 'provA');
-  assert.strictEqual(mine.reqs, 1);
-  assert.strictEqual(mine.pinned, false);
-
-  // 手动改绑到 pc
-  const pin = await rawRequest(uiPort, 'POST', `/api/sessions/${encodeURIComponent(key)}/pin`, { body: { provider: 'pc' } });
-  assert.strictEqual(pin.status, 200);
-  assert.strictEqual(JSON.parse(pin.text).session.provider_name, 'provC');
-  assert.strictEqual((await callWithSession('api-sess-1')).key, 'sk-c', '改绑后该对话应走 pc');
-
-  // 绑一个不存在的渠道 → 404
-  const bad = await rawRequest(uiPort, 'POST', `/api/sessions/${encodeURIComponent(key)}/pin`, { body: { provider: 'ghost' } });
-  assert.strictEqual(bad.status, 404);
-
-  // 解绑 → 下次请求重新按策略分配
-  assert.strictEqual((await rawRequest(uiPort, 'DELETE', `/api/sessions/${encodeURIComponent(key)}`)).status, 200);
-  const after = JSON.parse((await rawRequest(uiPort, 'GET', '/api/sessions')).text).sessions;
-  assert.ok(!after.some(s => s.key === key));
-  assert.strictEqual((await rawRequest(uiPort, 'DELETE', `/api/sessions/${encodeURIComponent(key)}`)).status, 404);
-});
-
-test('会话 API:置空 provider 表示解除钉定,渠道停用时拒绝绑定', async () => {
-  setRoutes([{ id: 'rs2', match: 'opus', pool: ['pa', 'pb'], strategy: 'round_robin', enabled: true }]);
-  _state.sessions.clear();
-  const key = keyOf('api-sess-2');
-  await callWithSession('api-sess-2');
-
+test('停用渠道拒绝新增钉定,槽位绑定的停用目标明确报错', async () => {
+  await call('disabled-pin');
   _state.store.claude.find(p => p.id === 'pa').enabled = false;
-  const refused = await rawRequest(uiPort, 'POST', `/api/sessions/${encodeURIComponent(key)}/pin`, { body: { provider: 'pa' } });
-  assert.strictEqual(refused.status, 400);
-  assert.ok(JSON.parse(refused.text).error.includes('停用'));
-
-  const cleared = await rawRequest(uiPort, 'POST', `/api/sessions/${encodeURIComponent(key)}/pin`, { body: { provider: '' } });
-  assert.strictEqual(cleared.status, 200);
-  assert.strictEqual(JSON.parse(cleared.text).session.pinned, false);
-  _state.store.claude.find(p => p.id === 'pa').enabled = true;
+  const pin = await api('POST', '/api/sessions/cc%3Adisabled-pin/pin', { provider: 'pa' });
+  assert.equal(pin.status, 400); assert.match(pin.body.error, /停用/);
+  slot('pa');
+  const response = await call('disabled-slot', 'mixr-main');
+  assert.equal(response.status, 503);
+  assert.equal(response.body.error.type, 'provider_disabled_error');
 });
 
-test('日志按会话过滤:只留该对话的请求', async () => {
-  setRoutes([{ id: 'rf2', match: 'opus', pool: ['pa', 'pb'], strategy: 'round_robin', enabled: true }]);
-  _state.sessions.clear();
-  await callWithSession('log-one');
-  await callWithSession('log-two');
-  const got = JSON.parse((await rawRequest(uiPort, 'GET', '/api/logs?session=' + encodeURIComponent('log-one'))).text).logs;
-  assert.ok(got.length >= 1);
-  assert.ok(got.every(l => l.session === 'log-one'));
-  assert.ok(got.every(l => l.session_kind === 'header'));
+test('日志按会话过滤,状态不回显 Key,私密正文不进入请求日志', async () => {
+  await call('log-one', 'session-model', { messages: [{ role: 'user', content: '这是我的私密提问内容' }] });
+  await call('log-two');
+  const logs = (await api('GET', '/api/logs?session=log-one')).body.logs;
+  assert.ok(logs.length > 0); assert.ok(logs.every(l => l.session === 'log-one' && l.session_kind === 'header'));
+  assert.ok(!JSON.stringify(logs).includes('私密提问'));
+  const state = (await api('GET', '/api/state')).body;
+  assert.ok(Array.isArray(state.sessions)); assert.deepEqual(state.cooldowns, []); assert.equal(state.cooldown_s, 0);
+  assert.equal(typeof state.session_ttl_min, 'number');
+  assert.doesNotMatch(JSON.stringify(state.sessions), /sk-a|sk-b|sk-c/);
 });
 
-test('/api/state 暴露会话数、TTL 参数与恒空的兼容冷却字段', async () => {
-  const s = JSON.parse((await rawRequest(uiPort, 'GET', '/api/state')).text);
-  assert.ok(Array.isArray(s.sessions));
-  assert.deepStrictEqual(s.cooldowns, [], '冷却已移除,兼容字段恒为空表');
-  assert.strictEqual(s.cooldown_s, 0, '兼容字段恒为 0');
-  assert.strictEqual(typeof s.session_ttl_min, 'number');
-  // 会话数据绝不能带出密钥
-  const blob = JSON.stringify(s.sessions);
-  assert.ok(!blob.includes('sk-a') && !blob.includes('sk-b') && !blob.includes('sk-c'));
-});
-
-test('IP/敏感面:会话标签不落盘到请求日志', async () => {
-  setRoutes([{ id: 'rl2', match: 'opus', pool: ['pa'], strategy: 'round_robin', enabled: true }]);
-  _state.sessions.clear();
-  await callWithSession('label-check', { body: { messages: [{ role: 'user', content: '这是我的私密提问内容' }] } });
-  const log = await lastLog();
-  assert.ok(!JSON.stringify(log).includes('私密提问'), '请求日志只应记会话短 id,不应记对话内容');
-});
-
-test('向后兼容:老格式规则(只有 provider,无 pool/priority/when)照常工作', async () => {
-  _state.routes = { rules: [{ id: 'legacy', match: 'opus', provider: 'pa', model: 'legacy-target', enabled: true }],
-    default: { provider: '', model: '' } };
-  _state.resetPools();
-  _state.sessions.clear();
-  const r = await callWithSession('legacy-1');
-  assert.strictEqual(r.status, 200);
-  assert.strictEqual(r.key, 'sk-a');
-  assert.strictEqual(mock.requests.at(-1).body.model, 'legacy-target');
-  assert.strictEqual((await lastLog()).pool, 1);
-});
-
-test('停用的单一目标渠道仍报 provider_disabled_error(池才自动跳过)', async () => {
-  _state.routes = { rules: [{ id: 'dis', match: 'opus', provider: 'pa', model: '', enabled: true }],
-    default: { provider: '', model: '' } };
-  _state.store.claude.find(p => p.id === 'pa').enabled = false;
-  const r = await callWithSession('dis-1');
-  _state.store.claude.find(p => p.id === 'pa').enabled = true;
-  assert.strictEqual(r.status, 503);
-  assert.strictEqual(JSON.parse(r.text).error.type, 'provider_disabled_error');
-});
-
-test('池成员全被停用时报 no_route_error', async () => {
-  setRoutes([{ id: 'pd', match: 'opus', pool: ['pa', 'pb'], strategy: 'round_robin', enabled: true }]);
-  const save = _state.store.claude.filter(p => p.id === 'pa' || p.id === 'pb').map(p => p.enabled);
-  _state.store.claude.filter(p => p.id === 'pa' || p.id === 'pb').forEach(p => { p.enabled = false; });
-  const r = await callWithSession('pd-1');
-  _state.store.claude.filter(p => p.id === 'pa' || p.id === 'pb').forEach((p, i) => { p.enabled = save[i]; });
-  assert.strictEqual(r.status, 503);
-  assert.strictEqual(JSON.parse(r.text).error.type, 'no_route_error');
-});
-
-// ---------------------------------------------------------------- 会话绑定落盘:"说成功、却没落盘"那一族
-// 三扇门(清空/钉定/解绑)以前都是 `改内存 + saveSessionsSoon()` 然后**当场回 200**。
-// saveSoon 是 1s 去抖的后台定时器,所以接口说"已清空"的那一刻,盘上还一条不少;
-// 而那次落盘要是失败,谁都接不住 —— 库那边是裸 timer 抛错,实测直接是个 uncaughtException,
-// 内存里的改动却留着("控制台看着改了、重启就变回去")。
-// 现在三扇门都走 mutateSessions:改与落盘一起做,落盘失败整份回滚并如实回 5xx。
-//
-// 夹具:让 sessions.json 的**原子替换**抛 EACCES(只挡这一个目标,别的数据文件照写)。
 function blockSessionsWrite() {
-  const realRename = fs.renameSync;
+  const rename = fs.renameSync;
   fs.renameSync = (from, to) => {
-    if (String(to).endsWith('sessions.json')) throw Object.assign(new Error('EACCES: permission denied, open'), { code: 'EACCES' });
-    return realRename(from, to);
+    if (String(to).endsWith('sessions.json')) throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+    return rename(from, to);
   };
-  return () => { fs.renameSync = realRename; };
+  return () => { fs.renameSync = rename; };
 }
-
-// 把绑定表摆成一个已知状态,并**同步**落盘(不经过去抖),好让"盘上变没变"有对照物。
 function seedSessions(bindings) {
   _state.sessions.clear();
-  for (const [k, v] of Object.entries(bindings)) _state.sessions.set(k, v);
-  fs.writeFileSync(path.join(TMP, 'sessions.json'), JSON.stringify({ version: 1, bindings }, null, 0));
+  for (const [key, value] of Object.entries(bindings)) _state.sessions.set(key, value);
+  fs.writeFileSync(path.join(TMP, 'sessions.json'), JSON.stringify({ version: 1, bindings }));
 }
-const sessionsOnDisk = () => JSON.parse(fs.readFileSync(path.join(TMP, 'sessions.json'), 'utf8')).bindings;
+const onDisk = () => JSON.parse(fs.readFileSync(path.join(TMP, 'sessions.json'), 'utf8')).bindings;
 
-test('清空会话:落盘失败时接口必须报错,且内存与盘上一个都不许少', async () => {
-  setRoutes([{ id: 'rsf', match: 'opus', pool: ['pa'], strategy: 'round_robin', enabled: true }]);
-  seedSessions({
-    'a-1': { app: 'claude', providerId: 'pa', model: '', lastUsed: Date.now() },
-    'b-2': { app: 'claude', providerId: 'pb', model: '', lastUsed: Date.now() },
-  });
-  const before = JSON.stringify(sessionsOnDisk());
-
-  const unblock = blockSessionsWrite();
-  let r;
-  try { r = await rawRequest(uiPort, 'DELETE', '/api/sessions'); }
-  finally { unblock(); }
-
-  assert.strictEqual(r.status, 500, `落盘失败就必须报错,不能回 200「已清空」;实得 ${r.status} ${r.text}`);
-  assert.match(r.text, /写入会话绑定失败/, `错误文案要能看出是落盘那一步;实得 ${r.text}`);
-  // 这是最要命的一条:接口说失败,内存里却已经清空了 —— 那就是"说失败、却已经生效"
-  assert.strictEqual(_state.sessions.size, 2, '内存里的会话必须退回原样');
-  assert.strictEqual(JSON.stringify(sessionsOnDisk()), before, '盘上本来就没变,回滚后当然还得是原样');
+test('清空会话写盘失败时内存与磁盘全部保留', async () => {
+  seedSessions({ a: { app: 'claude', providerId: 'pa', lastUsed: Date.now() }, b: { app: 'claude', providerId: 'pb', lastUsed: Date.now() } });
+  const before = JSON.stringify(onDisk()), unblock = blockSessionsWrite();
+  let response;
+  try { response = await api('DELETE', '/api/sessions'); } finally { unblock(); }
+  assert.equal(response.status, 500, response.text); assert.match(response.text, /写入会话绑定失败/);
+  assert.equal(_state.sessions.size, 2); assert.equal(JSON.stringify(onDisk()), before);
 });
 
-test('解绑会话:落盘失败时那条会话必须还在(内存与盘上都是)', async () => {
-  setRoutes([{ id: 'rsf2', match: 'opus', pool: ['pa'], strategy: 'round_robin', enabled: true }]);
-  seedSessions({ 'keep-me': { app: 'claude', providerId: 'pa', model: '', lastUsed: Date.now() } });
-  const before = JSON.stringify(sessionsOnDisk());
-
-  const unblock = blockSessionsWrite();
-  let r;
-  try { r = await rawRequest(uiPort, 'DELETE', '/api/sessions/keep-me'); }
-  finally { unblock(); }
-
-  assert.strictEqual(r.status, 500, `实得 ${r.status} ${r.text}`);
-  assert.strictEqual(_state.sessions.has('keep-me'), true, '解绑没落成,那条会话就该还在');
-  assert.strictEqual(JSON.stringify(sessionsOnDisk()), before);
+test('解绑会话写盘失败时不能先从内存删除', async () => {
+  seedSessions({ keep: { app: 'claude', providerId: 'pa', lastUsed: Date.now() } });
+  const before = JSON.stringify(onDisk()), unblock = blockSessionsWrite();
+  let response;
+  try { response = await api('DELETE', '/api/sessions/keep'); } finally { unblock(); }
+  assert.equal(response.status, 500); assert.equal(_state.sessions.has('keep'), true);
+  assert.equal(JSON.stringify(onDisk()), before);
 });
 
-test('钉定会话:落盘失败时钉定必须整体退回(不能"接口报错、内存里已经钉好了")', async () => {
-  setRoutes([{ id: 'rsf3', match: 'opus', pool: ['pa', 'pb'], strategy: 'round_robin', enabled: true }]);
-  seedSessions({ 'pin-me': { app: 'claude', providerId: 'pa', model: '', pinned: false, lastUsed: Date.now() } });
-  const before = _state.sessions.get('pin-me');
-  const diskBefore = JSON.stringify(sessionsOnDisk());
-
-  const unblock = blockSessionsWrite();
-  let r;
-  try { r = await rawRequest(uiPort, 'POST', '/api/sessions/pin-me/pin', { body: { provider: 'pb' } }); }
-  finally { unblock(); }
-
-  assert.strictEqual(r.status, 500, `实得 ${r.status} ${r.text}`);
-  // 钉定是**原地改对象**最容易漏回滚的一处:绑定表按引用整份退回时,
-  // 那个对象本身要是被原地改过,退回去的还是改过的它。所以实现里改的是副本。
-  const after = _state.sessions.get('pin-me');
-  assert.strictEqual(after.providerId, before.providerId, `钉定要退回,实得 providerId=${after.providerId}`);
-  assert.strictEqual(after.pinned, false, 'pinned 也要退回去');
-  assert.strictEqual(JSON.stringify(sessionsOnDisk()), diskBefore);
+test('钉定写盘失败整体回滚,不留下假成功配置', async () => {
+  seedSessions({ keep: { app: 'claude', providerId: 'pa', pinned: false, lastUsed: Date.now() } });
+  const before = JSON.stringify(onDisk()), unblock = blockSessionsWrite();
+  let response;
+  try { response = await api('POST', '/api/sessions/keep/pin', { provider: 'pb' }); } finally { unblock(); }
+  assert.equal(response.status, 500); assert.equal(_state.sessions.get('keep').providerId, 'pa');
+  assert.equal(_state.sessions.get('keep').pinned, false); assert.equal(JSON.stringify(onDisk()), before);
 });
 
-test('落盘成功时:接口回 200 的**同一刻**盘上就是新的(不靠 1s 去抖兜)', async () => {
-  // 反证上面三条不是"因为实现干脆不写盘了"才过的:落盘正常时必须真的写进去,
-  // 而且要在响应返回前写完 —— 否则"接口说已清空"和"重启后会话还在"之间始终有个窗口。
-  setRoutes([{ id: 'rsf4', match: 'opus', pool: ['pa'], strategy: 'round_robin', enabled: true }]);
-  seedSessions({ 'gone': { app: 'claude', providerId: 'pa', model: '', lastUsed: Date.now() } });
-
-  const r = await rawRequest(uiPort, 'DELETE', '/api/sessions');
-  assert.strictEqual(r.status, 200, r.text);
-  // 不 await 任何定时器:响应到手时盘上就该已经空了
-  assert.deepStrictEqual(sessionsOnDisk(), {}, '接口回 200 时盘上必须已经是新状态');
-  assert.strictEqual(_state.sessions.size, 0);
+test('删除成功响应发出时磁盘已同步,不依赖后台去抖', async () => {
+  seedSessions({ gone: { app: 'claude', providerId: 'pa', lastUsed: Date.now() } });
+  const response = await api('DELETE', '/api/sessions');
+  assert.equal(response.status, 200, response.text); assert.deepEqual(onDisk(), {}); assert.equal(_state.sessions.size, 0);
 });

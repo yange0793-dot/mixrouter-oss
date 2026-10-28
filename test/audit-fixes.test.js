@@ -147,13 +147,7 @@ test('setup:一个 responses 型 claude 渠道 + 一个直通渠道', async () =
     ],
     codex: [],
   }));
-  fs.writeFileSync(path.join(TMP, 'routes.json'), JSON.stringify({
-    rules: [
-      { id: 'rconv', match: 'claude-conv', provider: 'pconv', model: 'claude-conv', enabled: true },
-      { id: 'rdir', match: 'claude-direct', provider: 'pdir', model: 'claude-direct', enabled: true },
-    ],
-    default: { provider: 'pdir', model: 'claude-direct' },
-  }));
+  fs.writeFileSync(path.join(TMP, 'routes.json'), JSON.stringify({ rules: [], default: {} }));
   mod = require('../mixrouter.js');
   proxySrv = await mod.listen(0, mod.proxyHandler);
   uiSrv = await mod.listen(0, mod.apiHandler);
@@ -282,7 +276,7 @@ test('P2-3 同渠道重试要计入 attempts:日志反映真实上游调用数',
   const savedStore = state.store;
   const savedRoutes = state.routes;
   state.store = { claude: [{ id: 'pdie', name: '持续5xx', base_url: `http://127.0.0.1:${failPort}`, api_key: 'sk-x', enabled: true, wire_api: 'responses', models: ['die-model'] }], codex: [] };
-  state.routes = { rules: [{ id: 'rdie', match: 'die-model', provider: 'pdie', model: 'die-model', enabled: true }], default: { provider: 'pdie', model: 'die-model' } };
+  state.routes = { rules: [], default: {} };
   let hits = 0;
   failSrv.on('request', () => { hits++; });
   try {
@@ -375,47 +369,42 @@ print('ok')
 });
 
 // ---------------------------------------------------------------- P2-4 字符串 input 绕过内容路由
-test('P2-4 字符串 input 与等价数组一样能命中 when.body 内容分流', () => {
+test('P2-4 压缩输入文本提取支持字符串与等价数组', () => {
   const { bodyRouteText } = mod;
   const asString = bodyRouteText({ instructions: 'sys', input: 'please summarize this' });
   const asArray = bodyRouteText({ instructions: 'sys', input: [{ role: 'user', content: 'please summarize this' }] });
   assert.ok(asString.includes('please summarize this'), '字符串 input 必须参与匹配');
   assert.strictEqual(asString, asArray, '两种等价形状的匹配文本必须一致');
 
-  const rule = { when: { body: 'summarize' } };
-  const ctxOf = b => ({ bodyText: () => bodyRouteText(b) });
-  assert.strictEqual(mod.matchWhen(rule, ctxOf({ input: 'please summarize this' })), true);
-  assert.strictEqual(mod.matchWhen(rule, ctxOf({ input: [{ role: 'user', content: 'please summarize this' }] })), true);
   // 空串 input 不该凭空产出匹配文本
   assert.strictEqual(bodyRouteText({ input: '' }), '');
 });
 
 // ---------------------------------------------------------------- 二轮自查新发现
 // 这三条是修完审计报告后自己继续排查时发现的,不在原报告里
-test('删除渠道必须解开引用它的路由,不留僵尸引用', async () => {
+test('删除渠道清理槽位与备用引用,无关槽位保留', async () => {
   const created = JSON.parse((await rawRequest(uiPort, 'POST', '/api/providers', {
     body: { app: 'claude', name: '待删', base_url: 'https://del.example.com', api_key: 'sk-del', models: ['del-model'] },
   })).text);
-  const id = created.id;
-  const savedRules = JSON.parse(fs.readFileSync(path.join(TMP, 'routes.json'), 'utf8'));
-  // 一批规则:单选引用、池引用、default 引用、以及一个无关规则
-  await rawRequest(uiPort, 'PUT', '/api/routes', { body: { rules: [
-    { id: 'rd1', match: 'del-a', provider: id, model: '', enabled: true },
-    { id: 'rd2', match: 'del-b', pool: [{ provider: id }, { provider: 'pdir' }], strategy: 'round_robin', enabled: true },
-    { id: 'rd3', match: 'keep', provider: 'pdir', model: '', enabled: true },
-  ], default: { provider: id, model: '' } } });
-  await rawRequest(uiPort, 'DELETE', `/api/providers/${id}`);
-
-  const st = JSON.parse((await rawRequest(uiPort, 'GET', '/api/state')).text);
-  assert.strictEqual(st.routes.rules.find(r => r.id === 'rd1').provider, '', '单选引用要清空');
-  assert.deepStrictEqual(st.routes.rules.find(r => r.id === 'rd2').pool.map(m => m.provider), ['pdir'], '池里的引用要摘掉,别的成员留着');
-  assert.strictEqual(st.routes.default.provider, '', 'default 的引用也要清');
-  assert.strictEqual(st.routes.rules.find(r => r.id === 'rd3').provider, 'pdir', '无关规则不许动');
-  // 落盘也要一致:控制台刷新后不能又看到僵尸引用
-  const onDisk = JSON.parse(fs.readFileSync(path.join(TMP, 'routes.json'), 'utf8'));
-  assert.ok(!JSON.stringify(onDisk).includes(id), '磁盘上不该再留已删渠道的 id');
-
-  await rawRequest(uiPort, 'PUT', '/api/routes', { body: savedRules });
+  const id = created.id, savedSlots = mod._state.slotMap;
+  try {
+    const put = await rawRequest(uiPort, 'PUT', '/api/slots', { body: { claude: {
+      main: { provider: id, model: 'del-model' },
+      subagent: { provider: 'pconv', model: 'claude-conv', pool: [{ provider: id }, { provider: 'pdir' }] },
+      haiku: { provider: 'pdir', model: 'claude-direct' },
+    } } });
+    assert.strictEqual(put.status, 200, put.text);
+    const removed = await rawRequest(uiPort, 'DELETE', `/api/providers/${id}`);
+    assert.strictEqual(removed.status, 200, removed.text);
+    assert.ok(!mod._state.slotMap.claude.main);
+    assert.deepStrictEqual(mod._state.slotMap.claude.subagent.pool.map(m => m.provider), ['pdir']);
+    assert.strictEqual(mod._state.slotMap.claude.haiku.provider, 'pdir');
+    const onDisk = JSON.parse(fs.readFileSync(path.join(TMP, 'slots.json'), 'utf8'));
+    assert.ok(!JSON.stringify(onDisk).includes(id), '磁盘上也不留已删渠道的槽位引用');
+  } finally {
+    mod._state.slotMap = savedSlots;
+    fs.writeFileSync(path.join(TMP, 'slots.json'), JSON.stringify(savedSlots));
+  }
 });
 
 test('控制台写接口拒绝跨站来源(CSRF/DNS-rebinding)', async () => {
@@ -440,116 +429,59 @@ test('控制台写接口拒绝跨站来源(CSRF/DNS-rebinding)', async () => {
   assert.strictEqual((await rawRequest(uiPort, 'GET', '/api/state')).status, 200);
 });
 
-// ---------------------------------------------------------------- 三轮自查
-// 起因:线上 routes.json 里真有一条 match="kimi-k3" 的规则指向早已删除的渠道,
-// 请求打上去 503 却说"没有匹配的路由,或路由未绑定渠道"——控制台里那条规则显示着"已绑定"。
-// 而且这条悬空规则会把**后面所有规则和兜底一起挡住**,不光是它自己失效。
-test('PUT /api/routes 拒绝指向不存在渠道的规则(写上就拦,而不是等请求时 503)', async () => {
-  const saved = JSON.parse(fs.readFileSync(path.join(TMP, 'routes.json'), 'utf8'));
-  const put = b => rawRequest(uiPort, 'PUT', '/api/routes', { body: b });
-  // 单选目标
-  const single = await put({ rules: [{ id: 'rg1', match: 'm', provider: '早就删了的渠道', model: '' }], default: {} });
-  assert.strictEqual(single.status, 400, '单选目标指向幽灵渠道必须被拒');
-  assert.match(JSON.parse(single.text).error, /rg1/);
-  assert.match(JSON.parse(single.text).error, /早就删了的渠道/);
-  // 池成员
-  const pooled = await put({ rules: [{ id: 'rg2', match: 'm', pool: [{ provider: 'pdir' }, { provider: '幽灵' }] }], default: {} });
-  assert.strictEqual(pooled.status, 400, '池里的幽灵成员同样要拦');
-  assert.match(JSON.parse(pooled.text).error, /池成员 2/);
-  // 兜底路由
-  const def = await put({ rules: [], default: { provider: '幽灵' } });
-  assert.strictEqual(def.status, 400, '兜底路由指向幽灵渠道也要拦');
-  assert.match(JSON.parse(def.text).error, /兜底路由/);
-  // 被拒的写入不得落盘、不得生效
-  const onDisk = JSON.parse(fs.readFileSync(path.join(TMP, 'routes.json'), 'utf8'));
-  assert.ok(!JSON.stringify(onDisk).includes('幽灵'), '被拒的路由不得落盘');
-  // 合法写入照常放行(空 provider = 未绑定,必须仍然允许)
-  const ok = await put({ rules: [{ id: 'rok', match: 'm', provider: 'pdir' }, { id: 'rnone', match: 'x', provider: '' }], default: { provider: '' } });
-  assert.strictEqual(ok.status, 200, '合法路由与"未绑定"必须放行');
-  await put(saved);
+test('通用路由写接口已移除,任何旧规则载荷都不能改盘', async () => {
+  const saved = fs.readFileSync(path.join(TMP, 'routes.json'), 'utf8');
+  for (const body of [
+    { rules: [{ id: 'old', match: 'm', provider: 'pdir' }], default: {} },
+    { rules: [{ id: 'ghost', pool: [{ provider: '幽灵' }] }], default: { provider: 'pconv' } },
+    { rules: [{ when: { body: {} } }] },
+  ]) {
+    const result = await rawRequest(uiPort, 'PUT', '/api/routes', { body });
+    assert.strictEqual(result.status, 410, result.text);
+    assert.strictEqual(fs.readFileSync(path.join(TMP, 'routes.json'), 'utf8'), saved);
+  }
 });
 
-test('路由命中但目标渠道已删除时报错要点名规则与渠道,不糊成"没有匹配的路由"', async () => {
-  const saved = JSON.parse(fs.readFileSync(path.join(TMP, 'routes.json'), 'utf8'));
-  // 直接塞进内存:模拟"routes.json 是手改的 / 从旧备份恢复的"这种绕过接口校验的情形
-  mod._state.routes = {
-    rules: [{ id: 'rkimighost', match: 'kimi-k3', provider: '已删除的渠道', model: 'kimi-k3', priority: 10, enabled: true }],
-    default: { provider: 'pdir', model: '' },
-  };
-  const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {
-    body: { model: 'kimi-k3', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] },
-  });
-  assert.strictEqual(r.status, 503);
-  const j = JSON.parse(r.text);
-  assert.strictEqual(j.error.type, 'no_route_error');
-  assert.match(j.error.message, /rkimighost/, '要点名是哪条规则');
-  assert.match(j.error.message, /已删除的渠道/, '要点名是哪个渠道没了');
-  assert.ok(!/没有匹配的路由/.test(j.error.message), '不能再报成"没有匹配的路由"');
-
-  // 兜底路由本身 rule=null,这条分支不能去读 rule.id(曾经直接 TypeError 崩在请求里)
-  mod._state.routes = { rules: [], default: { provider: '已删除的渠道', model: '' } };
-  const d = await rawRequest(proxyPort, 'POST', '/v1/messages', {
-    body: { model: 'whatever', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] },
-  });
-  assert.strictEqual(d.status, 503, '兜底指向幽灵渠道要 503,不能崩');
-  assert.match(JSON.parse(d.text).error.message, /兜底路由/);
-  assert.match(JSON.parse(d.text).error.message, /已删除的渠道/);
-
-  // 池里混了幽灵成员、但有可用成员时:照常放行(池的意义就是绕开不可用的)
-  mod._state.routes = {
-    rules: [{ id: 'rmix', match: 'kimi-k3', pool: [{ provider: '已删除的渠道' }, { provider: 'pdir' }], model: 'claude-direct', enabled: true }],
-    default: { provider: 'pdir', model: '' },
-  };
-  const ok = await rawRequest(proxyPort, 'POST', '/v1/messages', {
-    body: { model: 'kimi-k3', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] },
-  });
-  assert.strictEqual(ok.status, 200, '池里有可用成员时必须照常转发');
-
-  mod._state.routes = { rules: saved.rules, default: saved.default };
+test('旧规则和默认目标不再执行,已有模型登记不被幽灵规则挡住', async () => {
+  const saved = mod._state.routes;
+  try {
+    mod._state.routes = {
+      rules: [{ id: 'ghost', match: 'claude-direct', provider: '已删除的渠道', enabled: true }],
+      default: { provider: 'pdir', model: 'claude-direct' },
+    };
+    const before = requests.length;
+    const unknown = await rawRequest(proxyPort, 'POST', '/v1/messages', {
+      body: { model: 'unknown-model', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] },
+    });
+    assert.strictEqual(unknown.status, 503);
+    assert.strictEqual(requests.length, before, '旧默认目标不应发上游请求');
+    const known = await rawRequest(proxyPort, 'POST', '/v1/messages', {
+      body: { model: 'claude-direct', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] },
+    });
+    assert.strictEqual(known.status, 200, known.text);
+    assert.strictEqual(requests.at(-1).body.model, 'claude-direct');
+  } finally { mod._state.routes = saved; }
 });
 
-test('启动时把僵尸引用喊出来(reportGhostRoutes)', async () => {
-  const savedRules = mod._state.routes.rules, savedDef = mod._state.routes.default;
-  mod._state.routes = { rules: [{ id: 'rzombie', match: 'kimi-k3', provider: '已删除的渠道', model: '' }], default: { provider: '' } };
-  const warns = [];
-  const orig = console.warn; console.warn = (...a) => warns.push(a.join(' '));
-  let bad;
-  try { bad = mod.reportGhostRoutes(); } finally { console.warn = orig; }
-  mod._state.routes = { rules: savedRules, default: savedDef };
-  assert.strictEqual(bad.length, 1, '要报出这一处');
-  assert.match(bad[0], /rzombie/);
-  assert.match(bad[0], /已删除的渠道/);
-  assert.strictEqual(warns.length, 1, '要打一条警告');
-  assert.match(warns[0], /僵尸引用/);
-  // 没有僵尸引用时不能瞎喊
-  assert.deepStrictEqual(mod.reportGhostRoutes(), []);
-});
-
-test('声明了协议组却绑另一组渠道的规则被拒(否则规则会静默失效)', async () => {
-  const saved = JSON.parse(fs.readFileSync(path.join(TMP, 'routes.json'), 'utf8'));
-  // pconv 是 claude 组渠道;声明 codex 组却绑它 → poolMembers 在 codex 组里找不到,规则静默变"未绑定"
-  const bad = await rawRequest(uiPort, 'PUT', '/api/routes', {
-    body: { rules: [{ id: 'rbad', match: 'm', app: 'codex', provider: 'pconv', model: '' }], default: {} },
-  });
-  assert.strictEqual(bad.status, 400, '跨组绑定必须被拒');
-  assert.match(JSON.parse(bad.text).error, /rbad/);
-  // 没声明 app 的规则允许只服务另一组(另一组会跳过它),必须放行
-  const ok = await rawRequest(uiPort, 'PUT', '/api/routes', {
-    body: { rules: [{ id: 'rother', match: 'm', provider: 'pconv', model: '' }], default: {} },
-  });
-  assert.strictEqual(ok.status, 200, '未声明组的规则不能误拦');
-  await rawRequest(uiPort, 'PUT', '/api/routes', { body: saved });
+test('槽位跨组或引用已删除渠道时写入就拒绝', async () => {
+  const saved = JSON.stringify(mod._state.slotMap);
+  for (const body of [
+    { claude: { main: { provider: '幽灵', model: 'm' } } },
+    { codex: { main: { provider: 'pconv', model: 'm' } } },
+    { claude: { main: { provider: 'pconv', pool: [{ provider: '幽灵' }] } } },
+  ]) {
+    const result = await rawRequest(uiPort, 'PUT', '/api/slots', { body });
+    assert.strictEqual(result.status, 400, result.text);
+    assert.strictEqual(JSON.stringify(mod._state.slotMap), saved);
+  }
 });
 
 test('上游 5xx 的原因必须落进请求日志,不能只留一个光秃秃的状态码', async () => {
   // 线上 9935 条记录里 649 条 5xx,其中 613 条 err 是空串:客户端拿到了原因、
   // 日志里却没有,事后排查"某渠道为什么 500"只能从零开始。这条钉住它。
-  const saved = JSON.parse(fs.readFileSync(path.join(TMP, 'routes.json'), 'utf8'));
   mode = 'upstream500';
   try {
-    // 冷却期内的渠道不被优先挑选:把上几条测试留下的冷却清掉,这条量的才是 5xx 原因落日志
-    mod._state.cooldowns = {};
-    await rawRequest(uiPort, 'PUT', '/api/routes', { body: { rules: [{ id: 'r500', match: 'claude-conv', provider: 'pconv', model: 'claude-conv' }], default: {} } });
+    mod._state.sessions.clear();
     const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {
       body: { model: 'claude-conv', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] },
     });
@@ -561,8 +493,6 @@ test('上游 5xx 的原因必须落进请求日志,不能只留一个光秃秃�
     assert.match(log.err, /trace_id=zzz/, '上游的追踪号也要留着');
   } finally {
     mode = 'json';
-    mod._state.cooldowns = {};
-    await rawRequest(uiPort, 'PUT', '/api/routes', { body: saved });
   }
 });
 
@@ -791,11 +721,10 @@ test('R2-10 存量脏 Key(写入闸门之前存进去的):换后备渠道,并如
   const p = mod._state.store.claude.find(x => x.id === 'pconv');
   const keep = p.api_key;
   // 让转换渠道的后备是直通渠道,才谈得上故障转移
-  const saved = JSON.parse(fs.readFileSync(path.join(TMP, 'routes.json'), 'utf8'));
+  const saved = mod._state.slotMap;
   try {
-    await rawRequest(uiPort, 'PUT', '/api/routes', { body: { rules: [
-      { id: 'rconv', match: 'claude-conv', pool: [{ provider: 'pconv', model: 'claude-conv' }, { provider: 'pdir', model: 'claude-direct' }], strategy: 'priority', model: 'claude-conv' },
-    ], default: { provider: 'pdir', model: 'claude-direct' } } });
+    mod._state.slotMap = { claude: { main: { provider: 'pconv', model: 'claude-conv',
+      pool: [{ provider: 'pdir', model: 'claude-direct' }], strategy: 'priority' } }, codex: {} };
     p.api_key = 'sk-c\nX-Injected: yes';
     // 清冷却与会话粘性:前面几条测试把 pdir 打进过冷却(它就成了首选,失败转移也就无从发生),
     // 会话粘性也会把 pconv 钉住。两个都得清,这条量的才是"脏 Key 渠道失败后换后备"。
@@ -803,14 +732,14 @@ test('R2-10 存量脏 Key(写入闸门之前存进去的):换后备渠道,并如
     mod._state.sessions.clear();
     const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {
       headers: { 'x-claude-code-session-id': 'r2-10-fresh' },
-      body: { model: 'claude-conv', max_tokens: 32, messages: [{ role: 'user', content: 'hi' }] },
+      body: { model: 'mixr-main', max_tokens: 32, messages: [{ role: 'user', content: 'hi' }] },
     });
     // 这条渠道自己发不出去,但有后备时应当换过去而不是把请求吞掉
     assert.strictEqual(r.status, 200, `应当换到后备渠道,实际 ${r.status}`);
     assert.strictEqual(lastRequestLog().failover, true, '要如实记为故障转移');
   } finally {
     p.api_key = keep;
-    fs.writeFileSync(path.join(TMP, 'routes.json'), JSON.stringify(saved));
+    mod._state.slotMap = saved;
   }
 });
 
@@ -858,7 +787,6 @@ test('R2-13 控制台写接口的类型闸门:畸形输入 400,不许存成 [obj
     ['PUT', '/api/providers/pconv', { note: {} }, 'note 是对象'],
     ['PUT', '/api/providers/pconv', { active_key: {} }, 'active_key 是对象(以前会静默切回第一把)'],
     ['POST', '/api/providers', { name: {}, base_url: 'https://x.example.com' }, 'name 是对象'],
-    ['PUT', '/api/routes', { rules: [{ id: 'rw', match: 'm', when: { body: {} }, provider: 'pconv', model: 'claude-conv' }] }, 'when.body 是对象'],
   ];
   for (const [method, p, body, label] of cases) {
     const r = await rawRequest(uiPort, method, p, { headers: { 'Content-Type': 'application/json' }, body });

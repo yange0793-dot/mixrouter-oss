@@ -21,7 +21,7 @@ npm start                      # = node mixrouter.js,前台起服务
 ```
 
 `npm test` 与 `npm run smoke` 都自带隔离:临时 `HOME`、临时 `MIXR_DATA_DIR`、内核分配的端口,
-不读也不写你真实的 `~/.claude` / `~/.codex` / `~/.zcode`,不连 8787 / 8788。
+不读也不写你真实的 `~/.claude` / `~/.codex`,不连 8787 / 8788。
 **不要在仓库根造 `providers.json` 来测试** —— 测试不需要真实 Key,这个文件一旦存在就有被提交的风险。
 
 ## 1. 先读这两处
@@ -60,7 +60,7 @@ npm test                                                                   # 全
 
 以下文件含明文凭据或本机运行状态,已在 `.gitignore` 里,发布物也会按路径形状拦掉:
 
-`providers.json`、`routes.json`、`slots.json`、`harness.json`、`sessions.json`、`logs/`、`backups/`、`.run/`、
+`providers.json`、`routes.json`、`slots.json`、`sessions.json`、`logs/`、`backups/`、`.run/`、
 `*.bak*`、`*.json.*.tmp`。
 
 - **不要**为了"这样方便复现"把它们 `git add -f`;发布清单会在打包时逐文件挡掉,CI 还会解包复核。

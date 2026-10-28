@@ -236,12 +236,12 @@ test('代理转发:haiku 槽别名按槽位落点送达上游', async () => {
   assert.ok(r.data.data.some(x => x.id === 'mixr-worker' && x.owned_by === 'slot:worker'));
 });
 
-test('内容分流:when.body 规则把压缩请求从槽位别名上分走,普通请求不受影响', async () => {
+test('压缩设置优先于槽位,普通请求不受影响', async () => {
+  const { FIXED_PREFIX } = require('../lib/routing/compact-signature');
+  const summary = FIXED_PREFIX + 'Your task is to create a detailed summary of the conversation so far';
   mod._state.slotMap = { claude: { main: { provider: 'pa', model: 'gpt-6-astra' } }, codex: {} };
-  mod._state.routes = { rules: [
-    { id: 'rcompact', match: '', strategy: 'priority', when: { body: 'detailed summary of the conversation' }, enabled: true,
-      pool: [{ provider: 'pa', model: 'gpt-5.6-sol' }] },
-  ], default: { provider: '', model: '' } };
+  const saved = await api('/api/compact', { provider: 'pa', model: 'gpt-5.6-sol' });
+  assert.equal(saved.status, 200, saved.text);
   hits.length = 0;
   // 普通请求:槽位别名照旧落到槽位落点
   let r = await request(`http://127.0.0.1:${proxyPort()}/v1/messages`, 'POST',
@@ -250,7 +250,7 @@ test('内容分流:when.body 规则把压缩请求从槽位别名上分走,普�
   assert.equal(hits[0].body.model, 'gpt-6-astra');
   // 压缩请求(请求体带摘要提示词):绕过槽位别名走内容规则
   r = await request(`http://127.0.0.1:${proxyPort()}/v1/messages`, 'POST',
-    { model: 'mixr-main', max_tokens: 1, messages: [{ role: 'user', content: 'Your task is to create a detailed summary of the conversation so far' }] });
+    { model: 'mixr-main', max_tokens: 1, messages: [{ role: 'user', content: summary }] });
   assert.equal(r.status, 200);
   assert.equal(hits[1].body.model, 'gpt-5.6-sol');
   assert.equal(r.headers['x-mixrouter-model'], 'gpt-5.6-sol');
@@ -258,7 +258,7 @@ test('内容分流:when.body 规则把压缩请求从槽位别名上分走,普�
   r = await request(`http://127.0.0.1:${proxyPort()}/v1/messages`, 'POST',
     { model: 'mixr-main', max_tokens: 1, messages: [
       { role: 'user', content: '历史' },
-      { role: 'user', content: [{ tool_use_id: 't', type: 'tool_result', content: 'x' }, { type: 'text', text: 'Your task is to create a detailed summary of the conversation so far' }] },
+      { role: 'user', content: [{ tool_use_id: 't', type: 'tool_result', content: 'x' }, { type: 'text', text: summary }] },
       { role: 'system', content: 'The following deferred tools are now available via ToolSearch' },
     ] });
   assert.equal(r.status, 200);
@@ -407,27 +407,24 @@ test('Codex 槽模型保存失败回滚:有效模型、显式覆盖与备池均�
   assert.equal(mod.slotsPublic().codex[0].configured_model, 'original-target');
 });
 
-test('PUT /api/routes 落盘失败:接口回 500,且内存与盘都不许变(此前内存会先动)', async () => {
-  const ch = await api('/api/providers', { app: 'claude', name: 'ROUTE-RB', base_url: 'http://127.0.0.1:8999', api_key: 'sk-x', models: ['m'] });
+test('压缩设置落盘失败:接口回 500,内存与盘上选择均不改变', async () => {
+  const ch = await api('/api/providers', { app: 'claude', name: 'COMPACT-RB', base_url: 'http://127.0.0.1:8999', api_key: 'sk-x', models: ['m'] });
   const id = ch.data.id;
-  const put = await api('/api/routes', { rules: [{ id: 'rb1', provider: id, match: 'ORIGINAL' }] }, 'PUT');
-  assert.equal(put.status, 200, `夹具:路由写入失败 ${put.text}`);
-  const live = () => (mod._state.routes.rules || []).find(x => x.id === 'rb1').match;
-  const onDisk = () => JSON.parse(fs.readFileSync(path.join(TMP, 'routes.json'), 'utf8')).rules.find(x => x.id === 'rb1').match;
-  assert.equal(live(), 'ORIGINAL');
-
+  const put = await api('/api/compact', { provider: id, model: 'ORIGINAL' });
+  assert.equal(put.status, 200, put.text);
+  const file = path.join(TMP, 'routes.json');
+  const disk = fs.readFileSync(file, 'utf8'), live = JSON.stringify(mod._state.routes);
   const realRename = fs.renameSync;
   fs.renameSync = (from, to) => {
     if (String(to).endsWith('routes.json')) throw Object.assign(new Error('simulated'), { code: 'EIO' });
     return realRename(from, to);
   };
   let r;
-  try { r = await api('/api/routes', { rules: [{ id: 'rb1', provider: id, match: 'CHANGED' }] }, 'PUT'); }
+  try { r = await api('/api/compact', { provider: id, model: 'CHANGED' }); }
   finally { fs.renameSync = realRename; }
-
-  assert.equal(r.status, 500, `夹具:这次写入必须失败(实得 ${r.status} ${r.text})`);
-  assert.equal(live(), 'ORIGINAL', '内存必须回滚 —— 转发读的是内存,不然"保存失败"的新规则已经在路由了');
-  assert.equal(onDisk(), 'ORIGINAL', '盘上当然也不能变');
+  assert.equal(r.status, 500, r.text);
+  assert.equal(JSON.stringify(mod._state.routes), live, '保存失败不能先让新选择生效');
+  assert.equal(fs.readFileSync(file, 'utf8'), disk);
 });
 
 // 把"在走路由"这件事退回直连态(内存与盘上 providers.json 一起改)。

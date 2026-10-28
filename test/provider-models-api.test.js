@@ -23,7 +23,6 @@ process.env.HOME = TMP;
 process.env.MIXR_DATA_DIR = TMP;
 process.env.MIXR_CLAUDE_SETTINGS = path.join(TMP, 'claude-settings.json');
 process.env.MIXR_CODEX_CONFIG = path.join(TMP, 'codex-config.toml');
-process.env.MIXR_ZCODE_CONFIG = path.join(TMP, 'zcode-config.json');
 process.env.MIXR_RESPONSE_ARCHIVE = 'off';
 process.env.MIXROUTER_PORT = '0';
 process.env.MIXUI_PORT = '0';

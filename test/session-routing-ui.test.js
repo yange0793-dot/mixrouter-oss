@@ -40,15 +40,12 @@ function fixture() {
         { id: 'o1', name: 'Beta', base_url: 'https://openai.example/v1', model: 'gpt-test', wire_api: 'responses', enabled: true, keys: [] },
       ],
     },
-    current: { claude: 'a1', codex: 'o1', zcode: null },
+    current: { claude: 'a1', codex: 'o1' },
     live: {
       claude: { base_url: 'https://anthropic.example', model: 'claude-special', match: true, router: true },
       codex: { base_url: '', match: true, router: false },
-      zcode: { base_url: '', model: '', match: true, router: false },
     },
-    router: { id: '@router', url: 'http://127.0.0.1:8787', claude_base: 'http://127.0.0.1:8787', codex_base: 'http://127.0.0.1:8787/v1', zcode_base: 'http://127.0.0.1:8787/custom' },
-    routes: { rules: [], default: { provider: 'a1', model: '', pool: [] } },
-    routes_revision: 'rev-one',
+    router: { id: '@router', url: 'http://127.0.0.1:8787', claude_base: 'http://127.0.0.1:8787', codex_base: 'http://127.0.0.1:8787/v1' },
     slots: {
       claude: ['main', 'opus', 'sonnet', 'haiku', 'subagent'].map(name => ({
         name, alias: 'mixr-' + name,
@@ -136,11 +133,10 @@ async function harness(data = fixture()) {
     querySelector: selector => selector === '.apptabs' ? tabs : nav.find(el => selector.includes(`data-view="${el.dataset.view}"`)) || null,
     addEventListener: (event, fn) => { (listeners.get(event) || listeners.set(event, []).get(event)).push(fn); },
   };
-  for (const id of ['rules-box', 'def-box', 'save-routes', 'add-rule']) get(id).parentElement = get('view-routes');
   for (const [parent, ids] of [['compact-panel', ['compact-provider', 'compact-model', 'compact-model-custom', 'compact-key']],
     ['compact-window-panel', ['window-scope', 'window-project', 'window-value']]]) {
     for (const id of ids) get(id).parentElement = get(parent);
-    get(parent).parentElement = get('view-routes');
+    get(parent).parentElement = get('view-compact');
   }
   for (const [maskId, controls] of [['mask', ['m-name', 'm-base', 'm-key', 'save-provider']], ['confirm-mask', ['confirm-cancel', 'confirm-ok']],
     ['routing-mask', ['routing-close', 'routing-save', 'routing-clear', 'routing-reload']]]) {

@@ -95,7 +95,8 @@ before(async () => {
   mod._state.store = { claude: [], codex: [{ id: 'native', name: 'native', enabled: true,
     api_key: 'fixture-secret', wire_api: 'responses', models: ['fixture-model'],
     base_url: `http://127.0.0.1:${upstream.address().port}` }] };
-  mod._state.routes = { rules: [], default: mod.normalizeRule({ pool: ['native'], strategy: 'priority' }) };
+  mod._state.routes = { rules: [] };
+  // 唯一登记:codex 组只有这一条渠道登记了 fixture-model,请求模型精确命中它,无需槽位。
   proxy = await mod.listen(0, mod.proxyHandler);
 });
 after(async () => {

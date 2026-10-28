@@ -29,6 +29,11 @@ const api = (method = 'GET', body, route = '/api/compact') => request(`http://12
 const rule = (id, body) => ({ id, match: '', app: 'claude', enabled: true, priority: 90,
   when: { body }, provider: 'old', model: 'misleading-rule-model', strategy: 'priority',
   pool: [{ provider: 'old', model: 'real-pool-model' }, { provider: 'new', model: 'backup-model' }] });
+// 瘦身之后 routes.json 里仍可能躺着旧版的通用规则/兜底:它们是**历史数据**,必须原样保留,
+// 但不参与路由。下面每个用例都带一条,证明压缩保存不会顺手改写或删除它。
+const STALE = { id: 'other', match: 'normal', enabled: true, provider: 'old', model: 'ordinary',
+  when: {}, untouched: 'yes' };
+const STALE_DEFAULT = { provider: 'old', model: 'default', untouched: 'default' };
 
 before(async () => {
   upstream = http.createServer((req, res) => {
@@ -47,9 +52,8 @@ beforeEach(() => {
     { id: 'new', name: 'New', base_url: base, api_key: 'fake', enabled: true, models: ['chosen-model'] },
     { id: 'off', name: 'Off', base_url: base, api_key: 'fake', enabled: false, models: [] },
   ], codex: [{ id: 'codex', base_url: base, enabled: true, model: 'codex-model' }] };
-  mod._state.routes = { rules: [rule('renamed-a', GLOBAL), rule('renamed-b', LOCAL),
-    { id: 'other', match: 'normal', enabled: true, provider: 'old', model: 'ordinary', when: {}, untouched: 'yes' }],
-  default: { provider: 'old', model: 'default', untouched: 'default' } };
+  mod._state.routes = { rules: [rule('renamed-a', GLOBAL), rule('renamed-b', LOCAL), { ...STALE }],
+    default: { ...STALE_DEFAULT } };
   mod._state.slotMap = { claude: { main: { provider: 'old', model: 'ordinary' } }, codex: {} };
   hits.length = 0;
 });
@@ -80,10 +84,26 @@ test('renamed compact rules both change, clear pool, preserve unrelated rules an
     assert.equal(response.status, 200); assert.equal(hits.at(-1).model, 'chosen-model');
   }
   // 把同一句话**引用**出来、没有固定前导的普通请求不得被判给压缩规则 —— 这正是误分流的形态。
+  // 回落的是槽位(不再有通用规则可落):模型仍是槽位的落点模型。
   assert.equal((await send('Your task is to create a detailed summary of the conversation so far')).status, 200);
   assert.equal(hits.at(-1).model, 'ordinary');
   assert.equal((await send([{ type: 'tool_result', content: FIXED_PREFIX + summary }])).status, 200);
   assert.equal(hits.at(-1).model, 'ordinary');
+});
+
+test('旧版通用规则与兜底留在盘上但不执行:未登记模型明确 503', async () => {
+  // routes.json 里的历史规则不能被启动流程删掉(那是用户数据),但它们不再参与路由。
+  assert.deepEqual(mod._state.routes.rules.at(-1), STALE);
+  assert.deepEqual(mod._state.routes.default, STALE_DEFAULT);
+  const send = model => request(`http://127.0.0.1:${proxy.address().port}/v1/messages`, 'POST',
+    { model, max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] });
+  const unrouted = await send('normal');
+  assert.equal(unrouted.status, 503);
+  assert.equal(unrouted.data.error.type, 'no_route_error');
+  assert.equal(hits.length, 0, '兜底不再执行,不得打到任何上游');
+  // 已登记模型仍然精确命中
+  assert.equal((await send('chosen-model')).status, 200);
+  assert.equal(hits.at(-1).model, 'chosen-model');
 });
 
 test('missing compact rules are created, not inferred from IDs', async () => {
@@ -104,11 +124,15 @@ test('invalid selections are rejected before disk or memory change', async () =>
   }
 });
 
-test('stale compact and generic route drafts cannot overwrite newer state', async () => {
+test('stale compact drafts cannot overwrite newer state;通用规则保存入口已关闭', async () => {
   const old = await api(); const routes = structuredClone(mod._state.routes);
   assert.equal((await api('POST', { provider: 'new', model: 'chosen', expected_revision: old.data.compact.revision })).status, 200);
   assert.equal((await api('POST', { provider: 'old', model: 'stale', expected_revision: old.data.compact.revision })).status, 409);
-  assert.equal((await api('PUT', { ...routes, expected_revision: old.data.compact.revision }, '/api/routes')).status, 409);
+  // 通用规则写入整体删除:PUT /api/routes 固定 410,既不 normalize 也不落盘
+  const fileBefore = fs.existsSync(path.join(TMP, 'routes.json')) ? fs.readFileSync(path.join(TMP, 'routes.json'), 'utf8') : null;
+  const put = await api('PUT', { ...routes, expected_revision: old.data.compact.revision }, '/api/routes');
+  assert.equal(put.status, 410);
+  assert.equal(fs.existsSync(path.join(TMP, 'routes.json')) ? fs.readFileSync(path.join(TMP, 'routes.json'), 'utf8') : null, fileBefore);
   assert.equal(mod._state.routes.rules[0].model, 'chosen');
 });
 

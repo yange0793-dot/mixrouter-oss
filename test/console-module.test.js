@@ -26,7 +26,6 @@ process.env.HOME = TMP;
 process.env.MIXR_DATA_DIR = TMP;
 process.env.MIXR_CLAUDE_SETTINGS = path.join(TMP, 'claude-settings.json');
 process.env.MIXR_CODEX_CONFIG = path.join(TMP, 'codex-config.toml');
-process.env.MIXR_ZCODE_CONFIG = path.join(TMP, 'zcode-config.json');
 process.env.MIXR_RESPONSE_ARCHIVE = 'off';
 process.env.MIXROUTER_PORT = '0';
 process.env.MIXUI_PORT = '0';
@@ -116,19 +115,22 @@ test('every read goes through the live getter, so a whole-object replacement is 
   assert.equal(before.status, 200);
   assert.deepEqual(before.json.providers.claude.map(p => p.id), ['pa', 'pb']);
   assert.equal(slotProvider(before.json, 'claude', 'main'), '', '夹具:起始槽位表是空的');
-  assert.deepEqual(before.json.routes.rules, []);
+  assert.deepEqual(before.json.compact.rules, [], '压缩设置经 /api/state 的 compact 字段读,旧 routes 字段已删除');
 
   // 整份替换四条活状态 —— 与 _state 的 setter 一致(不是就地改字段)。
   // 若工厂在创建时把 store/routes/slotMap/current 快照成了局部变量,这里读到的还是旧的那一份。
-  mod._state.store = { claude: [provider('pz')], codex: [] };
-  mod._state.routes = { rules: [{ id: 'rz', match: 'm', provider: 'pz', enabled: true }], default: { provider: '', model: '' } };
+  mod._state.store = { claude: [provider('pz', { models: ['shared-model', 'claude-opus-5'] })], codex: [] };
+  mod._state.routes = { rules: [{
+    id: 'rz', app: 'claude', provider: 'pz', model: 'claude-opus-5', pool: [], strategy: 'priority',
+    priority: 90, enabled: true, when: { body: 'your task is to create a detailed summary of' },
+  }] };
   mod._state.slotMap = { claude: { main: { provider: 'pz', model: 'shared-model' } }, codex: {} };
   mod._state.current = { ...mod._state.current, claude: 'pz' };
 
   const after = await api('/api/state');
   assert.equal(after.status, 200);
   assert.deepEqual(after.json.providers.claude.map(p => p.id), ['pz'], '渠道库整份替换后必须立刻可见');
-  assert.deepEqual(after.json.routes.rules.map(r => r.id), ['rz'], '路由整份替换后必须立刻可见');
+  assert.deepEqual(after.json.compact.rules.map(r => r.kind), ['global'], '压缩规则整份替换后必须立刻可见');
   assert.equal(slotProvider(after.json, 'claude', 'main'), 'pz', '槽位表整份替换后必须立刻可见');
   assert.equal(after.json.current.claude, 'pz', 'current 整份替换后必须立刻可见');
 });

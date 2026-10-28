@@ -177,7 +177,7 @@ beforeEach(() => {
     ...SLOTS.map(name => makeProvider(`a-${name}`, [`a-${name}-model`])),
     ...SLOTS.map(name => makeProvider(`b-${name}`, [`b-${name}-model`]))];
   mod._state.store = { claude: providers, codex: [] };
-  mod._state.routes = { rules: [], default: { provider: 'g', model: 'ordinary-model' } };
+  mod._state.routes = { rules: [], default: {} };
   mod._state.slotMap = globalSlotMap();
   mod._state.sessions.clear();
   mod._state.cooldowns = {};

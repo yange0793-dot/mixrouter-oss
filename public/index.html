@@ -11,7 +11,6 @@
 <link rel="stylesheet" href="/styles/readiness.css">
 <link rel="stylesheet" href="/styles/attempt-flow.css">
 <link rel="stylesheet" href="/styles/key-fallback.css">
-<link rel="stylesheet" href="/styles/harness.css">
 <link rel="stylesheet" href="/styles/providers.css">
 <link rel="stylesheet" href="/styles/usage.css">
 <link rel="stylesheet" href="/styles/config.css">
@@ -36,19 +35,17 @@
         <svg class="icon" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M11 4.5 6.5 9l4.5 4.5"/><path d="M3 3.5v11"/></svg>
       </button>
     </div>
-    <!-- 客户端就是渠道页的三个入口:点它直接落到 #providers?app=…,只有当前客户端亮起。
+    <!-- 客户端就是渠道页的两个入口:点它直接落到 #providers?app=…,只有当前客户端亮起。
          data-view 仍写 providers,app.js 的 data-view 逻辑不会失配。 -->
     <div class="nav-label">客户端</div>
     <nav class="nav-group nav-clients" aria-label="客户端">
       <a href="#providers" data-view="providers" data-app="claude" aria-label="Claude Code 渠道"><span class="appdot" aria-hidden="true"></span><span>Claude</span></a>
       <a href="#providers?app=codex" data-view="providers" data-app="codex" aria-label="Codex 渠道"><span class="appdot" aria-hidden="true"></span><span>Codex</span></a>
-      <a href="#providers?app=zcode" data-view="providers" data-app="zcode" aria-label="ZCode 渠道"><span class="appdot" aria-hidden="true"></span><span>ZCode</span></a>
     </nav>
     <div class="nav-label">工作区</div>
     <nav class="nav-group" aria-label="工作区">
       <a href="#overview" data-view="overview" class="active" aria-current="page"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.5" y="2.5" width="5.2" height="5.2" rx="1.2"/><rect x="10.3" y="2.5" width="5.2" height="5.2" rx="1.2"/><rect x="2.5" y="10.3" width="5.2" height="5.2" rx="1.2"/><rect x="10.3" y="10.3" width="5.2" height="5.2" rx="1.2"/></svg><span>概览</span></a>
-      <a href="#routes" data-view="routes"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="4" cy="9" r="1.8"/><circle cx="14" cy="4.5" r="1.8"/><circle cx="14" cy="13.5" r="1.8"/><path d="M5.8 9c2 0 3-4.5 6.4-4.5M5.8 9c2 0 3 4.5 6.4 4.5"/></svg><span>路由</span></a>
-      <a href="#harness" data-view="harness"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="6.5" y="2.5" width="5" height="5" rx="1.2"/><path d="M9 7.5v3M4 10.5h10M4 10.5v2M14 10.5v2"/><circle cx="4" cy="14" r="1.5"/><circle cx="14" cy="14" r="1.5"/></svg><span>Harness</span></a>
+      <a href="#compact" data-view="compact"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 5.5h12M3 12.5h12"/><path d="M6.5 5.5 9 3l2.5 2.5M6.5 12.5 9 15l2.5-2.5"/></svg><span>压缩设置</span></a>
     </nav>
     <div class="nav-label">观测</div>
     <nav class="nav-group" aria-label="观测">
@@ -160,7 +157,7 @@
           <div class="hint" id="usage-source-detail">请求数、tokens 与缓存命中全部来自本机请求日志（内存中最近的请求加上 logs/requests.jsonl）。「全部」指本机当前可用的日志范围，不是账号历史总量，也不读取任何上游账单。tokens 取上游回报的真实用量；缓存命中率 = 缓存读 /（新增输入 + 缓存读）。成功率按请求最终状态统计，断流与客户端取消即使 HTTP 状态是 200 也计为失败。</div>
         </div>
         <div class="usage-bar">
-          <!-- 协议组按协议标注,不按客户端推断:ZCode 走哪种协议就归到哪一组。 -->
+          <!-- 协议组按协议标注,不按客户端推断:哪个客户端发出的请求就按它用的协议归组。 -->
           <div class="usage-apps" role="group" aria-label="协议组">
             <button class="seg" type="button" data-usage-app="" onclick="setUsageFilter('app', '')" aria-pressed="true" aria-label="全部协议组">全部</button>
             <button class="seg" type="button" data-usage-app="claude" onclick="setUsageFilter('app', 'claude')" aria-pressed="false" aria-label="Anthropic Messages 协议">Anthropic</button>
@@ -270,13 +267,8 @@
         <div class="apptabs" role="tablist" aria-label="Agent 客户端">
           <button role="tab" aria-selected="true" aria-controls="agent-panel" id="tab-claude" class="active" onclick="setApp('claude')"><span class="appdot" aria-hidden="true"></span>Claude Code<span class="count" id="count-claude">—</span></button>
           <button role="tab" aria-selected="false" aria-controls="agent-panel" tabindex="-1" id="tab-codex" onclick="setApp('codex')"><span class="appdot" aria-hidden="true"></span>Codex<span class="count" id="count-codex">—</span></button>
-          <button role="tab" aria-selected="false" aria-controls="agent-panel" tabindex="-1" id="tab-zcode" onclick="setApp('zcode')"><span class="appdot" aria-hidden="true"></span>ZCode<span class="count" id="count-zcode">—</span></button>
         </div>
         <div id="agent-panel" role="tabpanel" aria-labelledby="tab-claude">
-          <div class="protocol-panel" id="zcode-protocol" hidden>
-            <label for="zcode-wire">ZCode 接入协议<select id="zcode-wire" onchange="setZcodeWire(this.value)"><option value="anthropic">Anthropic · Messages</option><option value="responses">OpenAI · Responses</option><option value="chat">OpenAI · Chat Completions</option></select></label>
-            <p id="zcode-group-hint"></p>
-          </div>
           <div class="liveinfo" id="liveinfo"><div class="empty"><b>正在读取客户端配置</b>连接本地控制台后展示实际配置，不代表上游连通性。</div></div>
           <div class="codex-models" id="codex-models" hidden>
             <p class="hint">选择渠道与落点模型；路由请求即时切换，模型列表自动同步，不改渠道默认模型。</p>
@@ -333,82 +325,40 @@
         </div>
       </section>
 
-      <section id="view-routes" style="display:none" aria-labelledby="routes-title">
-        <div class="head"><div><h1 id="routes-title">路由规则</h1><div class="sub">按模型名子串匹配，逗号分隔、大小写不敏感。优先级大的先匹配，同优先级按从上到下。</div></div><div class="actions"><button onclick="reloadRoutes()">重新载入</button><button class="primary" id="save-routes" onclick="saveRoutes()" disabled>保存路由</button></div></div>
-        <div class="panel">
-          <div class="cfg-panel-head"><h2>匹配与分流</h2><span class="cfg-panel-hint">单渠道直达，或渠道池按会话分流；同一对话保持渠道粘性。</span></div>
-          <div id="rules-box"><div class="empty"><b>等待路由配置</b>连接后即可编辑，自动刷新不会覆盖编辑草稿。</div></div>
-          <div class="savebar"><button id="add-rule" onclick="addRule()" disabled>＋ 添加规则</button><span class="msg" id="save-msg" role="status">自动刷新不会覆盖编辑草稿</span></div>
-          <details class="cfg-more"><summary>匹配细节</summary>
-            <p class="hint">目标模型留空 = 透传请求模型；<code>[1M]</code> 后缀会剥离并附加 context-1m beta 头。一条规则的目标渠道必须在同一协议组，另一组请求会跳过它继续匹配；仅有 Claude / Anthropic 与 Codex / OpenAI 两个协议组，ZCode 流量按所选协议归组，不单独识别 ZCode 会话。</p>
+      <!-- 压缩设置是独立视图:Claude 压缩模型、压缩 Key 与三层窗口都只在服务端路由/客户端磁盘上生效,
+           与渠道、槽位分开管。控件默认全展开,不再藏在折叠组里。
+           compact-* / window-* 的 DOM id 与保存动作保持不变。 -->
+      <section id="view-compact" style="display:none" aria-labelledby="compact-title">
+        <div class="head"><div><h1 id="compact-title">压缩设置</h1><div class="sub">Claude 的压缩模型、压缩 Key 与三层压缩窗口。改动只落在压缩规则或所选配置层，不动主模型、槽位与渠道当前 Key。</div></div>
+          <div class="actions"><button id="reload-compact" onclick="reloadCompact()">重新载入压缩选择</button><button class="primary" id="save-compact" onclick="saveCompact()" disabled>保存压缩模型</button></div></div>
+        <div class="panel" id="compact-panel">
+          <div class="cfg-panel-head"><h2>压缩模型</h2><span class="cfg-panel-hint">只改两条压缩规则，不动主模型、子代理槽位与渠道当前 Key。</span></div>
+          <div id="compact-current" class="hint" role="status">等待压缩路由配置</div>
+          <div class="rc-line"><label class="field">压缩渠道<select id="compact-provider" onchange="pickCompactProvider(this.value)"></select></label>
+            <label class="field">压缩模型<select id="compact-model" onchange="pickCompactModel(this.value)"></select><input id="compact-model-custom" type="text" placeholder="自定义模型名" hidden oninput="setCompactCustom(this.value)"></label>
+            <label class="field">压缩 Key<select id="compact-key" onchange="pickCompactKey(this.value)"></select></label></div>
+          <div id="compact-key-hint" class="hint">默认跟随渠道当前 Key；固定 Key 只影响压缩，不切换渠道当前账号。</div>
+          <div id="compact-status" class="split-status" role="status"></div>
+          <div class="savebar"><span id="compact-msg" class="msg" role="status"></span></div>
+          <details class="cfg-more"><summary>保存会改动什么</summary>
+            <p class="hint">保存会把现有压缩备池替换为所选单一渠道；普通主模型、子代理槽位和渠道当前账号都不变。压缩只按已知的压缩标记命中，不做通用规则匹配。</p>
           </details>
         </div>
-        <div class="panel">
-          <div class="cfg-panel-head"><h2>默认路由</h2><span class="cfg-panel-hint">所有规则都未命中时使用；未绑定渠道时请求返回 503。</span></div>
-          <div id="def-box"></div>
-        </div>
-        <details class="cfg-group" id="compact-group">
-          <summary><span class="cfg-group-title">压缩设置</span><span class="cfg-group-meta" id="compact-summary">压缩模型与压缩上下文窗口</span></summary>
-          <div class="panel" id="compact-panel">
-            <div class="cfg-panel-head"><h2>压缩模型</h2><span class="cfg-panel-hint">只改两条压缩规则，不动主模型、子代理槽位与渠道当前 Key。</span></div>
-            <div id="compact-current" class="hint" role="status">等待压缩路由配置</div>
-            <div class="rc-line"><label class="field">压缩渠道<select id="compact-provider" onchange="pickCompactProvider(this.value)"></select></label>
-              <label class="field">压缩模型<select id="compact-model" onchange="pickCompactModel(this.value)"></select><input id="compact-model-custom" type="text" placeholder="自定义模型名" hidden oninput="setCompactCustom(this.value)"></label>
-              <label class="field">压缩 Key<select id="compact-key" onchange="pickCompactKey(this.value)"></select></label></div>
-            <div id="compact-key-hint" class="hint">默认跟随渠道当前 Key；固定 Key 只影响压缩，不切换渠道当前账号。</div>
-            <div id="compact-status" class="split-status" role="status"></div>
-            <div class="savebar"><button id="reload-compact" onclick="reloadCompact()">重新载入压缩选择</button><button id="save-compact" class="primary" onclick="saveCompact()" disabled>保存压缩模型</button><span id="compact-msg" class="msg" role="status"></span></div>
-            <details class="cfg-more"><summary>保存会改动什么</summary>
-              <p class="hint">保存会把现有压缩备池替换为所选单一渠道；普通主模型、普通路由、子代理槽位和渠道当前账号都不变。</p>
-            </details>
-          </div>
-          <div class="panel" id="compact-window-panel">
-            <div class="cfg-panel-head"><h2>压缩上下文窗口</h2><span class="cfg-panel-hint">只改所选磁盘层的 <code>autoCompactWindow</code>；全局只改全局，不同步项目。</span></div>
-            <div class="rc-line"><label class="field" for="window-scope">配置层<select id="window-scope" onchange="selectWindowScope()"><option value="global">用户全局</option><option value="project">项目</option><option value="local">项目本地</option></select></label>
-              <label class="field" for="window-project">项目绝对目录<input id="window-project" type="text" placeholder="/绝对路径/项目目录" oninput="windowProjectChanged()" spellcheck="false"></label>
-              <label class="field" for="window-value">窗口 token（auto 或 100k–1M）<input id="window-value" type="text" inputmode="text" placeholder="auto、300k、1m" oninput="setWindowValue(this.value)"></label></div>
-            <div id="window-current" class="hint" role="status">尚未读取磁盘配置</div>
-            <div id="window-coverage" class="banner show cfg-note" role="status"><strong id="window-coverage-text">尚未检查配置层覆盖。</strong><button id="window-edit-override" class="small" hidden onclick="editWindowOverride()">编辑覆盖层</button></div>
-            <div id="window-layers" class="hint"></div>
-            <div id="window-status" class="split-status" role="status"></div>
-            <div class="savebar"><button id="reload-window" onclick="loadCompactWindow()">读取所选配置层</button><button id="save-window" class="primary" onclick="saveCompactWindow()" disabled>保存压缩窗口</button><span id="window-msg" class="msg" role="status"></span></div>
-            <details class="cfg-more"><summary>生效范围与限制</summary>
-              <div id="window-warnings" class="hint" role="status">这里仅显示磁盘设置；不代表运行中会话的实际窗口或模型上限。</div>
-              <div id="window-restart" class="hint">外部保存不会热改运行中会话。项目层设置需新开会话，或退出后在该项目目录用 claude --continue 继续。当前会话可用 /autocompact &lt;值&gt; 调整，但它写用户层，仍可能被项目或环境覆盖；请核对窗口与 capped 提示。</div>
-              <p class="hint"><code>auto</code> 只删除所选层的键并继承下层，不关闭自动压缩，也不清除环境覆盖。填写项目绝对目录才能核对项目与本地层覆盖；不自动查找项目。</p>
-            </details>
-          </div>
-        </details>
-      </section>
-
-      <section id="view-harness" style="display:none" aria-labelledby="harness-title">
-        <div class="head"><div><h1 id="harness-title">Harness</h1><div class="sub">主模型选定一个精确落点；普通子代理从你维护的候选池中自主选择。与 Claude / Codex 槽位独立。</div></div></div>
-        <div class="harness-layout">
-          <div class="panel" aria-labelledby="harness-main-title">
-            <h2 id="harness-main-title">主模型</h2>
-            <p class="hint">选择渠道及其已登记模型，不按模型名猜测供应商。</p>
-            <div class="harness-fields" id="harness-main"></div>
-          </div>
-          <div class="panel" aria-labelledby="harness-pool-title">
-            <h2 id="harness-pool-title">子代理候选池</h2>
-            <p class="hint">这里只维护可选模型，不分配固定角色。主模型保存后会自动纳入池中；池更新在新会话生效。</p>
-            <div id="harness-pool"></div>
-          </div>
-          <div class="harness-setup">
-            <div class="savebar">
-              <button class="primary" type="button" id="harness-save" onclick="harnessSave()" disabled>保存主模型与候选池</button>
-              <button type="button" id="harness-reload" onclick="harnessReload()">重新读取</button>
-              <button type="button" id="harness-preview-button" onclick="harnessPreview()" disabled>预览客户端接入</button>
-            </div>
-            <p class="harness-status" id="harness-status" role="status" aria-live="polite">尚未读取 Harness 配置。</p>
-            <p class="hint harness-client" id="harness-client-status">客户端状态尚未读取。</p>
-            <details class="harness-help">
-              <summary>生效范围与验证方式</summary>
-              <p class="hint">普通 subagent 显式选模只能使用此白名单；fork / team 继承模型，不由此池重选。Workflow 的固定角色走另一条配置路径，不受此池管理。</p>
-              <p class="hint">只检查配置文件，原生插件装载/实际请求仍待验证；池变动需重新接入并新开会话。</p>
-            </details>
-            <div class="harness-preview" id="harness-preview" aria-labelledby="harness-preview-title" hidden></div>
-          </div>
+        <div class="panel" id="compact-window-panel">
+          <div class="cfg-panel-head"><h2>压缩上下文窗口</h2><span class="cfg-panel-hint">只改所选磁盘层的 <code>autoCompactWindow</code>；全局只改全局，不同步项目。</span></div>
+          <div class="rc-line"><label class="field" for="window-scope">配置层<select id="window-scope" onchange="selectWindowScope()"><option value="global">用户全局</option><option value="project">项目</option><option value="local">项目本地</option></select></label>
+            <label class="field" for="window-project">项目绝对目录<input id="window-project" type="text" placeholder="/绝对路径/项目目录" oninput="windowProjectChanged()" spellcheck="false"></label>
+            <label class="field" for="window-value">窗口 token（auto 或 100k–1M）<input id="window-value" type="text" inputmode="text" placeholder="auto、300k、1m" oninput="setWindowValue(this.value)"></label></div>
+          <div id="window-current" class="hint" role="status">尚未读取磁盘配置</div>
+          <div id="window-coverage" class="banner show cfg-note" role="status"><strong id="window-coverage-text">尚未检查配置层覆盖。</strong><button id="window-edit-override" class="small" hidden onclick="editWindowOverride()">编辑覆盖层</button></div>
+          <div id="window-layers" class="hint"></div>
+          <div id="window-status" class="split-status" role="status"></div>
+          <div class="savebar"><button id="reload-window" onclick="loadCompactWindow()">读取所选配置层</button><button id="save-window" class="primary" onclick="saveCompactWindow()" disabled>保存压缩窗口</button><span id="window-msg" class="msg" role="status"></span></div>
+          <details class="cfg-more"><summary>生效范围与限制</summary>
+            <div id="window-warnings" class="hint" role="status">这里仅显示磁盘设置；不代表运行中会话的实际窗口或模型上限。</div>
+            <div id="window-restart" class="hint">外部保存不会热改运行中会话。项目层设置需新开会话，或退出后在该项目目录用 claude --continue 继续。当前会话可用 /autocompact &lt;值&gt; 调整，但它写用户层，仍可能被项目或环境覆盖；请核对窗口与 capped 提示。</div>
+            <p class="hint"><code>auto</code> 只删除所选层的键并继承下层，不关闭自动压缩，也不清除环境覆盖。填写项目绝对目录才能核对项目与本地层覆盖；不自动查找项目。</p>
+          </details>
         </div>
       </section>
 
@@ -579,6 +529,5 @@
 <script src="/js/readiness.js"></script>
 <script src="/js/attempt-flow.js"></script>
 <script src="/js/key-fallback.js"></script>
-<script src="/js/harness.js"></script>
 </body>
 </html>

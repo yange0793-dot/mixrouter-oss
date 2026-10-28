@@ -122,7 +122,10 @@ test('W1 只在 require.main 块里用 lifecycle;排空口径合规;保留合并
     `排空 ${wiredDrainMs()}ms + 落盘下限 ${MIN_FLUSH_BUDGET_MS}ms = ${budgetCeilingMs()}ms,` +
     `已越过 mixctl 的 ${EXTERNAL_KILL_MS}ms 强杀线`);
 
-  // (c) 生命周期接线不改变模块契约;合并保留 main 的 86 键及本地 Codex 更新入口。
+  // (c) 生命周期接线不改变模块契约;合并保留 main 的 79 键及本地 Codex 更新入口。
+  //     79 = 瘦身前的 86 减去随 ZCode/Harness 一起删掉的 7 个键
+  //     (switchZcode / switchZcodeRouter / zcodeSpec / zcodeRouterSpec / liveZcodeState /
+  //      harness / harnessModelList,resolveHarness 从未导出过)。
   const home = tmpData();
   const r = spawnSync(process.execPath, ['-e', `console.log('KEYS=' + JSON.stringify(Object.keys(require(${JSON.stringify(ENTRY)})).sort()))`], {
     encoding: 'utf8', timeout: 30000, cwd: home,
@@ -130,7 +133,7 @@ test('W1 只在 require.main 块里用 lifecycle;排空口径合规;保留合并
   });
   assert.equal(r.status, 0, r.stderr);
   const keys = JSON.parse(r.stdout.match(/KEYS=(.*)/)[1]);
-  assert.equal(keys.length, 86, `合并后的导出键数目变了(应为 86,现在 ${keys.length})`);
+  assert.equal(keys.length, 79, `合并后的导出键数目变了(应为 79,现在 ${keys.length})`);
   for (const k of ['proxyHandler', 'apiHandler', 'listen', 'explainRoute', 'resolveRoute', '_state',
     'sweepLogsNow', 'startLogRetention', 'updateCodexConfig'])
     assert.ok(keys.includes(k), `导出面少了 ${k}`);

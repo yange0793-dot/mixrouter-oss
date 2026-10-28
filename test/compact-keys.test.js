@@ -56,7 +56,7 @@ const choose = key_id => api('POST', { provider: 'primary', model: 'chosen', key
 const provider = () => mod._state.store.claude[0];
 const makeRules = () => ({ rules: COMPACT_RULES.map(spec => ({ id: spec.kind, match: '', app: 'claude',
   enabled: true, provider: 'primary', model: 'chosen', priority: spec.priority, pool: [],
-  when: { body: spec.body }, strategy: 'priority' })), default: { provider: 'primary', model: 'ordinary' } });
+  when: { body: spec.body }, strategy: 'priority' })), default: {} });
 
 before(async () => {
   upstream = http.createServer((req, res) => {
@@ -186,10 +186,10 @@ test('removed provider remains visible with the original pin and fails closed', 
   assert.equal(hits.length, 0);
 });
 
-test('provider DELETE preserves compact pin targets but still unbinds ordinary routes', async () => {
+test('provider DELETE preserves compact pin targets but unbinds model slots', async () => {
   await choose('compact');
   assert.equal((await api('DELETE', undefined, '/api/providers/primary')).status, 200);
-  assert.equal(mod._state.routes.default.provider, '');
+  assert.equal(mod._state.slotMap.claude.main, undefined);
   const view = (await api()).data.compact;
   assert.equal(view.rules[0].targets[0].provider, 'primary');
   assert.equal(view.rules[0].targets[0].key_id, 'compact');
@@ -246,15 +246,13 @@ test('normalization retains pins only for compact rules and rejects pin plus any
     assert.throws(() => normalizeRule({ ...rule, key_id: 'compact', pool }), e => e.statusCode === 400);
 });
 
-test('generic routes PUT preserves a valid compact pin and rejects a pin+pool atomically', async () => {
+test('removed routes PUT cannot bypass compact selection or change its pin', async () => {
   await choose('compact');
   const routes = structuredClone(mod._state.routes);
-  assert.equal((await api('PUT', routes, '/api/routes')).status, 200);
-  assert.equal(mod._state.routes.rules[0].key_id, 'compact');
   const disk = fs.readFileSync(path.join(TMP, 'routes.json'), 'utf8');
-  routes.rules[0].pool = ['other'];
-  assert.equal((await api('PUT', routes, '/api/routes')).status, 400);
-  assert.deepEqual(mod._state.routes.rules[0].pool, []);
+  routes.rules[0].key_id = 'active';
+  assert.equal((await api('PUT', routes, '/api/routes')).status, 410);
+  assert.equal(mod._state.routes.rules[0].key_id, 'compact');
   assert.equal(fs.readFileSync(path.join(TMP, 'routes.json'), 'utf8'), disk);
 });
 
@@ -324,7 +322,7 @@ test('preview uses direct compact texts and reports the same unavailable-pin err
   const state = JSON.stringify(mod._state.routes);
   const r = await preview({ compactTexts: [SUMMARY], bodyText: 'irrelevant' });
   assert.equal(r.status, 200);
-  assert.equal(r.data.matched.via, 'content');
+  assert.equal(r.data.matched.via, 'compact');
   assert.equal(r.data.selection.predicted.providerId, 'primary');
   assert.equal(r.data.selection.predicted.model, 'chosen');
   assert.equal(hits.length, 0, 'preview must never contact upstream');

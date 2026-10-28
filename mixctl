@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // mixctl — mixrouter 管理命令
-//   start | stop | restart | status | ls | sessions | slots | explain | backups | restore | probe | logs [n] | gc [天] [--apply] [--archives-only] | route [claude|codex|zcode] [--slots] | open | help
+//   start | stop | restart | status | ls | sessions | slots | explain | backups | restore | probe | logs [n] | gc [天] [--apply] [--archives-only] | route [claude|codex] [--slots] | open | help
 'use strict';
 const { spawn, execSync } = require('child_process');
 const http = require('http');
@@ -239,7 +239,12 @@ function previewRequest(body) {
 
 function printPreview(result) {
   if (!result.ok) console.log(`预览失败 [${result.error.code}]: ${result.error.message}`);
-  if (result.matched) console.log(`命中: ${result.matched.via} ${result.matched.ruleId || '(兜底)'}${result.matched.slot ? '  槽位 ' + result.matched.slot : ''}`);
+  // 分发只有"精确槽位"与"已登记模型"两条依据,没有兜底规则:不再打印 (兜底) 这种
+  // 已经不存在的落点名字,只照服务端给的 via / 槽位 / 规则 id 原样显示。
+  if (result.matched) {
+    const m = result.matched;
+    console.log(`命中: ${m.via}${m.ruleId ? ' ' + m.ruleId : ''}${m.slot ? '  槽位 ' + m.slot : ''}`);
+  }
   if (result.selection) {
     const s = result.selection, p = s.predicted;
     console.log(`首选来源: ${s.source}  策略: ${s.strategy}  ${s.deterministic ? '当前快照可确定' : '不确定'}`);
@@ -335,17 +340,16 @@ async function ls() {
   let s;
   try { s = await api('/api/state'); } catch { return console.log('mixrouter 未运行或控制台不可达'); }
   const nameOf = id => { for (const g of ['claude', 'codex']) { const p = s.providers[g].find(x => x.id === id); if (p) return p.name + (p.enabled ? '' : '(停用)'); } return '(未绑定)'; };
-  // 目标既可能是单一渠道,也可能是渠道池(会话粘性分发),分开显示;规则可只对某一组生效
-  const targetOf = r => {
-    const pool = (r.pool || []).map(m => typeof m === 'string' ? m : m.provider);
-    const appTag = r.app === 'codex' ? '[Cx] ' : (r.app === 'claude' ? '[CC] ' : '');
-    if (pool.length) return `${appTag}池[${pool.map(nameOf).join(' | ')}] ${r.strategy}`;
-    return appTag + nameOf(r.provider);
-  };
-  console.log('路由(请求模型名子串 → 目标 @ 模型,prio 大者先匹配;端点决定用哪组渠道):');
-  for (const r of s.routes.rules)
-    console.log(`  ${r.enabled ? ' ' : '#'} [p${Number(r.priority) || 0}] ${r.model ? '' : ''}${r.match || '(空)'}  →  ${targetOf(r)}${r.model ? ' @ ' + r.model : ''}`);
-  console.log(`  兜底 [p${Number(s.routes.default.priority) || 0}]  →  ${targetOf(s.routes.default)}${s.routes.default.model ? ' @ ' + s.routes.default.model : ''}`);
+  // 分发只有两条依据:精确槽位(别名)与"该组唯一已登记模型"。通用匹配规则已移除,
+  // 这里不再打印 rules/default —— 旧 routes.json 里的规则不会再执行,列出来只会误导。
+  const slots = s.slots || {};
+  console.log('分发依据(端点决定用哪组渠道;模型名先精确命中槽位,再命中已登记模型):');
+  for (const app of ['claude', 'codex']) {
+    const bound = (Array.isArray(slots[app]) ? slots[app] : []).filter(x => x && x.provider);
+    if (!bound.length) { console.log(`  [${app === 'codex' ? 'Cx' : 'CC'}] (没有绑定槽位)`); continue; }
+    for (const x of bound)
+      console.log(`  [${app === 'codex' ? 'Cx' : 'CC'}] ${x.alias || x.name} → ${nameOf(x.provider)}${x.model ? ' @ ' + x.model : ''}`);
+  }
   const cur = s.current, live = s.live, R = s.router || {};
   const modeOf = (app, lv) => lv.router ? `路由模式 ${lv.base_url}` : (lv.base_url || '(未配置)');
   console.log(`\nClaude Code 渠道 ${s.providers.claude.length} 个(当前生效 ${modeOf('claude', live.claude)},${cur.claude ? '库内选中 ' + (cur.claude === R.id ? '路由模式' : nameOf(cur.claude)) + (live.claude.match ? ' ✓' : ' ⚠配置漂移') : '库内未选中'}):`);
@@ -378,25 +382,22 @@ async function sessions() {
     console.log(`  ${marked ? '*' : ' '} ${x.key}`);
   }
 }
-// 把客户端切到路由模式(此后流量按路由规则分发);--slots 同时按槽位表写 Claude 槽位 env
-async function route(app, wire = 'anthropic', withSlots = false) {
-  if (!['claude', 'codex', 'zcode'].includes(app)) return console.log(ROUTE_USAGE);
-  if (app === 'zcode' && !['anthropic', 'responses', 'chat'].includes(wire)) return console.log('ZCode 协议必须为 anthropic、responses 或 chat');
+// 把客户端切到路由模式(此后流量按槽位与已登记模型分发);--slots 同时按槽位表写 Claude 槽位 env
+async function route(app, withSlots = false) {
+  if (!['claude', 'codex'].includes(app)) return console.log(ROUTE_USAGE);
   if (withSlots && app !== 'claude') return console.log('--slots 只对 claude 有意义(Codex 槽位是路由别名,客户端无需写入)');
   try {
-    const r = await apiPost('/api/router/' + app, app === 'zcode' ? { wire_api: wire } : (withSlots ? { slots: true } : {}));
-    const label = { claude: 'Claude Code', codex: 'Codex', zcode: 'ZCode' }[app];
+    const r = await apiPost('/api/router/' + app, withSlots ? { slots: true } : {});
+    const label = { claude: 'Claude Code', codex: 'Codex' }[app];
     // 备份池轮换预警(/api/router 自带 warnings,渠道库那份也在里面)。
     // 池满时最老那份备份在本次写入过程中已经被清掉,只留给服务端日志等于没提示。
     for (const w of r.warnings || []) console.log(`提醒: ${w}`);
-    console.log(`${app === 'zcode' ? '已注册路由接入' : '已切到路由模式'}:${label} → ${r.live.base_url}`);
+    console.log(`已切到路由模式:${label} → ${r.live.base_url}`);
     if (withSlots && Array.isArray(r.slots)) {
       const on = r.slots.filter(s => s.provider);
       console.log(on.length ? `槽位已写入:${on.map(s => `${s.name}=${s.alias}`).join('  ')}` : '槽位表为空,本次未写任何槽位 env(先在控制台或 slots 页配置)');
     }
-    console.log(app === 'zcode'
-      ? '请在 ZCode 模型选择器选择 Mixrouter 模型；如未出现请重启客户端，新会话生效。未修改当前会话或默认模型。'
-      : app === 'codex' ? 'Codex 需重启生效(重启后所有对话按「路由」页的规则分发)。' : 'Claude Code 需重启会话生效。');
+    console.log(app === 'codex' ? 'Codex 需重启生效(重启后按精确槽位与已登记模型分发)。' : 'Claude Code 需重启会话生效。');
   } catch (e) { console.log('接入失败:' + e.message); process.exitCode = 1; }
 }
 
@@ -849,6 +850,6 @@ else if (cmd === 'restore') runRestoreCmd(process.argv.slice(3), { root: ROOT, h
 else if (cmd === 'split') splitCmd(process.argv.slice(3));
 else if (cmd === 'logs') logsCmd(process.argv.slice(3));
 else if (cmd === 'gc') gc(process.argv.slice(3));
-else if (cmd === 'route') route(process.argv[3], process.argv[4] && !process.argv[4].startsWith('--') ? process.argv[4] : 'anthropic', process.argv.includes('--slots'));
+else if (cmd === 'route') route(process.argv[3], process.argv.includes('--slots'));
 else if (cmd === 'open') execSync(`open http://127.0.0.1:${UI_PORT}`);
 else console.log(MAIN_USAGE);

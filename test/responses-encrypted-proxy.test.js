@@ -37,7 +37,7 @@ const completed = { id: 'encrypted-success', object: 'response', status: 'comple
 const successBytes = frame({ type: 'response.output_text.delta', delta: 'ENCRYPTED_RECOVERY_OK' })
   + frame({ type: 'response.completed', response: completed });
 function history() {
-  return { model: 'fixture-codex-model', stream: true, store: false, prompt_cache_key: 'cache-preserved',
+  return { model: SLOT, stream: true, store: false, prompt_cache_key: 'cache-preserved',
     reasoning: { effort: 'max', summary: 'detailed' }, include: ['reasoning.encrypted_content'],
     metadata: { id: 'metadata-kept', client: 'codex' }, tools: [{ type: 'function', name: 'Read', strict: false,
       parameters: { type: 'object', properties: { file: { type: 'string' } }, required: ['file'] } }], input: [
@@ -59,6 +59,10 @@ function freeze(value) {
 }
 let upstream, proxy, reply, seen, closed, fixtureId = 0;
 const sockets = new Set();
+// 精确槽位:通用 match/default 规则删除后,多渠道(含备池)只能靠槽位别名 + 同一落点模型表达。
+const SLOT = 'mixr-main', SLOT_MODEL = 'fixture-codex-model';
+// 出站体:槽位把请求别名换成落点模型,其余字节一律照抄客户端请求。
+const outbound = body => ({ ...structuredClone(body), model: SLOT_MODEL });
 const originalHttpRequest = http.request, originalHttpsRequest = https.request;
 function intercept(original, options, ...rest) {
   const hostname = typeof options === 'object' && options !== null ? options.hostname : null;
@@ -69,7 +73,7 @@ function intercept(original, options, ...rest) {
   assert.equal(hostname, '127.0.0.1', `non-loopback transport target: ${hostname}`);
   return original.call(http, options, ...rest);
 }
-function configure({ host = HOSTS[0], protocol = 'https:', keyFallback = true, other = true, override } = {}) {
+function configure({ host = HOSTS[0], protocol = 'https:', keyFallback = true, other = true } = {}) {
   const provider = id => ({ id, name: id, enabled: true, wire_api: 'responses', api_key: 'synthetic-primary-key',
     base_url: host === '127.0.0.1' ? `http://127.0.0.1:${upstream.address().port}/${id}` : `${protocol}//${host}/${id}`,
     models: ['fixture-codex-model'], key_fallback: keyFallback, active_key: `key-a-${fixtureId}`, keys: [
@@ -77,8 +81,10 @@ function configure({ host = HOSTS[0], protocol = 'https:', keyFallback = true, o
       { id: `key-b-${fixtureId}`, key: 'synthetic-alternate-key', enabled: true },
     ] });
   mod._state.store = { claude: [], codex: [provider('primary'), ...(other ? [provider('secondary')] : [])] };
-  mod._state.routes = { rules: [], default: mod.normalizeRule({ pool: other ? ['primary', 'secondary'] : ['primary'], strategy: 'priority',
-    ...(override === undefined ? {} : { upstream_stream: override }) }) };
+  // 槽位钉定主渠道;备池只在需要换渠道的用例里加。上游流式开关已随规则一起废弃。
+  mod._state.slotMap = { claude: {}, codex: { main: { provider: 'primary', model: SLOT_MODEL,
+    ...(other ? { pool: ['secondary'] } : {}) } } };
+  mod._state.routes = { rules: [] };
 }
 function answer(res, text = successBytes, status = 200, mime = 'text/event-stream', headers = {}) {
   res.writeHead(status, { 'Content-Type': mime, ...headers }); res.end(text);
@@ -159,19 +165,21 @@ for (const [host, stream, status, sse, rawJson] of [
       sse ? 'text/event-stream' : 'application/json');
   };
   const result = await ask(body); recovered(result); assert.equal(result.text, stream ? successBytes : JSON.stringify(completed));
-  assert.deepEqual(seen[0].body, original); assert.deepEqual(seen[1].body, projectEncryptedReasoning(original).body);
+  assert.deepEqual(seen[0].body, outbound(original)); assert.deepEqual(seen[1].body, projectEncryptedReasoning(outbound(original)).body);
   assert.deepEqual(body, original); assert.equal(logs().length, beforeLogs + 1);
   assert.equal(seen[1].body.input.find(item => item.type === 'function_call').call_id, 'call-preserved');
   assert.deepEqual(seen[1].body.input.find(item => item.type === 'function_call_output').output, original.input[5].output);
   await waitFor(() => closed === seen.length, { label: 'encrypted abandoned responses closed' });
 });
 
-for (const override of [false, true]) test(`explicit upstream format override keeps encrypted downgrade semantics (${override})`, async () => {
-  configure({ override }); const body = history(); body.stream = !override;
+// 上游流式开关已废弃:出站形态由协议默认决定(客户端要流 = SSE,非流 = 整包 JSON)。
+// 两种形状下的密文降级语义必须一致。
+for (const [label, stream] of [['sse', true], ['json', false]]) test(`encrypted downgrade follows protocol-default transport (${label})`, async () => {
+  configure(); const body = history(); body.stream = stream;
   reply = (_req, res) => {
-    const text = seen.length === 1 ? (override ? frame(failure()) : JSON.stringify(failure().response))
-      : override ? frame({ type: 'response.completed', response: completed }) : JSON.stringify(completed);
-    answer(res, text, 200, override ? 'text/event-stream' : 'application/json');
+    const text = seen.length === 1 ? (stream ? frame(failure()) : JSON.stringify(failure().response))
+      : stream ? frame({ type: 'response.completed', response: completed }) : JSON.stringify(completed);
+    answer(res, text, 200, stream ? 'text/event-stream' : 'application/json');
   };
   const result = await ask(body); recovered(result); assert.match(result.text, /ENCRYPTED_RECOVERY_OK/);
   assert.deepEqual(seen[1].body, projectEncryptedReasoning(seen[0].body).body);
@@ -182,7 +190,7 @@ test('resource-ID recovery followed by encrypted error shares projected plan and
   reply = (_req, res) => seen.length === 1 ? answer(res, JSON.stringify(azure), 400, 'application/json')
     : seen.length === 2 ? answer(res, frame(failure())) : answer(res);
   const result = await ask(body); recovered(result, 3); assert.equal(result.text, successBytes);
-  assert.deepEqual(seen[1].body, projectResponsesHistory(original).body);
+  assert.deepEqual(seen[1].body, projectResponsesHistory(outbound(original)).body);
   assert.deepEqual(seen[2].body, projectEncryptedReasoning(seen[1].body).body); assert.deepEqual(body, original);
 });
 
@@ -284,7 +292,7 @@ for (const mutate of [body => { body.previous_response_id = 'server-reference'; 
   const body = history(); mutate(body); const original = structuredClone(body);
   reply = (_req, res) => answer(res, JSON.stringify(encrypted()), 400, 'application/json');
   const result = await ask(body); assert.equal(seen.length, 1); assert.equal(result.status, 400); assert.equal(result.text, JSON.stringify(encrypted()));
-  assert.deepEqual(body, original); assert.deepEqual(seen[0].body, original); assert.equal(result.headers['x-mixrouter-recovery'], undefined);
+  assert.deepEqual(body, original); assert.deepEqual(seen[0].body, outbound(original)); assert.equal(result.headers['x-mixrouter-recovery'], undefined);
 });
 
 test('Responses compaction endpoint is excluded from encrypted downgrade', async () => {

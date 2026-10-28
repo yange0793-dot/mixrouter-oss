@@ -466,7 +466,6 @@ body.shell-ready .head .actions:empty { display: none; }
 .panel .hint:last-child { margin-bottom: 0; }
 .hint { color: var(--dim); font-size: 13.5px; line-height: 1.65; overflow-wrap: anywhere; }
 .muted { color: var(--dim); }
-.rulecard { border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 16px; margin-bottom: 12px; background: var(--panel); }
 .bk-dir { border: 1px solid var(--border-soft); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 12px; background: var(--panel); }
 .bk-dir .bk-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; font-size: 14px; }
 .bk-dir .bk-head .mono { margin-left: auto; }
@@ -500,26 +499,15 @@ body.shell-ready .head .actions:empty { display: none; }
 .field { display: flex; flex-direction: column; gap: 5px; font-size: 13.5px; min-width: 0; }
 .savebar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 16px; }
 .savebar .msg, .msg { font-size: 13.5px; color: var(--dim); }
-.rc-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-.rc-idx { font: 12.5px var(--mono); color: var(--accent-text); background: var(--accent-soft); border-radius: 5px; padding: 4px 7px; }
-.rc-head > .field { flex: 1; min-width: 180px; }
 .rc-mini { display: flex; align-items: center; gap: 6px; font-size: 13.5px; color: var(--dim); }
 .rc-mini input[type=number] { width: 64px; }
 .rc-mini select { width: auto; max-width: 180px; }
-.rc-body { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border-soft); display: grid; gap: 12px; }
 .rc-line { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
-.rc-tag { font-size: 13px; color: var(--dim); width: 32px; align-self: center; }
 .rc-line > .field { flex: 1; min-width: 150px; }
 /* 槽位别名列(名称 + 别名 + 环境变量)。固定宽度让每行的渠道/模型下拉起点一致:
    以前靠行内 style 写 170px,但内容一长就被撑开,五行控件各错一截。 */
 .rc-line > .slot-ident { flex: 0 0 216px; min-width: 0; }
 .rc-line > .slot-ident .mono { overflow-wrap: anywhere; }
-.poolbox { display: flex; flex-wrap: wrap; gap: 8px; width: 100%; }
-.poolitem { display: flex; align-items: center; gap: 8px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 7px 10px; font-size: 13.5px; flex-wrap: wrap; }
-.poolitem.on { border-color: var(--accent-line); background: var(--accent-soft); }
-.poolitem label { display: flex; align-items: center; gap: 6px; }
-.poolitem .w { width: 64px; padding: 4px 6px; }
-.pool-hint { font-size: 13px; color: var(--dim); }
 .iconbtn { color: var(--dim); padding: 4px 8px; }
 .iconbtn:hover { color: var(--err-text); }
 .iconbtn:hover:not(:disabled) { color: var(--err-text); background: var(--err-soft); border-color: var(--err-line); }
@@ -559,13 +547,7 @@ summary::marker { color: var(--border-strong); }
 }
 
 /* ---- Provider page: client state ------------------------------------------- */
-.protocol-panel {
-  display: flex; align-items: center; gap: 16px; padding: 14px 16px;
-  border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); margin-bottom: 16px;
-}
-.protocol-panel label { flex-shrink: 0; }
-.protocol-panel select { display: block; margin-top: 4px; width: 240px; }
-.protocol-panel p, .integration-note { font-size: 14px; color: var(--dim); line-height: 1.7; }
+.integration-note { font-size: 14px; color: var(--dim); line-height: 1.7; }
 .integration-note { margin-top: 6px; }
 .liveinfo { margin-bottom: 14px; }
 .mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -840,8 +822,6 @@ details.advanced-slots {
 }
 /* 有事项时面板回到常规卡片,标题与说明照常出现。 */
 #overview-todo-panel[data-state="active"] { border-color: var(--border); }
-.rulefacts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 10px 18px; font-size: 13.5px; color: var(--text); }
-.rulefacts .rf-label { display: block; color: var(--dim); margin-bottom: 2px; }
 /* Definition pairs used by the health/config readers on several pages. */
 .config-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 12px 20px; margin: 12px 0 0; }
 .config-facts dt { color: var(--dim); font-size: 13.5px; }
@@ -1355,12 +1335,8 @@ body[data-connection=offline] .card.cur { border-color: var(--border); }
   .usage-grid .metric small { margin-top: 6px; }
   .apptabs { width: 100%; }
   .apptabs button { flex: 1 1 auto; padding: 6px 8px; }
-  .protocol-panel { align-items: stretch; flex-direction: column; gap: 8px; }
-  .protocol-panel select { width: 100%; }
   .mode-grid { grid-template-columns: 1fr; }
   .panel { padding: 16px; }
-  .rulecard { padding: 14px; }
-  .rc-head > .field { min-width: 180px; }
   .rc-line > .field { min-width: 100%; }
   .codex-slot-line { grid-template-columns: minmax(0, 1fr) 32px; }
   .codex-slot-line > .field { grid-column: 1 / -1; min-width: 0; }

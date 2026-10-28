@@ -29,7 +29,6 @@ process.env.HOME = TMP;
 process.env.MIXR_DATA_DIR = TMP;
 process.env.MIXR_CLAUDE_SETTINGS = path.join(TMP, 'claude-settings.json');
 process.env.MIXR_CODEX_CONFIG = path.join(TMP, 'codex-config.toml');
-process.env.MIXR_ZCODE_CONFIG = path.join(TMP, 'zcode-config.json');
 process.env.MIXR_RESPONSE_ARCHIVE = 'off';
 process.env.MIXROUTER_PORT = '0';
 process.env.MIXUI_PORT = '0';
@@ -306,7 +305,7 @@ test('静态资源前缀不吞控制台 API:POST /api/... 仍然走到业务分�
   // 拿 404 就说明路由圈错了。
   mod._state.store = { claude: [{ id: 'pa', name: 'pa', base_url: 'http://127.0.0.1:1/pa', api_key: 'sk-pa',
     enabled: true, models: ['x'], model: 'x' }], codex: [] };
-  mod._state.routes = { rules: [], default: { provider: 'pa', model: '' } };
+  mod._state.routes = { rules: [], default: {} };
   const r = await request('/api/routing/preview', 'POST', { body: { app: 'claude', model: 'x' } });
   assert.equal(r.status, 200, `POST /api/routing/preview 必须仍然走业务分支,实得 ${r.status} ${r.body}`);
   assert.equal(r.headers['content-type'], 'application/json');

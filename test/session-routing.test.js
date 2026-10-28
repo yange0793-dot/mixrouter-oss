@@ -186,7 +186,8 @@ before(async () => {
 beforeEach(() => {
   mod._state.store = { claude: [makeProvider('primary'), makeProvider('secondary')],
     codex: [makeProvider('cx-primary', 'responses'), makeProvider('cx-chat', 'chat')] };
-  mod._state.routes = { rules: [], default: { provider: 'primary', model: 'ordinary-model' } };
+  mod._state.store.claude[0].models.push('ordinary-model');
+  mod._state.routes = { rules: [], default: {} };
   mod._state.slotMap = { claude: { main: { provider: 'primary', model: 'shared-model' },
     haiku: { provider: 'primary', model: 'shared-model' } },
   codex: { main: { provider: 'cx-primary' }, chat: { provider: 'cx-chat' } } };
@@ -294,7 +295,7 @@ test('ordinary manual provider pin keeps its meaning while alias requests use th
   }));
   const pinPath = `/api/sessions/${encodeURIComponent(sessionKey('A'))}/pin`;
   assert.equal((await api(pinPath, 'POST', { provider: 'secondary', model: 'manual-model' })).status, 200);
-  assertAccount(await send('A', { model: 'ordinary-input' }), 'secondary', 'account-b', 'manual-model');
+  assertAccount(await send('A', { model: 'ordinary-model' }), 'secondary', 'account-b', 'manual-model');
   assertAccount(await send('A'), 'primary', 'account-a');
   assert.equal((await api(pinPath, 'POST', { provider: '' })).status, 200);
   assert.deepEqual((await readRouting('A')).routing.keys, { primary: 'account-a', secondary: 'account-b' });
@@ -504,7 +505,7 @@ test('slow pin body cannot overwrite routing saved after its request headers arr
     const current = mod._state.sessions.get(sessionKey('A'));
     assert.equal(current.providerId, 'secondary'); assert.equal(current.pinned, true);
     assert.deepEqual(JSON.parse(diskSessions()).bindings[sessionKey('A')].routing, saved.routing);
-    assertAccount(await send('A', { model: 'ordinary-input' }), 'secondary', 'slot-account', 'manual-model');
+    assertAccount(await send('A', { model: 'ordinary-model' }), 'secondary', 'slot-account', 'manual-model');
   } finally { pending.finish(); await pending.response.catch(() => {}); }
 });
 
@@ -550,11 +551,11 @@ for (const pinned of [false, true]) test(`provider removed during a conversion r
 });
 
 test('ordinary in-flight completion counts the current record without overwriting newly saved routing or manual pin', async () => {
-  await configure('A', routing({ primary: 'account-a' }), { model: 'ordinary-input' });
+  await configure('A', routing({ primary: 'account-a' }), { model: 'ordinary-model' });
   let held, resolveHeld;
   const arrived = new Promise(resolve => { resolveHeld = resolve; });
   onHit = (req, res) => { held = { req, res }; resolveHeld(); return true; };
-  const pending = send('A', { model: 'ordinary-input' });
+  const pending = send('A', { model: 'ordinary-model' });
   try {
     await arrived;
     const saved = await configure('A', routing({ primary: 'account-b', secondary: 'slot-account' }));
@@ -569,7 +570,7 @@ test('ordinary in-flight completion counts the current record without overwritin
     assert.equal(current.model, 'manual-model');
     assert.deepEqual(await readRouting('A'), { routing: saved.routing, revision: saved.revision });
     onHit = null;
-    assertAccount(await send('A', { model: 'ordinary-input' }), 'secondary', 'slot-account', 'manual-model');
+    assertAccount(await send('A', { model: 'ordinary-model' }), 'secondary', 'slot-account', 'manual-model');
   } finally {
     if (held && !held.res.writableEnded) held.res.end();
     await pending.catch(() => {});

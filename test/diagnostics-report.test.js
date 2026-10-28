@@ -14,6 +14,7 @@ test('诊断报告重建白名单，不包含凭据、路径、正文和任意�
   assert.ok(!JSON.stringify(result).includes(secret));
   assert.equal(result.clients.claude.config_status, 'configured');
   assert.equal(result.clients.codex.config_status, 'unreadable');
+  assert.deepEqual(Object.keys(result.clients), ['claude', 'codex'], '废弃客户端不进入诊断报告');
   assert.deepEqual(result.providers.claude, { total: 1, enabled: 1, configured_keys: 1 });
   assert.deepEqual(result.settings, { max_attempts: 10 });
   assert.deepEqual(result.metrics.requests, [{ app: 'unknown', wire: 'none', status_class: 'other', count: 3 }]);

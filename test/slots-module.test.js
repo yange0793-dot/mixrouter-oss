@@ -516,14 +516,15 @@ test('无 I/O:模块不 require 网络/文件模块,不读环境变量', () => {
   }
   assert.equal(/process\.env/.test(src), false, '不该读环境变量');
   // 只允许 require 叶子模块。白名单**逐项列全**,新增一项必须在这里显式登记:
-  //   zcode-config —— 类型判断工具
-  //   ./strategy   —— 取 STRATEGIES 白名单校验槽位 strategy。它自身**零 require**,
+  //   ../validation —— 类型判断工具(invalid/isObject)。原先长在 zcode-config 里,
+  //                   ZCode 接入移除后搬到通用模块,槽位校验继续用同一份。
+  //   ./strategy    —— 取 STRATEGIES 白名单校验槽位 strategy。它自身**零 require**,
   //                   是纯函数叶子,不违反本用例要防的"模块偷偷做 I/O"。
   //                   (2026-09-20 加入:校验收到的 strategy 必须是真策略名,抄一份常量会与真值漂移)
   const reqs = [...src.matchAll(/require\((['"])([^'"]+)\1\)/g)].map(m => m[2]);
-  assert.deepEqual(reqs, ['../zcode-config', './strategy'], 'require 清单变了就必须显式登记');
+  assert.deepEqual(reqs, ['../validation', './strategy'], 'require 清单变了就必须显式登记');
   // 逐个核白名单里的模块本身也是叶子:否则"间接 I/O"会绕过上面所有断言
-  for (const m of ['../lib/routing/strategy.js']) {
+  for (const m of ['../lib/routing/strategy.js', '../lib/validation.js']) {
     const leaf = require('node:fs').readFileSync(require.resolve(m), 'utf8');
     assert.equal(/require\(/.test(leaf), false, `${m} 必须零 require`);
   }

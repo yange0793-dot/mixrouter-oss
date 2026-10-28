@@ -25,11 +25,17 @@ process.env.MIXR_COOLDOWN_SEC = '60';
 process.env.MIXR_MAX_ATTEMPTS = '2';
 
 const mod = require('../mixrouter.js');
-const { _state, normalizeRule } = mod;
+const { _state } = mod;
 const POOL = ['pa', 'pb', 'pc'];
-// 三个渠道一个池,轮询策略:哪一条落到哪个渠道不写死(游标是跨请求状态),
-// 断言一律以"这一条实际落在哪"为基准,不去猜顺序。
-const routeFixture = () => { _state.routes = { rules: [normalizeRule({ id: 'flt', match: 'opus', pool: POOL, strategy: 'round_robin', enabled: true })], default: normalizeRule({}) }; };
+// 瘦身后普通请求只按**精确已登记模型**落点:同一模型登记在两个渠道就是明确歧义(409),
+// 而槽位别名请求不写会话绑定。本文件验的恰恰是"自动绑定 + 在途保护",所以夹具让
+// 请求模型 `model-pa` 只登记在 pa 一家 —— 落点确定,不影响任何一条在途断言。
+// 三个渠道都在池里的旧夹具(fixture 用 match 子串 + pool 轮转)已随通用路由一起删除。
+const routeFixture = () => {
+  _state.routes = { rules: [] };
+  _state.slotMap = { claude: {}, codex: {} };
+  _state.resetPools();
+};
 
 // ---- 可控上游:请求到了先挂住,等测试放行才回 200 ----
 const pending = [];
@@ -88,7 +94,7 @@ function request(port, method, reqPath, { headers = {}, body } = {}) {
 }
 
 // 发起一条代理请求,不 await 完成:等上游真的收到为止(拿到在途句柄)
-async function startProxy(sid, { model = 'claude-opus-5', body = {} } = {}) {
+async function startProxy(sid, { model = 'model-pa', body = {} } = {}) {
   const before = pending.length;
   const done = request(proxyPort, 'POST', '/v1/messages', {
     headers: { 'x-claude-code-session-id': sid },
@@ -111,7 +117,9 @@ test('setup:本地可控上游 + 代理/控制台端口', async () => {
   upstream.unref();
   const base = `http://127.0.0.1:${upstream.address().port}`;
   const prov = id => ({ id, name: '渠道' + id, base_url: base,
-    api_key: KEY_OF[id], enabled: true, models: ['claude-opus-5'], slots: {} });
+    // 登记模型名各渠道互不相同:同名登记在两家 = 明确歧义(409),而本文件要验的是
+    // "唯一落点 + 在途保护",不是歧义分型。请求侧统一用 pa 登记的那个名字。
+    api_key: KEY_OF[id], enabled: true, models: [`model-${id}`], slots: {} });
   const provs = ['pa', 'pb', 'pc'].map(prov);
   _state.store = { claude: provs, codex: [] };
   fs.writeFileSync(path.join(TMP, 'providers.json'), JSON.stringify({ version: 2, current: { claude: null, codex: null }, claude: provs, codex: [] }));

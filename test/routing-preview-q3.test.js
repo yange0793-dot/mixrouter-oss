@@ -83,16 +83,19 @@ after(() => {
 const P = (id, extra = {}) => ({ id, name: '渠道-' + id, base_url: EXTERNAL_UPSTREAM, api_key: 'sk-q3-' + id,
   models: ['m1'], enabled: true, ...extra });
 
-function setState({ claude, codex = [], routes }) {
+// 瘦身后只有三条路:压缩规则 / 精确槽位 / 唯一登记模型。夹具据此搭:
+// 需要"停用渠道"这类精确槽位才能到达的分支,就把槽位绑上去;其余走唯一登记模型。
+function setState({ claude, codex = [], routes, slotMap = { claude: {}, codex: {} } }) {
   mod._state.store = { claude, codex };
   mod._state.routes = routes;
+  mod._state.slotMap = slotMap;
 }
 
 // ---------------------------------------------------------------- 有实跑对应路径的码
 test('Q3:provider_key_unavailable —— 压缩 pin 预览与实跑状态码/类型/文案相同', async () => {
   const summary = FIXED_PREFIX + 'Your task is to create a detailed summary of this conversation.';
   setState({ claude: [P('pa')], routes: { rules: [rule({ app: 'claude', provider: 'pa', key_id: 'removed',
-    when: { body: COMPACT_RULES[0].body } })], default: {} } });
+    when: { body: COMPACT_RULES[0].body } })] } });
   const live = await req('/v1/messages', 'POST', { model: 'q3compact', max_tokens: 8,
     messages: [{ role: 'user', content: summary }] });
   const prev = createExplainer(explainDeps())({ app: 'claude', model: 'q3compact', context: { compactTexts: [summary] } });
@@ -104,35 +107,44 @@ test('Q3:provider_key_unavailable —— 压缩 pin 预览与实跑状态码/类
 });
 
 test('Q3:provider_disabled —— explain 与实跑的状态码/类型逐字相同(Claude 侧)', async () => {
-  setState({ claude: [P('pdead', { enabled: false })], routes: { rules: [rule({ id: 'd', match: 'q3dead', provider: 'pdead' })], default: {} } });
-  const live = await req('/v1/messages', 'POST', { model: 'q3dead', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] });
-  const prev = createExplainer(explainDeps())({ app: 'claude', model: 'q3dead' });
+  // 停用渠道不再参与"已登记模型"的唯一命中,只能由**精确槽位**绑上来才会走到 provider_disabled。
+  setState({ claude: [P('pdead', { enabled: false })], routes: { rules: [] },
+    slotMap: { claude: { main: { provider: 'pdead', model: 'm1' } }, codex: {} } });
+  const live = await req('/v1/messages', 'POST', { model: 'mixr-main', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] });
+  const prev = createExplainer(explainDeps())({ app: 'claude', model: 'mixr-main' });
 
   assert.equal(live.status, 503);
   assert.equal(live.json.error.type, 'provider_disabled_error');   // anthropicError:error.type 带后缀
   assert.equal(prev.error.httpStatus, live.status, 'httpStatus 必须与实跑相同');
   assert.equal(prev.error.code, live.json.error.type, 'code 必须与实跑的 error.type 逐字相同');
+  assert.equal(prev.error.message, live.json.error.message, '文案也要同源,不能各写一份');
 });
 
 test('Q3:no_route —— explain 与实跑的状态码/类型逐字相同(Claude 侧)', async () => {
-  setState({ claude: [P('pa')], routes: { rules: [rule({ id: 'g', match: 'q3ghost', provider: 'gone' })], default: {} } });
-  const live = await req('/v1/messages', 'POST', { model: 'q3ghost', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] });
-  const prev = createExplainer(explainDeps())({ app: 'claude', model: 'q3ghost' });
+  // 压缩规则指向已删渠道:成员为空、留下幽灵引用,走 ghosts 那条文案。
+  const summary = FIXED_PREFIX + 'Your task is to create a detailed summary of this conversation.';
+  setState({ claude: [P('pa')],
+    routes: { rules: [rule({ id: 'g', provider: 'gone', when: { body: COMPACT_RULES[0].body } })] } });
+  const live = await req('/v1/messages', 'POST', { model: 'q3ghost', max_tokens: 8,
+    messages: [{ role: 'user', content: summary }] });
+  const prev = createExplainer(explainDeps())({ app: 'claude', model: 'q3ghost', context: { compactTexts: [summary] } });
 
   assert.equal(live.status, 503);
   assert.equal(live.json.error.type, 'no_route_error');
   assert.equal(prev.error.httpStatus, live.status);
   assert.equal(prev.error.code, live.json.error.type);
+  assert.ok(prev.warnings.some(w => w.code === 'ghost_ref'));
 });
 
 test('Q3:wire_api_mismatch —— Codex 侧 error.type 去后缀、error.code 带后缀,两侧都要对', async () => {
+  // 唯一登记模型落在 responses-only 渠道上,客户端却走 chat 端点。
   setState({
     claude: [P('pa')],
     codex: [P('px', { model: 'xm', wire_api: 'responses' })],
-    routes: { rules: [rule({ id: 'c', match: 'q3gpt', provider: 'px', app: 'codex' })], default: {} },
+    routes: { rules: [] },
   });
-  const live = await req('/v1/chat/completions', 'POST', { model: 'q3gpt', messages: [{ role: 'user', content: 'hi' }] });
-  const prev = createExplainer(explainDeps())({ app: 'codex', model: 'q3gpt', kind: 'chat/completions' });
+  const live = await req('/v1/chat/completions', 'POST', { model: 'xm', messages: [{ role: 'user', content: 'hi' }] });
+  const prev = createExplainer(explainDeps())({ app: 'codex', model: 'xm', kind: 'chat/completions' });
 
   assert.equal(live.status, 400);
   // openaiError:{error:{message, type: type.replace(/_error$/,''), code: type}} —— 落点与 anthropic 不同
@@ -145,7 +157,7 @@ test('Q3:wire_api_mismatch —— Codex 侧 error.type 去后缀、error.code �
 });
 
 test('Q3:invalid_request_error —— 实跑有这条路径,explain 不产出该码(不对齐也不冒充)', async () => {
-  setState({ claude: [P('pa')], routes: { rules: [], default: { provider: 'pa' } } });
+  setState({ claude: [P('pa')], routes: { rules: [] } });
   const live = await req('/v1/messages', 'POST', 'not-json');
   assert.equal(live.status, 400);
   assert.equal(live.json.error.type, 'invalid_request_error');
@@ -156,7 +168,7 @@ test('Q3:invalid_request_error —— 实跑有这条路径,explain 不产出该
 
 // ---------------------------------------------------------------- 预览专有码:无实跑路径
 test('Q3:bad_app / bad_model 是预览专有 —— 无实跑对应路径,不加 _error 后缀', async () => {
-  setState({ claude: [P('pa')], routes: { rules: [], default: { provider: 'pa' } } });
+  setState({ claude: [P('pa')], routes: { rules: [] } });
   const ex = createExplainer(explainDeps());
 
   for (const [input, code] of [[{ app: 'nope', model: 'x' }, 'bad_app'], [{ app: 'claude', model: 42 }, 'bad_model']]) {
@@ -178,7 +190,7 @@ test('Q3:bad_app / bad_model 是预览专有 —— 无实跑对应路径,不加
 });
 
 test('Q3:kind_app_mismatch 也是预览专有 —— 实跑按 URL 路径定 kind,不存在"kind 与 app 不匹配"', async () => {
-  setState({ claude: [P('pa')], routes: { rules: [], default: { provider: 'pa' } } });
+  setState({ claude: [P('pa')], routes: { rules: [] } });
   const r = createExplainer(explainDeps())({ app: 'codex', model: 'x', kind: 'messages' });
   assert.equal(r.error.code, 'kind_app_mismatch');
   assert.equal(r.error.httpStatus, 400);

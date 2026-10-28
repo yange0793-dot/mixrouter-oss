@@ -14,8 +14,6 @@ process.env.MIXR_CODEX_CONFIG = path.join(TMP, 'codex.toml');
 process.env.MIXR_RESPONSE_ARCHIVE = 'off';
 const sig = require('../lib/routing/compact-signature');
 const identity = require('../lib/session/identity');
-const rules = require('../lib/routing/rules');
-const { whenMissFields } = require('../lib/routing/resolve');
 const mod = require('../mixrouter');
 
 const SUMMARY = sig.FIXED_PREFIX + 'Your task is to create a detailed summary of the conversation so far, paying close attention to the user requests and your previous actions.';
@@ -79,28 +77,41 @@ test('compactTexts 只取末条 user 的直接文本,不读 tool_result、system
   assert.deepEqual(identity.compactTexts({}), []);
 });
 
-test('matchWhen 与 whenMissFields 对压缩规则同判定,且惰性不求值无关回调', () => {
-  let bodyCalls = 0, textCalls = 0;
-  const ctx = texts => ({ bodyText: () => { bodyCalls++; return SUMMARY.toLowerCase(); }, compactTexts: () => { textCalls++; return texts; } });
-  const rule = compactRule('renamed');
-  assert.equal(rules.matchWhen(rule, ctx([MARKED])), true);
-  assert.equal(whenMissFields(rule, ctx([MARKED])) === null, true);
-  assert.equal(rules.matchWhen(rule, ctx([TASK])), false);
-  assert.deepEqual(whenMissFields(rule, ctx([TASK])), ['body']);
-  assert.equal(bodyCalls, 0, '压缩规则不吃 bodyText');
-  assert.equal(textCalls, 4);
-  // 没有 compactTexts 回调时判"不匹配",不得抛
-  assert.equal(rules.matchWhen(rule, { bodyText: () => SUMMARY.toLowerCase() }), false);
-  assert.deepEqual(whenMissFields(rule, {}), ['body']);
-  // 与 matchWhen 同一惰性短路:session 没过时不碰 compactTexts
-  let calls = 0;
-  assert.equal(rules.matchWhen({ ...rule, when: { session: 'nope', body: rule.when.body } }, { session: 'x', compactTexts: () => { calls++; return [MARKED]; } }), false);
-  assert.equal(calls, 0);
-  // 非压缩的通用 when.body 规则语义不变
-  const generic = { id: 'g', when: { body: 'detailed summary of the conversation' } };
-  assert.equal(rules.matchWhen(generic, { bodyText: () => 'please provide a detailed summary of the conversation' }), true);
-  assert.equal(rules.matchWhen(generic, { bodyText: () => 'nothing' }), false);
-  assert.equal(whenMissFields(generic, { bodyText: () => 'please provide a detailed summary of the conversation' }), null);
+test('压缩判定只有 compactRuleMatches 一份实现;通用 when.body 不再参与路由', () => {
+  // 规则身份、开头锚定、末条 user 直接文本这三条判据全在上面两条里钉过。
+  // 这里钉的是**删掉通用匹配之后**的接线:一条带 when.body 的普通规则(不是压缩签名)
+  // 即使正文里出现它的子串,也不得改道。
+  const savedStore = mod._state.store, savedRoutes = mod._state.routes, savedSlots = mod._state.slotMap;
+  mod._state.store = { claude: [
+    { id: 'pc', name: 'C', base_url: 'http://127.0.0.1:1', api_key: 'fake', enabled: true, models: ['compact-model'] },
+    { id: 'pm', name: 'M', base_url: 'http://127.0.0.1:1', api_key: 'fake', enabled: true, models: ['slot-model'] },
+  ], codex: [] };
+  mod._state.slotMap = { claude: { main: { provider: 'pm', model: 'slot-model' } }, codex: {} };
+  mod._state.routes = { rules: [
+    { id: 'generic', match: '', app: 'claude', enabled: true, priority: 99,
+      when: { body: 'detailed summary' }, provider: 'pc', model: 'compact-model', pool: [] },
+    compactRule('renamed-global'),
+  ] };
+  try {
+    const ctxOf = body => ({
+      compactTexts: () => identity.compactTexts(body),
+      // bodyText 不再参与任何判定(通用子串匹配已删除),此处只保留以证明它不被读取
+    });
+    const ordinary = { messages: [{ role: 'user', content: 'please give a detailed summary' }] };
+    const plain = mod.resolveRoute('mixr-main', ctxOf(ordinary), 'claude');
+    assert.equal(plain.stage, 'slot', '通用 when.body 规则已删除,不得截走普通请求');
+    assert.equal(plain.slot, 'main');
+    assert.equal(plain.provider.id, 'pm');
+
+    const compact = mod.resolveRoute('mixr-main', ctxOf({ messages: [{ role: 'user', content: SUMMARY }] }), 'claude');
+    assert.equal(compact.stage, 'compact', '真压缩请求仍先于槽位');
+    assert.equal(compact.content, true);
+    assert.equal(compact.provider.id, 'pc');
+    assert.equal(compact.rule.id, 'renamed-global');
+  } finally {
+    // 这段是纯解析:必须还原单例状态,否则后面那条端到端用例会拿死端口当上游。
+    mod._state.store = savedStore; mod._state.routes = savedRoutes; mod._state.slotMap = savedSlots;
+  }
 });
 
 // ---------------- 端到端:代理真的不再被引用特征串的任务改道 ----------------
@@ -132,8 +143,7 @@ before(async () => {
   mod._state.routes = { rules: [
     compactRule('renamed-global'),
     { id: 'renamed-talentsai', match: '', app: 'claude', enabled: true, priority: 100,
-      when: { body: sig.MARKER }, provider: 'pc', model: 'compact-model', pool: [] }],
-  default: { provider: 'pm', model: 'default-model' } };
+      when: { body: sig.MARKER }, provider: 'pc', model: 'compact-model', pool: [] }] };
 });
 
 test('真压缩命中压缩渠道;引用特征串的任务、工具结果与系统说明仍走槽位', async () => {

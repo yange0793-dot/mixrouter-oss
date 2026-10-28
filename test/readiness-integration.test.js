@@ -8,7 +8,7 @@ const http = require('node:http');
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'mixr-ready-integration-'));
 Object.assign(process.env, { HOME: home, MIXR_DATA_DIR: home, MIXROUTER_PORT: '0', MIXUI_PORT: '0',
   MIXR_CLAUDE_SETTINGS: path.join(home, 'settings.json'), MIXR_CODEX_CONFIG: path.join(home, 'config.toml'),
-  MIXR_ZCODE_CONFIG: path.join(home, 'zcode.json'), MIXR_RESPONSE_ARCHIVE: 'off', MIXR_RETRY_DELAY_MS: '0',
+  MIXR_RESPONSE_ARCHIVE: 'off', MIXR_RETRY_DELAY_MS: '0',
   MIXR_MAX_ATTEMPTS: '3', MIXR_CONV_RETRIES: '0' });
 const mod = require('../mixrouter');
 let ui, proxy, upstream, base;
@@ -67,7 +67,7 @@ function populate() {
     { id: 'backup', name: 'backup', base_url: base, api_key: secretB, models: ['model-b'], enabled: true },
   ], codex: [] };
   mod._state.slotMap = { claude: { main: { provider: 'primary', model: 'model-a', pool: [{ provider: 'backup', model: 'model-b' }], strategy: 'priority' } }, codex: {} };
-  mod._state.current = { claude: null, codex: null, zcode: null };
+  mod._state.current = { claude: null, codex: null };
   mod._state.sessions.clear(); mod._state.cooldowns = {}; mode = 'success'; hits.length = 0;
 }
 test('导入预览不改库、明确合并保留原配置、重复请求令牌不可复用', async () => {
@@ -117,21 +117,15 @@ test('兼容接口真的发三种请求，成功不修改路由或会话', async
   assert.equal(JSON.stringify(mod._state.store), before);
   assert.equal(mod._state.sessions.size, 0);
 });
-test('兼容接口保留 ZCode 客户端语义，非法客户端不发请求', async () => {
+test('兼容接口拒绝已移除的 ZCode 和未知客户端,不发请求', async () => {
   populate();
-  const checked = await api('/api/providers/primary/compatibility', 'POST', {
-    app: 'zcode', model: 'model-a', client_wire: 'anthropic', confirm_run: true,
-  });
-  assert.equal(checked.status, 200, checked.text);
-  assert.equal(checked.body.ok, true, checked.text);
-  assert.equal(checked.body.scope.app, 'zcode');
-  assert.equal(checked.body.scope.client_wire, 'messages');
-  assert.equal(hits.length, 3);
-  const invalid = await api('/api/providers/primary/compatibility', 'POST', {
-    app: 'invalid', model: 'model-a', confirm_run: true,
-  });
-  assert.equal(invalid.status, 400, invalid.text);
-  assert.equal(hits.length, 3);
+  for (const app of ['zcode', 'invalid']) {
+    const checked = await api('/api/providers/primary/compatibility', 'POST', {
+      app, model: 'model-a', client_wire: 'anthropic', confirm_run: true,
+    });
+    assert.equal(checked.status, 400, checked.text);
+    assert.equal(hits.length, 0);
+  }
 });
 test('槽位故障回退使用明确备用模型，不永久改主用配置', async () => {
   populate(); mode = 'fail-primary';

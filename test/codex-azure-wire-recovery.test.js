@@ -112,8 +112,9 @@ function configure(host = HOSTS[0]) {
     : `${host.startsWith('http://') ? 'http' : 'https'}://${host.replace(/^http:\/\//, '')}/v1`;
   mod._state.store = { claude: [], codex: [{ id: 'azure-fixture', name: 'AgentRouter', enabled: true,
     api_key: 'synthetic-fixture-key', wire_api: 'responses', base_url: base, models: ['fixture-codex-model'] }] };
-  mod._state.routes = { rules: [], default: mod.normalizeRule({ provider: 'azure-fixture' }) };
-  mod._state.slotMap = { claude: {}, codex: { main: { provider: 'azure-fixture', model: 'fixture-codex-model' } } };
+  mod._state.routes = { rules: [] };
+  // 唯一登记模型:fixture-codex-model 只登记在 azure-fixture 上,请求模型精确命中它。
+  mod._state.slotMap = { claude: {}, codex: {} };
 }
 function reset() { fixtureId++; seen = []; mod._state.sessions.clear(); mod._state.cooldowns = {}; mod._state.resetPools(); configure(); }
 function answer(res, bytes = successBytes, status = 200, mime = 'text/event-stream', headers = {}) {

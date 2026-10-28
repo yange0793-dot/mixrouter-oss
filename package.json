@@ -2,7 +2,7 @@
   "name": "mixrouter",
   "version": "3.9.0",
   "private": true,
-  "description": "零依赖的本地 AI 路由器:Claude Code、Codex 与 ZCode 的渠道切换、会话分发和槽位路由",
+  "description": "零依赖的本地 AI 路由器:Claude Code 与 Codex 的渠道切换、精确模型匹配、模型槽位与压缩设置",
   "main": "mixrouter.js",
   "repository": {
     "type": "git",

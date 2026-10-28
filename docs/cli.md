@@ -15,7 +15,7 @@
 ./mixctl explain --input <file|-> [--json]
 ./mixctl split <主渠道ID> <主模型> <子代理渠道ID> <子代理模型> [--apply]
 ./mixctl split subagent <渠道ID> <模型> [--apply]
-./mixctl route <claude|codex|zcode> [anthropic|responses|chat] [--slots]
+./mixctl route <claude|codex> [--slots]
 ./mixctl backups [--json] [<文件名前缀>]
 ./mixctl backups --diff <备份名> [--file <现役路径>] [--json]
 ./mixctl restore <备份名或路径> [--file <受管现役路径>] [--dry-run | --yes] [--json]
@@ -34,8 +34,8 @@
 `start` / `stop` / `restart` 管后台进程(pid 在 `.run/mixrouter.pid`);`status` 同时核对
 运行进程加载的源码指纹。`--slots` 只对 `route claude` 有效;Codex 槽位不是客户端 env,
 `mixctl route codex --slots` 会被直接拒绝;普通 `route codex` 已自动使用可用主槽与审查槽别名。
-`route` 会写客户端配置,
-查询状态请用 `status` 或 `slots`。备份与还原是本地命令,不需要服务运行;
+`route` 只接受 `claude` 与 `codex` 两个客户端(旧的 `route zcode` 已移除),
+会写客户端配置,查询状态请用 `status` 或 `slots`。备份与还原是本地命令,不需要服务运行;
 **日志查询需要服务运行**。`probe` 需要服务运行:它会**真的向上游发一次生成请求、消耗额度**
 (每个模型一次),只读不落盘。
 
@@ -57,8 +57,8 @@
 `x-mixrouter-app` / `x-mixrouter-provider` / `x-mixrouter-model` / `x-mixrouter-session`
 便于排查。
 
-控制台在 **8788**:概览、用量统计、渠道与 Key、路由、会话、诊断、设置与备份。渠道支持搜索、筛选、
-测试、编辑、删除与客户端接入;路由编辑器支持渠道池、策略、优先级和匹配条件;
+控制台在 **8788**:概览、用量统计、渠道与 Key、压缩设置、会话、诊断、设置与备份。渠道支持搜索、筛选、
+测试、编辑、删除与客户端接入;「压缩设置」集中压缩专用渠道/模型/Key 与 Claude 压缩上下文窗口;
 会话页可手动改绑;请求日志支持多条件筛选。「用量统计」按区间汇总请求数、tokens、缓存命中率、
 速度与首字延迟,只报真实消耗,不折算金额。控制台与代理都只接受**字面量回环 Host**:
 `127.0.0.1:端口` 或 `[::1]:端口`(当前服务只绑 IPv4)。用 `localhost` 或自定义域名访问
@@ -77,8 +77,10 @@
   `npm run local` 是前台进程、没有 pid 文件,不由 `mixctl` 管理:停止用 Ctrl+C,
   重启就是再跑一次同一命令;只有 `mixctl start` 起的实例才用 `mixctl restart`。
 
-数据文件是 `providers.json`(含明文 Key,`0600`)、`routes.json`、
-`slots.json`、`sessions.json` 与 `logs/`。
+数据文件是 `providers.json`(含明文 Key,`0600`)、`routes.json`(现在只承载压缩设置;
+旧版本的通用规则字段留在盘上但**不再执行**)、`slots.json`、`sessions.json` 与 `logs/`。
+服务启动只读不写,不会删除或改写这份历史数据;但保存压缩设置或服务正常退出时,
+`routes.json` 会被内存里的归一化结果整体重写,已废弃条件与顶层 `default` 不会写回。
 这些都是本机状态,不要提交到 git 或随发布包分发。
 把 `MIXR_DATA_DIR` 指到一个固定目录,升级换代码时数据才不跟着代码走;
 更换代码目录而不设它,服务会按空库启动。
@@ -98,7 +100,7 @@
 ```
 
 等价手改:`ANTHROPIC_BASE_URL=http://127.0.0.1:8787`(不带 `/v1`)、
-`ANTHROPIC_AUTH_TOKEN` 填任意非空占位值,模型名保持不动——路由规则就是按它匹配的。
+`ANTHROPIC_AUTH_TOKEN` 填任意非空占位值,模型名保持不动——精确匹配与槽位别名都按它判断。
 标了 `wire_api: responses` 的渠道**不能直连切换**(它只挂 Codex 型通道),
 控制台里那颗按钮是禁用的,请走路由模式。
 
@@ -117,17 +119,9 @@ Codex 渠道补齐;已有无效槽不覆盖,需先修复。用户自己的 secti
 `wire_api = "responses"`,`experimental_bearer_token` 填占位值。
 首次切换接入后让客户端重新读取连接配置;已接入后的槽位落点变更不需要再重启,见下节。
 
-### ZCode
-
-```bash
-./mixctl route zcode                # 默认 Anthropic
-./mixctl route zcode responses      # OpenAI Responses
-./mixctl route zcode chat           # OpenAI Chat
-```
-
-只写桌面端 `~/.zcode/v2/config.json` 的自有 provider 条目,不改默认模型、已有会话、
-其它服务商或 CLI 扩展配置。配完在 ZCode 模型选择器里选 **Mixrouter · …**;
-新条目没出现就重启客户端并新建会话。
+> 本版只接入 Claude Code 与 Codex。旧的 `./mixctl route zcode`、`MIXR_ZCODE_CONFIG`
+> 与 ZCode 接入向导入口都已移除;`~/.zcode/v2/config.json` 不再由本项目读写。
+> 以前接过的话,按[升级与回退](upgrade-and-rollback.md#4-把客户端恢复成原来的配置)手工撤销。
 
 ## 4. 槽位与会话
 
@@ -172,13 +166,15 @@ Claude 槽位可在控制台「后备渠道」编辑备池(`pool`)的顺序与�
 
 ## 5. 压缩、日志与归档
 
-- **压缩模型**:控制台「路由 → 压缩模型」或 `GET/POST /api/compact`。它只改两条压缩内容
-  规则,不动主模型与普通路由。Key 默认跟随渠道当前账号;固定 `key_id` 只影响压缩,
+- **压缩模型**:控制台左侧「压缩设置」→ 压缩模型/Key,或 `GET/POST /api/compact`。它只改
+  压缩专用目标,不动主模型与普通转发。Key 默认跟随渠道当前账号;固定 `key_id` 只影响压缩,
   且只支持单渠道。失效时返回 `provider_key_unavailable_error`。压缩识别只读最后一条 user
-  消息的直接文本,命中判据见[参考手册](reference.md#6-压缩分流与压缩窗口)。
-- **压缩窗口**:控制台「路由 → 压缩上下文窗口」或 `GET/POST /api/compact/window`,
+  消息的直接文本,命中判据见[参考手册](reference.md#6-压缩设置与压缩窗口)。
+- **压缩窗口**:控制台「压缩设置」→ 压缩上下文窗口,或 `GET/POST /api/compact/window`,
   改磁盘配置里的 `autoCompactWindow`,接受 `100k`–`1M` 或 `auto`。
   环境变量 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 优先于磁盘设置,保存不会热改运行中的会话。
+  「压缩设置」在左侧导航有独立入口(视图 `#compact`,旧 `#routes` 链接会归一到这里);
+  `PUT /api/routes` 已移除(打过去固定回 410,说明通用规则不再存在)。
 - **请求日志**:`mixctl logs` 走运行中服务的 `GET /api/logs`,**服务必须运行**
   (控制台不可达时退回本机 `requests.jsonl` 的有界尾读,只支持位置式条数)。
   默认查当前进程内存环,重启后归零;要查旧记录用 `--history`。

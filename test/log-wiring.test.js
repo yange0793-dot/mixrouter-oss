@@ -63,6 +63,11 @@ const RUNTIME_FIELDS = ['app', 'attempts', 'bytes_in', 'cache_read', 'effort', '
   'model_out', 'ms', 'out', 'pool', 'provider', 'request_id', 'rule', 'session', 'session_kind', 'slot', 'status', 'sticky',
   'strategy', 'stream', 'ts', 'ttfb_ms', 'wire'].sort();
 const keysOf = o => Object.keys(o).sort();
+// 槽位分组合计。瘦身后普通路由规则已删除,唯一能给请求打上 slot 标签的路径是槽位别名,
+// 但本文件前面那几条脱敏用例会故意打一条 `mixr-haiku`(要验"不在用渠道的密钥也脱敏"),
+// 于是全局口径不能再假设"除这一条之外全是 none" —— 一律按**分组合计**对齐总数。
+const slotReqs = bySlot => Object.values(bySlot || {}).reduce((a, s) => a + (s.reqs || 0), 0);
+const slotSum = (bySlot, field) => Object.values(bySlot || {}).reduce((a, s) => a + (s[field] || 0), 0);
 
 test('setup:mock 上游 + 两个服务;渠道没有任何可用目标', async () => {
   await new Promise(ok => mock.server.listen(0, '127.0.0.1', ok));
@@ -74,23 +79,20 @@ test('setup:mock 上游 + 两个服务;渠道没有任何可用目标', async ()
     claude: [
       // 绑定上游:用来产生"成功但有 err"的条目(上游 401 回显密钥)
       { id: 'p-echo', name: '回显渠道', base_url: `http://127.0.0.1:${mockPort}`, api_key: SENT_ERR, enabled: true, models: ['echo-model'] },
-      // 多账号渠道、且没有任何路由指向它:它的密钥只能通过"密钥清单"这一层被脱敏覆盖
+      // 多账号渠道:它的密钥只能通过"密钥清单"这一层被脱敏覆盖(没有槽位指向它)
       { id: 'p-multi', name: '多账号渠道', base_url: 'http://127.0.0.1:1', api_key: SENT_MODEL, enabled: true,
         keys: [{ id: 'k1', label: '账号1', key: SENT_ERR }, { id: 'k2', label: '账号2', key: SENT_MODEL }] },
     ],
     codex: [],
   }));
-  fs.writeFileSync(path.join(TMP, 'routes.json'), JSON.stringify({
-    rules: [
-      { id: 'r-echo', match: 'echo-model', provider: 'p-echo', model: 'echo-model', enabled: true },
-      // 规则把请求模型改写成 SENT_MODEL(另一个渠道的密钥)。落地后 entry.model_out 就是这把密钥
-      // —— 这正是模块注释点名的威胁:客户端把 Key 误填进 model。model_out 只可能是路由改写的结果,
-      // 所以这条用例要验的是"**不在用**的渠道的密钥同样被脱敏",即 secrets 取的是全量清单而非当前渠道。
-      { id: 'r-leak', match: 'leaky-model', provider: 'p-echo', model: SENT_MODEL, enabled: true },
-    ],
-    default: { provider: '', model: '' },
-  }));
-  fs.writeFileSync(path.join(TMP, 'slots.json'), JSON.stringify({ version: 1, claude: { opus: { provider: 'p-echo', model: 'echo-model' } }, codex: {} }));
+  fs.writeFileSync(path.join(TMP, 'routes.json'), JSON.stringify({ rules: [], default: {} }));
+  // haiku 槽把请求模型改写成 SENT_MODEL(另一个渠道的密钥)。落地后 entry.model_out 就是这把密钥
+  // —— 这正是模块注释点名的威胁:客户端把 Key 误填进 model。model_out 只可能是槽位改写的结果,
+  // 所以这条用例要验的是"**不在用**的渠道的密钥同样被脱敏",即 secrets 取的是全量清单而非当前渠道。
+  fs.writeFileSync(path.join(TMP, 'slots.json'), JSON.stringify({ version: 1, claude: {
+    opus: { provider: 'p-echo', model: 'echo-model' },
+    haiku: { provider: 'p-echo', model: SENT_MODEL },
+  }, codex: {} }));
   mod = require('../mixrouter.js');
   proxySrv = await mod.listen(0, mod.proxyHandler);
   uiSrv = await mod.listen(0, mod.apiHandler);
@@ -135,10 +137,10 @@ test('上游 401 回显渠道密钥:err 里的密钥在响应与磁盘上都被�
 });
 
 test('非在用的渠道密钥也必须脱敏(secrets 取的是全量清单,不是当前渠道)', async () => {
-  // 真实泄漏路径:请求模型名被路由改写成 SENT_MODEL(p-multi 的密钥),落进 entry.model_out。
-  // p-multi 没有任何规则指向它,所以"按当前渠道取密钥"的实现拿不到这把 key —— 只有
+  // 真实泄漏路径:请求模型名被槽位改写成 SENT_MODEL(p-multi 的密钥),落进 entry.model_out。
+  // p-multi 没有任何槽位指向它,所以"按当前渠道取密钥"的实现拿不到这把 key —— 只有
   // "遍历全部渠道全部密钥"这一层能挡住它。
-  const r = await ask('leaky-model');
+  const r = await ask('mixr-haiku');
   assert.strictEqual(r.status, 200);
   const resp = await ui('GET', '/api/logs?limit=1');
   assert.ok(!resp.text.includes(SENT_MODEL), '不在用渠道的密钥也不得出现在 /api/logs');
@@ -146,7 +148,7 @@ test('非在用的渠道密钥也必须脱敏(secrets 取的是全量清单,不�
   assert.ok(!onDisk.includes(SENT_MODEL), '不在用渠道的密钥也不得落盘');
   // 前提:这条条目确实把改写后的模型名写进了 model_out(否则本用例是空转,测不到脱敏)
   const e = JSON.parse(resp.text).logs[0];
-  assert.strictEqual(e.rule, 'r-leak');
+  assert.strictEqual(e.rule, 'slot:claude/haiku');
   assert.strictEqual(e.model_out, '[redacted]', 'model_out 应是被脱敏后的值');
 });
 
@@ -158,7 +160,7 @@ test('全部既有端点在接线后仍返回原形状(回归闸门)', async () 
   assert.strictEqual(stats.reqs, all.logs.length, '统计总数须与全量日志一致');
   assert.strictEqual(stats.scope.source, 'memory');
   assert.strictEqual(stats.scope.timezone, 'UTC');
-  assert.strictEqual(stats.by_slot.none.reqs, stats.reqs);
+  assert.strictEqual(slotReqs(stats.by_slot), stats.reqs, '每一条请求都要归进某个槽位分组(none = 非槽位请求)');
   assert.deepStrictEqual(keysOf(stats.by_slot.none), ['cache', 'in', 'out', 'reqs']);
   const state = JSON.parse((await ui('GET', '/api/state')).text);
   assert.deepStrictEqual(keysOf(state.stats), ['inTok', 'outTok', 'reqs']);
@@ -338,10 +340,10 @@ test('HTTP history pagination retains initial snapshot and stats counts disk sco
   assert.strictEqual(stats.reqs, expected.length + 1);
   assert.strictEqual(stats.scope.source, 'history');
   assert.strictEqual(stats.scope.timezone, 'UTC');
-  assert.strictEqual(stats.by_slot.none.reqs, stats.reqs);
-  assert.strictEqual(stats.by_slot.none.in, stats.inTok);
-  assert.strictEqual(stats.by_slot.none.out, stats.outTok);
-  assert.strictEqual(stats.by_slot.none.cache, stats.cache);
+  assert.strictEqual(slotReqs(stats.by_slot), stats.reqs, '分组合计要等于总量');
+  assert.strictEqual(slotSum(stats.by_slot, 'in'), stats.inTok);
+  assert.strictEqual(slotSum(stats.by_slot, 'out'), stats.outTok);
+  assert.strictEqual(slotSum(stats.by_slot, 'cache'), stats.cache);
   const at = expected[0].ts;
   const query = new URLSearchParams({ history: '1', since: at, until: at, limit: '1000' });
   const filtered = JSON.parse((await ui('GET', '/api/logs?' + query)).text);
@@ -382,7 +384,8 @@ test('real slot request records resolved slot and both stats scopes expose slot 
   for (const suffix of ['', '?history=1']) {
     const stats = JSON.parse((await ui('GET', '/api/stats' + suffix)).text);
     assert.strictEqual(stats.by_slot.opus.reqs, 1);
-    assert.strictEqual(stats.by_slot.none.reqs, stats.reqs - 1);
+    // 前面脱敏用例打的那条 mixr-haiku 也计入 haiku 分组,所以 none = 总数 − opus − haiku
+    assert.strictEqual(stats.by_slot.none.reqs, stats.reqs - 1 - ((stats.by_slot.haiku || {}).reqs || 0));
     assert.strictEqual(stats.by_slot.opus.in, recent[0].in);
     assert.strictEqual(stats.by_slot.opus.out, recent[0].out);
     assert.strictEqual(stats.by_slot.opus.cache, recent[0].cache_read);

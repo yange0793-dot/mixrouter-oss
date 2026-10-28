@@ -2,8 +2,8 @@
 // 编程兼容性探针的**链路级**回归。
 //
 // 这个文件不测"函数返回值长什么样",而是钉住三件事:
-//   1. 六条客户端→上游协议组合(Claude→anthropic/responses/chat、Codex Responses→
-//      responses/chat、ZCode chat→chat)都真的经过 createAttempt + createAttemptRunner +
+//   1. 五条客户端→上游协议组合(Claude→anthropic/responses/chat、Codex Responses→
+//      responses/chat)都真的经过 createAttempt + createAttemptRunner +
 //      createRequestContext + production dispatchResponse,而不是只打 /v1/models;
 //   2. 隔离:注入的 storeOf / settleRequest 一旦被调用就抛错 ——
 //      探针必须只认识本次渠道,不写会话、不碰真实渠道库;
@@ -30,7 +30,6 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'mixr-compat-'));
 process.env.MIXR_DATA_DIR = TMP;
 process.env.MIXR_CLAUDE_SETTINGS = path.join(TMP, 'settings.json');
 process.env.MIXR_CODEX_CONFIG = path.join(TMP, 'config.toml');
-process.env.MIXR_ZCODE_CONFIG = path.join(TMP, 'zcode.json');
 process.env.MIXR_RETRY_DELAY_MS = '0';
 process.env.MIXROUTER_PORT = '0';
 process.env.MIXUI_PORT = '0';
@@ -462,7 +461,6 @@ const COMBOS = [
   { app: 'claude', client_wire: 'messages', wire_api: 'chat' },
   { app: 'codex', client_wire: 'responses', wire_api: 'responses' },
   { app: 'codex', client_wire: 'responses', wire_api: 'chat' },
-  { app: 'zcode', client_wire: 'chat', wire_api: 'chat' }, // ZCode 的 chat 接入
 ];
 const UPSTREAM_PATH = {
   anthropic: '/v1/messages', responses: '/v1/responses', chat: '/v1/chat/completions',
@@ -482,7 +480,7 @@ after(async () => {
 
 // ---------------------------------------------------------------- 链路矩阵
 
-test('六条客户端→上游协议组合全部经真实转发链通过', async t => {
+test('五条客户端→上游协议组合全部经真实转发链通过', async t => {
   for (const combo of COMBOS) {
     await t.test(`${combo.app}/${combo.client_wire} → ${combo.wire_api}`, async () => {
       mock.reset();
@@ -619,20 +617,6 @@ test('Key 不可用时明确报认证问题,且不发任何请求', async () => 
   }
 });
 
-test('chat 客户端配 responses 渠道是配置不匹配:零请求', async () => {
-  mock.reset();
-  const result = await tester.test({
-    provider: makeProvider({ wire_api: 'responses' }), app: 'zcode', model: 'mock-model',
-    client_wire: 'chat', confirm_run: true,
-  });
-  assert.equal(result.ok, false);
-  assert.equal(mock.requests.length, 0);
-  for (const check of result.checks) {
-    assert.equal(check.status, 'skipped');
-    assert.equal(check.code, 'wire_api_mismatch');
-  }
-});
-
 test('不认识的 app / client_wire 直接拒绝,零请求', async () => {
   mock.reset();
   const badApp = await tester.test({ provider: makeProvider(), app: 'unknown', model: 'm',
@@ -666,25 +650,17 @@ test('Codex 选 chat 连接仍按 Responses 客户端探(测的是翻译链,不�
   assert.equal(mock.requests[2].body.tools[0].function.strict, false);
 });
 
-test('显式 app=zcode 按 kind 选择客户端协议(anthropic/responses/chat)', async t => {
-  const cases = [
-    { wire_api: 'anthropic', client_wire: 'anthropic', client: 'messages', path: '/v1/messages' },
-    { wire_api: 'responses', client_wire: 'responses', client: 'responses', path: '/v1/responses' },
-    { wire_api: 'chat', client_wire: 'chat', client: 'chat', path: '/v1/chat/completions' },
-  ];
-  for (const item of cases) {
-    await t.test(`zcode/${item.client_wire}`, async () => {
+test('已移除的 ZCode 不能借任意 client_wire 重新接入', async t => {
+  for (const wire of ['anthropic', 'responses', 'chat']) {
+    await t.test(wire, async () => {
       mock.reset();
       const result = await tester.test({
-        provider: makeProvider({ wire_api: item.wire_api }), app: 'zcode', model: 'mock-model',
-        key_id: 'k1', client_wire: item.client_wire, confirm_run: true,
+        provider: makeProvider({ wire_api: wire }), app: 'zcode', model: 'mock-model',
+        key_id: 'k1', client_wire: wire, confirm_run: true,
       });
-      assert.equal(result.ok, true, JSON.stringify(result));
-      assert.equal(result.scope.app, 'zcode');
-      assert.equal(result.scope.client_wire, item.client);
-      assert.equal(result.scope.wire_api, item.wire_api);
-      assert.equal(mock.requests.length, 3);
-      assert.equal(mock.requests[0].url, item.path);
+      assert.equal(result.ok, false, JSON.stringify(result));
+      assert.equal(result.checks[0].code, 'invalid_request');
+      assert.equal(mock.requests.length, 0);
     });
   }
 });

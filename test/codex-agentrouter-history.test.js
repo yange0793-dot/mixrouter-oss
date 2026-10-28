@@ -44,7 +44,7 @@ function history() {
     }, required: ['label'], additionalProperties: false } },
     { type: 'custom', name: 'echo_fixture', format: { type: 'grammar', syntax: 'regex', definition: 'fixture_[a-z]+' } },
   ] }];
-  const body = { model: 'fixture-codex-model', stream: true, store: false,
+  const body = { model: SLOT, stream: true, store: false,
     instructions: 'Use synthetic labels only.', prompt_cache_key: 'fixture-cache', prompt_cache_retention: '24h',
     reasoning: { effort: 'max', summary: 'detailed' }, include: ['reasoning.encrypted_content'],
     text: { format: { type: 'text' }, verbosity: 'medium' }, parallel_tool_calls: false,
@@ -85,6 +85,10 @@ function freeze(value) {
 
 let upstream, proxy, api, reply, seen, fixtureId = 0, generationCount;
 const sockets = new Set();
+// 精确槽位:通用 match/default 规则删除后,多渠道(含备池)只能靠槽位别名 + 同一落点模型表达。
+const SLOT = 'mixr-main', SLOT_MODEL = 'fixture-codex-model';
+// 出站体:槽位把请求别名换成落点模型,其余字节一律照抄客户端请求。
+const outbound = body => ({ ...structuredClone(body), model: SLOT_MODEL });
 const originalHttpRequest = http.request;
 const originalHttpsRequest = https.request;
 function interceptRequest(original, options, ...rest) {
@@ -105,7 +109,9 @@ function configure({ host = HOSTS[0], other = true, keyFallback = true } = {}) {
       { id: `fixture-b-${fixtureId}`, label: 'b', key: 'synthetic-alternate-key', enabled: true },
     ] });
   mod._state.store = { claude: [], codex: [provider('fixture-primary'), ...(other ? [provider('fixture-secondary')] : [])] };
-  mod._state.routes = { rules: [], default: mod.normalizeRule({ pool: other ? ['fixture-primary', 'fixture-secondary'] : ['fixture-primary'], strategy: 'priority' }) };
+  mod._state.slotMap = { claude: {}, codex: { main: { provider: 'fixture-primary', model: SLOT_MODEL,
+    ...(other ? { pool: ['fixture-secondary'] } : {}) } } };
+  mod._state.routes = { rules: [] };
 }
 function reset() {
   fixtureId++; seen = []; generationCount = 0; mod._state.sessions.clear(); mod._state.cooldowns = {}; mod._state.resetPools(); configure();
@@ -259,9 +265,9 @@ for (const [host, mode] of [[HOSTS[0], 'raw-json-sse-mime'], [HOSTS[1], 'data-on
     };
     const result = await ask(body);
     assert.equal(result.status, 200, result.text); assert.deepEqual(result.bytes, Buffer.from(successBytes));
-    assert.equal(seen.length, 2); assert.deepEqual(JSON.parse(seen[0].bytes), original);
-    assert.deepEqual(JSON.parse(seen[1].bytes), expectedProjection(original)); assert.deepEqual(body, original);
-    assert.equal(projectResponsesHistory(original).ok, true); assertSameBinding();
+    assert.equal(seen.length, 2); assert.deepEqual(JSON.parse(seen[0].bytes), outbound(original));
+    assert.deepEqual(JSON.parse(seen[1].bytes), expectedProjection(outbound(original))); assert.deepEqual(body, original);
+    assert.equal(projectResponsesHistory(outbound(original)).ok, true); assertSameBinding();
     assert.equal(lastLog().attempts, 2); assert.equal(lastLog().effort, 'max');
     assert.equal(lastLog().in, 23); assert.equal(lastLog().out, 7); assert.equal(lastLog().cache_read, 5);
     assert.equal(lastLog().err || '', ''); assert.equal(lastLog().err_class || '', '');
@@ -279,18 +285,18 @@ test('nonstream native JSON generic400 follows the same safe projection and succ
     : answer(res, JSON.stringify(completed), 200, 'application/json');
   const result = await ask(body);
   assert.equal(result.status, 200); assert.equal(result.text, JSON.stringify(completed)); assert.equal(seen.length, 2);
-  assert.deepEqual(JSON.parse(seen[1].bytes), expectedProjection(original)); assert.deepEqual(body, original); assertSameBinding();
+  assert.deepEqual(JSON.parse(seen[1].bytes), expectedProjection(outbound(original))); assert.deepEqual(body, original); assertSameBinding();
   assert.equal((await recoveryEvents()).length, 1);
 });
 
 test('output ID alone is projected while empty output and semantic call ID survive', async () => {
-  const body = freeze({ model: 'fixture-codex-model', stream: true, reasoning: { effort: 'max' }, input: [
+  const body = freeze({ model: SLOT, stream: true, reasoning: { effort: 'max' }, input: [
     { type: 'function_call', call_id: 'semantic-call-kept', namespace: 'fixture_tools', name: 'summarize', arguments: '{"id":"argument-id-kept"}' },
     { type: 'function_call_output', id: 'fco-only', call_id: 'semantic-call-kept', output: '' },
   ] }), original = structuredClone(body);
   reply = (_req, res) => seen.length === 1 ? answer(res, JSON.stringify(genericError()), 400) : answer(res);
   const result = await ask(body); assert.equal(result.status, 200, result.text); assert.equal(seen.length, 2);
-  assert.deepEqual(JSON.parse(seen[1].bytes), expectedProjection(original)); assert.deepEqual(body, original); assertSameBinding();
+  assert.deepEqual(JSON.parse(seen[1].bytes), expectedProjection(outbound(original))); assert.deepEqual(body, original); assertSameBinding();
 });
 
 test('same generic400 from an unknown provider returns exact original bytes without retry', async () => {
@@ -300,7 +306,7 @@ test('same generic400 from an unknown provider returns exact original bytes with
   const result = await ask(body);
   assert.equal(result.status, 400); assert.equal(result.text, raw); assert.equal(result.headers['x-request-id'], 'unknown-provider-error');
   assert.equal(seen.length, 1); assert.equal(lastLog().attempts, 1); assert.equal(lastLog().resource_recovery_skipped, undefined);
-  assert.deepEqual(JSON.parse(seen[0].bytes), original); assert.deepEqual(body, original); assert.equal((await recoveryEvents()).length, 0);
+  assert.deepEqual(JSON.parse(seen[0].bytes), outbound(original)); assert.deepEqual(body, original); assert.equal((await recoveryEvents()).length, 0);
 });
 
 test('ordinary400/filter/auth errors remain exact terminal failures, never history retries', async () => {
@@ -313,7 +319,7 @@ test('ordinary400/filter/auth errors remain exact terminal failures, never histo
     const result = await ask(body);
     assert.equal(result.status, status); assert.equal(result.text, raw); assert.equal(result.headers['x-request-id'], 'terminal-error');
     assert.equal(seen.length, 1); assert.equal(lastLog().attempts, 1); assert.equal(lastLog().resource_recovery_skipped, undefined);
-    assert.deepEqual(JSON.parse(seen[0].bytes), original); assert.deepEqual(body, original); assert.equal((await recoveryEvents()).length, 0);
+    assert.deepEqual(JSON.parse(seen[0].bytes), outbound(original)); assert.deepEqual(body, original); assert.equal((await recoveryEvents()).length, 0);
   }
 });
 
@@ -332,7 +338,7 @@ test('HTTP400 complete error plus unknown or partial tail preserves every byte w
     reply = (_req, res) => answer(res, raw, 400, 'text/event-stream', { 'x-request-id': 'unsafe-tail' });
     const result = await ask(body);
     assert.equal(result.status, 400); assert.deepEqual(result.bytes, Buffer.from(raw)); assert.equal(seen.length, 1);
-    assert.equal(result.headers['x-request-id'], 'unsafe-tail'); assert.deepEqual(JSON.parse(seen[0].bytes), original);
+    assert.equal(result.headers['x-request-id'], 'unsafe-tail'); assert.deepEqual(JSON.parse(seen[0].bytes), outbound(original));
     assert.deepEqual(body, original); assert.equal((await recoveryEvents()).length, 0);
   }
 });
@@ -359,7 +365,7 @@ test('unsafe original histories are not modified and log the existing fixed reso
     const result = await ask(body);
     assert.equal(result.status, 400); assert.equal(result.text, raw); assert.equal(seen.length, 1); assert.equal(lastLog().attempts, 1);
     assert.equal(result.headers['x-request-id'], 'unsafe-history'); assert.equal(lastLog().resource_recovery_skipped, code);
-    assert.deepEqual(JSON.parse(seen[0].bytes), original); assert.deepEqual(body, original); assert.equal(generationCount, 0);
+    assert.deepEqual(JSON.parse(seen[0].bytes), outbound(original)); assert.deepEqual(body, original); assert.equal(generationCount, 0);
     assert.equal((await recoveryEvents()).length, 0);
   }
 });
@@ -372,7 +378,7 @@ test('repeated generic failures project once and stop at MAX_ATTEMPTS3 + CONV_RE
   const result = await ask(body);
   assert.equal(seen.length, 5); assert.equal(lastLog().attempts, 5); assert.equal(result.status, 400);
   assert.equal(result.text, JSON.stringify(genericError('fixture-5'))); assert.equal(result.headers['x-request-id'], 'last-5');
-  assert.deepEqual(JSON.parse(seen[0].bytes), original); assert.deepEqual(JSON.parse(seen[1].bytes), expectedProjection(original));
+  assert.deepEqual(JSON.parse(seen[0].bytes), outbound(original)); assert.deepEqual(JSON.parse(seen[1].bytes), expectedProjection(outbound(original)));
   for (const request of seen.slice(2)) assert.deepEqual(request.bytes, seen[1].bytes, 'later attempts reuse the one safe projection');
   assert.deepEqual(body, original); assertSameBinding(); assert.equal(generationCount, 0); assert.equal(logs().length, logCount + 1);
   assert.equal(lastLog().resource_recovery_skipped, undefined); assert.match(lastLog().err, /Upstream rejected the request as invalid/);

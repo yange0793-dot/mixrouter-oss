@@ -535,8 +535,9 @@ test('DELETE /api/providers 失败时,槽位与路由的引用要跟着渠道一
   // 让这个渠道被一个槽位和一条路由引用着 —— 删除时这两处都会被改写
   const slotPut = await post('/api/slots', { claude: { subagent: { provider: id, model: 'slot-model' } } }, 'PUT');
   assert.equal(slotPut.status, 200, `夹具:槽位绑定失败 ${slotPut.text}`);
-  const routePut = await post('/api/routes', { rules: [{ id: 'r1', provider: id, enabled: true }] }, 'PUT');
-  assert.equal(routePut.status, 200, `夹具:路由绑定失败 ${routePut.text}`);
+  // 压缩设置是瘦身后唯一还会引用渠道 id 的规则面(普通路由规则已删除)
+  const routePut = await post('/api/compact', { provider: id, model: 'claude-opus-5' });
+  assert.equal(routePut.status, 200, `夹具:压缩设置绑定失败 ${routePut.text}`);
 
   const before = (await get('/api/state')).json;
   const slotBefore = before.slots.claude.find(s => s.name === 'subagent');
@@ -557,8 +558,11 @@ test('DELETE /api/providers 失败时,槽位与路由的引用要跟着渠道一
   const slotAfter = after.slots.claude.find(s => s.name === 'subagent');
   assert.equal(slotAfter.provider, id, '槽位对它的引用必须一起回来 —— 否则渠道在、槽位空,是另一种不一致');
   assert.equal(slotAfter.model, 'slot-model', '槽位其余字段一个字都不该丢');
-  const ruleAfter = (after.routes.rules || []).find(r => r.id === 'r1');
-  assert.equal(ruleAfter.provider, id, '路由规则里的引用同样要回来');
+  const ruleAfter = after.compact.rules.find(r => r.kind === 'global');
+  assert.equal(ruleAfter.targets[0].provider, id, '压缩设置的引用同样要回来');
+  // provider 被删时公开视图会补一个 enabled:false 的占位成员,所以必须同时看 enabled
+  // 才证明渠道是真的回来了,而不是"占位符长得像回来"。
+  assert.equal(ruleAfter.targets[0].enabled, true, '压缩设置的落点渠道要真的可用');
 
   // 内存对了还不够:**盘上**也得是对的。槽位与路由各自在删除过程中落过一次盘,
   // 回滚若没把它们写回去,重启之后就是另一个样子。
@@ -567,7 +571,7 @@ test('DELETE /api/providers 失败时,槽位与路由的引用要跟着渠道一
   assert.equal(slotsOnDisk.claude.subagent.provider, id,
     'slots.json 里也必须恢复 —— 只改内存的话重启后又变空');
   const routesOnDisk = JSON.parse(fs.readFileSync(path.join(DATA, 'routes.json'), 'utf8'));
-  assert.equal((routesOnDisk.rules || []).find(r => r.id === 'r1').provider, id,
+  assert.equal((routesOnDisk.rules || []).find(r => r.id === 'compact-global').provider, id,
     'routes.json 同理');
 });
 
@@ -586,8 +590,8 @@ test('删渠道:第一段落盘(槽位)就失败时,四处内存与盘上都不�
   const id = created.json.id;
   const slotPut = await post('/api/slots', { claude: { subagent: { provider: id, model: 'slot-model' } } }, 'PUT');
   assert.equal(slotPut.status, 200, `夹具:槽位绑定失败 ${slotPut.text}`);
-  const routePut = await post('/api/routes', { rules: [{ id: 'r1', provider: id, enabled: true }] }, 'PUT');
-  assert.equal(routePut.status, 200, `夹具:路由绑定失败 ${routePut.text}`);
+  const routePut = await post('/api/compact', { provider: id, model: 'claude-opus-5' });
+  assert.equal(routePut.status, 200, `夹具:压缩设置绑定失败 ${routePut.text}`);
 
   const slotsBefore = fs.readFileSync(path.join(DATA, 'slots.json'), 'utf8');
   const providersBefore = fs.readFileSync(path.join(DATA, 'providers.json'), 'utf8');
@@ -614,7 +618,9 @@ test('删渠道:第一段落盘(槽位)就失败时,四处内存与盘上都不�
   assert.equal(after.providers.claude.some(p => p.id === id), true,
     '内存里渠道要还在 —— 否则控制台显示它没了、盘上却还在');
   assert.equal(after.slots.claude.find(s => s.name === 'subagent').provider, id, '内存槽位要回到原样');
-  assert.equal((after.routes.rules || []).find(r => r.id === 'r1').provider, id, '内存路由引用也要回到原样');
+  const compactAfter = after.compact.rules.find(r => r.kind === 'global').targets[0];
+  assert.equal(compactAfter.provider, id, '内存里的压缩设置引用也要回到原样');
+  assert.equal(compactAfter.enabled, true, '占位成员不算回来 —— 渠道必须在库里');
 });
 
 test('删渠道失败:恢复渠道的原始顺序,不能把它追加到队尾', async t => {
@@ -647,7 +653,7 @@ test('删渠道回滚:槽位恢复失败也必须继续恢复路由', async t =>
   assert.equal(created.status, 200);
   const id = created.json.id;
   assert.equal((await post('/api/slots', { claude: { subagent: { provider: id, model: 'slot-model' } } }, 'PUT')).status, 200);
-  assert.equal((await post('/api/routes', { rules: [{ id: 'rb-route', provider: id, enabled: true }] }, 'PUT')).status, 200);
+  assert.equal((await post('/api/compact', { provider: id, model: 'claude-opus-5' })).status, 200);
   const routesBefore = fs.readFileSync(path.join(DATA, 'routes.json'), 'utf8');
   const providersBefore = fs.readFileSync(path.join(DATA, DATA_POOL_BASE), 'utf8');
   const realRename = fs.renameSync;
@@ -675,5 +681,6 @@ test('删渠道回滚:槽位恢复失败也必须继续恢复路由', async t =>
   assert.match(res.json.error, /盘上已不一致/);
   const after = (await get('/api/state')).json;
   assert.equal(after.slots.claude.find(s => s.name === 'subagent').provider, id);
-  assert.equal(after.routes.rules.find(r => r.id === 'rb-route').provider, id);
+  // 压缩设置是唯一还会引用渠道 id 的规则面:回滚失败时它仍必须回到原样(内存层面)
+  for (const rule of after.compact.rules) assert.equal(rule.targets[0].provider, id, '压缩设置的引用要回到原样');
 });

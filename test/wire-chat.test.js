@@ -560,10 +560,10 @@ test('e2e setup:chat 型 Claude 渠道 + mock 上游', async () => {
     }],
     codex: [],
   }));
-  fs.writeFileSync(path.join(TMP, 'routes.json'), JSON.stringify({
-    rules: [{ id: 'r1', match: 'claude-opus', provider: 'p1', model: 'glm-5.3-flash', enabled: true }],
-    default: { provider: 'p1', model: 'glm-5.3-flash' },
-  }));
+  // 通用 match/default 规则已删除:Claude 组固定槽位 main 钉到 p1,落点模型是该网关的 glm-5.3-flash。
+  fs.writeFileSync(path.join(TMP, 'routes.json'), JSON.stringify({ rules: [] }));
+  fs.writeFileSync(path.join(TMP, 'slots.json'), JSON.stringify({ version: 1,
+    claude: { main: { provider: 'p1', model: 'glm-5.3-flash' } }, codex: {} }));
   mod = require('../mixrouter.js');
   proxySrv = await mod.listen(0, mod.proxyHandler);
   uiSrv = await mod.listen(0, mod.apiHandler);
@@ -576,7 +576,7 @@ test('e2e setup:chat 型 Claude 渠道 + mock 上游', async () => {
 test('e2e 非流式:messages 翻成 chat 发上游,整包 JSON 翻回 Anthropic', async () => {
   const before = mock.requests.length;
   const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {
-    body: { model: 'claude-opus-5', max_tokens: 64, messages: [{ role: 'user', content: '你好' }] },
+    body: { model: 'mixr-main', max_tokens: 64, messages: [{ role: 'user', content: '你好' }] },
   });
   assert.strictEqual(r.status, 200);
   const seen = mock.requests[before];
@@ -597,7 +597,7 @@ test('e2e 非流式:messages 翻成 chat 发上游,整包 JSON 翻回 Anthropic'
 test('e2e 流式:客户端要流,收 Anthropic SSE 事件序列', async () => {
   const before = mock.requests.length;
   const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {
-    body: { model: 'claude-opus-5', max_tokens: 64, stream: true, messages: [{ role: 'user', content: '你好' }] },
+    body: { model: 'mixr-main', max_tokens: 64, stream: true, messages: [{ role: 'user', content: '你好' }] },
   });
   assert.strictEqual(r.status, 200);
   assert.ok(r.headers['content-type'].includes('text/event-stream'));
@@ -613,7 +613,7 @@ test('e2e 流式:客户端要流,收 Anthropic SSE 事件序列', async () => {
 test('e2e:count_tokens 在 chat 线上本地估算,不打上游', async () => {
   const before = mock.requests.length;
   const r = await rawRequest(proxyPort, 'POST', '/v1/messages/count_tokens', {
-    body: { model: 'claude-opus-5', messages: [{ role: 'user', content: '数一下这段的 token' }] },
+    body: { model: 'mixr-main', messages: [{ role: 'user', content: '数一下这段的 token' }] },
   });
   assert.strictEqual(r.status, 200);
   assert.ok(JSON.parse(r.text).input_tokens >= 1);

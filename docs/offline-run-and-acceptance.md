@@ -55,7 +55,7 @@ npm run smoke                      # 等价于 node scripts/smoke-offline.js;退
 5. **`MIXR_DATA_DIR` 指向临时目录**,providers / routes / slots / sessions / logs 全在那一份。
 6. **`MIXR_UPSTREAM_PROXY` 显式置空**(而不是依赖调用方 shell 里没有)。
 
-**不监视真实 HOME**。脚本不去 stat 真实的 `~/.claude` / `~/.codex` / `~/.zcode`,也不拿仓库根
+**不监视真实 HOME**。脚本不去 stat 真实的 `~/.claude` / `~/.codex`,也不拿仓库根
 `providers.json` 之类的 mtime 去推断"我有没有污染":那些都是运行中本来就会被改写的文件,
 其它会话正常操作就会让这类断言误报。防污染改成两条:严格的环境隔离(上面 4/5 条),加上
 临时 `HOME` 里放一份**哨兵** `settings.json`,跑完比对内容原样未动——这才是在验证
@@ -107,7 +107,6 @@ require 之后再改不生效。这也是为什么 `test/` 下每个文件都在
 MIXR_DATA_DIR=/tmp/mixr-run \
 MIXR_CLAUDE_SETTINGS=/tmp/mixr-run/claude/settings.json \
 MIXR_CODEX_CONFIG=/tmp/mixr-run/codex/config.toml \
-MIXR_ZCODE_CONFIG=/tmp/mixr-run/zcode/config.json \
 MIXROUTER_PORT=0 MIXUI_PORT=0 \
 node mixrouter.js
 ```
@@ -176,8 +175,8 @@ npm run smoke            # → node scripts/smoke-offline.js(两个入口都可�
 (以下都按 `scripts/run-tests.js` 现役源码写):
 
 1. **整份环境重定向到一次性临时目录**:`HOME`、`USERPROFILE`、`XDG_CONFIG_HOME`、
-   `TMPDIR`/`TMP`/`TEMP`、`MIXR_DATA_DIR`、三个客户端配置路径(`MIXR_CLAUDE_SETTINGS` /
-   `MIXR_CODEX_CONFIG` / `MIXR_ZCODE_CONFIG`)。调用方环境里所有 `MIXR_` / `MIXROUTER_` / `MIXUI_` 前缀的变量
+   `TMPDIR`/`TMP`/`TEMP`、`MIXR_DATA_DIR`、两个客户端配置路径(`MIXR_CLAUDE_SETTINGS` /
+   `MIXR_CODEX_CONFIG`)。调用方环境里所有 `MIXR_` / `MIXROUTER_` / `MIXUI_` 前缀的变量
    **整个过滤掉**,不继承现役路由旋钮;`MIXROUTER_PORT` / `MIXUI_PORT` 显式设成 `'0'`,
    `MIXR_UPSTREAM_PROXY` 显式置空。跑完把整个临时根目录删掉。
    > 注意 `MIXROUTER_PORT='0'` 在这套环境里的实际效果:见 §2,`ROUTER_URL` 与
