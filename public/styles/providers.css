@@ -250,6 +250,7 @@ body[data-connection=offline] #prov-grid .card.sel { border-color: var(--border)
 #provider-form #m-keys-wrap { margin-top: 0; }
 #provider-form > label { margin: 14px 0 5px; }
 #provider-form input[type="text"],
+#provider-form input[type="url"],
 #provider-form input[type="password"],
 #provider-form select { width: 100%; }
 #provider-form .muted { font-size: 12.5px; line-height: 1.6; }

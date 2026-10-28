@@ -64,6 +64,7 @@ Claude Code / Codex 入口的判定顺序是固定的四段,唯一定义在 `lib
 | `wire_api` | Claude 组:`anthropic`(缺省)/ `responses` / `chat`;Codex 组:`responses`(缺省)/ `chat` |
 | `ua` | 渠道级 User-Agent,压过客户端自己的 UA |
 | `direct` | `true` = 这个渠道跳过 `MIXR_UPSTREAM_PROXY` 隧道 |
+| `proxy_url` | 渠道级出站代理;非空 = 这个渠道强制走该 HTTP CONNECT 代理,空/缺省 = 跟 `MIXR_UPSTREAM_PROXY` 走;只接受 `http://` 地址,不能带 `user:pass@`、查询串或片段;与 `direct: true` 互斥(同时给 400) |
 | `enabled` | 默认启用 |
 | `keys` / `active_key` | 多 Key 清单 `[{id,label,key}]` 与当前生效 Key |
 | `key_fallback` | 布尔值，默认关闭；明确开启后才在账号故障时尝试同渠道备用 Key，不改 `active_key` 或模型 |
@@ -72,6 +73,28 @@ Claude Code / Codex 入口的判定顺序是固定的四段,唯一定义在 `lib
 Responses 型通道上 → Claude 组标 `responses`;网关只开 `/v1/chat/completions` → 标 `chat`。
 配错时不会静默降级:路由命中的渠道协议与请求端点不匹配会回 `wire_api_mismatch_error`;
 但有些错误上游自己也会回 4xx,那种情况看到的是上游原文,不一定是这个错误码。
+
+**渠道级出站代理(`proxy_url`)** 让同一个进程里的不同渠道走不同出口。取舍顺序固定为
+`direct: true` > `proxy_url` > `MIXR_UPSTREAM_PROXY` > 直连:标了 `direct` 的渠道永远直连,
+即使填了 `proxy_url` 也不会生效;没标 `direct` 但 `proxy_url` 非空,就强制走它;否则才看全局变量。
+`direct` 与 `proxy_url` 同时存在会让"这个渠道到底怎么出网"变得含糊,写接口在保存前直接以
+400 拒绝——给标了直连的渠道加代理时,同一个 `PUT` 里带 `"direct": false`。写接口是
+`POST /api/providers` 与 `PUT /api/providers/<渠道ID>`;后者传空串即清除该字段。环回地址与
+`MIXR_UPSTREAM_PROXY_BYPASS` 里的域名仍直连,不进隧道。
+
+只支持 `http://` 的 CONNECT 代理,不支持 SOCKS。不允许 `user:pass@`:代理口令会明文写进
+`providers.json`,还会被接口响应原样回显;查询串与片段也不收,出站只用主机与端口。
+它只回答"这个渠道从哪出网",不会自动探测系统里哪个代理可用,也不读系统代理(见第 10 节)。
+
+为什么按渠道而不是全局开隧道:一台机器上"必须出境"的往往只有个别上游,全局隧道会让本来
+直连就通的国内站点白绕一趟出境,更慢,也更容易被中间设备掐断。2026-10-28 实测(同一条 curl
+只换出口):
+
+| 上游 | 直连 | 走 `127.0.0.1:7890` |
+| --- | --- | --- |
+| anyrouter.top | 失败(TLS alert 40 / EPROTO) | 200 |
+| ps.air-outer.com | 200 | 200 |
+| wududu.edu.kg | 200 | 200 |
 
 ### 多 Key 渠道
 
@@ -116,8 +139,10 @@ Anthropic `has_more` / `last_id` 分页通过同一端点的 `after_id` 继续�
 ### 出站直连
 
 渠道的 `direct: true` 只让这个渠道的转发与探活跳过进程内 HTTP CONNECT 隧道,直连连接
-仍复用 keep-alive。它不改客户端配置,也不能绕过操作系统 TUN/VPN。未配置
-`MIXR_UPSTREAM_PROXY` 时本来就直连,不会自动跟随 macOS 系统代理或其他代理软件的规则。
+仍复用 keep-alive。它不改客户端配置,也不能绕过操作系统 TUN/VPN。`direct`、
+`MIXR_UPSTREAM_PROXY` 与渠道 `proxy_url` 都没配时本来就直连,不会自动跟随 macOS
+系统代理或其他代理软件的规则。要反过来强制某个渠道出境,用该渠道的 `proxy_url`;
+两者互斥,同时出现会被写接口拒绝。
 「直连」只决定路径,不保证 DNS 返回的每个 CDN 地址都可达。
 
 直连池显式启用多地址尝试,每个候选等待 1000ms 再切下一个,避免沿用 Node 部分版本的
@@ -761,7 +786,7 @@ require 之后再改不生效。
 | `MIXR_RESPONSE_ARCHIVE` | 关 | 仅 `on` 开启上游响应正文归档 |
 | `MIXR_RESPONSE_ARCHIVE_DIR` | `<MIXR_DATA_DIR>/logs/responses` | 返回归档私有目录 |
 | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | 未设 | 压缩窗口的环境覆盖,优先于磁盘设置 |
-| `MIXR_UPSTREAM_PROXY` / `MIXR_UPSTREAM_PROXY_BYPASS` | 空 | 出站 HTTP CONNECT 隧道;环回地址永不隧道 |
+| `MIXR_UPSTREAM_PROXY` / `MIXR_UPSTREAM_PROXY_BYPASS` | 空 | 全局出站 HTTP CONNECT 隧道;环回地址永不隧道。渠道 `proxy_url` 会覆盖它;**不读系统代理**,`NODE_USE_ENV_PROXY` 对它也无效 |
 | `MIXR_UPSTREAM_IDLE_MS` | 5000 | 出站空闲连接回收阈值;`0` = 关掉空闲计时 |
 | `MIXR_UPSTREAM_CONNECT_TIMEOUT_MS` | 15000 | 直连 DNS/TCP/TLS 初次建连硬截止,握手后清理;正整数 1–600000,非法值或 0 回默认;不改模型等待预算 |
 | `MIXR_BODY_LIMIT_MB` | 64 | 请求体上限 |
@@ -778,6 +803,14 @@ require 之后再改不生效。
 | `MIXR_SESSION_TTL_MIN` / `MIXR_SESSION_MAX` | 720 / 1000 | 会话绑定空闲失效时间(分钟)/ 会话表上限 |
 | `MIXR_SESSION_LABEL` | 开 | `0` 关掉会话标签采集 |
 | `MIXR_SESSION_CLI_TIMEOUT_MS` | 10000 | `mixctl sessions` 每次请求的有界超时 |
+
+**出站代理不读系统代理**:`MIXR_UPSTREAM_PROXY` 与渠道 `proxy_url` 都只在显式给出地址时生效,
+不会自动探测系统里正开着的代理。VPN 的系统代理模式下,只有主动读 macOS 代理设置的程序
+(浏览器)才走 VPN;mixrouter 的每条出站都显式传自己的 agent(`lib/upstream-proxy.js` 的
+`transportAgent`),绕开了这一步。`NODE_USE_ENV_PROXY=1` 配 `https_proxy` 同样无效:实测不传
+agent 时 200,显式传 agent 时握手失败,而 mixrouter 恰恰每条都传。系统级 TUN 模式仍有效,
+因为它在路由层接管流量,不依赖程序读设置。环回地址永不隧道;`MIXR_UPSTREAM_PROXY_BYPASS`
+里的域名对渠道 `proxy_url` 同样生效。
 
 ---
 

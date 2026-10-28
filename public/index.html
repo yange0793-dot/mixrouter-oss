@@ -529,7 +529,9 @@
           <label class="chk" for="m-dropimg"><input type="checkbox" id="m-dropimg">纯文本渠道：转发时将 Responses 图片替换为文字说明</label>
         </div>
         <label for="m-note">备注</label><input type="text" id="m-note">
-        <label class="chk" for="m-direct"><input type="checkbox" id="m-direct">直连上游：本渠道不使用 MIXR_UPSTREAM_PROXY 出站隧道（国内站点绕出境只会更慢、更容易被掐断）</label>
+        <label for="m-proxy-url">出站代理（可选，留空 = 跟随全局）</label><input type="url" id="m-proxy-url" placeholder="http://127.0.0.1:7890" inputmode="url" autocomplete="off" spellcheck="false">
+        <p class="muted">只有必须出境的渠道才填，例如本机 VPN 的系统代理；国内站点留空，绕出境只会更慢。只支持 http:// 的 CONNECT 代理，不能带用户名密码。与下面「直连上游」互斥：填了代理就不要勾直连，两者服务端会拒收。</p>
+        <label class="chk" for="m-direct"><input type="checkbox" id="m-direct">强制直连：不用 MIXR_UPSTREAM_PROXY 与上面的出站代理（国内站点绕出境只会更慢、更容易被掐断）。不勾选也不代表走代理——没设全局隧道时本来就是直连</label>
         <label class="chk" for="m-enabled"><input type="checkbox" id="m-enabled" checked>启用渠道</label>
         <div class="foot"><button type="button" onclick="closeModal()">取消</button><button type="submit" class="primary" id="save-provider">保存渠道</button></div>
       </form>
