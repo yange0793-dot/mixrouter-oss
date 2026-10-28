@@ -50,7 +50,7 @@ test('providers.example.json:示例凭据与域名都是占位值', () => {
 
 test('routes.example.json:只承载压缩设置,不预置匹配规则和默认目标', () => {
   assert.deepEqual(routesFile.rules, []);
-  assert.deepEqual(routesFile.default, {});
+  assert.equal(Object.hasOwn(routesFile, 'default'), false, '可配置默认目标已删除,示例里也不留这个字段');
   assert.match(routesFile._说明, /压缩设置/);
   assert.match(routesFile._说明, /不执行.*match\/when.*default/);
 });
