@@ -131,6 +131,11 @@ document.addEventListener('focusin', e => {
 for (const id of ['m-base', 'm-key', 'm-wire', 'm-wire-claude', 'm-direct']) {
   for (const event of ['input', 'change']) $(id)?.addEventListener(event, () => invalidateDiscovery());
 }
+// 「直连上游」与「出站代理」互斥:前者是退出隧道,后者是强制走隧道,同时给服务端只能回 400。
+// 这里只在两样都填上时提醒一句,不替用户清空任何一边——清哪边都等于替他决定这条渠道走直连还是走代理。
+$('m-direct')?.addEventListener('change', () => {
+  if ($('m-direct').checked && $('m-proxy-url').value.trim()) toast('「直连上游」与「出站代理」互斥：要走代理请先取消直连', 'err');
+});
 
 function setConnection(connected, error = '') {
   const changed = online !== connected;
@@ -586,7 +591,7 @@ function renderProviders() {
       </header>
       <div class="provider-content">
         <div class="mono endpoint" title="${esc(p.base_url)}">${esc(p.base_url)}</div>
-        <div class="provider-models tags"><span class="tag">${esc(wire)}</span>${models.map(m => `<span class="tag">${esc(m)}</span>`).join('')}${p.drop_images ? '<span class="tag">纯文本</span>' : ''}${p.direct ? '<span class="tag">直连</span>' : ''}</div>
+        <div class="provider-models tags"><span class="tag">${esc(wire)}</span>${models.map(m => `<span class="tag">${esc(m)}</span>`).join('')}${p.drop_images ? '<span class="tag">纯文本</span>' : ''}${p.direct ? '<span class="tag">直连</span>' : ''}${p.proxy_url ? '<span class="tag">经代理</span>' : ''}</div>
         ${deadKeys.length ? `<p class="note">已停用的 Key：${deadKeys.map(k => `${esc(k.label || k.id)}（${esc(k.id)}）`).join('、')}。停用只影响固定选它的会话与压缩规则，不会自动改选其他 Key。</p>` : ''}${p.note ? `<p class="note" title="${esc(p.note)}">${esc(p.note)}</p>` : ''}
         ${isZcode && group === 'codex' && wire !== zcodeWire ? `<p class="note">此渠道按 ${esc(wire)} 协议接入，与上方路由协议选择不同。</p>` : ''}
       </div>
@@ -638,6 +643,9 @@ function openProvider(id) {
   $('m-wire-claude').value = editing?.wire_api === 'responses' ? 'responses' : editing?.wire_api === 'chat' ? 'chat' : 'anthropic';
   $('m-note').value = editing?.note || ''; $('m-enabled').checked = editing ? !!editing.enabled : true;
   $('m-direct').checked = !!editing?.direct;
+  // 出站代理默认留空:这台机器多数上游直连就是 200,只有被掐断的渠道才需要单独出境;
+  // 留空 = 跟随全局 MIXR_UPSTREAM_PROXY,不把"某条渠道的选择"变成所有渠道的默认。
+  $('m-proxy-url').value = editing?.proxy_url || '';
   resetModelDiscovery(); renderFetchKeySelect();
   showDialog('mask', 'm-name');
 }
@@ -882,11 +890,15 @@ async function saveProvider() {
   if (savingProvider) return;
   if (!online) return toast('控制台离线，表单已保留，请连接后保存', 'err');
   if (!$('provider-form').reportValidity()) return;
-  const body = { app: editingGroup, name: $('m-name').value.trim(), base_url: $('m-base').value.trim(), api_key: keyDraft.length ? '' : $('m-key').value, note: $('m-note').value, enabled: $('m-enabled').checked, direct: $('m-direct').checked };
+  // 出站代理留空 = 跟随全局(服务端编辑时按空串清除),所以这里原样传 trim 后的值,不省略字段。
+  const proxyUrl = $('m-proxy-url').value.trim();
+  const body = { app: editingGroup, name: $('m-name').value.trim(), base_url: $('m-base').value.trim(), api_key: keyDraft.length ? '' : $('m-key').value, note: $('m-note').value, enabled: $('m-enabled').checked, direct: $('m-direct').checked, proxy_url: proxyUrl };
   body.models = [...new Set(modelDraft.map(r => String(r.value || '').trim()).filter(Boolean))];
   if (editingGroup === 'codex') { body.model = $('m-model').value.trim(); body.wire_api = $('m-wire').value; body.drop_images = $('m-dropimg').checked; }
   else body.wire_api = $('m-wire-claude').value;
   if (!body.name || !body.base_url) return toast('名称与 Base URL 必填', 'err');
+  // 前端先拦一次互斥:服务端会 400,但让用户等一个来回再看到报错没有意义。
+  if (body.direct && proxyUrl) { $('m-proxy-url').focus(); return toast('「直连上游」与「出站代理」互斥：要走代理请取消直连，要直连请清空代理地址', 'err'); }
   // 编辑时把多 Key 清单一起提交(留空=不改;清单清空=退回单 Key);新建渠道用上面的 API Key 一把起步
   if (editing) body.keys = keyDraft.filter(k => k.id || k.key.trim()).map(k => ({ id: k.id, label: k.label.trim(), key: k.key.trim() }));
   if (editingGroup === 'codex' && !body.model) return toast('OpenAI 渠道必须填模型名', 'err');

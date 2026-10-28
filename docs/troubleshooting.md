@@ -172,6 +172,44 @@ curl -s http://127.0.0.1:8788/api/health | python3 -m json.tool
 
 ---
 
+## 某个上游在浏览器里能打开,mixrouter 却报 TLS 握手失败 / EPROTO
+
+**症状**:日志、「测试」或「模型测活」报 `EPROTO`、`alert 40`、`ERR_SSL_...` 或直接握手失败,
+而同一个地址在浏览器里能打开。
+
+判据是同一个 URL 只换出口:
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' https://<上游域名>/v1/models
+curl -sS -o /dev/null -w '%{http_code}\n' -x http://127.0.0.1:7890 https://<上游域名>/v1/models
+```
+
+直连失败、加 `-x` 成功,缺口就在出站路径,不是 Key 或模型名。
+
+**"浏览器能上"不算数**:VPN 的系统代理模式下,只有主动读 macOS 代理设置的程序(浏览器)
+才走 VPN。mixrouter 的每条出站都显式传自己的 agent(`lib/upstream-proxy.js` 的
+`transportAgent`),系统代理对它无效;`NODE_USE_ENV_PROXY=1` 配 `https_proxy` 也一样——
+实测不传 agent 时 200,显式传 agent 时握手失败,而 mixrouter 恰恰每条都传。两者是两条不同的路。
+
+处置:给这个渠道补 `proxy_url`,只改它的出口:
+
+```bash
+curl -sS -X PUT http://127.0.0.1:8788/api/providers/<渠道ID> \
+  -H 'Content-Type: application/json' \
+  -d '{"proxy_url":"http://127.0.0.1:7890"}'
+```
+
+渠道当前标了 `direct: true` 时,同一请求里带 `"direct": false`,否则会 400(两者互斥)。
+传空串 `""` 清除,回到跟随 `MIXR_UPSTREAM_PROXY`。只接受 `http://` CONNECT 代理,
+不能带 `user:pass@`、查询串或片段;不支持 SOCKS。
+
+**不要把 `MIXR_UPSTREAM_PROXY` 全局打开当解法**:它会让本来直连就通的国内站点白绕一趟出境,
+更慢,也更容易被中间设备掐断。2026-10-28 实测:anyrouter.top 直连失败(TLS alert 40 / EPROTO)、
+走 `127.0.0.1:7890` 为 200,而同机的 ps.air-outer.com、wududu.edu.kg 两种出口都是 200
+——需要出境的是个别渠道,不是整台机器。
+
+---
+
 ## 3. Key 失效
 
 **症状**:401/403,`err_class` 是 `authentication`;或 `provider_key_unavailable_error`。
