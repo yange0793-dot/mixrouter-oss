@@ -415,6 +415,31 @@ SSE。一次请求的上游调用总上界是 `MIXR_MAX_ATTEMPTS` + `MIXR_CONV_R
 可用 `MIXR_MAX_UPSTREAM_CALLS` 进一步限制总次数(含首次调用),不扩大原有配额。
 例如同时设 `MIXR_MAX_ATTEMPTS=50`、`MIXR_MAX_UPSTREAM_CALLS=50`,总调用数不会因额外配额超过 50。
 
+### 模型测活
+
+渠道「测试」只探渠道通不通(Claude 线拿主模型发一次,OpenAI 线只 `GET /v1/models`),
+一个坏模型就会把整张卡片染红。「模型测活」按**模型**判活:对渠道登记过的每个模型名
+各发一次最小真实生成请求,逐模型独立给出结论,能指出是哪个模型名在当前上游不可用。
+
+- **判据**:HTTP 2xx **且**正文不是错误壳(`{"error":…}` / `{"type":"error"}`)。
+  有的网关回 200 + 错误体,只看状态码会误判成可用。
+- **上游协议**:按渠道自己的 `wire_api`,分别 `POST /v1/messages`(anthropic)、
+  `/v1/responses`(responses)与 `/v1/chat/completions`(chat)。模型名带 `[1M]` 后缀时
+  按既有规则剥掉并补 `anthropic-beta` 头。
+- **预算**:每次最多 `max_tokens` / `max_output_tokens` 128,不重试、不换渠道;
+  单模型默认 30 秒时限,并发默认 4 路,单个模型失败不影响其余模型。
+  输出预算不能给小:实测某渠道的 `deepseek-v4.1-flash` 在 16 token 时推理就吃光预算,
+  上游回 500 `empty response content` —— 可用的模型会被判成故障。
+- **只读**:不改渠道库、不写客户端配置、不落盘、不写请求日志。
+
+结果不含 API Key;上游错误原因只取一句,消洗控制字符并截断,Key 本体替换成 `***`。
+入口是控制台「渠道与 Key」页渠道卡片上的「测活」按钮,结果按模型逐行显示;命令行是
+`mixctl probe <渠道ID或渠道名> [模型...] [--key-id <KeyID>] [--wire <anthropic|responses|chat>] [--json]`,
+HTTP 端点为 `POST /api/providers/<渠道ID>/models/test`。
+
+**测活会真的向上游发请求、消耗额度**。结论只是"此刻这个模型名能否走通",不是持续健康监控,
+也不代表工具调用、流式或长上下文都对——那属于「编程兼容测试」的范围。
+
 ---
 
 ## 6. 压缩分流与压缩窗口

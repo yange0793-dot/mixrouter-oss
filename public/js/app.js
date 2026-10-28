@@ -6,6 +6,9 @@ const GROUPS = { claude: 'Claude / Anthropic', codex: 'Codex / OpenAI' };
 const ZCODE_HELP = '保存后在 ZCode 模型选择器选择 Mixrouter · ...；如未出现请重启客户端，新会话生效';
 let state = null, view = 'overview', curApp = 'claude', zcodeWire = 'anthropic', editing = null, editingGroup = 'claude', keyDraft = [];
 let routesDraft = null, routesBase = '', routesBaseRevision = '', routesDirty = false, routesRevision = 0, testResults = {}, logsTimer = null;
+// 模型测活结果按渠道 id 存:renderProviders 每 5 秒整块重绘卡片,DOM 里的结果一重绘就没了,
+// 状态必须放在模块级变量里才能活过轮询(和 testResults 是同一个道理)。
+let modelProbe = {};
 let compactDraft = null, compactBase = '', compactDirty = false, compactRevision = 0, compactCustom = false, savingCompact = false;
 // 最近一次压缩保存的"四段结果"。这四件事**各自独立**,把它们揉成一句"已生效"是本页以前最
 // 容易误导人的地方:请求成功了不等于配置落了盘,落了盘不等于运行中的服务用上了,服务用上了
@@ -527,6 +530,24 @@ function renderProviders() {
     const verified = online && !lv?.error && isCur && lv?.match === true && !lv.router;
     const t = testResults[p.id];
     const tline = !t ? '' : t.wait ? '<div class="testline wait" role="status">测试中…</div>' : `<div class="testline ${t.ok ? 'ok' : 'err'}" role="status">上次测试${t.ok ? '通过' : '失败'} · ${esc(t.ok ? `${t.status} · ${t.ms}ms${t.model ? ' · ' + t.model : ''}` : t.error || ('HTTP ' + t.status))}${!t.ok && t.body ? ' · ' + esc(t.body.slice(0, 120)) : ''}</div>`;
+    // 模型测活结果。状态在 modelProbe 里(跨重绘保留),这里只负责翻成 DOM:
+    // 每行 = 模型名 + 文字结论徽标 + HTTP/耗时 + 截断后的失败原因(全文进 title)。
+    // 模型名与上游错误都来自用户输入/上游返回,一律 esc。
+    const mp = modelProbe[p.id];
+    let pline = '';
+    if (mp?.wait) pline = '<div class="probeline wait" role="status">模型测活中…</div>';
+    else if (mp?.error) pline = `<div class="probeline err" role="status">模型测活失败：${esc(mp.error)}</div>`;
+    else if (mp?.results) {
+      const resultCount = mp.results.length;
+      const passed = mp.passed ?? mp.results.filter(r => r.ok).length, failed = mp.failed ?? (resultCount - passed);
+      const total = mp.total_ms == null ? '' : ` · ${mp.total_ms}ms`;
+      const rows = mp.results.map(r => {
+        const reason = String(r.error || ''), cut = reason.length > 60 ? reason.slice(0, 60) + '…' : reason;
+        const meta = [r.status == null ? '' : `HTTP ${r.status}`, r.ms == null ? '' : `${r.ms}ms`].filter(Boolean).join(' · ');
+        return `<div class="probeline ${r.ok ? 'ok' : 'err'}"><span class="pm-name mono">${esc(r.model)}</span><span class="pm-verdict ${r.ok ? 'ok' : 'err'}">${r.ok ? '通过' : '失败'}</span><span class="pm-meta mono">${esc(meta)}</span>${cut ? `<span class="pm-reason" title="${esc(reason)}">${esc(cut)}</span>` : ''}</div>`;
+      }).join('');
+      pline = `<div class="probelines" role="status"><div class="probeline sum mono">${resultCount} 个模型 · ${passed} 通过 ${failed} 失败${total}</div>${rows}</div>`;
+    }
     const models = group === 'claude' ? (p.models || []) : [p.model].filter(Boolean);
     const wire = group === 'claude' ? (p.wire_api === 'responses' ? 'responses（转换）' : p.wire_api === 'chat' ? 'chat（转换）' : 'anthropic') : p.wire_api || 'responses';
     // responses/chat 渠道只挂 Codex/OpenAI 型通道,直连写进客户端必然失败(服务端也会拒),按钮直接封掉
@@ -569,8 +590,8 @@ function renderProviders() {
         ${deadKeys.length ? `<p class="note">已停用的 Key：${deadKeys.map(k => `${esc(k.label || k.id)}（${esc(k.id)}）`).join('、')}。停用只影响固定选它的会话与压缩规则，不会自动改选其他 Key。</p>` : ''}${p.note ? `<p class="note" title="${esc(p.note)}">${esc(p.note)}</p>` : ''}
         ${isZcode && group === 'codex' && wire !== zcodeWire ? `<p class="note">此渠道按 ${esc(wire)} 协议接入，与上方路由协议选择不同。</p>` : ''}
       </div>
-      <div class="provider-meta mono keyrow">API key · ${account}${tline}</div>
-      <div class="foot provider-actions"><button class="small ${verified ? 'cur' : 'primary'}" data-action="switch" data-provider="${esc(p.id)}" onclick="switchProvider(${arg})" ${locked ? 'disabled' : ''} title="${convOnly ? '该渠道只挂 Codex 型通道，直连不可用：请用上方「路由模式」' : ''}">${isZcode ? '接入 ZCode' : isCur ? '重新写入' : '切换'}</button><button class="small" data-action="test" data-provider="${esc(p.id)}" onclick="testProvider(${arg})" ${!online || t?.wait ? 'disabled' : ''}>测试</button><button class="small" data-action="edit" data-provider="${esc(p.id)}" onclick="openProvider(${arg})">编辑</button><button class="small" data-action="toggle" data-provider="${esc(p.id)}" onclick="toggleProvider(${arg})" ${!online ? 'disabled' : ''}>${p.enabled ? '停用' : '启用'}</button><button class="small danger" data-action="delete" data-provider="${esc(p.id)}" onclick="delProvider(${arg})" ${!online ? 'disabled' : ''}>删除</button></div></article>`;
+      <div class="provider-meta mono keyrow">API key · ${account}${tline}${pline}</div>
+      <div class="foot provider-actions"><button class="small ${verified ? 'cur' : 'primary'}" data-action="switch" data-provider="${esc(p.id)}" onclick="switchProvider(${arg})" ${locked ? 'disabled' : ''} title="${convOnly ? '该渠道只挂 Codex 型通道，直连不可用：请用上方「路由模式」' : ''}">${isZcode ? '接入 ZCode' : isCur ? '重新写入' : '切换'}</button><button class="small" data-action="test" data-provider="${esc(p.id)}" onclick="testProvider(${arg})" ${!online || t?.wait ? 'disabled' : ''}>测试</button><button class="small" data-action="probe" data-provider="${esc(p.id)}" onclick="probeModels(${arg})" ${!online || mp?.wait ? 'disabled' : ''} title="对每个模型各发一次真实请求，会消耗额度">测活</button><button class="small" data-action="edit" data-provider="${esc(p.id)}" onclick="openProvider(${arg})">编辑</button><button class="small" data-action="toggle" data-provider="${esc(p.id)}" onclick="toggleProvider(${arg})" ${!online ? 'disabled' : ''}>${p.enabled ? '停用' : '启用'}</button><button class="small danger" data-action="delete" data-provider="${esc(p.id)}" onclick="delProvider(${arg})" ${!online ? 'disabled' : ''}>删除</button></div></article>`;
   }).join('');
   // 轮询只更新状态,但不能在用户正操作卡片时拆 DOM:下拉展开时重建会把菜单关掉,焦点恢复也救不回来。
   // 焦点在卡片内的输入/下拉上就等失焦后的下一次刷新再重绘;按钮没有展开态,照旧重建并恢复焦点。
@@ -941,6 +962,15 @@ async function testProvider(id) {
   testResults[id] = { wait: true }; if (view === 'providers') renderProviders();
   try { testResults[id] = await api('/api/providers/' + encodeURIComponent(id) + '/test', { method: 'POST' }); }
   catch (e) { testResults[id] = { ok: false, error: e.message }; }
+  if (view === 'providers') renderProviders();
+}
+// 模型级测活:服务端对渠道登记的每个模型各发一次最小真实请求,所以比「测试」贵得多。
+// 同一个渠道并发点两次没有意义:第一次还没回来时直接忽略,免得把额度烧两遍。
+async function probeModels(id) {
+  if (!online || modelProbe[id]?.wait) return;
+  modelProbe[id] = { wait: true }; if (view === 'providers') renderProviders();
+  try { modelProbe[id] = await api('/api/providers/' + encodeURIComponent(id) + '/models/test', { method: 'POST' }); }
+  catch (e) { modelProbe[id] = { error: e.message }; }
   if (view === 'providers') renderProviders();
 }
 

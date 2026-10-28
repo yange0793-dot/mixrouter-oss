@@ -103,6 +103,9 @@ body[data-connection=offline] #prov-grid .card.sel { border-color: var(--border)
 }
 #prov-grid .provider-meta .keycount { font-size: 12px; color: var(--dim); }
 #prov-grid .provider-meta .testline { grid-column: 1 / -1; white-space: normal; text-align: right; }
+/* 模型测活结果同样占满 meta 区一整行;它是逐行清单,左对齐比贴着右边缘的右对齐好读。 */
+#prov-grid .provider-meta .probelines,
+#prov-grid .provider-meta > .probeline { grid-column: 1 / -1; white-space: normal; text-align: left; }
 
 /* Actions: everyday operations first, delete separated and quiet until hovered. */
 #prov-grid .provider-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
@@ -197,6 +200,8 @@ body[data-connection=offline] #prov-grid .card.sel { border-color: var(--border)
   #prov-grid .provider-meta { display: flex; flex-wrap: wrap; align-items: center; column-gap: 6px; row-gap: 4px; }
   #prov-grid .provider-meta .keypick { width: auto; min-width: 160px; max-width: min(260px, 100%); }
   #prov-grid .provider-meta .testline { flex-basis: 100%; text-align: left; }
+  #prov-grid .provider-meta .probelines,
+  #prov-grid .provider-meta > .probeline { flex-basis: 100%; }
   #prov-grid .provider-actions button { min-height: 34px; }
 }
 
