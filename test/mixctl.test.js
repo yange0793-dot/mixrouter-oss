@@ -164,7 +164,7 @@ test('mixctl explain 把模型名 POST 给 /api/routing/preview 并渲染预测�
       const parsed = JSON.parse(body || '{}');
       requests.push({ path: req.url, body: parsed });
       res.setHeader('Content-Type', 'application/json');
-      // 按请求的 model 返回不同预测:命中槽位 vs 落回兜底
+      // 按请求的 model 返回不同预测:命中槽位 vs 明确没有可走的落点
       if (parsed.model === 'mixr-haiku') {
         res.end(JSON.stringify({ ok: true, input: { app: 'claude', model: 'mixr-haiku', kind: 'messages' },
           matched: { via: 'slot', ruleId: null, slot: 'haiku', strategy: 'round_robin' },
@@ -173,10 +173,13 @@ test('mixctl explain 把模型名 POST 给 /api/routing/preview 并渲染预测�
           effective: [{ providerId: 'pa', providerName: '大渠道', model: 'deepseek-v4-flash', enabled: true, cooldown: false }],
           warnings: [], ghosts: [] }));
       } else {
-        res.end(JSON.stringify({ ok: true, input: { app: 'claude', model: 'mixr-opus', kind: 'messages' },
-          matched: { via: 'default', ruleId: null, slot: null, strategy: 'round_robin' },
+        // 瘦身后没有兜底路由:没绑定的槽位别名一律 no_route_error,
+        // 形状照 /api/routing/preview 的真实返回(ok:false + error + 判定事件)。
+        res.end(JSON.stringify({ ok: false, input: { app: 'claude', model: 'mixr-opus', kind: 'messages' },
+          matched: { via: 'model', ruleId: null, slot: null, strategy: 'round_robin' },
           selection: { strategy: 'round_robin', deterministic: true, predicted: null }, effective: [],
-          warnings: [{ code: 'slot_fell_through', message: '模型名 "mixr-opus" 像槽位别名,但槽位表里没有它' }], ghosts: [] }));
+          warnings: [{ code: 'slot_fell_through', message: '模型名 "mixr-opus" 像槽位别名,但槽位表里没有它' }],
+          error: { code: 'no_route_error', httpStatus: 503, message: '槽位别名 "mixr-opus" 没有可用的目标' }, ghosts: [] }));
       }
     });
   });
@@ -191,8 +194,9 @@ test('mixctl explain 把模型名 POST 给 /api/routing/preview 并渲染预测�
   assert.match(hit.output, /大渠道 \(pa\) @ deepseek-v4-flash/);
 
   const miss = await run(['explain', 'mixr-opus'], port);
-  assert.equal(miss.code, 0);
-  assert.match(miss.output, /命中: default/);
+  assert.equal(miss.code, 1, '预览报明确失败时 mixctl 以非零退出');
+  assert.match(miss.output, /预览失败 \[no_route_error\]/);
+  assert.match(miss.output, /命中: model/);
   assert.doesNotMatch(miss.output, /兜底/, '兜底路由已移除,输出里不该再出现这个词');
   assert.match(miss.output, /slot_fell_through/);
 
