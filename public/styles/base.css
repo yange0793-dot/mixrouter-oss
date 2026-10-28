@@ -698,6 +698,19 @@ summary::marker { color: var(--border-strong); }
 .testline.ok { color: var(--ok-text); }
 .testline.err { color: var(--err-text); }
 .testline.wait { color: var(--dim); }
+/* 模型测活结果:一个模型一行。行内允许换行,窄屏时原因掉到下一行而不是被挤成竖排字。
+   每条结果都必须能靠文字读懂(通过/失败),颜色只是辅助。 */
+.probelines { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border-soft); font-size: 13px; line-height: 1.5; }
+.probeline { display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 8px; overflow-wrap: anywhere; }
+.probeline.sum { color: var(--dim); }
+.probeline.wait { color: var(--dim); }
+.probeline.err { color: var(--err-text); }
+.probeline .pm-name { color: var(--text); overflow-wrap: anywhere; }
+.probeline .pm-verdict { font-size: 12px; padding: 0 6px; border-radius: 5px; border: 1px solid transparent; white-space: nowrap; }
+.probeline .pm-verdict.ok { color: var(--ok-text); background: var(--ok-soft); border-color: var(--ok-line); }
+.probeline .pm-verdict.err { color: var(--err-text); background: var(--err-soft); border-color: var(--err-line); }
+.probeline .pm-meta { white-space: nowrap; }
+.probeline .pm-reason { flex: 1 1 160px; min-width: 0; color: var(--err-text); overflow-wrap: anywhere; }
 .card .foot { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; padding-top: 12px; border-top: 1px solid var(--border-soft); }
 
 /* Provider card anatomy: identity, address/models, status and actions. */

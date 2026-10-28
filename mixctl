@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // mixctl — mixrouter 管理命令
-//   start | stop | restart | status | ls | sessions | slots | explain | backups | restore | logs [n] | gc [天] [--apply] [--archives-only] | route [claude|codex|zcode] [--slots] | open | help
+//   start | stop | restart | status | ls | sessions | slots | explain | backups | restore | probe | logs [n] | gc [天] [--apply] [--archives-only] | route [claude|codex|zcode] [--slots] | open | help
 'use strict';
 const { spawn, execSync } = require('child_process');
 const http = require('http');
@@ -18,7 +18,7 @@ const backupView = require('./lib/cli/backup-view');
 const { runRestoreCmd } = require('./lib/cli/restore');
 const { runLogs } = require('./lib/cli/logs');
 const { runSessions } = require('./lib/cli/sessions');
-const { EXPLAIN_USAGE, BACKUPS_USAGE, SPLIT_USAGE, ROUTE_USAGE, MAIN_USAGE } = require('./lib/cli/usage');
+const { EXPLAIN_USAGE, BACKUPS_USAGE, PROBE_USAGE, SPLIT_USAGE, ROUTE_USAGE, MAIN_USAGE } = require('./lib/cli/usage');
 // 三类路径(开发副本 / 发布目录 / 数据目录)的唯一来源。本文件原先自己拼了四遍
 // (ROOT / RUN_DIR / PID_FILE / REQ_LOG),那四行与 mixrouter.js 的同名常量、以及
 // scripts/launchd-run.sh 里的 `$DIR/.run`,靠"都在仓库根"这一条巧合对齐。
@@ -671,6 +671,127 @@ async function logsCmd(args) {
   logs(positional[positional.length - 1]);
 }
 
+// ---------------------------------------------------------------- probe
+// 对**一个渠道登记过的每个模型**各探一次活。真正的测活跃服务端(lib/model-probe.js 与
+// POST /api/providers/:id/models/test):本文件只负责解析参数、把渠道名解析成 id、把结果
+// 摊成一张能进日志的纯文本表。
+//
+// 与渠道测试(lib/provider-test.js)的分工:那个回答"渠道通不通",一个坏模型会让整张卡片变红;
+// probe 逐模型给结论,坏的是哪一个一眼能看见。代价是**每个模型都真的向上游发一次生成请求**,
+// 会消耗额度 —— 这也是这里不做任何自动重试或换渠道的原因:一次调用几次请求要对得上。
+const PROBE_WIRES = ['anthropic', 'responses', 'chat'];
+const PROBE_REASON_MAX = 60;
+const probeError = (code, message) => Object.assign(new Error(message), { code });
+
+function parseProbeArgs(args) {
+  const opts = { json: false, help: false, channel: undefined, models: [], keyId: undefined, wire: undefined };
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--json') {
+      if (opts.json) throw probeError('invalid_arguments', '--json 不能重复');
+      opts.json = true;
+    } else if (arg === '--key-id' || arg === '--wire') {
+      const key = arg === '--key-id' ? 'keyId' : 'wire';
+      if (opts[key] !== undefined) throw probeError('invalid_arguments', `${arg} 不能重复`);
+      const value = args[++i];
+      if (!value || value.startsWith('--')) throw probeError('invalid_arguments', `${arg} 缺少值`);
+      opts[key] = value;
+    } else if (arg === '--help' || arg === '-h') {
+      opts.help = true;
+    } else if (arg.startsWith('-')) {
+      throw probeError('invalid_arguments', `无法识别的 probe 选项: ${arg};仅支持 --key-id / --wire / --json / --help`);
+    } else if (opts.channel === undefined) {
+      opts.channel = arg;
+    } else {
+      opts.models.push(arg);
+    }
+  }
+  if (opts.help) return opts;
+  if (!opts.channel) throw probeError('invalid_arguments', 'probe 需要指定渠道(渠道ID或渠道名)');
+  // 非法 wire 在**本地**就拒掉:发出去才发现写错,服务器只能回一句 400,还白等一轮。
+  if (opts.wire !== undefined && !PROBE_WIRES.includes(opts.wire))
+    throw probeError('invalid_arguments', `--wire 必须是 ${PROBE_WIRES.join(' / ')} 之一`);
+  return opts;
+}
+
+// 渠道查找:**先 id 后 name**,两组都按 claude → codex 的顺序。
+//   · id 是机器标识,全库唯一;能按 id 命中时不必看名字。
+//   · name 是人写的标签,不保证唯一,两个组各有一个同名渠道完全合法。此时必须给一个
+//     确定的答案,不能"按数组顺序碰运气" —— 组顺序就是控制台的默认视图顺序(Claude 在前),
+//     同名时取 Claude 组与用户在主标签页看到的那条一致。
+// 取不到就报错并列出可用渠道,**不猜**一个最像的:猜错等于把真实请求发给另一个渠道。
+function findProbeChannel(state, want) {
+  const groups = ['claude', 'codex'].map(app => ({ app, list: (state.providers && state.providers[app]) || [] }));
+  for (const g of groups) {
+    const hit = g.list.find(p => p.id === want);
+    if (hit) return { app: g.app, provider: hit };
+  }
+  for (const g of groups) {
+    const hit = g.list.find(p => p.name === want);
+    if (hit) return { app: g.app, provider: hit };
+  }
+  const available = groups.flatMap(g => g.list.map(p => `${p.id}(${p.name})`)).slice(0, 20);
+  throw probeError('unknown_channel',
+    `没有匹配的渠道 ${JSON.stringify(want)};可用渠道(id(名称),最多列 20 个):${available.join(' / ') || '(无)'}`);
+}
+
+const probeReason = text => {
+  const s = String(text == null ? '' : text);
+  return s.length > PROBE_REASON_MAX ? s.slice(0, PROBE_REASON_MAX) + '…' : s;
+};
+
+function printProbe(result, provider) {
+  const results = Array.isArray(result.results) ? result.results : [];
+  console.log(`渠道 ${provider.name} (${provider.id}) · 协议 ${result.wire} · ${results.length} 个模型 · ${result.total_ms}ms`);
+  // 纯文本、无颜色:这份输出要能原样进日志或被 diff,ANSI 只会变成乱码。
+  // 中文按 padEnd 的字符数对齐,视觉宽度不完美,但同一张表里每一行的列位置一致。
+  console.log(`${'模型'.padEnd(22)}${'结论'.padEnd(7)}${'状态'.padEnd(7)}耗时`);
+  for (const r of results) {
+    const verdict = r.ok ? '通过' : '失败';
+    const status = r.status === null || r.status === undefined ? '-' : String(r.status);
+    const reason = !r.ok && r.error ? `   ${probeReason(r.error)}` : '';
+    console.log(`${String(r.model || '').padEnd(22)}${verdict.padEnd(7)}${status.padEnd(7)}${r.ms}ms${reason}`);
+  }
+}
+
+async function probeCmd(args) {
+  const json = args.includes('--json');
+  try {
+    const opts = parseProbeArgs(args);
+    if (opts.help) return console.log(PROBE_USAGE);
+    let state;
+    try { state = await api('/api/state'); }
+    catch (e) {
+      // 与 logsCmd 同一判据:连不上是"服务没在跑",不是渠道坏了。把这句原样抛出去
+      // 会让人以为上游或渠道出了故障(OFFLINE_RE 的用意),所以先翻译成人话。
+      if (OFFLINE_RE.test(e.message || e.code || ''))
+        throw probeError('console_unreachable', '控制台不可达,probe 需要服务在运行;先执行 mixctl start(或查看 mixctl logs)');
+      throw probeError('state_failed', `读取渠道清单失败:${e.message}`);
+    }
+    const { provider } = findProbeChannel(state, opts.channel);
+    const body = {};
+    if (opts.models.length) body.models = opts.models;
+    if (opts.keyId !== undefined) body.key_id = opts.keyId;
+    if (opts.wire !== undefined) body.wire = opts.wire;
+    const result = await apiPost(`/api/providers/${encodeURIComponent(provider.id)}/models/test`, body);
+    if (!result || !Array.isArray(result.results))
+      throw probeError('invalid_response', '测活接口返回的结果缺少 results');
+    if (json) console.log(JSON.stringify(result, null, 2)); else printProbe(result, provider);
+    // 退出码要能把"有模型失败"传给脚本:文本表是给人看的,而脚本(以及 CI)只看 exit code。
+    // 失败用 1,与 explain/backups 的"有失败"同档;0 表示这次探到的模型全部通过。
+    const failed = typeof result.failed === 'number' ? result.failed : result.results.filter(r => !r.ok).length;
+    process.exitCode = failed > 0 ? 1 : 0;
+  } catch (e) {
+    const error = { code: e.code || 'probe_failed', message: e.message };
+    if (json) console.log(JSON.stringify({ ok: false, error }, null, 2));
+    else {
+      console.log(`探活失败 [${error.code}]: ${error.message}`);
+      if (error.code === 'invalid_arguments') console.log(PROBE_USAGE);
+    }
+    process.exitCode = 1;
+  }
+}
+
 const cmd = process.argv[2] || 'status';
 if (cmd === 'start') start();
 else if (cmd === 'stop') stop();
@@ -722,6 +843,7 @@ else if (cmd === 'sessions' || cmd === 'sess') {
 }
 else if (cmd === 'slots') slotsCmd();
 else if (cmd === 'explain') explainCmd(process.argv.slice(3));
+else if (cmd === 'probe') probeCmd(process.argv.slice(3));
 else if (cmd === 'backups') runBackupsCmd(process.argv.slice(3));
 else if (cmd === 'restore') runRestoreCmd(process.argv.slice(3), { root: ROOT, home: os.homedir(), env: process.env });
 else if (cmd === 'split') splitCmd(process.argv.slice(3));

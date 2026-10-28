@@ -21,6 +21,7 @@
 ./mixctl restore <备份名或路径> [--file <受管现役路径>] [--dry-run | --yes] [--json]
 ./mixctl logs [n] [--history] [--since <时间>] [--until <时间>] [--cursor <游标>] [--limit <条数>] [--json]
 ./mixctl logs [n] [--app <claude|codex>] [--provider <渠道>] [--model <模型>] [--session <会话>] [--status <ok|err|状态码>] [--slot <槽名>] [--err_class <错误分类>]
+./mixctl probe <渠道ID或渠道名> [模型...] [--key-id <KeyID>] [--wire <anthropic|responses|chat>] [--json]
 ./mixctl sessions
 ./mixctl sessions config <完整会话键> [--json]
 ./mixctl sessions set-key <完整会话键> <渠道ID> <KeyID|--inherit> [--json]
@@ -35,7 +36,8 @@
 `mixctl route codex --slots` 会被直接拒绝;普通 `route codex` 已自动使用可用主槽与审查槽别名。
 `route` 会写客户端配置,
 查询状态请用 `status` 或 `slots`。备份与还原是本地命令,不需要服务运行;
-**日志查询需要服务运行**。
+**日志查询需要服务运行**。`probe` 需要服务运行:它会**真的向上游发一次生成请求、消耗额度**
+(每个模型一次),只读不落盘。
 
 ## 2. 端口、端点与数据目录
 
