@@ -74,7 +74,7 @@ const EXCLUDE = [
   { path: 'routes.json', why: '本机路由规则,运行数据' },
   { path: 'sessions.json', why: '**含对话标签(对话内容片段)** 的会话绑定,运行数据' },
   { path: 'slots.json', why: '本机子代理槽位,运行数据' },
-  { path: 'harness.json', why: '本机 Harness 主模型与子代理白名单池,运行数据' },
+  { path: 'harness.json', why: '已移除接入模块的遗留运行数据(Harness 集成不再由本产品管理),仍禁止进入制品' },
   { path: 'dsh.json', why: '已移除接入模块的遗留运行数据,仍禁止进入制品' },
   { path: 'logs', why: '运行期日志(server.log / requests.jsonl / 响应归档)' },
   { path: 'backups', why: '历史备份归档,内含明文 Key 与渠道配置' },
@@ -100,7 +100,6 @@ const REQUIRED_ENTRIES = [
   'public/js/workspace.js', 'public/js/usage.js', 'public/styles/base.css',
   'public/js/readiness.js', 'public/js/attempt-flow.js', 'public/js/key-fallback.js',
   'public/styles/readiness.css', 'public/styles/attempt-flow.css', 'public/styles/key-fallback.css',
-  'public/js/harness.js', 'public/styles/harness.css',
   'public/styles/providers.css', 'public/styles/usage.css',
   'public/styles/config.css', 'public/styles/observe.css',
 ];

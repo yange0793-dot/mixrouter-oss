@@ -513,10 +513,10 @@ test('setup:responses 型 Claude 渠道 + mock 上游', async () => {
     }],
     codex: [],
   }));
-  fs.writeFileSync(path.join(TMP, 'routes.json'), JSON.stringify({
-    rules: [{ id: 'r1', match: 'claude-opus', provider: 'p1', model: 'gpt-6-astra[1M]', enabled: true }],
-    default: { provider: 'p1', model: 'gpt-6-astra' },
-  }));
+  // 通用 match/default 规则已删除:Claude 组固定槽位 main 钉到 p1,落点模型带 [1M] 能力声明。
+  fs.writeFileSync(path.join(TMP, 'routes.json'), JSON.stringify({ rules: [] }));
+  fs.writeFileSync(path.join(TMP, 'slots.json'), JSON.stringify({ version: 1,
+    claude: { main: { provider: 'p1', model: 'gpt-6-astra[1M]' } }, codex: {} }));
   mod = require('../mixrouter.js');
   proxySrv = await mod.listen(0, mod.proxyHandler);
   uiSrv = await mod.listen(0, mod.apiHandler);
@@ -597,7 +597,7 @@ test('长会话续聊:main/subagent 槽位切换模型后,第 38 项按实际出
 
 test('非流式:messages 翻成 responses 发上游,响应翻回 Anthropic', async () => {
   const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {
-    body: { model: 'claude-opus-5', max_tokens: 64, messages: [{ role: 'user', content: '你好' }] },
+    body: { model: 'mixr-main', max_tokens: 64, messages: [{ role: 'user', content: '你好' }] },
   });
   assert.strictEqual(r.status, 200);
   const seen = up.requests.at(-1);
@@ -623,7 +623,7 @@ test('非流式:messages 翻成 responses 发上游,响应翻回 Anthropic', asy
 test('Responses 出站同时保留图片、工具和 high effort', async () => {
   const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {
     body: {
-      model: 'claude-opus-5', max_tokens: 64, output_config: { effort: 'high' }, thinking: { type: 'adaptive' },
+      model: 'mixr-main', max_tokens: 64, output_config: { effort: 'high' }, thinking: { type: 'adaptive' },
       tools: [{ name: 'check', input_schema: { type: 'object', properties: {} } }],
       messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAA' } }] }],
     },
@@ -639,7 +639,7 @@ test('Responses 出站同时保留图片、工具和 high effort', async () => {
 
 test('流式:responses SSE → Anthropic SSE 事件序列', async () => {
   const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {
-    body: { model: 'claude-opus-5', max_tokens: 64, stream: true, messages: [{ role: 'user', content: 'hi' }] },
+    body: { model: 'mixr-main', max_tokens: 64, stream: true, messages: [{ role: 'user', content: 'hi' }] },
   });
   assert.strictEqual(r.status, 200);
   assert.ok(r.headers['content-type'].includes('text/event-stream'));
@@ -653,7 +653,7 @@ test('流式:responses SSE → Anthropic SSE 事件序列', async () => {
 test('客户端要流、上游整包回 JSON:摊成 Anthropic SSE', async () => {
   up.setJsonAlways(true);
   const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {
-    body: { model: 'claude-opus-5', max_tokens: 64, stream: true, messages: [{ role: 'user', content: 'hi' }] },
+    body: { model: 'mixr-main', max_tokens: 64, stream: true, messages: [{ role: 'user', content: 'hi' }] },
   });
   up.setJsonAlways(false);
   assert.strictEqual(r.status, 200);
@@ -667,7 +667,7 @@ test('客户端要流、上游整包回 JSON:摊成 Anthropic SSE', async () => 
 // 比 promise 微任务还早,mixrouter 的 close 回调据此误判成取消)
 test('流式成功:日志不得记成 client closed,usage 要落地', async () => {
   const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {
-    body: { model: 'claude-opus-5', max_tokens: 64, stream: true, messages: [{ role: 'user', content: '记日志' }] },
+    body: { model: 'mixr-main', max_tokens: 64, stream: true, messages: [{ role: 'user', content: '记日志' }] },
   });
   assert.strictEqual(r.status, 200);
   const log = lastRequestLog();
@@ -682,7 +682,7 @@ test('流式成功:日志不得记成 client closed,usage 要落地', async () =
 test('上游流中途夭折:客户端收到 error,不出现 message_stop', async () => {
   up.setAbortMidStream(true);
   const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {
-    body: { model: 'claude-opus-5', max_tokens: 64, stream: true, messages: [{ role: 'user', content: '断流' }] },
+    body: { model: 'mixr-main', max_tokens: 64, stream: true, messages: [{ role: 'user', content: '断流' }] },
   });
   up.setAbortMidStream(false);
   assert.strictEqual(r.status, 200);
@@ -702,7 +702,7 @@ test('端到端:可选参数的空占位在三条回程路径上都被剪掉,req
     EDIT_ARGS,
   ];
   const req = stream => rawRequest(proxyPort, 'POST', '/v1/messages', {
-    body: { model: 'claude-opus-5', max_tokens: 64, stream, tools: PRUNE_TOOLS, messages: [{ role: 'user', content: '读文件' }] },
+    body: { model: 'mixr-main', max_tokens: 64, stream, tools: PRUNE_TOOLS, messages: [{ role: 'user', content: '读文件' }] },
   });
   up.setJsonBody({ id: 'resp_t', status: 'completed', model: 'gpt-6-astra', usage: { input_tokens: 5, output_tokens: 5 },
     output: calls.map(([name, a], i) => ({ type: 'function_call', call_id: `call_${i}`, name, arguments: JSON.stringify(a) })) });
@@ -722,7 +722,7 @@ test('端到端:可选参数的空占位在三条回程路径上都被剪掉,req
 test('上游 200 但 status=failed:翻成 Anthropic error,不回空消息', async () => {
   up.setJsonBody({ status: 'failed', error: { message: 'mock failure' } });
   const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {
-    body: { model: 'claude-opus-5', max_tokens: 64, messages: [{ role: 'user', content: 'hi' }] },
+    body: { model: 'mixr-main', max_tokens: 64, messages: [{ role: 'user', content: 'hi' }] },
   });
   up.setJsonBody(null);
   assert.strictEqual(r.status, 502);
@@ -735,7 +735,7 @@ test('上游 200 + SSE 皮里包错误:换一代 key 重试,同一条响应继�
   up.setErrorStream(1);
   const before = up.requests.length;
   const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {
-    body: { model: 'claude-opus-5', max_tokens: 64, stream: true, messages: [{ role: 'user', content: '重试' }] },
+    body: { model: 'mixr-main', max_tokens: 64, stream: true, messages: [{ role: 'user', content: '重试' }] },
   });
   assert.strictEqual(r.status, 200);
   const pair = up.requests.slice(before);
@@ -751,7 +751,7 @@ test('上游 200 + SSE 皮里包错误:换一代 key 重试,同一条响应继�
 test('count_tokens:responses 上游没有该端点,本地估一个', async () => {
   const before = up.requests.length;
   const r = await rawRequest(proxyPort, 'POST', '/v1/messages/count_tokens', {
-    body: { model: 'claude-opus-5', messages: [{ role: 'user', content: 'x'.repeat(400) }] },
+    body: { model: 'mixr-main', messages: [{ role: 'user', content: 'x'.repeat(400) }] },
   });
   assert.strictEqual(r.status, 200);
   const j = JSON.parse(r.text);
@@ -763,7 +763,7 @@ test('上游 5xx:同一渠道内轮换 prompt_cache_key 重试,不改模型', as
   up.setFail(1);
   const before = up.requests.length;
   const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {
-    body: { model: 'claude-opus-5', max_tokens: 32, messages: [{ role: 'user', content: '重试看看' }] },
+    body: { model: 'mixr-main', max_tokens: 32, messages: [{ role: 'user', content: '重试看看' }] },
   });
   assert.strictEqual(r.status, 200);
   const pair = up.requests.slice(before);
@@ -773,12 +773,18 @@ test('上游 5xx:同一渠道内轮换 prompt_cache_key 重试,不改模型', as
   assert.strictEqual(pair[1].body.prompt_cache_key, pair[0].body.prompt_cache_key + '-g1');
 });
 
-test('上游错误体翻成 Anthropic 形状(Claude Code 才认)', async () => {
+test('未登记模型回 Anthropic 形状错误(Claude Code 才认),不打上游', async () => {
+  const before = up.requests.length;
   const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {
     body: { model: 'nope-404-model', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] },
   });
-  // 这条走 default 规则,仍是同一个渠道;上游 200 时不该出错
-  assert.ok([200, 404].includes(r.status));
+  // 通用 default 兜底已删除:没有任何渠道登记这个模型名,必须明确 503,不偷偷换模型也不打上游
+  assert.strictEqual(r.status, 503);
+  assert.strictEqual(up.requests.length, before);
+  const j = JSON.parse(r.text);
+  assert.strictEqual(j.type, 'error');
+  assert.strictEqual(j.error.type, 'no_route_error');
+  assert.match(j.error.message, /nope-404-model/);
 });
 
 test('渠道 API:claude 组可以设 wire_api=responses,非法值被拒', async () => {

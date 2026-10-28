@@ -203,7 +203,7 @@ function writeTmpConfig(dataDir, upstreamBase) {
   fs.mkdirSync(path.join(dataDir, 'logs'), { recursive: true });
   const providers = {
     version: 2,
-    current: { claude: null, codex: null, zcode: null },
+    current: { claude: null, codex: null },
     claude: [
       { id: 'p-auth', name: 'smoke-anthropic', base_url: upstreamBase, api_key: KEY_CLAUDE_A,
         enabled: true, models: ['up-model-a'], ua: '', note: 'smoke' },
@@ -217,6 +217,9 @@ function writeTmpConfig(dataDir, upstreamBase) {
         enabled: true, model: 'gpt-smoke', wire_api: 'responses', drop_images: false, note: 'smoke' },
     ],
   };
+  // routes.json 仍按**旧格式**落一份(含通用规则与兜底):这是"历史磁盘数据"的夹具。
+  // 分发改由精确槽位与已登记模型决定,这些规则不再执行 —— 但启动与请求都不许把它们
+  // 删掉或改写(见下面「历史 routes.json 逐字节未动」那条断言)。
   const routes = {
     rules: [
       { id: 'r-auth', match: 'smoke-a', provider: 'p-auth', model: 'up-model-a', pool: [], strategy: 'round_robin', priority: 0, when: {}, enabled: true, app: 'claude' },
@@ -232,10 +235,11 @@ function writeTmpConfig(dataDir, upstreamBase) {
 
 // 子进程环境:先清掉调用方 shell 里所有 MIXR_/MIXROUTER_/MIXUI_ 残值,再显式给本次要用的
 // ——调用方 shell 里一个陈旧的 MIXR_DATA_DIR 就能让"隔离"变成写真实数据目录。
+// DSH_HOME 同理,但它是已移除的 Harness 集成留下的名字,不带前缀,只能按名剔。
 function childEnv(ports, dirs) {
   const env = {};
   for (const [k, v] of Object.entries(process.env)) {
-    if (/^(MIXR_|MIXROUTER_|MIXUI_)/.test(k)) continue;
+    if (/^(MIXR_|MIXROUTER_|MIXUI_)/.test(k) || k === 'DSH_HOME') continue;
     env[k] = v;
   }
   return {
@@ -244,9 +248,6 @@ function childEnv(ports, dirs) {
     MIXR_DATA_DIR: dirs.data,
     MIXR_CLAUDE_SETTINGS: path.join(dirs.home, '.claude', 'settings.json'),
     MIXR_CODEX_CONFIG: path.join(dirs.home, '.codex', 'config.toml'),
-    MIXR_ZCODE_CONFIG: path.join(dirs.home, '.zcode', 'v2', 'config.json'),
-    DSH_HOME: path.join(dirs.home, '.dsh'),
-    MIXR_HARNESS_PROFILE: path.join(dirs.home, '.dsh', 'profiles', 'desktop', 'cordis.patch.yml'),
     MIXR_UPSTREAM_PROXY: '',                           // 明确的空值:不回落到调用方 shell 的隧道
     MIXR_SESSION_LABEL: '0',
     MIXROUTER_PORT: String(ports.proxy),
@@ -344,6 +345,8 @@ async function main() {
     //    不拿真实 ~/.claude 做这件事——那是运行中用户的文件,别的会话正常改写会让它误报,
     //    而且本轮边界本来就不读真配置。
     writeTmpConfig(dirs.data, upstreamBase);
+    // 启动前把这份**旧格式** routes.json 存一份字节:后面的请求与启动流程都不许改写它。
+    const legacyRoutes = fs.readFileSync(path.join(dirs.data, 'routes.json'), 'utf8');
     const claudeCfg = path.join(dirs.home, '.claude', 'settings.json');
     fs.mkdirSync(path.dirname(claudeCfg), { recursive: true });
     const sentinel = '{\n  "env": {\n    "SMOKE_SENTINEL": "untouched"\n  }\n}\n';
@@ -420,6 +423,12 @@ async function main() {
         must(typeof p.base_url === 'string' && p.base_url.includes(String(mockPort)), `渠道 ${p.id} 的 base_url 不是 mock 上游`);
       }
       must(!/sk-smoke/.test(r.text), '/api/state 里仍出现 sk-smoke 前缀');
+      // 瘦身后的快照契约:通用规则与已移除客户端不能再从 /api/state 冒出来。
+      // 前端若还按老形状读,这里的 key 就是唯一能提前拦住它的地方。
+      for (const gone of ['routes', 'routes_revision']) must(!Object.hasOwn(j, gone), `/api/state 不该再有 ${gone}`);
+      must(!Object.hasOwn(j.live || {}, 'zcode'), '/api/state 的 live 里不该再有 zcode');
+      must(!Object.hasOwn(j.current || {}, 'zcode'), '/api/state 的 current 里不该再有 zcode');
+      must(!(j.router && Object.hasOwn(j.router, 'zcode_base')), '/api/state 的 router 里不该再有 zcode_base');
     });
     await step('/api/health:只读健康视图可读', async () => {
       const r = await req(uiPort, 'GET', '/api/health');
@@ -437,7 +446,9 @@ async function main() {
     });
 
     // ---- 7) Anthropic 一进一出(直通)
-    const NOSTREAM = { model: 'smoke-a', max_tokens: 16, messages: [{ role: 'user', content: 'ping' }] };
+    // 请求模型名就是该渠道**登记的精确模型名** —— 分发只认精确槽位与已登记模型,
+    // 旧的冒烟名(smoke-a/b/c)在没有匹配规则之后不会再被分发到任何渠道。
+    const NOSTREAM = { model: 'up-model-a', max_tokens: 16, messages: [{ role: 'user', content: 'ping' }] };
     const anthHeaders = { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01' };
     await step('Anthropic 非流式:messages → 上游 /v1/messages,响应回到 message 形状', async () => {
       const n = mock.seen.length;
@@ -471,7 +482,7 @@ async function main() {
     await step('Claude 组 wire_api=responses:客户端说 Anthropic,出站打到 /v1/responses 并翻回来', async () => {
       const n = mock.seen.length;
       const r = await req(proxyPort, 'POST', '/v1/messages', {
-        headers: anthHeaders, body: { model: 'smoke-b', max_tokens: 16, messages: [{ role: 'user', content: 'ping' }] } });
+        headers: anthHeaders, body: { model: 'up-model-b', max_tokens: 16, messages: [{ role: 'user', content: 'ping' }] } });
       eq(r.status, 200, 'status');
       const j = JSON.parse(r.text);
       eq(j.type, 'message', 'type');
@@ -487,7 +498,7 @@ async function main() {
     await step('Claude 组 wire_api=chat:出站打到 /v1/chat/completions,整包翻回 Anthropic', async () => {
       const n = mock.seen.length;
       const r = await req(proxyPort, 'POST', '/v1/messages', {
-        headers: anthHeaders, body: { model: 'smoke-c', max_tokens: 16, messages: [{ role: 'user', content: 'ping' }] } });
+        headers: anthHeaders, body: { model: 'up-model-c', max_tokens: 16, messages: [{ role: 'user', content: 'ping' }] } });
       eq(r.status, 200, 'status');
       const j = JSON.parse(r.text);
       eq(j.type, 'message', 'type');
@@ -500,7 +511,7 @@ async function main() {
     });
     await step('Claude 组 wire_api=chat 流式:chat 的 finish_reason 终态要翻成 Anthropic 收尾', async () => {
       const r = await req(proxyPort, 'POST', '/v1/messages', {
-        headers: anthHeaders, body: { model: 'smoke-c', max_tokens: 16, messages: [{ role: 'user', content: 'ping' }], stream: true } });
+        headers: anthHeaders, body: { model: 'up-model-c', max_tokens: 16, messages: [{ role: 'user', content: 'ping' }], stream: true } });
       eq(r.status, 200, 'status');
       must(String(r.headers['content-type']).includes('text/event-stream'), `content-type 不是 SSE:${r.headers['content-type']}`);
       must(r.text.includes(MOCK_PREFIX + 'up-model-c'), 'SSE 里没有正文');
@@ -558,29 +569,41 @@ async function main() {
       must(!body.includes(KEY_CLAUDE_A), 'requests.jsonl 里落进了原始 Key');
       must(body.trim().split('\n').length >= 5, 'requests.jsonl 行数偏少');
     });
-    await step('Harness 独立模型池:保存不写客户端,跨协议组 Messages 转译可用', async () => {
-      const originalSlots = JSON.stringify(state0.slots);
-      const state = JSON.parse((await req(uiPort, 'GET', '/api/harness')).text);
-      const saved = await req(uiPort, 'PUT', '/api/harness', { headers: anthHeaders, body: {
-        expected_revision: state.revision, main: { provider: 'c-resp', model: 'gpt-smoke' },
-        pool: [{ provider: 'p-auth', model: 'up-model-a' }],
-      } });
-      eq(saved.status, 200, 'Harness save status');
-      const configured = JSON.parse(saved.text);
-      must(configured.pool.length === 2, '主模型应自动纳入池');
-      must(!/sk-smoke/.test(saved.text), 'Harness state 不能回显 Key');
-      const response = await req(proxyPort, 'POST', '/harness/v1/messages', { headers: anthHeaders,
-        body: { ...NOSTREAM, model: 'mixr-harness-main' } });
-      eq(response.status, 200, 'Harness Messages status');
-      must(JSON.parse(response.text).content.some(block => block.text === MOCK_PREFIX + 'gpt-smoke'), 'Harness 主模型没有落到 Codex 组的准确模型');
-      const after = JSON.parse((await req(uiPort, 'GET', '/api/state')).text);
-      eq(JSON.stringify(after.slots), originalSlots, 'Harness 不改其他客户端槽位');
-      must(fs.existsSync(path.join(dirs.data, 'harness.json')), '池只保存到隔离数据目录');
-      must(!fs.existsSync(path.join(dirs.home, '.dsh')), '普通保存与请求不能创建 Harness profile');
+    await step('历史 routes.json(含旧通用规则)逐字节未动:启动与请求都不改写磁盘数据', () => {
+      eq(fs.readFileSync(path.join(dirs.data, 'routes.json'), 'utf8'), legacyRoutes,
+        '旧 routes.json 在启动/转发之后被改写了');
     });
-    await step('Harness 关键静态资源随运行包交付', async () => {
-      for (const asset of ['/js/harness.js', '/styles/harness.css'])
-        eq((await req(uiPort, 'GET', asset)).status, 200, asset);
+    // 这一步**会写盘**(压缩规则是唯一还能改路由配置的入口),所以必须排在
+    // 「历史 routes.json 逐字节未动」之后 —— 反过来会把那条断言弄成假绿。
+    await step('压缩规则是唯一写入口:GET/POST /api/compact 可用,PUT /api/routes 固定 410', async () => {
+      const got = await req(uiPort, 'GET', '/api/compact');
+      eq(got.status, 200, 'GET /api/compact status');
+      const before = JSON.parse(got.text).compact;
+      must(before && typeof before.revision === 'string', 'GET /api/compact 必须带 revision');
+      const post = await req(uiPort, 'POST', '/api/compact', { headers: { 'Content-Type': 'application/json' },
+        body: { provider: 'p-auth', model: 'up-model-a', expected_revision: before.revision } });
+      eq(post.status, 200, 'POST /api/compact status');
+      const after = JSON.parse(post.text).compact;
+      must(after.selection && after.selection.provider === 'p-auth' && after.selection.model === 'up-model-a',
+        `POST /api/compact 没落下选择:${JSON.stringify(after.selection)}`);
+      must(after.revision !== before.revision, 'POST /api/compact 之后 revision 必须变化');
+      const reread = JSON.parse((await req(uiPort, 'GET', '/api/compact')).text).compact;
+      must(reread.selection && reread.selection.provider === 'p-auth', 'GET /api/compact 读不回刚写下的选择');
+      // 旧入口必须 410 而不是 404:旧控制台/脚本看到的是"功能被移除",不是"路径写错"。
+      const put = await req(uiPort, 'PUT', '/api/routes', { headers: { 'Content-Type': 'application/json' },
+        body: { rules: [], default: {} } });
+      eq(put.status, 410, 'PUT /api/routes 必须回 410');
+      must(/压缩设置|已移除/.test(put.text), `410 要说清去哪改,实得 ${put.text.slice(0, 120)}`);
+      // 写完之后磁盘上确实换了内容:routes.json 是压缩规则的存储,不再只是历史残留。
+      const disk = JSON.parse(fs.readFileSync(path.join(dirs.data, 'routes.json'), 'utf8'));
+      must(Array.isArray(disk.rules) && disk.rules.length > 0, '写盘后 routes.json 里应有压缩规则');
+    });
+    await step('已移除的 Harness 端点不再存在:/api/harness 与 /harness/v1/* 都不服务', async () => {
+      eq((await req(uiPort, 'GET', '/api/harness')).status, 404, 'GET /api/harness');
+      eq((await req(uiPort, 'PUT', '/api/harness', { headers: anthHeaders, body: {} })).status, 404, 'PUT /api/harness');
+      eq((await req(proxyPort, 'POST', '/harness/v1/messages', { headers: anthHeaders,
+        body: { ...NOSTREAM, model: 'mixr-harness-main' } })).status, 404, 'POST /harness/v1/messages');
+      must(!fs.existsSync(path.join(dirs.home, '.dsh')), '请求不能创建 Harness profile');
     });
     await step('临时 HOME 里的哨兵客户端配置原样未动(本次跑没有触发客户端配置写入)', () => {
       eq(fs.readFileSync(claudeCfg, 'utf8'), sentinelBefore, '哨兵 settings.json 内容被改了');

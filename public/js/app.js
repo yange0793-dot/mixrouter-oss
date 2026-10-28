@@ -1,11 +1,10 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const APPS = { claude: { label: 'Claude Code', cfg: '~/.claude/settings.json' }, codex: { label: 'Codex', cfg: '~/.codex/config.toml' }, zcode: { label: 'ZCode', cfg: '~/.zcode/v2/config.json' } };
+const APPS = { claude: { label: 'Claude Code', cfg: '~/.claude/settings.json' }, codex: { label: 'Codex', cfg: '~/.codex/config.toml' } };
 const GROUPS = { claude: 'Claude / Anthropic', codex: 'Codex / OpenAI' };
-const ZCODE_HELP = '保存后在 ZCode 模型选择器选择 Mixrouter · ...；如未出现请重启客户端，新会话生效';
-let state = null, view = 'overview', curApp = 'claude', zcodeWire = 'anthropic', editing = null, editingGroup = 'claude', keyDraft = [];
-let routesDraft = null, routesBase = '', routesBaseRevision = '', routesDirty = false, routesRevision = 0, testResults = {}, logsTimer = null;
+let state = null, view = 'overview', curApp = 'claude', editing = null, editingGroup = 'claude', keyDraft = [];
+let testResults = {}, logsTimer = null;
 // 模型测活结果按渠道 id 存:renderProviders 每 5 秒整块重绘卡片,DOM 里的结果一重绘就没了,
 // 状态必须放在模块级变量里才能活过轮询(和 testResults 是同一个道理)。
 let modelProbe = {};
@@ -14,7 +13,7 @@ let compactDraft = null, compactBase = '', compactDirty = false, compactRevision
 // 容易误导人的地方:请求成功了不等于配置落了盘,落了盘不等于运行中的服务用上了,服务用上了
 // 也不等于旧客户端会话跟着变。所以分开存、分开显示。
 //   saved    —— 这次请求本身成功返回
-//   written  —— 服务端把配置写进了磁盘(routes.json)
+//   written  —— 服务端把配置写进了磁盘(压缩规则的存储)
 //   loaded   —— 运行中的服务已经按新配置分发(压缩是服务端路由,不重载进程)
 //   restart  —— 客户端要不要重开(压缩不需要;窗口需要新开会话)
 let compactOutcome = null;
@@ -30,10 +29,9 @@ let codexCompactError = '', codexCompactMessage = '', codexCompactStateRevision 
 // /api/health 的最近一次只读快照(渠道页的可用性徽标与设置页共用)。它是**独立**的一次
 // fetch:读失败只让徽标与设置页那一块显示"未读取",绝不阻断 /api/state 的整页刷新。
 let liveHealth = null, healthError = '', healthTask = null;
-const providerGroup = () => curApp === 'zcode' ? (zcodeWire === 'anthropic' ? 'claude' : 'codex') : curApp;
+const providerGroup = () => curApp;
 const providers = (group = providerGroup()) => state?.providers?.[group] || [];
 const allProviders = () => [...providers('claude'), ...providers('codex')];
-const zcodeSupported = () => !!state?.live && Object.hasOwn(state.live, 'zcode') && Object.hasOwn(state.current || {}, 'zcode');
 const handlerArg = value => esc(JSON.stringify(String(value))); // Escape both the JS string and its HTML attribute.
 // 会话下拉的 DOM id 必须由**完整 key** 推出来:短 id 只有 8 位,两个不同会话会撞同一个短 id
 // (实测 cx:01a178e0-… 与 cx:01a178e0-… 就是),用短 id 拼 id 会让 for/id 指错行。
@@ -142,12 +140,10 @@ function setConnection(connected, error = '') {
   online = connected; document.body.dataset.connection = connected ? 'online' : 'offline';
   $('connection-label').textContent = connected ? '控制台已连接' : '控制台离线';
   $('connection-banner').classList.toggle('show', !connected);
-  $('connection-message').textContent = connected ? '' : `无法获取实时状态${error ? '：' + error : ''}。${lastSync ? '当前为 ' + lastSync.toLocaleTimeString('zh-CN', { hour12: false }) + ' 的最后快照，运行时长和指标已停止更新。' : '尚无可用快照。'}每 5 秒自动重试；路由草稿仍保留。`;
+  $('connection-message').textContent = connected ? '' : `无法获取实时状态${error ? '：' + error : ''}。${lastSync ? '当前为 ' + lastSync.toLocaleTimeString('zh-CN', { hour12: false }) + ' 的最后快照，运行时长和指标已停止更新。' : '尚无可用快照。'}每 5 秒自动重试；压缩草稿仍保留。`;
   $('new-provider').disabled = !state;
-  $('save-routes').disabled = !connected || !routesDraft || savingRoutes || savingCompact || compactDirty;
-  $('save-compact').disabled = !connected || !state?.compact || savingCompact || savingRoutes || routesDirty;
+  $('save-compact').disabled = !connected || !state?.compact || savingCompact;
   $('save-window').disabled = !connected || !windowSnapshot || !windowDirty || savingWindow || !!windowLoadTask;
-  $('add-rule').disabled = !routesDraft;
   // 会话覆盖弹窗:离线、没读到服务端版本、或正在保存时,三扇门都封掉
   if (typeof updateRoutingButtons === 'function') updateRoutingButtons();
   renderCodexCompact();
@@ -167,12 +163,12 @@ function renderOverview() {
   $('metric-sessions').textContent = state.sessions?.length ?? '—';
   $('metric-sessions-hint').textContent = '按协议归组 · 失败后仍可重试';
   for (const app of Object.keys(APPS)) {
-    const count = app === 'zcode' ? ps.length : providers(app).length;
+    const count = providers(app).length;
     $('count-' + app).textContent = count;
-    $('tab-' + app).setAttribute('aria-label', `${APPS[app].label}，${count} 个${app === 'zcode' ? '共享' : ''}渠道`);
+    $('tab-' + app).setAttribute('aria-label', `${APPS[app].label}，${count} 个渠道`);
   }
 }
-// 侧栏三个客户端入口的状态点:实心 = 已写入配置,空心环 = 还没接。只读 liveFacts,不另判一套。
+// 侧栏两个客户端入口的状态点:实心 = 已写入配置,空心环 = 还没接。只读 liveFacts,不另判一套。
 // 提示放在链接上而不是那个 aria-hidden 的点上——点对读屏是不可见的,提示挂那里等于没有。
 function syncClientDots() {
   for (const link of document.querySelectorAll('nav a[data-app]')) {
@@ -182,7 +178,7 @@ function syncClientDots() {
     link.setAttribute('title', configured ? '已写入客户端配置' : '尚未接入客户端');
   }
 }
-// Polling updates status only: route editor DOM is initialized once, never rebuilt by refresh.
+// Polling updates status only: editors keep their draft DOM, never rebuilt by refresh.
 function refresh() {
   if (refreshTask) return refreshTask;
   $('refresh-btn').disabled = true;
@@ -190,17 +186,16 @@ function refresh() {
   refreshTask = (async () => {
     try {
       const next = await api('/api/state');
-      if (!next.providers || !next.routes || !next.current || !next.live) throw new Error('状态数据不完整');
+      if (!next.providers || !next.current || !next.live) throw new Error('状态数据不完整');
       // 轮询若早于刚完成的热更新,保留 PUT 返回的 Codex 状态,下轮再读最新快照。
       if (state && codexRevision !== codexSlotRevision) {
         if (state.slots) next.slots = { ...next.slots, codex: state.slots.codex };
         next.live.codex = state.live.codex;
       }
       state = next; lastSync = new Date();
-      if (!routesDraft) { routesDraft = structuredClone(state.routes); routesBase = JSON.stringify(state.routes); routesBaseRevision = state.routes_revision || ''; renderRoutes(); }
       if (state.compact && !compactDraft) loadCompactDraft();
       renderCompactCurrent(); renderCompactKeys();
-      renderOverview(); setConnection(true); updateRouteStatus(); updateCompactStatus(); renderSlots();
+      renderOverview(); setConnection(true); updateCompactStatus(); renderSlots();
       // 概览在 setConnection 之后渲染:客户端状态那三行要读 online(liveFacts 的口径),
       // 早一步渲染就会把一次成功的刷新说成"待确认"。
       renderOverviewPage();
@@ -230,8 +225,8 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) refr
 window.addEventListener('offline', () => { setConnection(false, '网络连接已断开'); renderProviders(); renderSlots(); });
 window.addEventListener('online', refresh);
 
-const VIEWS = ['overview', 'usage', 'providers', 'harness', 'routes', 'sessions', 'diagnostics', 'settings'];
-const VIEW_LABELS = { overview: '概览', usage: '用量统计', providers: '渠道与 Key', harness: 'DeepSeek Harness', routes: '路由', sessions: '会话', diagnostics: '诊断', settings: '设置与备份' };
+const VIEWS = ['overview', 'usage', 'providers', 'compact', 'sessions', 'diagnostics', 'settings'];
+const VIEW_LABELS = { overview: '概览', usage: '用量统计', providers: '渠道与 Key', compact: '压缩设置', sessions: '会话', diagnostics: '诊断', settings: '设置与备份' };
 // 切视图只有这一条路径。原先 nav 的 onclick 里写着全部逻辑,gotoLogs() 只能去"点"那个 <a>
 // ——视图一改名,选择器返回 null,.click() 就当场抛 TypeError(会话页的「日志」按钮变成死按钮,
 // 而且没有任何提示)。抽成函数后,程序化切换不再依赖导航项是否存在。
@@ -252,11 +247,11 @@ function showView(name) {
   if (view === 'diagnostics') { loadLogs(); loadStats(); restartLogsTimer(); } else { clearInterval(logsTimer); logsTimer = null; }
   // 用量页自己管轮询与在途请求:离开时停表,回来时立刻拉一次(切页不重复初始化筛选)。
   if (typeof usageSetVisible === 'function') usageSetVisible(view === 'usage');
-  if (typeof harnessSetVisible === 'function') harnessSetVisible(view === 'harness');
   if (view === 'usage' && typeof renderUsage === 'function') renderUsage();
   if (view === 'providers') { renderProviders(); ensureHealth(); }
   if (view === 'sessions') renderSessions();
-  if (view === 'routes' && !windowSnapshot && !windowLoadTask) loadCompactWindow();
+  // 压缩页进入时才去读磁盘窗口(默认「用户全局」层);已读过且有草稿时不重读,免得覆盖草稿。
+  if (view === 'compact' && !windowSnapshot && !windowLoadTask) loadCompactWindow();
   // 设置页的四条只读读取按页面进入时机触发,且各自独立失败:
   // 健康端点挂了不会连累备份清点,反之也一样(每个 load* 自带 try/catch)。
   if (view === 'settings') {
@@ -296,12 +291,11 @@ function setApp(app) {
   syncViewNav();
   for (const key of Object.keys(APPS)) { const tab = $('tab-' + key); tab.classList.toggle('active', key === app); tab.setAttribute('aria-selected', String(key === app)); tab.tabIndex = key === app ? 0 : -1; }
   $('agent-panel').setAttribute('aria-labelledby', 'tab-' + app);
-  $('zcode-protocol').hidden = app !== 'zcode'; renderProviders(); renderSlots();
+  renderProviders(); renderSlots();
   if (typeof workspaceAppChanged === 'function') {
     try { workspaceAppChanged(app); } catch (e) { console.error(e); }
   }
 }
-function setZcodeWire(wire) { if (['anthropic', 'responses', 'chat'].includes(wire)) { zcodeWire = wire; renderProviders(); } }
 document.querySelector('.apptabs').addEventListener('keydown', e => {
   const keys = Object.keys(APPS); let i = keys.indexOf(curApp);
   if (e.key === 'ArrowRight') i = (i + 1) % keys.length;
@@ -325,32 +319,29 @@ function overviewTodo() {
   const ps = allProviders();
   const disabledProviders = ps.filter(p => p.enabled === false);
   const disabledKeys = ps.flatMap(p => (p.keys || []).filter(k => k.enabled === false).map(k => ({ provider: p, key: k })));
-  // 路由里的僵尸引用:池成员或单选目标指向已删除的渠道。主入口启动时也会告警,
-  // 但真正致命的是"命中即 503",用户得在界面上看得见、能跳去改。
-  const ghosts = [];
-  for (const [label, r] of [...(state.routes?.rules || []).map((r, i) => [`规则 ${i + 1}（${r.match || '未填匹配'}）`, r]), ['默认路由', state.routes?.default || {}]]) {
-    // 归属用 appOfRule:与路由页同一个口径,不给概览另写一份"这规则算哪一组"。
-    for (const g of ghostRefsOf(r, appOfRule(r))) ghosts.push(`${label} 的${g.where}指向已删除的渠道（${g.id}）`);
-  }
+  // 槽位里的僵尸引用:槽位指向已删除的渠道。命中即失败,用户得在界面上看得见、能跳去改。
+  const ghosts = ghostSlotRefs();
   // 会话里引用已失效的渠道 / Key:面板里 routingStaleOf() 已能逐条算,这里只给总数。
   let staleSessions = 0;
   for (const s of state.sessions || []) if (routingStaleOf(groupOfSession(s), s.routing).length) staleSessions++;
 
   if (disabledProviders.length) items.push({ text: `${disabledProviders.length} 个渠道已停用：${disabledProviders.map(p => p.name).join('、')}`, view: 'providers', action: '去渠道与 Key' });
   if (disabledKeys.length) items.push({ text: `${disabledKeys.length} 把 Key 已停用：${disabledKeys.map(({ provider, key }) => `${provider.name} · ${key.label || key.id}（${key.id}）`).join('、')}`, view: 'providers', action: '去渠道与 Key' });
-  if (ghosts.length) items.push({ text: `路由里有失效引用，命中即 503：${ghosts.join('；')}`, view: 'routes', action: '去路由' });
+  if (ghosts.length) items.push({ text: `槽位里有失效引用，请求会失败：${ghosts.join('；')}`, view: 'providers', action: '去渠道与 Key' });
   if (staleSessions) items.push({ text: `${staleSessions} 个会话的 Key / 槽位覆盖里存在已失效的引用`, view: 'sessions', action: '去会话' });
 
   if (!items.length) return '<p class="ov-ok" id="overview-todo-empty">没有需要处理的事项。</p>';
   return `<ul class="ov-todo" id="overview-todo-list">${items.map(it => `<li><span>${esc(it.text)}</span>${overviewJump(it.view, it.action)}</li>`).join('')}</ul>`;
 }
-// 与服务端 poolLib.ghostRefs 同口径的只读复算:池成员 + 单选目标,逐个查渠道还在不在。
-function ghostRefsOf(r, group) {
+// 槽位的僵尸引用:槽位表里指向已删除渠道的条目。只读复算,不改任何状态。
+function ghostSlotRefs() {
   const out = [];
-  if (r.provider && !providers(group).some(p => p.id === r.provider)) out.push({ where: '目标渠道', id: r.provider });
-  for (const m of r.pool || []) {
-    const id = typeof m === 'string' ? m : m.provider;
-    if (id && !providers(group).some(p => p.id === id)) out.push({ where: '渠道池', id });
+  for (const app of Object.keys(APPS)) {
+    for (const s of state?.slots?.[app] || []) {
+      if (s.provider && !providers(app).some(p => p.id === s.provider)) {
+        out.push(`${APPS[app].label} 槽位 ${s.name} 的渠道（${s.provider}）`);
+      }
+    }
   }
   return out;
 }
@@ -392,18 +383,17 @@ function renderOverviewPage() {
       <div class="mono ov-cfg">${esc(APPS[app].cfg)}</div></div>`;
   }).join('');
 
-  // 接入地址 = "我在哪里填什么"。zcode 缺 base 时退回 url(与 routerBase 同口径)。
-  // 完整端点清单默认收起:三行基址已经回答了「填什么」,这里只是备查。
+  // 接入地址 = "我在哪里填什么"。缺 base 时退回 url(与 routerBase 同口径)。
+  // 完整端点清单默认收起:两行基址已经回答了「填什么」,这里只是备查。
   const r = state.router || {};
   const endpoints = [...new Set(Array.isArray(r.endpoints) ? r.endpoints : [])];
   $('overview-endpoints').innerHTML = [
     ['Claude Code / Anthropic', r.claude_base || r.url || ''],
     ['Codex / OpenAI', r.codex_base || r.url || ''],
-    ['ZCode', r.zcode_base || r.url || ''],
   ].map(([label, value]) => `<div class="ov-row"><div class="ov-row-name">${esc(label)}</div><div class="mono">${esc(value || '未提供')}</div></div>`).join('')
     + (endpoints.length ? `<details class="ov-endpoints-more"><summary>全部端点（${endpoints.length}）</summary><div class="ov-endpoint-list">${endpoints.map(esc).join('<br>')}</div></details>` : '');
 
-  // 接入向导入口只在还有客户端没写入配置时露面;三个都接好了就没必要占首屏。
+  // 接入向导入口只在还有客户端没写入配置时露面;两个都接好了就没必要占首屏。
   const ready = $('readiness-overview');
   if (ready) ready.hidden = Object.keys(APPS).every(app => { const f = liveFacts(app); return !!(f.healthy && f.lv?.base_url); });
   // 侧栏状态点与这里同源(都读 liveFacts),必须排在 setConnection 之后,
@@ -425,12 +415,12 @@ function overviewGoConnect(app) {
 
 function routerBase(app = curApp) {
   const r = state?.router || {};
-  return app === 'zcode' ? (r.zcode_base || r.url || '') : app === 'claude' ? (r.claude_base || r.url || '') : (r.codex_base || r.url || '');
+  return app === 'claude' ? (r.claude_base || r.url || '') : (r.codex_base || r.url || '');
 }
 const connectionExpanded = {};
 // 客户端接入状态的判定口径只此一处。概览页与渠道页读同一个函数,不各写一套——
 // 两处各判一次迟早会分叉,而这两处说的都是"客户端到底写了没有",分叉就是骗人。
-// app 显式传入而不是读 curApp:概览要三行并排看。
+// app 显式传入而不是读 curApp:概览要两行并排看。
 function liveFacts(app) {
   const lv = state.live?.[app], cur = state.current?.[app];
   const selected = allProviders().find(p => p.id === cur);
@@ -439,7 +429,7 @@ function liveFacts(app) {
   const stateLabel = !online ? '离线 · 最后快照' : !lv ? '状态未提供' : lv.error ? '配置读取失败' : lv.base_url ? '已写入配置' : '尚未配置';
   const slot = (state.slots?.[app] || []).find(s => s.alias === lv?.model);
   const configuredName = !healthy ? '待确认'
-    : inRouter ? slot?.provider_name || '按路由规则分发'
+    : inRouter ? slot?.provider_name || '按槽位分发'
     : lv?.match === true ? selected?.name || lv?.provider || '未配置' : lv?.provider || '自定义上游';
   // 概览页要的一句结论:现在这套客户端配置是直连、走路由,还是压根没接。
   const mode = !healthy ? '待确认' : inRouter ? '路由模式' : direct ? '直连' : '尚未配置';
@@ -448,8 +438,8 @@ function liveFacts(app) {
 function liveLine() {
   const { lv, cur, selected, healthy, inRouter, direct, stateLabel, slot, configuredName } = liveFacts(curApp);
   const modeBadge = enabled => enabled ? '<span class="badge on">已写入配置</span>' : `<span class="badge off">${!healthy ? '待确认' : '未接入'}</span>`;
-  // 三个客户端共用同一块「当前配置」摘要。以前只有 Codex 有,Claude Code / ZCode 得在整页里
-  // 自己找写了什么;现在口径一致(liveFacts 一处判定),接入细节默认收起、按客户端记住展开状态。
+  // 两个客户端共用同一块「当前配置」摘要,口径一致(liveFacts 一处判定),
+  // 接入细节默认收起、按客户端记住展开状态。
   // 详情里仍是那两张模式卡与配置行,离线时 liveFacts 会把它们降级成「待确认」,不冒充已写入。
   return `<dl class="current-config">
     <div><dt>配置供应商</dt><dd>${esc(configuredName)}</dd><small>${esc(stateLabel)}</small></div>
@@ -457,9 +447,9 @@ function liveLine() {
     <div><dt>接入方式</dt><dd>${!healthy ? '待确认' : inRouter ? '本地路由' : direct ? '直连' : '未接入'}</dd><small>${esc(lv?.wire_api || '')}</small></div>
     </dl><details class="connection-details"${connectionExpanded[curApp] ? ' open' : ''} ontoggle="connectionExpanded['${curApp}']=this.open"><summary>连接配置</summary><div class="mode-grid">
     <article class="mode-card ${direct ? 'selected' : ''}"><div class="top"><h2>直连渠道</h2>${modeBadge(direct)}</div><p>${direct ? esc(lv.match === true ? selected?.name || lv.provider || '自定义上游' : lv.provider || '自定义上游（配置未匹配）') : '客户端直接请求上游，不经过本地路由'}</p><p class="mono">${esc(lv?.base_url && !lv.router ? lv.base_url : '从下方渠道卡片选择接入')}</p></article>
-    <article class="mode-card ${inRouter ? 'selected' : ''}"><div class="top"><h2>路由模式</h2>${modeBadge(inRouter)}</div><p>经本地代理按规则分发，按会话保持渠道粘性</p><p class="mono">${esc(inRouter ? lv.base_url || routerBase() : routerBase() || '等待后端提供路由地址')}</p></article>
+    <article class="mode-card ${inRouter ? 'selected' : ''}"><div class="top"><h2>路由模式</h2>${modeBadge(inRouter)}</div><p>经本地代理按精确槽位与已登记模型分发，按会话保持渠道粘性</p><p class="mono">${esc(inRouter ? lv.base_url || routerBase() : routerBase() || '等待后端提供路由地址')}</p></article>
     </div><p class="config-line">${esc(APPS[curApp].cfg)} · ${stateLabel}${lv?.wire_api ? ' · 协议 ' + esc(lv.wire_api) : ''}${lv?.model ? ' · 配置模型 ' + esc(lv.model) : ''}${cur ? ' · 库内选中 ' + esc(cur === (state.router?.id || '@router') ? '路由模式' : selected?.name || cur) : ''}</p>
-    <p class="integration-note">${curApp === 'zcode' ? esc(ZCODE_HELP) + '。以上仅表示集成配置，不代表当前运行会话已切换；写入时合并并保留其他 provider，不默认更改现有默认模型。' : '切换会写入客户端配置，原文件自动备份。' + (curApp === 'claude' ? 'Claude Code 需重启会话生效。' : '首次接入或切换直连需重新打开 Codex；路由槽位调整从下一次请求生效。')}</p></details>`;
+    <p class="integration-note">切换会写入客户端配置，原文件自动备份。${curApp === 'claude' ? 'Claude Code 需重启会话生效。' : '首次接入或切换直连需重新打开 Codex；槽位调整从下一次请求生效。'}</p></details>`;
 }
 // 渠道库布局:list(默认,高密度行式账本)或 grid(并列卡片)。偏好记在 localStorage,
 // 但读写全程兜底:隐私模式、旧浏览器或坏值都不能把渠道页带崩,读不到就退回默认。
@@ -498,21 +488,20 @@ function renderProviders() {
   // 标题对所有客户端同一口径;大小写眉标与副标题由外壳按设计处理,这里不再按客户端藏。
   const title = $('providers-title'); if (title) title.textContent = '渠道与 Key';
   applyProviderLayout();
-  const isZcode = curApp === 'zcode', group = providerGroup();
-  $('btn-router').textContent = isZcode ? '接入路由' : '路由模式';
-  $('btn-router').disabled = !online || !state || (isZcode && !zcodeSupported());
-  $('zcode-group-hint').textContent = `复用 ${GROUPS[group]} 渠道库，不创建第三份渠道仓库。${group === 'codex' ? 'Responses 与 Chat 共用列表；直连接入按渠道卡片自身协议写入，路由接入使用上方所选协议。' : 'Anthropic 协议展示、新建和编辑 Claude 组渠道。'}编辑、启停和删除会同步影响使用该渠道库的客户端。`;
+  const group = providerGroup();
+  $('btn-router').textContent = '路由模式';
+  $('btn-router').disabled = !online || !state;
   if (!state) {
     if (!online && document.body.dataset.connection === 'offline') $('liveinfo').innerHTML = '<div class="empty"><b>无法读取客户端配置</b>请检查本地 Mixrouter 服务；连接恢复后会自动刷新。</div>';
     return;
   }
   const ps = providers(group), query = $('provider-search').value.trim().toLowerCase(), filter = $('provider-filter').value;
   const shown = ps.filter(p => (!query || [p.name, p.base_url, p.model, ...(p.models || []), ...Object.values(p.slots || {})].join(' ').toLowerCase().includes(query)) && (filter === 'all' || (filter === 'enabled' ? p.enabled : !p.enabled)));
-  $('channel-heading').textContent = isZcode ? `共享渠道 · ${GROUPS[group]}` : `${APPS[curApp].label} 渠道库`;
-  $('channel-count').textContent = `显示 ${shown.length} / ${ps.length} 个渠道 · ${ps.filter(p => p.enabled).length} 个已启用${isZcode ? ' · ZCode 复用，不重复计数' : ''}`;
+  $('channel-heading').textContent = `${APPS[curApp].label} 渠道库`;
+  $('channel-count').textContent = `显示 ${shown.length} / ${ps.length} 个渠道 · ${ps.filter(p => p.enabled).length} 个已启用`;
   $('prov-empty').hidden = shown.length > 0;
   $('empty-title').textContent = ps.length ? '没有匹配的渠道' : `${GROUPS[group]} 还没有渠道`;
-  $('empty-hint').textContent = ps.length ? '尝试其他名称、URL 或模型，或清除启用状态筛选。' : `新建一个${isZcode ? '共享' : ''}渠道，填写上游地址与模型后即可配置直连或路由。`;
+  $('empty-hint').textContent = ps.length ? '尝试其他名称、URL 或模型，或清除启用状态筛选。' : '新建一个渠道，填写上游地址与模型后即可配置直连或路由。';
   $('empty-action').textContent = ps.length ? '清除筛选' : '＋ 新建渠道';
   $('empty-action').onclick = ps.length ? () => { $('provider-search').value = ''; $('provider-filter').value = 'all'; renderProviders(); $('provider-search').focus(); } : () => openProvider();
   const liveHtml = liveLine();
@@ -523,9 +512,8 @@ function renderProviders() {
   // (liveHealth 可能还没回来或读失败;冷却已移除,/api/state 的 cooldowns 恒为空表)。
   const healthById = new Map((liveHealth?.providers || []).map(h => [h.provider, h]));
   let warning = '';
-  if (isZcode && !zcodeSupported()) warning = '当前后端尚未提供 ZCode 集成状态，已禁用接入操作以免旧接口误写其他客户端。共享渠道仍可管理；请接入支持 ZCode 的后端后重试。';
-  else if (lv?.error) warning = `客户端配置读取失败：${lv.error}。无法确认集成状态，请检查配置后重试。`;
-  else if (online && lv && curId && lv.match === false) warning = `${APPS[curApp].label} 配置与库内选择不一致。${isZcode ? '可重新「接入 ZCode」或「接入路由」，然后在模型选择器选择对应模型。' : '可通过渠道「重新写入」或重新启用路由模式恢复，写入前自动备份。'}`;
+  if (lv?.error) warning = `客户端配置读取失败：${lv.error}。无法确认集成状态，请检查配置后重试。`;
+  else if (online && lv && curId && lv.match === false) warning = `${APPS[curApp].label} 配置与库内选择不一致。可通过渠道「重新写入」或重新启用路由模式恢复，写入前自动备份。`;
   $('drift-banner').classList.toggle('show', !!warning); $('drift-text').textContent = warning;
   // 健康端点挂了不能把整页拖垮:读不到就只显示一句"健康状态未读取",其余卡片照常渲染。
   $('prov-health').hidden = !!liveHealth;
@@ -557,7 +545,7 @@ function renderProviders() {
     const wire = group === 'claude' ? (p.wire_api === 'responses' ? 'responses（转换）' : p.wire_api === 'chat' ? 'chat（转换）' : 'anthropic') : p.wire_api || 'responses';
     // responses/chat 渠道只挂 Codex/OpenAI 型通道,直连写进客户端必然失败(服务端也会拒),按钮直接封掉
     const convOnly = (group === 'claude' && (p.wire_api === 'responses' || p.wire_api === 'chat')) || (curApp === 'codex' && p.wire_api === 'chat');
-    const arg = handlerArg(p.id), locked = !online || (isZcode && !zcodeSupported()) || convOnly;
+    const arg = handlerArg(p.id), locked = !online || convOnly;
     // 失效(停用)的 Key:卡片上先给数量,展开的多 Key 清单里能逐把看出来是哪几把。
     // 只报 label 与 id —— 明文 Key 从不进入任何渲染路径(见 renderKeyDraft 的密码框与卡片下拉)。
     const keys = p.keys || [];
@@ -593,10 +581,10 @@ function renderProviders() {
         <div class="mono endpoint" title="${esc(p.base_url)}">${esc(p.base_url)}</div>
         <div class="provider-models tags"><span class="tag">${esc(wire)}</span>${models.map(m => `<span class="tag">${esc(m)}</span>`).join('')}${p.drop_images ? '<span class="tag">纯文本</span>' : ''}${p.direct ? '<span class="tag">直连</span>' : ''}${p.proxy_url ? '<span class="tag">经代理</span>' : ''}</div>
         ${deadKeys.length ? `<p class="note">已停用的 Key：${deadKeys.map(k => `${esc(k.label || k.id)}（${esc(k.id)}）`).join('、')}。停用只影响固定选它的会话与压缩规则，不会自动改选其他 Key。</p>` : ''}${p.note ? `<p class="note" title="${esc(p.note)}">${esc(p.note)}</p>` : ''}
-        ${isZcode && group === 'codex' && wire !== zcodeWire ? `<p class="note">此渠道按 ${esc(wire)} 协议接入，与上方路由协议选择不同。</p>` : ''}
+        
       </div>
       <div class="provider-meta mono keyrow">API key · ${account}${tline}${pline}</div>
-      <div class="foot provider-actions"><button class="small ${verified ? 'cur' : 'primary'}" data-action="switch" data-provider="${esc(p.id)}" onclick="switchProvider(${arg})" ${locked ? 'disabled' : ''} title="${convOnly ? '该渠道只挂 Codex 型通道，直连不可用：请用上方「路由模式」' : ''}">${isZcode ? '接入 ZCode' : isCur ? '重新写入' : '切换'}</button><button class="small" data-action="test" data-provider="${esc(p.id)}" onclick="testProvider(${arg})" ${!online || t?.wait ? 'disabled' : ''}>测试</button><button class="small" data-action="probe" data-provider="${esc(p.id)}" onclick="probeModels(${arg})" ${!online || mp?.wait ? 'disabled' : ''} title="对每个模型各发一次真实请求，会消耗额度">测活</button><button class="small" data-action="edit" data-provider="${esc(p.id)}" onclick="openProvider(${arg})">编辑</button><button class="small" data-action="toggle" data-provider="${esc(p.id)}" onclick="toggleProvider(${arg})" ${!online ? 'disabled' : ''}>${p.enabled ? '停用' : '启用'}</button><button class="small danger" data-action="delete" data-provider="${esc(p.id)}" onclick="delProvider(${arg})" ${!online ? 'disabled' : ''}>删除</button></div></article>`;
+      <div class="foot provider-actions"><button class="small ${verified ? 'cur' : 'primary'}" data-action="switch" data-provider="${esc(p.id)}" onclick="switchProvider(${arg})" ${locked ? 'disabled' : ''} title="${convOnly ? '该渠道只挂 Codex 型通道，直连不可用：请用上方「路由模式」' : ''}>${isCur ? '重新写入' : '切换'}</button><button class="small" data-action="test" data-provider="${esc(p.id)}" onclick="testProvider(${arg})" ${!online || t?.wait ? 'disabled' : ''}>测试</button><button class="small" data-action="probe" data-provider="${esc(p.id)}" onclick="probeModels(${arg})" ${!online || mp?.wait ? 'disabled' : ''} title="对每个模型各发一次真实请求，会消耗额度">测活</button><button class="small" data-action="edit" data-provider="${esc(p.id)}" onclick="openProvider(${arg})">编辑</button><button class="small" data-action="toggle" data-provider="${esc(p.id)}" onclick="toggleProvider(${arg})" ${!online ? 'disabled' : ''}>${p.enabled ? '停用' : '启用'}</button><button class="small danger" data-action="delete" data-provider="${esc(p.id)}" onclick="delProvider(${arg})" ${!online ? 'disabled' : ''}>删除</button></div></article>`;
   }).join('');
   // 轮询只更新状态,但不能在用户正操作卡片时拆 DOM:下拉展开时重建会把菜单关掉,焦点恢复也救不回来。
   // 焦点在卡片内的输入/下拉上就等失焦后的下一次刷新再重绘;按钮没有展开态,照旧重建并恢复焦点。
@@ -621,7 +609,7 @@ function openProvider(id) {
   if (id && !editing) return toast('渠道已不存在，请刷新后重试', 'err');
   const isCodex = editingGroup === 'codex';
   $('m-title').textContent = (editing ? '编辑渠道 · ' : '新建渠道 · ') + GROUPS[editingGroup];
-  $('m-description').textContent = curApp === 'zcode' ? '这是共享渠道库，修改对 Claude Code / Codex 同样可见。保存渠道不会写入 ZCode；请在渠道卡片上点击「接入 ZCode」。' : '保存到渠道库后，通过渠道卡片写入客户端配置。Claude 模型列表第一项作为主模型。';
+  $('m-description').textContent = '保存到渠道库后，通过渠道卡片写入客户端配置。Claude 模型列表第一项作为主模型。';
   $('m-base-hint').textContent = isCodex ? '（通常包含 /v1）' : '';
   $('m-name').value = editing?.name || ''; $('m-base').value = editing?.base_url || ''; $('m-key').value = '';
   // 清单是唯一真相:渠道一旦有清单(老式单 Key 渠道也会合成一条「账号1」),顶栏那个单行
@@ -634,7 +622,7 @@ function openProvider(id) {
   renderKeyDraft();
   $('m-claude-fields').style.display = isCodex ? 'none' : ''; $('m-codex-fields').style.display = isCodex ? '' : 'none';
   $('m-model').required = isCodex;
-  $('m-model').value = editing?.model || ''; $('m-wire').value = editing?.wire_api || (curApp === 'zcode' && isCodex ? zcodeWire : 'responses');
+  $('m-model').value = editing?.model || ''; $('m-wire').value = editing?.wire_api || 'responses';
   $('m-dropimg').checked = !!editing?.drop_images;
   // 下拉候选 = 本组渠道登记过的模型名(含正在编辑这条自己的),手写的新名字会临时并进来
   modelCandidates = [...new Set(providers(editingGroup).flatMap(p => [...(isCodex ? [p.model] : []), ...(p.models || [])]).filter(Boolean))].sort();
@@ -927,32 +915,27 @@ async function saveProvider() {
 }
 function canConnect(app) {
   if (!online) { toast('控制台离线，请重新连接后操作', 'err'); return false; }
-  if (app === 'zcode' && !zcodeSupported()) { toast('当前后端尚未支持 ZCode 接入，未发送写入请求', 'err'); return false; }
   return true;
 }
 async function switchProvider(id) {
   const app = curApp, p = providers().find(x => x.id === id);
   if (!p || !canConnect(app)) return;
-  const message = app === 'zcode'
-    ? `将「${p.name}」接入 ZCode，按渠道自身 ${providerGroup() === 'claude' ? 'anthropic' : p.wire_api || 'responses'} 协议写入 ${APPS.zcode.cfg}。合并并保留其他 provider，不默认更改现有默认模型。\n\n${ZCODE_HELP}。不会自动切换当前运行会话。`
-    : `将 ${APPS[app].label} 配置写入为「${p.name}」直连。\n文件：${APPS[app].cfg}（原文件自动备份）。\n${app === 'claude' ? 'Claude Code 需重启会话生效。' : 'Codex 需重启生效。'}`;
-  if (!await askConfirm(app === 'zcode' ? '接入 ZCode' : '写入直连配置', message, app === 'zcode' ? '接入 ZCode' : '写入配置') || !canConnect(app)) return;
+  const message = `将 ${APPS[app].label} 配置写入为「${p.name}」直连。\n文件：${APPS[app].cfg}（原文件自动备份）。\n${app === 'claude' ? 'Claude Code 需重启会话生效。' : 'Codex 需重启生效。'}`;
+  if (!await askConfirm('写入直连配置', message, '写入配置') || !canConnect(app)) return;
   try {
-    const res = await api('/api/switch/' + encodeURIComponent(id), { method: 'POST', ...(app === 'zcode' ? { body: JSON.stringify({ app: 'zcode' }) } : {}) });
-    toastWithBackupWarnings(app === 'zcode' ? `已保存 ZCode 集成配置。${ZCODE_HELP}` : `已写入 ${APPS[app].label} 配置 → ${p.name}，请重启${app === 'claude' ? '会话' : '客户端'}生效`, res); await refresh();
+    const res = await api('/api/switch/' + encodeURIComponent(id), { method: 'POST' });
+    toastWithBackupWarnings(`已写入 ${APPS[app].label} 配置 → ${p.name}，请重启${app === 'claude' ? '会话' : '客户端'}生效`, res); await refresh();
   } catch (e) { toast('接入失败：' + e.message, 'err'); }
 }
 async function switchRouterMode() {
-  const app = curApp, wire = zcodeWire;
+  const app = curApp;
   if (!canConnect(app)) return;
   const base = routerBase(app) || '后端提供的路由地址';
-  const message = app === 'zcode'
-    ? `将 ZCode 以 ${wire} 协议接入路由：${base}。\n流量归入 ${GROUPS[wire === 'anthropic' ? 'claude' : 'codex']} 组。\n写入 ${APPS.zcode.cfg}，合并并保留其他 provider，不默认更改现有默认模型。\n\n${ZCODE_HELP}。不会自动切换当前运行会话。`
-    : `将 ${APPS[app].label} 指向 ${base}，请求按路由规则分发，按会话保持渠道粘性。\n写入 ${APPS[app].cfg}（原文件自动备份）。${app === 'claude' ? 'Claude Code 需重启会话生效。' : 'Codex 需重启生效。'}\n可随时通过渠道卡片切回直连。`;
-  if (!await askConfirm(app === 'zcode' ? '接入路由' : '写入路由配置', message, '接入路由') || !canConnect(app)) return;
+  const message = `将 ${APPS[app].label} 指向 ${base}，请求按槽位与已登记模型分发，按会话保持渠道粘性。\n写入 ${APPS[app].cfg}（原文件自动备份）。${app === 'claude' ? 'Claude Code 需重启会话生效。' : 'Codex 需重启生效。'}\n可随时通过渠道卡片切回直连。`;
+  if (!await askConfirm('写入路由配置', message, '接入路由') || !canConnect(app)) return;
   try {
-    const res = await api('/api/router/' + app, { method: 'POST', ...(app === 'zcode' ? { body: JSON.stringify({ wire_api: wire }) } : {}) });
-    toastWithBackupWarnings(app === 'zcode' ? `已保存路由集成配置。${ZCODE_HELP}` : `已写入 ${APPS[app].label} 路由配置，请重启${app === 'claude' ? '会话' : '客户端'}生效`, res); await refresh();
+    const res = await api('/api/router/' + app, { method: 'POST' });
+    toastWithBackupWarnings(`已写入 ${APPS[app].label} 路由配置，请重启${app === 'claude' ? '会话' : '客户端'}生效`, res); await refresh();
   } catch (e) { toast('接入失败：' + e.message, 'err'); }
 }
 async function toggleProvider(id) {
@@ -988,7 +971,7 @@ async function probeModels(id) {
 
 // ---------------- 子代理槽位 ----------------
 // 槽位 = 别名(mixr-…)→「渠道 @ 模型」。Claude 五个固定槽写进客户端 env;
-// Codex 槽名自拟,客户端用 codex -m mixr-<槽名> 选用。别名请求优先于一切路由规则。
+// Codex 槽名自拟,客户端用 codex -m mixr-<槽名> 选用。别名请求优先于普通请求的落点选择。
 const SLOT_LABELS = { main: '主模型 main', opus: 'Opus 槽', sonnet: 'Sonnet 槽', haiku: 'Haiku 槽', subagent: 'Subagent 槽' };
 const SLOT_MODEL_CUSTOM = '__custom__';
 const slotModelEdit = { claude: null, codex: null }; // {name, value, original, provider} 手写模型草稿
@@ -1305,7 +1288,7 @@ function renderSlots(force) {
   // 外壳可能把同一块 slots-panel 放进 details#slots-details 并挪到渠道库下方:这里不另包
   // details(重复包裹会让折叠标题出现两次),只同步显隐;拿不到包装层就按老结构单独用 panel。
   const details = $('slots-details');
-  if (!state || curApp === 'zcode') { panel.hidden = true; if (details) details.hidden = true; return; }
+  if (!state) { panel.hidden = true; if (details) details.hidden = true; return; }
   panel.hidden = false; if (details) details.hidden = false;
   const isClaude = curApp === 'claude';
   $('slots-hint').textContent = isClaude
@@ -1416,12 +1399,6 @@ function renderCompactCurrent() {
   if (!c) { $('compact-current').textContent = '当前服务端不支持压缩选择'; return; }
   $('compact-current').innerHTML = (c.mode === 'mixed' ? '<b>当前为混合落点或未完整配置，不代表单一模型。</b><br>' : '')
     + (c.rules.map(r => `${esc(r.id)}${r.enabled ? '' : '（规则停用）'}：${r.targets.map(t => `${esc(t.name)} / ${esc(t.model || '透传请求模型')} / ${t.key_id ? '固定 Key ' + esc(t.key_label || t.key_id) + '（' + esc(t.key_id) + '）' : '跟随渠道当前 Key'}${t.key_available === false ? '（Key 不可用）' : ''}${t.enabled ? '' : '（渠道停用）'}`).join(' → ') || '无可用目标'}${r.has_pool ? '（渠道池）' : ''}`).join('<br>') || '尚无压缩规则；保存时创建两条规则。');
-  // 折叠着的那组也要能一眼看出当前压缩落点。
-  const summary = $('compact-summary');
-  if (summary) {
-    const first = c.rules.find(r => r.targets?.length)?.targets[0];
-    summary.textContent = first ? `${first.name} / ${first.model || '透传请求模型'}${c.rules.length > 1 ? ` 等 ${c.rules.length} 条规则` : ''}` : '尚未配置压缩落点';
-  }
 }
 function renderCompactEditor() {
   if (!compactDraft) return;
@@ -1466,9 +1443,8 @@ function renderCompactKeys() {
 }
 function updateCompactStatus() {
   if (!compactDraft) return;
-  $('compact-msg').textContent = state?.compact?.revision !== compactBase ? '服务端路由已变化；压缩草稿保留，请重新载入后保存。'
-    : routesDirty ? '通用路由有未保存草稿；先保存或重新载入通用路由。'
-      : compactDirty ? '有未保存的压缩选择；自动刷新不会覆盖。' : '压缩选择与上次载入一致。';
+  $('compact-msg').textContent = state?.compact?.revision !== compactBase ? '服务端压缩规则已变化；草稿保留，请重新载入后保存。'
+    : compactDirty ? '有未保存的压缩选择；自动刷新不会覆盖。' : '压缩选择与上次载入一致。';
   renderSplitStatus();
 }
 // 四段分开读:保存成功 / 已写盘 / 服务已加载 / 客户端需重开。没有状态时(还没保存过)
@@ -1534,18 +1510,17 @@ async function reloadCompact() {
   if (await refresh()) loadCompactDraft();
 }
 async function saveCompact() {
-  if (!online || !compactDraft || savingCompact || savingRoutes) return;
-  if (routesDirty) return toast('通用路由有未保存草稿，请先保存或重新载入；压缩选择未提交', 'err');
+  if (!online || !compactDraft || savingCompact) return;
   const provider = compactDraft.provider, model = compactDraft.model.trim(), key_id = compactDraft.key_id, keySupported = compactKeySupported();
   if (!provider || !model) return toast('请选择压缩渠道和非空模型名', 'err');
   if (key_id && !keySupported) return toast('当前服务端尚不支持指定Key，更新服务后可用；固定 Key 草稿未提交', 'err');
   const key = state.compact.providers.find(p => p.id === provider)?.keys?.find(k => k.id === key_id);
   if (key_id && (!key || key.enabled === false)) return toast('固定 Key 已不可用；请明确改选可用 Key 或跟随渠道当前 Key', 'err');
-  if (compactBase !== state.compact.revision) return toast('服务端路由已变化，请重新载入压缩选择', 'err');
-  const revision = compactRevision, routeRevision = routesRevision, expected_revision = compactBase;
+  if (compactBase !== state.compact.revision) return toast('服务端压缩规则已变化，请重新载入压缩选择', 'err');
+  const revision = compactRevision, expected_revision = compactBase;
   const keyText = !keySupported ? '服务端不支持指定 Key，本次只保存渠道与模型' : key_id ? `固定 Key ${key.label || key.id}（${key.id}）` : '跟随渠道当前 Key';
-  if (!await askConfirm('保存压缩模型', `只将两条压缩规则同步改为 ${provider} / ${model} / ${keyText}，并替换现有压缩备池为单一渠道。普通模型、普通路由、子代理槽位和渠道当前 Key（active_key）均不变。`, '保存压缩模型')) return;
-  if (routesDirty || savingRoutes || savingCompact) return toast('路由草稿已变化，请先处理通用路由', 'err');
+  if (!await askConfirm('保存压缩模型', `只将两条压缩规则同步改为 ${provider} / ${model} / ${keyText}，并替换现有压缩备池为单一渠道。普通模型、子代理槽位和渠道当前 Key（active_key）均不变。`, '保存压缩模型')) return;
+  if (savingCompact) return toast('压缩选择正在保存，请稍候', 'err');
   if (keySupported && !compactKeySupported()) return toast('服务端 Key 支持状态已变化，请重新确认；选择未提交', 'err');
   savingCompact = true; setConnection(online);
   // 服务端是否成功回包与"要不要继续抛"是两件事:Key 未确认那条分支是在**回包之后**抛的,
@@ -1554,23 +1529,20 @@ async function saveCompact() {
   try {
     const result = await api('/api/compact', { method: 'POST', body: JSON.stringify({ provider, model, ...(keySupported ? { key_id } : {}), expected_revision }) });
     responseOk = true;   // 请求本身成功了;后面若因响应不完整而抛,也不该说成"没发生过"
-    if (!result.compact || !result.routes) throw new Error('服务端未返回完整压缩配置');
+    if (!result.compact) throw new Error('服务端未返回压缩配置');
     if (keySupported && (!compactKeySupported(result.compact) || result.compact.selection?.key_id !== key_id)) {
-      state.compact = result.compact; state.routes = result.routes; state.routes_revision = result.compact.revision;
-      compactDirty = true; renderCompactCurrent(); renderCompactKeys(); updateCompactStatus(); updateRouteStatus();
+      state.compact = result.compact;
+      compactDirty = true; renderCompactCurrent(); renderCompactKeys(); updateCompactStatus();
       // 请求成功了,但服务端没确认 Key 选择 —— 写盘与加载都无从确认,只能如实标"未确认"。
       compactOutcome = { saved: true, written: null, loaded: null, restart: false, error: '服务端未确认 Key 选择' };
       renderSplitStatus();
       throw new Error('服务端未确认 Key 选择；渠道和模型可能已写入，固定 Key 草稿保留，请更新服务并重新读取核对');
     }
-    state.compact = result.compact; state.routes = result.routes; state.routes_revision = result.compact.revision;
+    state.compact = result.compact;
     compactBase = result.compact.revision;
     if (compactRevision === revision) loadCompactDraft();
-    if (!routesDirty && routesRevision === routeRevision) {
-      routesDraft = structuredClone(result.routes); routesBase = JSON.stringify(result.routes); routesBaseRevision = result.compact.revision; renderRoutes();
-    }
-    renderCompactCurrent(); updateCompactStatus(); updateRouteStatus();
-    // 四段都成立:POST 成功返回(服务端 saveRoutes 之后才回包,所以"已写盘"是服务端的保证)、
+    renderCompactCurrent(); updateCompactStatus();
+    // 四段都成立:POST 成功返回(服务端先写盘再回包,所以"已写盘"是服务端的保证)、
     // 运行中的服务读的就是同一份内存路由(压缩不重载进程)、客户端不需重开(下次请求即新规则)。
     // 这三句都是**依据**,不是"看起来像"——所以这里敢把三段都标成 ✓。
     compactOutcome = { saved: true, written: true, loaded: true, restart: false, error: '' };
@@ -1718,177 +1690,9 @@ async function saveCompactWindow() {
   finally { savingWindow = false; setConnection(online); }
 }
 
-// ---------------- 路由 ----------------
-const STRAT_LABEL = { priority: '主备(按池序,主挂了才降级)', round_robin: '轮询(新对话依次分配)', weighted: '加权(按权重比例)', least_used: '最少会话优先', random: '随机' };
-function blankRule() {
-  return { id: 'r' + Date.now(), match: '', provider: '', model: '', pool: [], strategy: 'round_robin', priority: 0, app: '', when: {}, enabled: true };
-}
-const poolModes = new WeakSet();
-function updateRouteStatus() {
-  if (!routesDraft) return;
-  const changed = state && JSON.stringify(state.routes) !== routesBase;
-  $('save-msg').textContent = changed ? '服务端配置已变化；草稿保留，重新载入可获取最新配置。' : routesDirty ? '有未保存更改 · 自动刷新不会覆盖草稿' : '草稿与上次载入一致 · 自动刷新不重绘表单';
-}
-function markRoutesDirty() { routesDirty = true; routesRevision++; updateRouteStatus(); updateCompactStatus(); setConnection(online); }
-const routeInput = e => { if (!$('compact-panel').contains(e.target) && !$('compact-window-panel').contains(e.target) && e.target.matches('input, select')) markRoutesDirty(); };
-$('view-routes').addEventListener('input', routeInput);
-$('view-routes').addEventListener('change', routeInput);
-window.addEventListener('beforeunload', e => { if (routesDirty || compactDirty || windowDirty || codexCompactDraft?.dirty || routingDirty || (activeDialog?.id === 'mask')) { e.preventDefault(); e.returnValue = ''; } });
-function renderRoutes() {
-  if (!routesDraft) return;
-  const focused = document.activeElement;
-  const focusId = $('view-routes').contains(focused) ? focused.id : null;
-  $('rules-box').innerHTML = routesDraft.rules.length ? routesDraft.rules.map(ruleCard).join('') : '<div class="empty"><b>尚无匹配规则</b>请求将使用默认路由。添加规则可按模型、会话或客户端条件分流。</div>';
-  $('def-box').innerHTML = ruleTargetBox(routesDraft.default, 'def', '兜底') + ruleFacts(routesDraft.default, true);
-  if (focusId && $(focusId)) $(focusId).focus();
-}
-function appOfRule(r) {
-  if (r.app === 'codex' || r.app === 'claude') return r.app;
-  const ids = [(r.pool || []).map(m => typeof m === 'string' ? m : m.provider), r.provider ? [r.provider] : []].flat().filter(Boolean);
-  return ids.some(id => providers('codex').some(p => p.id === id)) ? 'codex' : 'claude';
-}
-function ruleCard(r, i) {
-  const app = appOfRule(r);
-  const conds = ['session', 'ua', 'token', 'body'].filter(key => r.when?.[key]);
-  return `<div class="rulecard"><div class="rc-head"><span class="rc-idx">${i + 1}</span>
-    <label class="field" for="rule-${i}-match">匹配模型<input id="rule-${i}-match" type="text" value="${esc(r.match)}" oninput="routesDraft.rules[${i}].match=this.value" placeholder="如 opus, claude-3-opus, gpt-5"></label>
-    <label class="rc-mini rc-app">适用<select id="rule-${i}-app" onchange="setRuleApp(${i},this.value)"><option value="" ${r.app ? '' : 'selected'}>两组通用</option><option value="claude" ${r.app === 'claude' ? 'selected' : ''}>Claude / Anthropic</option><option value="codex" ${r.app === 'codex' ? 'selected' : ''}>Codex / OpenAI</option></select></label>
-    <label class="rc-mini">优先级<input type="number" value="${Number(r.priority) || 0}" oninput="routesDraft.rules[${i}].priority=Number(this.value)||0"></label>
-    <label class="rc-mini rc-enable"><input type="checkbox" ${r.enabled ? 'checked' : ''} onchange="routesDraft.rules[${i}].enabled=this.checked">启用</label>
-    <button class="iconbtn" onclick="delRule(${i})" aria-label="删除第 ${i + 1} 条规则">×</button></div>
-    <div class="rc-body">${ruleTargetBox(r, i, '目标')}<details class="cfg-more rc-cond">
-    <summary>附加条件<span class="cfg-count">${conds.length ? conds.length + ' 项' : '可选'}</span></summary>
-    <div class="rc-line"><span class="rc-tag">条件</span>
-    ${[['session', '会话 ID', '会话 id 含…'], ['ua', '客户端 UA', '客户端 UA 含…'], ['token', '客户端 token', '客户端 token 含…'], ['body', '请求内容', '请求体含…（内容分流，先于槽位）']].map(([key, label, placeholder]) => `<label class="field">${label}（可选）<input type="text" value="${esc(r.when?.[key] || '')}" oninput="setWhen(${i},'${key}',this.value)" placeholder="${placeholder}"></label>`).join('')}
-    </div></details>${ruleFacts(r, false)}</div></div>`;
-}
-// 规则的"来源/协议/最近实际落点"一角。前两项是静态只读推导;最后一项**只认会话里的 actual**,
-// 没有真实请求记录就写「暂无」——绝不用 /api/routing/preview 的预测冒充实际落点(第二期硬要求)。
-// isDefault 用来把"默认路由"和"显式规则"分开说:两者在界面上的位置不同,读的人要能一眼分清。
-function ruleFacts(r, isDefault) {
-  const app = appOfRule(r);
-  const isPool = (r.pool || []).length > 0 || poolModes.has(r);
-  const sourceText = r.app ? '显式规则 · 限定 ' + GROUPS[r.app] : (isDefault ? '默认路由 · 所有规则未命中时使用' : '通用规则 · 按目标归组');
-  const strategyText = isPool ? (STRATEGY_SHORT[ruleStrategy(r)] || ruleStrategy(r)) : '单一渠道';
-  const ids = [...new Set([r.provider, ...(r.pool || []).map(m => typeof m === 'string' ? m : m.provider)].filter(Boolean))];
-  const wires = ids.map(id => {
-    const p = providers(app).find(x => x.id === id);
-    return p ? `${p.name} · ${wireLabel(p, app)}` : `已删除渠道（${id}）`;
-  });
-  const actual = actualRefsOf(r);
-  return `<div class="rulefacts">
-    <div><span class="rf-label">配置来源</span><span>${esc(sourceText)}</span></div>
-    <div><span class="rf-label">分配策略</span><span>${esc(strategyText)}</span></div>
-    <div><span class="rf-label">协议</span><span>${wires.length ? wires.map(esc).join('、') : '未绑定渠道'}</span></div>
-    <div><span class="rf-label">最近实际落点</span><span>${actual.length ? actual.map(a => esc(a)).join('；') : '暂无'}</span></div>
-  </div>`;
-}
-// 服务端给的状态里没有 strategy 字段时,按 rules 的默认(round_robin)算,与 normalizeRule 同口径。
-const ruleStrategy = r => r.strategy || 'round_robin';
-const STRATEGY_SHORT = { priority: '主备', round_robin: '轮询', weighted: '加权', least_used: '最少会话', random: '随机' };
-const wireLabel = (p, app) => app === 'claude'
-  ? (p.wire_api === 'responses' ? 'responses（转换）' : p.wire_api === 'chat' ? 'chat（转换）' : 'anthropic')
-  : (p.wire_api === 'chat' ? 'chat' : 'responses');
-// 这条规则最近真的把请求落到过哪 —— 只看会话记下来的 actual(服务端只记真实请求)。
-// 池按成员逐个收,单选按目标收;两者都按渠道聚合,顺带报最近一次的状态码。
-function actualRefsOf(r) {
-  const ids = new Set([r.provider, ...(r.pool || []).map(m => typeof m === 'string' ? m : m.provider)].filter(Boolean));
-  if (!ids.size) return [];
-  const seen = new Map();
-  for (const s of state?.sessions || []) {
-    const a = actualOf(s);
-    if (!a || !a.provider || !ids.has(a.provider)) continue;
-    const prev = seen.get(a.provider);
-    if (!prev || (a.ts || 0) >= (prev.ts || 0)) seen.set(a.provider, a);
-  }
-  return [...seen.values()].map(a => `${a.provider_name || a.provider}${a.status ? '（' + a.status + '）' : ''}`);
-}
-function ruleTargetBox(r, key, label) {
-  const isPool = poolModes.has(r) || (r.pool || []).length > 0;
-  const app = appOfRule(r), field = key === 'def' ? 'routesDraft.default' : `routesDraft.rules[${key}]`;
-  const ids = new Set((r.pool || []).map(m => typeof m === 'string' ? m : m.provider));
-  const wOf = id => { const m = (r.pool || []).find(x => typeof x === 'object' && x && x.provider === id); return m?.weight || ''; };
-  // 池里指向"已删除渠道"的成员在下拉/勾选框里根本没有对应项,不摆出来用户就看不到,
-  // 保存时又会被服务端按僵尸引用拒绝(报的是他界面上找不到的 id)
-  const ghosts = [...ids].filter(id => !providers(app).some(p => p.id === id))
-    .map(id => `<div class="poolitem on"><label><input type="checkbox" checked disabled><span>⚠ 渠道已删除（${esc(id)}）</span><span class="badge off">失效</span></label><label><button class="iconbtn" onclick="dropPoolMember('${key}',${handlerArg(id)})" aria-label="移除失效成员 ${esc(id)}">移除</button></label></div>`).join('');
-  const members = ghosts + providers(app).map((p, i) => `<div class="poolitem ${ids.has(p.id) ? 'on' : ''}"><label><input id="pool-${key}-${i}" type="checkbox" ${ids.has(p.id) ? 'checked' : ''} onchange="togglePool('${key}',${handlerArg(p.id)},this.checked)"><span>${esc(p.name)}</span>${p.enabled ? '' : '<span class="badge off">停用</span>'}</label><label>权重<input class="w" type="number" min="1" value="${esc(wOf(p.id))}" aria-label="${esc(p.name)} 的权重" oninput="setWeight('${key}',${handlerArg(p.id)},this.value)"></label></div>`).join('');
-  return `<div class="rc-line"><span class="rc-tag">${label}</span>
-    ${key === 'def' ? `<label class="field">协议组<select id="default-app" onchange="setDefaultApp(this.value)"><option value="claude" ${app === 'claude' ? 'selected' : ''}>Claude / Anthropic</option><option value="codex" ${app === 'codex' ? 'selected' : ''}>Codex / OpenAI</option></select></label>` : ''}
-    <label class="field">目标类型<select id="target-${key}-mode" onchange="setPoolMode('${key}',this.value)"><option value="single" ${isPool ? '' : 'selected'}>单一渠道</option><option value="pool" ${isPool ? 'selected' : ''}>渠道池（多对话分流）</option></select></label>
-    ${isPool ? `<label class="field">分配策略<select onchange="${field}.strategy=this.value">${Object.keys(STRAT_LABEL).map(s => `<option value="${s}" ${r.strategy === s ? 'selected' : ''}>${STRAT_LABEL[s]}</option>`).join('')}</select></label>` : `<label class="field">目标渠道<select onchange="${field}.provider=this.value">${ruleOpts(r.provider, app)}</select></label>`}
-    <label class="field">目标模型<input type="text" value="${esc(r.model || '')}" oninput="${field}.model=this.value" placeholder="${app === 'codex' ? '留空用渠道自带模型名' : '留空透传请求模型'}"></label>
-    ${isPool ? `<div class="poolbox">${members || `<span class="pool-hint">还没有 ${GROUPS[app]} 渠道，请先在渠道页添加。</span>`}</div>` : ''}</div>`;
-}
-function ruleOpts(sel, app = 'claude') {
-  const list = providers(app);
-  // 选中的渠道已经不存在(渠道被删了、或 routes.json 是手改/旧备份恢复的):
-  // 以前这个 id 不在下拉列表里,浏览器就默认显示第一项"未绑定",可草稿里仍是那个幽灵 id——
-  // 界面说"没绑定"、保存时又原样回传,用户根本看不出哪条规则出了问题。
-  // 显式补一个选项把它摆出来,用户改选一个真渠道即可。
-  const ghost = sel && !list.some(p => p.id === sel)
-    ? `<option value="${esc(sel)}" selected>⚠ 渠道已删除（${esc(sel)}）</option>` : '';
-  return '<option value="">未绑定</option>' + ghost
-    + list.map(p => `<option value="${esc(p.id)}" ${p.id === sel ? 'selected' : ''}>${esc(p.name)}${p.enabled ? '' : '（停用）'}</option>`).join('');
-}
-function draftOf(key) { return key === 'def' ? routesDraft.default : routesDraft.rules[Number(key)]; }
-function changeRuleGroup(r, app) {
-  if (app) r.app = app; else delete r.app;
-  const group = providers(app || appOfRule(r));
-  r.pool = (r.pool || []).filter(m => group.some(p => p.id === (typeof m === 'string' ? m : m.provider)));
-  if (r.provider && !group.some(p => p.id === r.provider)) r.provider = '';
-  markRoutesDirty(); renderRoutes();
-}
-function setRuleApp(i, v) { changeRuleGroup(routesDraft.rules[i], v); }
-function setDefaultApp(v) { changeRuleGroup(routesDraft.default, v); }
-function setPoolMode(key, mode) {
-  const r = draftOf(key), first = providers(appOfRule(r))[0];
-  if (mode === 'pool') { poolModes.add(r); r.pool = first ? [{ provider: first.id }] : []; r.provider = ''; }
-  else { poolModes.delete(r); r.pool = []; r.provider = r.provider || first?.id || ''; }
-  markRoutesDirty(); renderRoutes();
-}
-function togglePool(key, id, on) {
-  const r = draftOf(key), list = (r.pool || []).map(m => typeof m === 'string' ? { provider: m } : m);
-  poolModes.add(r); r.pool = on ? list.concat([{ provider: id }]) : list.filter(m => m.provider !== id);
-  markRoutesDirty(); renderRoutes();
-}
-// 摘掉池里指向已删除渠道的成员(界面上那个"⚠ 渠道已删除"项)
-function dropPoolMember(key, id) {
-  const r = draftOf(key);
-  r.pool = (r.pool || []).map(m => typeof m === 'string' ? { provider: m } : m).filter(m => m.provider !== id);
-  poolModes.add(r);
-  markRoutesDirty(); renderRoutes();
-}
-function setWeight(key, id, val) {
-  const r = draftOf(key), n = Number(val);
-  r.pool = (r.pool || []).map(m => { const o = typeof m === 'string' ? { provider: m } : { ...m }; if (o.provider === id) { if (Number.isFinite(n) && n > 0) o.weight = n; else delete o.weight; } return o; });
-}
-function setWhen(i, field, val) { const r = routesDraft.rules[i]; r.when = r.when || {}; if (val.trim()) r.when[field] = val; else delete r.when[field]; }
-function addRule() { if (!routesDraft) return; routesDraft.rules.push(blankRule()); markRoutesDirty(); renderRoutes(); $('rule-' + (routesDraft.rules.length - 1) + '-match').focus(); }
-function delRule(i) { routesDraft.rules.splice(i, 1); markRoutesDirty(); renderRoutes(); $('add-rule').focus(); }
-async function reloadRoutes() {
-  if (routesDirty && !await askConfirm('重新载入路由', '丢弃未保存草稿，使用服务端的最新路由配置？', '重新载入')) return;
-  if (!await refresh()) return;
-  routesDraft = structuredClone(state.routes); routesBase = JSON.stringify(state.routes); routesBaseRevision = state.routes_revision || ''; routesDirty = false;
-  renderRoutes(); updateRouteStatus(); updateCompactStatus(); setConnection(online); toast('已载入最新路由', 'ok');
-}
-let savingRoutes = false;
-async function saveRoutes() {
-  if (!routesDraft || !online || savingRoutes || savingCompact) return;
-  if (compactDirty) return toast('压缩选择有未保存草稿，请先保存或重新载入压缩选择', 'err');
-  if (JSON.stringify(state.routes) !== routesBase && !await askConfirm('覆盖服务端路由', '服务端路由已变化。保存将以当前草稿覆盖服务端配置，是否继续？', '保存草稿')) return;
-  if (compactDirty || savingCompact) return toast('压缩草稿已变化，请先处理压缩选择', 'err');
-  const payload = JSON.stringify(routesDraft), revision = routesRevision;
-  const expected = JSON.stringify(state.routes) === routesBase ? routesBaseRevision : state.routes_revision;
-  savingRoutes = true; setConnection(online);
-  try {
-    const result = await api('/api/routes', { method: 'PUT', body: JSON.stringify({ ...routesDraft, ...(expected ? { expected_revision: expected } : {}) }) });
-    routesBase = payload; routesBaseRevision = result.routes_revision || ''; routesDirty = routesRevision !== revision;
-    toast(routesDirty ? '已保存提交时的路由；后续编辑仍在草稿中' : '路由已保存', 'ok'); await refresh(); updateRouteStatus();
-    if (!compactDirty) loadCompactDraft();
-  } catch (e) { toast('保存失败：' + e.message, 'err'); }
-  finally { savingRoutes = false; setConnection(online); }
-}
+// ---------------- 保存草稿的离开提醒 ----------------
+// 压缩选择 / 压缩窗口 / Codex 阈值 / 会话覆盖 任一处有未保存草稿时,关页面前提醒一句。
+window.addEventListener('beforeunload', e => { if (compactDirty || windowDirty || codexCompactDraft?.dirty || routingDirty || (activeDialog?.id === 'mask')) { e.preventDefault(); e.returnValue = ''; } });
 
 // ---------------- 会话 ----------------
 const KIND_LABEL = { header: '会话头', metadata: 'metadata', fingerprint: '内容指纹', anon: '无身份' };
@@ -1930,7 +1734,7 @@ function sessionMatches(s, q) {
     .some(x => String(x || '').toLowerCase().includes(q));
 }
 // 搜索框的输入只准重渲染,不准碰任何数据。曾经有过"压缩控件冒泡事件污染通用路由草稿"的事故,
-// 所以这里写死:setSessQuery 只改 sessQuery 这个筛选词,会话、routesDraft、compactDraft 一概不动。
+// 所以这里写死:setSessQuery 只改 sessQuery 这个筛选词,会话、compactDraft 一概不动。
 // 过滤后的行数变化只发生在渲染层(state.sessions 始终是服务端那一份)。
 function setSessQuery(value) {
   sessQuery = String(value ?? '');
@@ -1997,8 +1801,6 @@ function renderSessions() {
     const app = s.app || 'claude';
     const b = boundOf(s), src = boundSourceOf(b);
     const [srcText, srcCls] = BOUND_SOURCE[src];
-    const hasPool = (state.routes.rules || []).concat([state.routes.default])
-      .some(r => ((r.pool || []).some(m => (typeof m === 'string' ? m : m.provider) === b.provider)) || r.provider === b.provider);
     const opts = state.providers[app].map(p =>
       `<option value="${esc(p.id)}" ${p.id === b.provider ? 'selected' : ''}>${esc(p.name)}${p.enabled ? '' : '(停用)'}</option>`).join('');
     // 绑定列的摘要行:来源标标 + 渠道名。未绑定时只剩一个「未绑定」标标——
@@ -2016,7 +1818,6 @@ function renderSessions() {
             <label class="field" for="${esc(domIdOf(s.key))}">普通请求渠道（非槽位、非分流请求）<select id="${esc(domIdOf(s.key))}" class="pin-sel" onchange="pinSession(${handlerArg(s.key)}, this.value)" ${!online ? 'disabled' : ''}>
               <option value="" ${b.provider ? '' : 'selected'}>(未绑定)</option>${opts}</select></label>
             <div class="bind-src"><span class="badge ${srcCls}">${srcText}</span></div>
-            ${hasPool ? '' : '<div class="rt-note">不在任何池内</div>'}
           </details>
           </div>
           ${bindName ? `<div class="bind-meta" title="${esc([b.model, b.rule].filter(Boolean).join(' · '))}">${esc(b.model || '-')}${b.rule ? ` · ${esc(b.rule)}` : ''}</div>` : ''}</td>
@@ -2105,7 +1906,7 @@ async function clearSessions() {
   if (!online) return toast('控制台离线，未清空会话绑定', 'err');
   const saved = (state?.sessions || []).reduce((n, s) => n + (routingDescribeOf(groupOfSession(s), s.routing).length ? 1 : 0), 0);
   const warn = saved ? `\n\n其中 ${saved} 个会话配了 Key / 槽位覆盖，这些配置会一并删除且不可恢复。` : '';
-  if (!await sessionConfirm('清空全部会话绑定', '所有协议组的对话将在下次请求时按策略重新分配渠道，包括 ZCode 按协议归组的流量。' + warn, saved ? '清空全部（含配置）' : '清空绑定')) return;
+  if (!await sessionConfirm('清空全部会话绑定', '所有协议组的对话将在下次请求时重新分配渠道。' + warn, saved ? '清空全部（含配置）' : '清空绑定')) return;
   try { await api('/api/sessions', { method: 'DELETE' }); toast(saved ? `已清空会话绑定，并删除 ${saved} 个会话的 Key / 槽位配置` : '已清空会话绑定', 'ok'); refresh(); }
   catch (e) { toast('清空失败：' + e.message, 'err'); }
 }
@@ -2751,7 +2552,7 @@ async function loadPreview() {
     $('preview-body').innerHTML = `<p class="hint"><strong>这是预测，不是实际落点。</strong>真实落点请看「会话」页每行的最近实际请求列。</p>`
       + `<dl class="config-facts">
         <div><dt>命中方式</dt><dd>${esc(m.via || '未提供')}</dd></div>
-        <div><dt>命中规则</dt><dd>${esc(m.ruleId || '未命中(走默认路由)')}</dd></div>
+        <div><dt>命中规则</dt><dd>${esc(m.ruleId || '未命中(没有可走的规则)')}</dd></div>
         <div><dt>分配策略</dt><dd>${esc(m.strategy || '未提供')}</dd></div>
         <div><dt>预测首选</dt><dd>${esc(chosen || '无法确定(如随机策略)')}</dd></div>
       </dl>`

@@ -96,25 +96,18 @@ before(async () => {
   });
   upstream.on('connection', socket => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); });
   await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve));
+  // 每条渠道登记自己的模型名。通用 match 规则与 upstream_stream 覆盖都已删除:
+  // 请求模型精确命中唯一登记的渠道,上游流式开关只由协议默认值决定。
   const provider = (id, wire_api) => ({ id, name: id, wire_api, base_url: `http://127.0.0.1:${upstream.address().port}`,
-    api_key: 'sk-fixture', enabled: true, models: ['model'], model: 'model' });
+    api_key: 'sk-fixture', enabled: true, models: [id], model: id });
   fs.writeFileSync(path.join(root, 'providers.json'), JSON.stringify({
     claude: [provider('cc-chat', 'chat'), provider('cc-resp', 'responses'), provider('cc-native', 'anthropic')],
-    codex: [provider('cx-chat', 'chat'), provider('cx-resp', 'responses')],
+    codex: [provider('cx-chat', 'chat'), provider('cx-resp', 'responses'), provider('cx-archive', 'responses')],
   }));
-  const rules = [];
-  for (const [app, id] of [['claude', 'cc-chat'], ['claude', 'cc-resp'], ['claude', 'cc-native'], ['codex', 'cx-chat'], ['codex', 'cx-resp']]) {
-    for (const [mode, value] of [['false', false], ['true', true], ['default', undefined], ['invalid', 'false']]) {
-      const name = `${id}-${mode}`;
-      rules.push({ id: name, app, match: name, provider: id, model: name, enabled: true,
-        ...(value === undefined ? {} : { upstream_stream: value }) });
-    }
-  }
-  fs.writeFileSync(path.join(root, 'routes.json'), JSON.stringify({ rules, default: {} }));
+  fs.writeFileSync(path.join(root, 'routes.json'), JSON.stringify({ rules: [] }));
   mod = require('../mixrouter');
-  // This module's contract starts at resolved.rule; routing field persistence is
-  // tested independently. Inject fixture rules without depending on normalization.
-  mod._state.routes = { rules, default: {} };
+  mod._state.routes = { rules: [] };
+  mod._state.slotMap = { claude: {}, codex: {} };
   proxy = await mod.listen(0, mod.proxyHandler);
   ui = await mod.listen(0, mod.apiHandler);
   reply = jsonReply;
@@ -153,15 +146,15 @@ test('applying stream copies the converted object and removes streaming-only opt
 });
 
 for (const id of ['cc-chat', 'cc-resp']) {
-  for (const stream of [true, false]) test(`${id}: upstream false still returns client ${stream ? 'SSE' : 'JSON'} with tools/reasoning/usage`, async () => {
+  for (const stream of [true, false]) test(`${id}: Anthropic 线恒按流式上行,客户端仍得 ${stream ? 'SSE' : 'JSON'} 且工具/思考/usage 齐全`, async () => {
     reply = jsonReply;
-    const body = { model: `${id}-false`, stream, max_tokens: 32, tools, messages: [{ role: 'user', content: 'fixture' }] };
+    const body = { model: id, stream, max_tokens: 32, tools, messages: [{ role: 'user', content: 'fixture' }] };
     const response = await request(proxy, '/v1/messages', body);
     assert.equal(response.status, 200, response.text);
     const sent = seen.at(-1);
-    assert.equal(sent.body.stream, false);
-    assert.equal(sent.body.stream_options, undefined);
-    assert.equal(sent.headers.accept, 'application/json');
+    // 协议默认:kind=messages 的上游请求永远流式,与客户端 body.stream 无关
+    assert.equal(sent.body.stream, true);
+    assert.equal(sent.headers.accept, 'text/event-stream');
     assert.equal(body.stream, stream);
     const message = stream ? wireResponses.collectAnthropicMessage(response.text) : JSON.parse(response.text);
     assert.match(response.headers['content-type'], stream ? /text\/event-stream/ : /application\/json/);
@@ -175,14 +168,13 @@ for (const id of ['cc-chat', 'cc-resp']) {
   });
 }
 for (const [id, endpoint] of [['cx-chat', '/v1/responses'], ['cx-resp', '/v1/responses'], ['cx-chat', '/v1/chat/completions']]) {
-  for (const stream of [true, false]) test(`${id} ${endpoint}: false override preserves client ${stream ? 'SSE' : 'JSON'} and usage`, async () => {
+  for (const stream of [true, false]) test(`${id} ${endpoint}: 上游流式跟随 body.stream,客户端 ${stream ? 'SSE' : 'JSON'} 与 usage 不变`, async () => {
     reply = jsonReply;
-    const response = await request(proxy, endpoint, { model: `${id}-false`, stream,
-      input: 'fixture', messages: [{ role: 'user', content: 'fixture' }], stream_options: { include_usage: true } });
+    const response = await request(proxy, endpoint, { model: id, stream,
+      input: 'fixture', messages: [{ role: 'user', content: 'fixture' }] });
     assert.equal(response.status, 200, response.text);
-    assert.equal(seen.at(-1).body.stream, false);
-    assert.equal(seen.at(-1).body.stream_options, undefined);
-    assert.equal(seen.at(-1).headers.accept, 'application/json');
+    assert.equal(seen.at(-1).body.stream, stream);
+    assert.equal(seen.at(-1).headers.accept, stream ? 'text/event-stream' : 'application/json');
     assert.match(response.headers['content-type'], stream ? /text\/event-stream/ : /application\/json/);
     if (endpoint.endsWith('chat/completions')) {
       if (stream) {
@@ -220,7 +212,7 @@ test('native Responses JSON→SSE retains multiple content parts, refusal, custo
   payload.output[1].content.push({ type: 'output_text', text: '第二段', annotations: [{ type: 'fixture' }] }, { type: 'refusal', refusal: '真实拒绝' });
   payload.output.push({ id: 'custom-1', type: 'custom_tool_call', call_id: 'custom-call-1', name: 'Patch', input: 'real patch' });
   reply = (_req, res) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(payload)); };
-  const response = await request(proxy, '/v1/responses', { model: 'cx-resp-false', stream: true, input: 'fixture' });
+  const response = await request(proxy, '/v1/responses', { model: 'cx-resp', stream: true, input: 'fixture' });
   assert.equal(response.status, 200, response.text);
   const events = wireResponses.parseSseEvents(response.text).events;
   assert.deepEqual(events.filter(event => event.type === 'response.output_text.delta').map(event => event.delta), ['答案', '第二段']);
@@ -230,38 +222,41 @@ test('native Responses JSON→SSE retains multiple content parts, refusal, custo
   assert.deepEqual(events.at(-1).response, payload);
 });
 
-test('explicit false uses nonstream first-header budget rather than short stream budget', async () => {
+test('非流式 responses 上行按非流式首字节预算等上游,不用短流式预算', async () => {
   reply = (req, res) => setTimeout(() => jsonReply(req, res), 250);
-  const response = await request(proxy, '/v1/messages', { model: 'cc-chat-false', stream: true, messages: [{ role: 'user', content: 'delay' }] });
+  const response = await request(proxy, '/v1/responses', { model: 'cx-resp', stream: false, input: 'delay' });
+  // 首字节预算由**上游是否流式**决定:body.stream=false 时走 nonstream 预算(1500ms),
+  // 250ms 的延迟仍然成功;若错用了 100ms 流式预算,这里会 502 超时。
   assert.equal(response.status, 200, response.text);
   assert.equal(seen.at(-1).body.stream, false);
+  assert.equal(response.headers['x-mixrouter-upstream-stream'], 'false');
 });
 
 test('default requests keep converter defaults and native omitted stream shape', async () => {
   reply = streamReply;
   for (const id of ['cc-chat', 'cc-resp', 'cc-native']) {
-    const response = await request(proxy, '/v1/messages', { model: `${id}-default`, stream: false, messages: [{ role: 'user', content: 'fixture' }] });
+    const response = await request(proxy, '/v1/messages', { model: id, stream: false, messages: [{ role: 'user', content: 'fixture' }] });
     assert.equal(response.status, 200, response.text);
     assert.equal(seen.at(-1).body.stream, true);
   }
   reply = jsonReply;
   for (const [id, endpoint] of [['cx-resp', '/v1/responses'], ['cx-chat', '/v1/chat/completions']]) {
-    const response = await request(proxy, endpoint, { model: `${id}-default`, input: 'fixture', messages: [{ role: 'user', content: 'fixture' }] });
+    const response = await request(proxy, endpoint, { model: id, input: 'fixture', messages: [{ role: 'user', content: 'fixture' }] });
     assert.equal(response.status, 200);
     assert.ok(!Object.hasOwn(seen.at(-1).body, 'stream'));
     assert.equal(seen.at(-1).headers.accept, 'application/json');
   }
-  const response = await request(proxy, '/v1/responses', { model: 'cx-chat-default', stream: false, input: 'fixture' });
+  const response = await request(proxy, '/v1/responses', { model: 'cx-chat', stream: false, input: 'fixture' });
   assert.equal(response.status, 200); assert.equal(seen.at(-1).body.stream, false);
   assert.equal(seen.at(-1).headers.accept, 'application/json');
 });
 
-test('Anthropic and compact ignore false override; compact body is untouched', async () => {
+test('Anthropic 恒流式、compact 不改写正文', async () => {
   reply = streamReply;
-  assert.equal((await request(proxy, '/v1/messages', { model: 'cc-native-false', stream: false, messages: [{ role: 'user', content: 'fixture' }] })).status, 200);
+  assert.equal((await request(proxy, '/v1/messages', { model: 'cc-native', stream: false, messages: [{ role: 'user', content: 'fixture' }] })).status, 200);
   assert.equal(seen.at(-1).body.stream, true);
   reply = jsonReply;
-  const body = { model: 'cx-resp-false', input: [], stream: true, stream_options: { include_usage: true } };
+  const body = { model: 'cx-resp', input: [], stream: true, stream_options: { include_usage: true } };
   const response = await request(proxy, '/v1/responses/compact', body);
   assert.equal(response.status, 200);
   assert.equal(seen.at(-1).path, '/v1/responses/compact');
@@ -269,29 +264,31 @@ test('Anthropic and compact ignore false override; compact body is untouched', a
   assert.match(response.headers['content-type'], /application\/json/);
 });
 
-for (const [id, endpoint] of [['cx-resp', '/v1/responses'], ['cx-chat', '/v1/chat/completions']]) {
-  test(`${id}: true override buffers upstream SSE into native nonstream JSON`, async () => {
-    reply = streamReply;
-    const response = await request(proxy, endpoint, { model: `${id}-true`, stream: false, input: 'fixture', messages: [{ role: 'user', content: 'fixture' }] });
+test('客户端要 JSON、上游却回 SSE:原生线原样中继,不伪造整包成功', async () => {
+  reply = streamReply;
+  for (const [id, endpoint] of [['cx-resp', '/v1/responses'], ['cx-chat', '/v1/chat/completions']]) {
+    const response = await request(proxy, endpoint, { model: id, stream: false, input: 'fixture', messages: [{ role: 'user', content: 'fixture' }] });
     assert.equal(response.status, 200, response.text);
-    assert.equal(seen.at(-1).body.stream, true);
-    assert.equal(seen.at(-1).headers.accept, 'text/event-stream');
-    assert.match(response.headers['content-type'], /application\/json/);
-    assert.deepEqual(JSON.parse(response.text), endpoint.endsWith('responses') ? responsesJson() : chatJson());
-  });
-}
+    // 上行跟随 body.stream=false,得到的是协议默认的非流式请求
+    assert.equal(seen.at(-1).body.stream, false);
+    // 上游违约发流:转出去的仍是上游原字节,不能被伪造成一个 response.completed 的整包 JSON
+    assert.match(response.headers['content-type'], /text\/event-stream/);
+    assert.ok(!response.text.startsWith('{"'), '不能把流伪装成整包 JSON');
+    assert.ok(response.text.includes(endpoint.endsWith('responses') ? 'response.completed' : '[DONE]'));
+  }
+});
 
 test('native JSON-to-SSE rejects malformed results instead of inventing success', async () => {
   for (const [id, endpoint, payload] of [['cx-resp', '/v1/responses', { id: 'bad', status: 'in_progress', output: [] }],
     ['cx-chat', '/v1/chat/completions', { choices: [] }]]) {
     reply = (_req, res) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(payload)); };
-    const response = await request(proxy, endpoint, { model: `${id}-false`, stream: true, input: 'fixture' });
+    const response = await request(proxy, endpoint, { model: id, stream: true, input: 'fixture' });
     assert.equal(response.status, 502, response.text);
     assert.ok(!response.text.includes('response.completed'));
   }
 });
 
-test('explicit native streaming override rejects truncated tools and missing terminal SSE', async () => {
+test('上游流残缺时原样中继已发出的字节,不补造终态', async () => {
   for (const id of ['cx-chat', 'cx-resp']) {
     reply = (_req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
@@ -300,38 +297,44 @@ test('explicit native streaming override rejects truncated tools and missing ter
       ] }, finish_reason: 'tool_calls' }] }) + 'data: [DONE]\n\n');
       else res.end(sse({ type: 'response.output_text.delta', output_index: 0, delta: 'unfinished' }));
     };
+    // 客户端要 JSON,上游违约发流且流本身残缺:转出去的必须是上游原字节,
+    // 不能被补成 response.completed / 完整 chat 结果的"成功"包。
     const response = await request(proxy, id === 'cx-chat' ? '/v1/chat/completions' : '/v1/responses',
-      { model: `${id}-true`, stream: false, input: 'fixture' });
-    assert.equal(response.status, 502, response.text);
-    assert.match(response.headers['content-type'], /application\/json/);
+      { model: id, stream: false, input: 'fixture' });
+    assert.equal(response.status, 200, response.text);
+    assert.match(response.headers['content-type'], /text\/event-stream/);
+    assert.ok(!response.text.includes('"status":"completed"'), `不能伪造成功终态:${response.text}`);
+    assert.ok(!response.text.startsWith('{"'), '不能把流伪装成整包 JSON');
   }
 });
 
-test('native Chat streaming override keeps interleaved choices and tool arguments separate', async () => {
-  reply = (_req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-    res.end(sse({ id: 'multi', choices: [
-      { index: 0, delta: { tool_calls: [{ index: 0, id: 'a', type: 'function', function: { name: 'A', arguments: '{"x":' } }] } },
-      { index: 1, delta: { content: 'second', reasoning_content: 'real' } },
-    ] }) + sse({ choices: [
-      { index: 1, delta: { content: ' choice' }, finish_reason: 'stop' },
-      { index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '1}' } }] }, finish_reason: 'tool_calls' },
-    ], usage: chatJson().usage }) + 'data: [DONE]\n\n');
-  };
-  const response = await request(proxy, '/v1/chat/completions', { model: 'cx-chat-true', stream: false, messages: [] });
+test('native Chat JSON→SSE keeps interleaved choices and tool arguments separate', async () => {
+  const payload = { id: 'multi', object: 'chat.completion', model: 'upstream-model', choices: [
+    { index: 0, finish_reason: 'tool_calls', message: { role: 'assistant', content: null,
+      tool_calls: [{ id: 'a', type: 'function', function: { name: 'A', arguments: '{"x":1}' } }] } },
+    { index: 1, finish_reason: 'stop', message: { role: 'assistant', content: 'second choice', reasoning_content: 'real' } },
+  ], usage: chatJson().usage };
+  reply = (_req, res) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(payload)); };
+  const response = await request(proxy, '/v1/chat/completions', { model: 'cx-chat', stream: true, messages: [] });
   assert.equal(response.status, 200, response.text);
-  const json = JSON.parse(response.text);
-  assert.equal(json.choices[0].message.tool_calls[0].function.arguments, '{"x":1}');
-  assert.equal(json.choices[1].message.content, 'second choice');
-  assert.equal(json.choices[1].message.reasoning_content, 'real');
-  assert.deepEqual(json.usage, chatJson().usage);
+  const frames = wireResponses.parseSseEvents(response.text).events;
+  const byIndex = index => frames.flatMap(frame => frame.choices || []).filter(choice => choice.index === index);
+  const call = byIndex(0).find(choice => choice.delta?.tool_calls)?.delta.tool_calls[0];
+  assert.equal(call.index, 0);
+  assert.equal(call.function.arguments, '{"x":1}');
+  const second = byIndex(1);
+  assert.equal(second.find(choice => choice.delta?.content === 'second choice').delta.content, 'second choice');
+  assert.equal(second[0].delta.reasoning_content, 'real');
+  assert.deepEqual(frames.find(frame => frame.usage).usage, chatJson().usage);
+  assert.ok(response.text.endsWith('data: [DONE]\n\n'));
 });
 
-test('archive records upstream JSON, not synthesized SSE; logs retain usage', async () => {
+test('archive records upstream JSON bytes, not the client rendering; logs retain usage', async () => {
   reply = jsonReply;
-  const response = await request(proxy, '/v1/responses', { model: 'cx-resp-false', stream: true, input: 'archive-fixture' });
+  const response = await request(proxy, '/v1/responses', { model: 'cx-archive', stream: false, input: 'archive-fixture' });
   assert.equal(response.status, 200);
-  const logResponse = await request(ui, '/api/logs?model=cx-resp-false', undefined, 'GET');
+  assert.deepEqual(JSON.parse(response.text), responsesJson(), '客户端拿到的就是上游 JSON');
+  const logResponse = await request(ui, '/api/logs?model=cx-archive', undefined, 'GET');
   const log = JSON.parse(logResponse.text).logs[0];
   assert.deepEqual({ in: log.in, out: log.out, cache_read: log.cache_read }, { in: 50, out: 12, cache_read: 8 });
   let archive;
@@ -340,7 +343,7 @@ test('archive records upstream JSON, not synthesized SSE; logs retain usage', as
       const meta = path.join(root, 'archive', dir, 'metadata.json');
       if (!fs.existsSync(meta)) continue;
       const metadata = JSON.parse(fs.readFileSync(meta, 'utf8'));
-      if (metadata.model === 'cx-resp-false' && metadata.finished_at && metadata.state === 'complete') {
+      if (metadata.model === 'cx-archive' && metadata.finished_at && metadata.state === 'complete') {
         archive = { dir: path.dirname(meta), metadata }; return true;
       }
     }

@@ -21,6 +21,8 @@ Object.assign(process.env, {
 const mod = require('../mixrouter');
 const { destroyAgents } = require('../lib/upstream-proxy');
 const MODEL = 'fixture-upstream-model';
+// 精确槽位:通用 match/default 规则删除后,多渠道(含备池)只能靠槽位别名 + 同一落点模型表达。
+const SLOT = 'mixr-main';
 const frame = payload => `data: ${JSON.stringify(payload)}\n\n`;
 const chunk = (delta, finish_reason = null) => ({ id: 'fixture-chat', object: 'chat.completion.chunk',
   created: 1, model: MODEL, choices: [{ index: 0, delta, finish_reason }] });
@@ -47,7 +49,7 @@ const successJson = { id: 'fixture-json', object: 'chat.completion', model: MODE
     prompt_tokens_details: { cached_tokens: 4 }, completion_tokens_details: { reasoning_tokens: 2 } } };
 
 function history() {
-  return { model: 'fixture-client-model', stream: true, store: false,
+  return { model: SLOT, stream: true, store: false,
     instructions: 'Use synthetic local fixtures only.', reasoning: { effort: 'max', summary: 'detailed' },
     prompt_cache_key: 'cache-preserved', max_output_tokens: 256, parallel_tool_calls: false, tool_choice: 'auto',
     tools: [{ type: 'function', name: 'Read', description: 'Read a synthetic fixture.', strict: false,
@@ -69,8 +71,9 @@ function configure({ other = true, keyFallback = true } = {}) {
       { id: `key-b-${fixtureId}`, key: 'synthetic-alternate-key', enabled: true },
     ] });
   mod._state.store = { claude: [], codex: [provider('primary'), ...(other ? [provider('secondary')] : [])] };
-  mod._state.routes = { rules: [], default: mod.normalizeRule({ model: MODEL, strategy: 'priority',
-    pool: other ? ['primary', 'secondary'] : ['primary'] }) };
+  mod._state.slotMap = { claude: {}, codex: { main: { provider: 'primary', model: MODEL,
+    ...(other ? { pool: ['secondary'] } : {}) } } };
+  mod._state.routes = { rules: [] };
 }
 function reset() {
   fixtureId++; seen = []; closed = 0; mod._state.sessions.clear(); mod._state.cooldowns = {}; mod._state.resetPools(); configure();

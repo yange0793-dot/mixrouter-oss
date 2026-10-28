@@ -350,10 +350,6 @@ test('setup:起控制台与代理两个服务;渠道指向死端口(只为造日
     claude: [{ id: 'p-dead', name: '死端口渠道', base_url: DEAD, api_key: 'sk-dead', enabled: true, models: ['j10-model'] }],
     codex: [],
   }));
-  fs.writeFileSync(path.join(TMP, 'routes.json'), JSON.stringify({
-    rules: [{ id: 'r-j10', match: 'j10-model', provider: 'p-dead', model: 'j10-model', enabled: true }],
-    default: { provider: '', model: '' },
-  }));
   mod = require('../mixrouter.js');
   uiSrv = await mod.listen(0, mod.apiHandler);
   uiPort = uiSrv.address().port;
@@ -395,13 +391,20 @@ test('接线:控制台 400 的错误体仍是 { error: "…" }(sendErr 与手写
 test('接线:发送畸形请求体仍得到 400 与那两句话(深度守卫搬走后没变)', async () => {
   const deep = '{"a":' + '['.repeat(bodyLib.MAX_JSON_DEPTH + 2) + '1' + ']'.repeat(bodyLib.MAX_JSON_DEPTH + 2) + '}';
   const r = await new Promise((resolve, reject) => {
-    const req = http.request({ hostname: '127.0.0.1', port: uiPort, method: 'PUT', path: '/api/routes',
+    const req = http.request({ hostname: '127.0.0.1', port: uiPort, method: 'POST', path: '/api/compact',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(deep) } },
       res => { const cs = []; res.on('data', c => cs.push(c)); res.on('end', () => resolve({ status: res.statusCode, text: Buffer.concat(cs).toString('utf8') })); });
     req.on('error', reject); req.end(deep);
   });
   assert.equal(r.status, 400);
   assert.match(JSON.parse(r.text).error, /嵌套层数超过 256 层/);
+});
+
+test('接线:PUT /api/routes 固定 410,不落盘也不改内存', async () => {
+  const before = JSON.stringify(mod._state.routes);
+  const r = await raw(uiPort, 'PUT', '/api/routes', { rules: [], default: {} });
+  assert.equal(r.status, 410);
+  assert.equal(JSON.stringify(mod._state.routes), before);
 });
 
 test('接线:槽位 PUT 是**部分更新** —— 没带 dropTools 时旧值必须留在原地', async () => {
@@ -442,14 +445,13 @@ test('接线:chat 上游的错误正文翻给客户端时是**纯截断**,与原
   try {
     // claude 渠道标 wire_api:'chat' → 客户端 /v1/messages 走"现场翻译"分支(就是那两处所在的分支)
     const created = await raw(uiPort, 'POST', '/api/providers',
-      { name: 'chat 上游', base_url: `http://127.0.0.1:${upPort}`, api_key: 'sk-x', wire_api: 'chat' });
+      { name: 'chat 上游', base_url: `http://127.0.0.1:${upPort}`, api_key: 'sk-x', wire_api: 'chat', models: ['j10-chat'] });
     const pid = JSON.parse(created.text).id;
     assert.ok(pid, `建渠道失败:${created.text}`);
-    const put = await raw(uiPort, 'PUT', '/api/routes', {
-      rules: [{ id: 'r-chat', match: 'j10-chat', provider: pid, model: 'j10-chat', enabled: true }],
-      default: { provider: '', model: '' },
-    });
-    assert.equal(put.status, 200, `路由没设上:${put.text}`);
+    // 精确登记模型即落点:无需再写通用规则(PUT /api/routes 已固定 410)
+    const model = JSON.parse((await raw(uiPort, 'GET', '/api/state')).text)
+      .providers.claude.find(p => p.id === pid).models[0];
+    assert.equal(model, 'j10-chat');
     // 非流式,避免摊 SSE;这条路径与流式共用同一个错误分支
     const got = await raw(proxyPort, 'POST', '/v1/messages',
       { model: 'j10-chat', max_tokens: 8, stream: false, messages: [{ role: 'user', content: 'hi' }] });
@@ -464,9 +466,13 @@ test('接线:chat 上游的错误正文翻给客户端时是**纯截断**,与原
   } finally { upstream.close(); }
 });
 
-test('接线:导出面保留合并后的 86 键与本地 Codex 配置更新入口', () => {
-  assert.equal(Object.keys(mod).length, 86);
-  assert.equal(typeof mod.updateCodexConfig, 'function');
+test('接线:导出面保留转发/槽位/压缩入口,harness 与 zcode 入口已消失', () => {
+  for (const name of ['resolveRoute', 'explainRoute', 'resolveSlot', 'slotsPublic', 'pickMember',
+    'classifyProxyRequest', 'wireOf', 'updateCodexConfig', 'bodyRouteText'])
+    assert.equal(typeof mod[name], 'function', `导出面缺 ${name}`);
+  // 已删除的接入面:不留半截入口(留一个空函数比直接没有更难发现)
+  for (const name of ['resolveHarness', 'switchZcode', 'zcodeSpec', 'zcodeRouterSpec', 'liveZcodeState'])
+    assert.equal(mod[name], undefined, `${name} 应当随瘦身一起删除`);
 });
 
 test('本文件不许出现任何写客户端配置的路径(结构性保证不碰 ~/.claude 与 ~/.codex)', () => {

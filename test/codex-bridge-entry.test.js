@@ -27,7 +27,7 @@ process.env.MIXR_MAX_ATTEMPTS = '1';
 
 const mod = require('../mixrouter.js');
 const codexTools = require('../lib/codex-tools');
-const { normalizeRule, _state } = mod;
+const { _state } = mod;
 
 const PATCH = '*** Begin Patch\n*** End Patch';
 // 与 codex-bridge-modern.test.js 同一份合法协议契约:namespace 里的 custom 工具 + 普通 function 工具
@@ -117,10 +117,8 @@ const callResponses = (sessionId, { model, stream, body }) => rawRequest(proxyPo
   headers: { 'Content-Type': 'application/json', 'session-id': sessionId, 'User-Agent': 'codex_exec/0.154.0' },
   body: { model, store: false, stream, input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: '帮我看看这个仓库' }] }], ...body },
 });
-const setRoutes = (rules, def = { provider: '', model: '' }) => {
-  _state.routes = { rules: rules.map(normalizeRule), default: normalizeRule(def) };
-  _state.resetPools();
-};
+// 通用 match 规则已删除:每个 chat 渠道登记自己唯一的模型名,请求模型精确命中该渠道。
+const resetRouting = () => { _state.routes = { rules: [] }; _state.slotMap = { claude: {}, codex: {} }; _state.resetPools(); };
 const sseEvents = text => text.split('\n').filter(line => line.startsWith('data: '))
   .map(line => JSON.parse(line.slice(6)));
 
@@ -140,7 +138,7 @@ test('setup:mock chat 上游(JSON / SSE / 工具)+ 代理与控制台', async ()
     ],
   };
   fs.writeFileSync(path.join(TMP, 'providers.json'), JSON.stringify({ version: 2, current: { claude: null, codex: null }, ...provs }));
-  fs.writeFileSync(path.join(TMP, 'routes.json'), JSON.stringify({ rules: [], default: { provider: '', model: '' } }));
+  fs.writeFileSync(path.join(TMP, 'routes.json'), JSON.stringify({ rules: [] }));
   _state.store = provs;
   _state.sessions.clear();
   _state.cooldowns = {};
@@ -152,7 +150,7 @@ test('setup:mock chat 上游(JSON / SSE / 工具)+ 代理与控制台', async ()
 });
 
 test('入口回归:stream:false + chat 上游回 JSON,自定义工具经 chatJsonToResponses 保留 namespace/input', async () => {
-  setRoutes([{ id: 'rx-json', match: 'glm-json', pool: [{ provider: 'cjson', model: 'glm-json' }], enabled: true }]);
+  resetRouting();
   _state.sessions.clear();
   const before = upstreams.cjson.requests.length;
   const r = await callResponses('entry-json', { model: 'glm-json', stream: false, body: { tools: declared } });
@@ -169,7 +167,7 @@ test('入口回归:stream:false + chat 上游回 JSON,自定义工具经 chatJso
 });
 
 test('入口回归:stream:false + 上游回 SSE,入口按原请求判定,非流客户端拿到 JSON 而非 SSE', async () => {
-  setRoutes([{ id: 'rx-ns-sse', match: 'glm-sse', pool: [{ provider: 'csse', model: 'glm-sse' }], enabled: true }]);
+  resetRouting();
   _state.sessions.clear();
   const r = await callResponses('entry-ns-sse', { model: 'glm-sse', stream: false });
   assert.strictEqual(r.status, 200);
@@ -181,7 +179,7 @@ test('入口回归:stream:false + 上游回 SSE,入口按原请求判定,非流�
 });
 
 test('入口回归:上游忽略 stream(回 JSON)而客户端要流,代理摊成 responses SSE 且自定义工具不丢', async () => {
-  setRoutes([{ id: 'rx-stream-json', match: 'glm-json', pool: [{ provider: 'cjson', model: 'glm-json' }], enabled: true }]);
+  resetRouting();
   _state.sessions.clear();
   const r = await callResponses('entry-stream-json', { model: 'glm-json', stream: true, body: { tools: declared } });
   assert.strictEqual(r.status, 200);
@@ -193,7 +191,7 @@ test('入口回归:上游忽略 stream(回 JSON)而客户端要流,代理摊成 
 });
 
 test('入口回归:custom tools 出入及下一轮工具结果(SSE 上游)', async () => {
-  setRoutes([{ id: 'rx-tool', match: 'glm-tool', pool: [{ provider: 'ctool', model: 'glm-tool' }], enabled: true }]);
+  resetRouting();
   _state.sessions.clear();
   const first = await callResponses('entry-tool', { model: 'glm-tool', stream: true, body: { tools: declared } });
   assert.strictEqual(first.status, 200);
@@ -224,7 +222,7 @@ test('入口回归:custom tools 出入及下一轮工具结果(SSE 上游)', asy
 });
 
 test('入口回归:reasoning 与 usage 穿过桥接层保留', async () => {
-  setRoutes([{ id: 'rx-rs', match: 'glm-think', pool: [{ provider: 'cthink', model: 'glm-think' }], enabled: true }]);
+  resetRouting();
   _state.sessions.clear();
   const r = await callResponses('entry-rs', { model: 'glm-think', stream: true });
   assert.strictEqual(r.status, 200);

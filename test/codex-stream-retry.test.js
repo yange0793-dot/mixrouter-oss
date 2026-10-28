@@ -61,7 +61,8 @@ function configure(wireApi = 'responses', baseUrl = `http://127.0.0.1:${upstream
     api_key: 'synthetic-key', base_url: baseUrl,
     active_key: 'k1', keys: [{ id: 'k1', key: 'synthetic-key', enabled: true }] };
   mod._state.store = { claude: [], codex: [provider] };
-  mod._state.routes = { rules: [], default: mod.normalizeRule({ model: MODEL, pool: ['stream'], strategy: 'priority' }) };
+  // 唯一登记模型:codex 组只有 'stream' 一条渠道登记了 MODEL,请求模型精确命中它。
+  mod._state.routes = { rules: [] };
 }
 function reset() {
   fixtureId++; seen = []; closed = 0; mod._state.sessions.clear(); mod._state.cooldowns = {}; mod._state.resetPools();

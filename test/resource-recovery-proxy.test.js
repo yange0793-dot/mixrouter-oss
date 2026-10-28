@@ -44,14 +44,16 @@ function failure(res, { status = 400, json = true, value } = {}) {
   res.writeHead(status, { 'Content-Type': json ? 'application/json' : 'text/event-stream' });
   res.end(json ? JSON.stringify(value || (status === 400 ? mismatch() : failed().response)) : frame(value || failed()));
 }
-function configure({ override, pinned = false, wire = 'responses' } = {}) {
+function configure({ wire = 'responses' } = {}) {
   const provider = { id: 'primary', name: 'primary', enabled: true, wire_api: wire,
     api_key: 'sk-original', active_key: 'original', key_fallback: true,
     keys: [{ id: 'original', key: 'sk-original' }, { id: 'other', key: 'sk-other' }],
     base_url: `http://127.0.0.1:${upstream.address().port}/primary`, models: ['fixture-model'] };
   mod._state.store = { claude: [provider], codex: [provider] };
-  mod._state.routes = { rules: [], default: mod.normalizeRule({ provider: 'primary',
-    ...(pinned ? { key_id: 'original' } : {}), ...(override === undefined ? {} : { upstream_stream: override }) }) };
+  // 唯一登记模型:fixture-model 只有 primary 一条渠道登记,请求模型精确命中它。
+  // 上游流式开关已随规则一起废弃,出站形态一律由协议默认决定。
+  mod._state.slotMap = { claude: {}, codex: {} };
+  mod._state.routes = { rules: [] };
 }
 function ask(body = history(), endpoint = '/v1/responses', callback) {
   return new Promise((resolve, reject) => {
@@ -106,12 +108,14 @@ after(async () => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-for (const [stream, override, status, json] of [
-  [true, undefined, 400, true], [false, undefined, 400, true],
-  [true, undefined, 200, false], [false, undefined, 200, true],
-  [true, false, 200, true], [false, true, 200, false], [true, undefined, 400, false],
-]) test(`resource recovery HTTP/JSON/SSE (client=${stream}, override=${override}, status=${status}, json=${json})`, async () => {
-  configure({ override });
+// 上游流式开关已废弃:这里只按「客户端是否要流 / 上游回什么形状」这两个真实维度组合。
+// 上游回的形状与客户端请求可以不一致(网关会把 JSON 请求按 SSE 回),两条路径都要能恢复。
+for (const [stream, status, json] of [
+  [true, 400, true], [false, 400, true],
+  [true, 200, false], [true, 200, true],
+  [false, 200, true], [false, 200, false], [true, 400, false],
+]) test(`resource recovery HTTP/JSON/SSE (client=${stream}, status=${status}, json=${json})`, async () => {
+  configure();
   const body = { ...history(), stream }, before = hash(body);
   reply = (_req, res) => seen.length === 1 ? failure(res, { status, json }) : success(res, json);
   recovered(await ask(body)); assert.equal(hash(body), before);
@@ -141,7 +145,7 @@ test('HTTP400 SSE content-type with raw JSON schema error or semantic content ne
 });
 
 test('same candidate model/key is frozen even if active key changes during recovery delay', async () => {
-  configure({ pinned: true });
+  configure();
   reply = (_req, res) => {
     if (seen.length !== 1) return success(res);
     mod._state.store.codex[0].active_key = 'other'; mod._state.store.codex[0].api_key = 'sk-other';
@@ -247,8 +251,8 @@ test('HTTP400 malformed/unknown frames before error prohibit recovery', async ()
   }
 });
 
-test('buffered SSE malformed/unknown prefix cannot reopen resource retry window', async () => {
-  configure({ override: true });
+test('malformed/unknown SSE prefix cannot reopen resource retry window for a non-stream client', async () => {
+  configure();
   reply = (_req, res) => { res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.end('data: malformed\n\n' + frame(failed())); };
   const result = await ask({ ...history(), stream: false }); assert.equal(seen.length, 1);
   assert.match(result.text, /different Azure OpenAI resource/);

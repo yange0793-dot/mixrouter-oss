@@ -39,7 +39,7 @@ function request(port, endpoint, body, session) {
     req.on('error', reject); req.end(data);
   });
 }
-const ask = (session, model = 'big') => request(proxy.address().port, '/v1/messages',
+const ask = (session, model = 'up-a') => request(proxy.address().port, '/v1/messages',
   { model, stream: true, max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }, session);
 
 before(async () => {
@@ -55,12 +55,10 @@ before(async () => {
   await new Promise(r => upstream.listen(0, '127.0.0.1', r));
   const base_url = `http://127.0.0.1:${upstream.address().port}`;
   const provider = (id, key, wire_api) => ({ id, name: id, base_url, wire_api, api_key: key + '-active', enabled: true,
-    models: ['big'], keys: [{ id: 'k1', key: key + '-1' }, { id: 'k2', key: key + '-2' }] });
+    models: ['up-' + id], keys: [{ id: 'k1', key: key + '-1' }, { id: 'k2', key: key + '-2' }] });
   fs.writeFileSync(path.join(TMP, 'providers.json'), JSON.stringify({
     claude: [provider('a', 'sk-a', 'anthropic'), provider('b', 'sk-b', 'anthropic'), provider('conv', 'sk-conv', 'chat')], codex: [] }));
-  fs.writeFileSync(path.join(TMP, 'routes.json'), JSON.stringify({ rules: [
-    { id: 'r-main', app: 'claude', match: 'big', provider: 'a', model: 'up-a', enabled: true },
-    { id: 'r-conv', app: 'claude', match: 'converted-model', provider: 'conv', model: 'up-conv', enabled: true }], default: {} }));
+  fs.writeFileSync(path.join(TMP, 'routes.json'), JSON.stringify({ rules: [], default: {} }));
   fs.writeFileSync(path.join(TMP, 'slots.json'), JSON.stringify({ version: 1,
     claude: { haiku: { provider: 'b', model: 'up-b' } }, codex: {} }));
   mod = require('../mixrouter');
@@ -88,12 +86,12 @@ test('两条会话各自粘性;槽位请求不污染主对话绑定', async () =
   assert.equal((await ask('s-one')).status, 200);
   assert.equal(seen[3].body.model, 'up-a', '槽位请求不得把主对话挪到槽位渠道');
   assert.equal(seen[3].key, 'sk-a-active');
-  // 控制台看得到两条会话,各自的绑定都是规则渠道(槽位请求没有改绑)
+  // 控制台看得到两条会话,各自的绑定都是登记渠道(槽位请求没有改绑)
   const rows = JSON.parse((await request(ui.address().port, '/api/sessions')).text).sessions;
   assert.equal(rows.length, 2);
   for (const row of rows) {
     const bound = row.bound || { provider: row.provider };
-    assert.equal(bound.provider, 'a', `会话 ${row.key} 应当仍绑在规则渠道上`);
+    assert.equal(bound.provider, 'a', `会话 ${row.key} 应当仍绑在登记渠道上`);
     assert.equal(bound.model, 'up-a', '槽位请求不得把主对话的落点模型改掉');
     assert.equal(bound.pinned, false, '自动粘性不是手动钉定');
   }
@@ -103,6 +101,7 @@ test('在途请求用入口快照:同渠道重试不因控制台中途改路由�
   let attempt = 0;
   const before = seen.length;
   const original = upstream.listeners('request');
+  const originalStore = mod._state.store;
   upstream.removeAllListeners('request');
   upstream.on('request', (req, res) => {
     const parts = [];
@@ -113,9 +112,10 @@ test('在途请求用入口快照:同渠道重试不因控制台中途改路由�
         body: JSON.parse(Buffer.concat(parts).toString('utf8')) });
       if (attempt === 1) {
         // 第一发 5xx:代理会在同一渠道内重试(claude 转换线走 CONV_RETRIES 配额)。
-        // 趁这一刻把路由改成另一条渠道 —— 在途请求不该跟过去。
-        mod._state.routes = { rules: [
-          { id: 'r-main', app: 'claude', match: 'big', provider: 'b', model: 'up-b', enabled: true }], default: {} };
+        // 趁这一刻把登记模型转到另一渠道 —— 在途请求仍应使用原入口快照。
+        mod._state.store = { ...originalStore, claude: originalStore.claude.map(p => ({
+          ...p, models: p.id === 'b' ? ['up-conv'] : p.id === 'conv' ? [] : p.models,
+        })) };
         res.writeHead(500, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify({ error: { message: 'fixture 500' } }));
       }
@@ -124,7 +124,7 @@ test('在途请求用入口快照:同渠道重试不因控制台中途改路由�
     });
   });
   try {
-    const r = await ask('s-retry', 'converted-model');
+    const r = await ask('s-retry', 'up-conv');
     assert.equal(r.status, 200, r.text);
     assert.equal(attempt, 3, '同渠道重试两次(第一次 500 后换 cache 代际重打,第二次才成功)');
     assert.equal(seen[before].body.model, 'up-conv');
@@ -136,8 +136,6 @@ test('在途请求用入口快照:同渠道重试不因控制台中途改路由�
   } finally {
     upstream.removeAllListeners('request');
     for (const listener of original) upstream.on('request', listener);
-    mod._state.routes = { rules: [
-      { id: 'r-main', app: 'claude', match: 'big', provider: 'a', model: 'up-a', enabled: true },
-      { id: 'r-conv', app: 'claude', match: 'converted-model', provider: 'conv', model: 'up-conv', enabled: true }], default: {} };
+    mod._state.store = originalStore;
   }
 });

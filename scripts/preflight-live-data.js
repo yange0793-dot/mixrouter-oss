@@ -39,7 +39,6 @@ process.env.HOME = home;
 process.env.MIXR_DATA_DIR = data;
 process.env.MIXR_CLAUDE_SETTINGS = path.join(home, '.claude', 'settings.json');
 process.env.MIXR_CODEX_CONFIG = path.join(home, '.codex', 'config.toml');
-process.env.MIXR_ZCODE_CONFIG = path.join(home, '.zcode', 'v2', 'config.json');
 process.env.MIXROUTER_PORT = '0';
 process.env.MIXUI_PORT = '0';
 process.env.TMPDIR = path.join(root, 'tmp');
@@ -82,14 +81,15 @@ const get = (port, p) => new Promise(resolve => {
     if (d) {
       const c = (d.providers && d.providers.claude || []).length;
       const x = (d.providers && d.providers.codex || []).length;
-      const rules = (d.routes && d.routes.rules || []).length;
+      // 通用匹配规则已移除:这里不再要求 routes.rules 非空,也不拿它跟线上比。
+      // 分发改由精确槽位与"该组唯一已登记模型"决定,所以改看槽位表是否照旧可读。
+      const slots = Object.keys((d.slots && d.slots.claude) || {}).length +
+        Object.keys((d.slots && d.slots.codex) || {}).length;
       check(`渠道数 claude=${c} codex=${x}`, c > 0 && x > 0, `claude=${c} codex=${x}`);
-      check(`路由规则数 ${rules}`, rules > 0, String(rules));
+      check(`槽位表可读(绑定 ${slots} 条)`, typeof d.slots === 'object' && d.slots !== null, String(slots));
       if (liveState) {
         const lc = (liveState.providers.claude || []).length, lx = (liveState.providers.codex || []).length;
-        const lr = (liveState.routes.rules || []).length;
         check('渠道数与线上一致', c === lc && x === lx, `新=${c}/${x} 线上=${lc}/${lx}`);
-        check('规则数与线上一致', rules === lr, `新=${rules} 线上=${lr}`);
       }
       check('会话表可读(数量与线上比对)', Array.isArray(d.sessions),
         `新=${(d.sessions || []).length} 线上=${liveState ? (liveState.sessions || []).length : '?'}`);

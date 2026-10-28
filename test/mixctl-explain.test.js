@@ -18,10 +18,11 @@ let mode = 'ok';
 let requests = [];
 let server;
 
+// 真实预览的命中来源只剩三种:compact / slot / model(规则与兜底阶段已删除)。
 const PREVIEW = {
   ok: true,
   input: { app: 'claude', model: 'demo', kind: 'messages' },
-  matched: { via: 'rule', ruleId: 'r1', slot: null, strategy: 'round_robin' },
+  matched: { via: 'model', ruleId: 'model:a', slot: null, strategy: 'round_robin' },
   selection: {
     source: 'strategy', strategy: 'round_robin', deterministic: true,
     predicted: { providerId: 'a', providerName: '渠道A', model: 'a-out' },
@@ -116,11 +117,25 @@ test('--kind 与完整会话键进 body,短 id 在本地就被拦下', async () 
 test('自然语言摘要给出命中来源、首选与范围说明', async () => {
   const r = await run(['explain', 'claude', 'demo']);
   assert.equal(r.code, 0);
-  assert.match(r.output, /命中: rule r1/);
+  assert.match(r.output, /命中: model model:a/);
   assert.match(r.output, /首选来源: strategy/);
   assert.match(r.output, /渠道A \(a\) @ a-out/);
   assert.match(r.output, /提醒 \[new_session_preview\]/);
   assert.equal(r.output.includes('{"ok"'), false, '非 --json 不应吐原始 JSON');
+});
+
+test('槽位与压缩命中的摘要各自打出来源与槽名', async () => {
+  const previous = PREVIEW.matched;
+  try {
+    PREVIEW.matched = { via: 'slot', ruleId: 'slot:claude/main', slot: 'main', strategy: 'priority' };
+    const slot = await run(['explain', 'claude', 'mixr-main']);
+    assert.equal(slot.code, 0);
+    assert.match(slot.output, /命中: slot slot:claude\/main  槽位 main/);
+    PREVIEW.matched = { via: 'compact', ruleId: 'compact-global', slot: null, strategy: 'priority' };
+    const compact = await run(['explain', 'claude', 'mixr-main']);
+    assert.equal(compact.code, 0);
+    assert.match(compact.output, /命中: compact compact-global/);
+  } finally { PREVIEW.matched = previous; }
 });
 
 test('不确定首选时摘要列出候选渠道,不假装知道落点', async () => {

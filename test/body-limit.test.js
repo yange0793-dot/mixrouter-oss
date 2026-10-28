@@ -34,7 +34,6 @@ function limitsFor(value, drainMs) {
       MIXR_DATA_DIR: dir,
       MIXR_CLAUDE_SETTINGS: path.join(dir, 'settings.json'),
       MIXR_CODEX_CONFIG: path.join(dir, 'config.toml'),
-      MIXR_ZCODE_CONFIG: path.join(dir, 'zcode.json'),
       MIXROUTER_PORT: '0',
       MIXUI_PORT: '0',
     };
@@ -161,7 +160,6 @@ test('客户端超限后停住不发:服务端在排空时限内主动给 413,�
       MIXR_DATA_DIR: dir,
       MIXR_CLAUDE_SETTINGS: path.join(dir, 'settings.json'),
       MIXR_CODEX_CONFIG: path.join(dir, 'config.toml'),
-      MIXR_ZCODE_CONFIG: path.join(dir, 'zcode.json'),
       MIXROUTER_PORT: '0',
       MIXUI_PORT: '0',
       MIXR_BODY_LIMIT_MB: '1',

@@ -144,32 +144,40 @@ test('installPlan 拒绝非绝对路径与非法的 releaseName', () => {
 
 // ---------------------------------------------------------------- 客户端配置
 
-test('三个客户端配置:有覆盖用覆盖,没覆盖落 HOME 下', () => {
+test('两个受管客户端配置:有覆盖用覆盖,没覆盖落 HOME 下', () => {
   const env = {
     MIXR_CLAUDE_SETTINGS: '/tmp/c.json',
     MIXR_CODEX_CONFIG: '/tmp/x.toml',
-    MIXR_ZCODE_CONFIG: '/tmp/z.json',
   };
   assert.equal(paths.claudeSettings(env, HOME), '/tmp/c.json');
   assert.equal(paths.codexConfig(env, HOME), '/tmp/x.toml');
-  assert.equal(paths.zcodeConfig(env, HOME), '/tmp/z.json');
   assert.equal(paths.claudeSettings({}, HOME), path.join(HOME, '.claude', 'settings.json'));
   assert.equal(paths.codexConfig({}, HOME), path.join(HOME, '.codex', 'config.toml'));
-  assert.equal(paths.zcodeConfig({}, HOME), path.join(HOME, '.zcode', 'v2', 'config.json'));
-  // claude/codex 两项的真值仍来自 LIVE_FILES —— 同一条规则存两份就是分叉的入口。
+  // 真值来自 LIVE_FILES —— 同一条规则存两份就是分叉的入口。
   assert.equal(paths.claudeSettings({}, HOME), LIVE_FILES.claudeSettings({}, HOME));
   assert.equal(paths.codexConfig({}, HOME), LIVE_FILES.codexConfig({}, HOME));
 });
 
-test('zcode 默认路径与 lib/zcode-config.js 原本的默认值逐字相同', () => {
-  // 这一条是本次搬迁的等价性证明:把真值从 zcode-config.js 挪到 paths.js 时,
-  // 默认值必须一字不变 —— 它是用户机器上那个文件的真实位置。
-  const expected = path.join(HOME, '.zcode', 'v2', 'config.json');
-  assert.equal(paths.zcodeConfig({}, HOME), expected);
-  // 且 zcode-config.js 现在确实走 paths(不是还留着自己那一份)。
-  const src = fs.readFileSync(path.join(ROOT, 'lib', 'zcode-config.js'), 'utf8');
-  assert.match(src, /require\('\.\/paths'\)/, 'lib/zcode-config.js 应从 lib/paths.js 取默认路径');
-  assert.doesNotMatch(src, /'\.zcode',\s*'v2'/, 'lib/zcode-config.js 不该再自己拼一份 zcode 路径');
+test('已移除的 ZCode / Harness 不再有路径入口:不导出 zcodeConfig,安装计划也不列它', () => {
+  // ZCode 接入整体删除。路径模块如果还留着一份 .zcode 默认值,安装/备份就会继续
+  // 把一个不再受管的客户端当成受管对象去读写 —— 那正是本次要断掉的东西。
+  assert.equal(paths.zcodeConfig, undefined, 'lib/paths.js 不该再导出 zcodeConfig');
+  assert.equal('zcodeConfig' in paths.installPlan({ root: ROOT, home: HOME }), false,
+    '安装计划里不该再有 zcodeConfig 这一项');
+  const src = fs.readFileSync(path.join(ROOT, 'lib', 'paths.js'), 'utf8');
+  assert.doesNotMatch(src, /'\.zcode'/, 'lib/paths.js 不该再拼 zcode 路径');
+  // 三个纯客户端集成模块整体删除。它们各自带着自己那份客户端配置读写逻辑,
+  // 留着就等于"删了入口但文件还在",下一次有人 require 回来一切照旧。
+  for (const file of ['zcode-config.js', 'harness-config.js', 'harness-pool.js']) {
+    assert.equal(fs.existsSync(path.join(ROOT, 'lib', file)), false,
+      `lib/${file} 应已删除(被复用的公共校验辅助在 lib/validation.js)`);
+  }
+  // 反过来:公共校验辅助必须真的在,别把 invalid/isObject 一起删掉。
+  const validation = require('../lib/validation');
+  assert.equal(typeof validation.invalid, 'function', 'lib/validation.js 要导出 invalid');
+  assert.equal(typeof validation.isObject, 'function', 'lib/validation.js 要导出 isObject');
+  assert.equal(validation.invalid('x').statusCode, 400, 'invalid 的错误要带 statusCode 400');
+  assert.equal(validation.isObject([]), false, 'isObject 不认数组');
 });
 
 test('LaunchAgent 目录落在 HOME 下(脚本只读它,不往里写)', () => {

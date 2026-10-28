@@ -48,7 +48,7 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8788/
 
 ---
 
-## Azure 资源绑定错误 / Harness 模型池错误
+## Azure 资源绑定错误
 
 看到 `The requested item was created under a different Azure OpenAI resource` 时,不是本机
 session ID 坏了。含完整原生 Responses input、无服务器历史引用且尚未提交输出的请求,
@@ -70,16 +70,10 @@ AgentRouter 明确端点上的特定 HTTP 400 `Upstream rejected the request as 
 - 客户端只给服务器引用或工具配对不完整:保留原始上游错误,不猜测删除历史。需由客户端重发
   完整历史或新开会话,不要手工删 `call_id`、工具结果或加密推理来凑通过。
 - 重复的已知错误只重发同一投影;预算用完、已发送正文/推理/工具或未知签名错误时,
-  不会无限恢复或改用池内其他模型。已输出内容后的中断由客户端自身的 sampling 循环处理,
+  不会无限恢复。已输出内容后的中断由客户端自身的 sampling 循环处理,
   网关不会重放整轮。
-- Harness 主模型保存后能热改路由,但白名单变动需再次预览/确认接入并新开会话。
-- `harness_model_not_found`:别名不在池里,不会回落默认模型。
-- `harness_route_unavailable`:配置里的渠道/Key/准确模型已失效,在 Harness 页面重新选择。
-- `harness_protocol_unsupported`:所选渠道不兼容该入口,接入使用通用 Messages 入口。
-- 接入报 409:预览已过期、文件外部变化或 YAML 无法安全局部合并;重新预览或在 Harness
-  原生配置中修正冲突,不通过整对象 `!!js` 覆盖来绕过。
 
-详见[Harness 接入与恢复边界](harness.md)。其他没有细节的上游错误并不属于本条修复。
+完整边界见[参考手册 §5](reference.md#5-上游健康超时重试)。其他没有细节的上游错误并不属于本条修复。
 
 ## 1. 请求 503:先看错误码
 
@@ -87,10 +81,11 @@ AgentRouter 明确端点上的特定 HTTP 400 `Upstream rejected the request as 
 
 | 错误码 | 常见原因 | 怎么查 |
 | --- | --- | --- |
-| `no_route_error` | 没有匹配的路由,或规则指向已删除渠道(**僵尸引用**) | `./mixctl explain <claude\|codex> <模型>`;看返回值里的 `ghosts` |
+| `no_route_error` | 模型名没有任何渠道精确登记;或命中的槽位/渠道已删除(503) | `./mixctl explain <claude\|codex> <模型>`;错误文案会指出是缺登记还是失效引用 |
+| `model_ambiguous_error` | 多个启用且有效的渠道登记了同一模型名,且这个对话没有钉定在其中一条上(409) | 错误文案列出候选渠道;改用槽位别名、停用/删除多余登记,或把本对话钉定到其中一个 |
 | `provider_disabled_error` | 命中的渠道被停用(`enabled: false`) | `./mixctl ls`,渠道名后带 `(停用)` |
-| `provider_key_unavailable_error` | 覆盖 / 压缩规则点名的 Key 被删、停用、重复或为空 | 控制台「渠道与 Key」页看失效 Key;`./mixctl sessions config <完整会话键>` |
-| `wire_api_mismatch_error` | 路由命中的全是 `responses` 渠道,而客户端说的是 chat(或反过来) | `./mixctl ls` 看每个渠道的 `(responses)` / `(chat)` |
+| `provider_key_unavailable_error` | 覆盖 / 压缩设置点名的 Key 被删、停用、重复或为空 | 控制台「渠道与 Key」页看失效 Key;`./mixctl sessions config <完整会话键>` |
+| `wire_api_mismatch_error` | 命中的全是 `responses` 渠道,而客户端说的是 chat(或反过来) | `./mixctl ls` 看每个渠道的 `(responses)` / `(chat)` |
 
 路由准备阶段的拒绝会在返回错误前同步写入脱敏请求日志:`attempts: 0`、`provider`、
 `model_out`、`rule` 与 `slot` 为空、tokens 为 0,`err_class` 记录对应错误码,不臆测路由计划。
@@ -108,29 +103,24 @@ Codex 的 `no_route_error` 日志 `err` 以固定诊断开头:
 排查命令(只读、零副作用):
 
 ```bash
-./mixctl ls                                  # 渠道 + 规则 + 当前生效 + 配置漂移标记
-./mixctl explain claude claude-opus-5        # 这条请求会走哪条规则、落到哪个渠道、为什么
+./mixctl ls                                  # 渠道 + 槽位 + 当前生效 + 配置漂移标记
+./mixctl explain claude claude-opus-5        # 这条请求会落到哪个渠道、为什么(槽位/精确登记)
 ./mixctl explain claude claude-opus-5 --json # 结构化输出,失败时也输出可解析对象且 exit 1
 ```
 
-### 僵尸引用(路由指着已删除渠道,命中即 503)
+### 没有精确目标:缺登记 / 歧义 / 失效引用
 
-这是最容易被误判成"规则没生效"的一类。`no_route_error` 的文案会**直说**哪条规则指向了哪个已删
-渠道(见 `lib/proxy/prepare.js` 的 `badRoute`),不会笼统报"没有匹配的路由"。服务启动时
-`reportGhostRoutes()` 也会把全部僵尸引用打到服务日志:
+这一版没有通用规则,精确登记阶段不命中只有这几种来源,`explain` 的结论与错误文案都会直说:
 
-```
-[mixrouter] 路由里有 N 处僵尸引用(渠道已删除,规则还指着它)——命中这些规则的请求会直接 503:
-  - 规则 r3(match "haiku")的provider指向已不存在的渠道 p2
-  - 兜底路由的pool指向已不存在的渠道 p9
-  请在控制台 http://127.0.0.1:8788 的「路由」页重新选择目标渠道。
-```
+- **模型名没有任何渠道登记** → `no_route_error`。在渠道的模型列表里补上准确模型名,或给它绑一个槽位别名;
+- **多个启用且有效的渠道登记了同一模型名** → `model_ambiguous_error`(HTTP 409),不会替你挑一个。
+  若本对话已**手动钉定**在其中一个候选渠道上,则按钉定落点、不报歧义;否则改用槽位别名指定唯一目标,
+  或停用/删除多余的登记;
+- **槽位或渠道已删除** → `no_route_error`,槽位规则、会话槽位覆盖或槽位后备池指向了不存在的渠道,
+  错误文案会指出是哪个槽位/哪条引用。到控制台重新选择槽位目标。
 
-怎么来的:删渠道时虽然会顺手解开引用,但 `routes.json` 可能是手改的、或从旧备份恢复的。
-`PUT /api/routes` 现在会在写入时拒绝指向不存在渠道的规则(400);**读盘时**不拦,只告警——
-为的是让你能看见并修,而不是拒绝启动。
-
-处置:控制台「路由」页重新选择目标渠道,或删掉那条规则。
+旧 `routes.json` 里的 `rules` / `default` 即使还写着已删除的渠道,也**不再产生任何 503**:
+这些字段已不参与请求。启动时也不会因为它们而告警或删文件。
 
 ### 渠道停用 / 被删
 
@@ -138,7 +128,7 @@ Codex 的 `no_route_error` 日志 `err` 以固定诊断开头:
 ./mixctl ls        # [停用] 标记;渠道列表里没有它 = 已被删除
 ```
 
-停用只在控制台勾回 `enabled` 即可。删除会让引用它的规则/槽位/会话覆盖变成失效引用——上一条。
+停用只在控制台勾回 `enabled` 即可。删除会让引用它的槽位、槽位后备池与会话覆盖变成失效引用——上一条。
 
 ---
 
@@ -229,7 +219,7 @@ curl -sS -X PUT http://127.0.0.1:8788/api/providers/<渠道ID> \
   没了,检查是不是把清单整体替换成了一行新的。
 - **会话覆盖 / 压缩固定 Key 点名的那把不可用**:这是**有意的硬失败**,不会降级到渠道当前 Key。
   用 `./mixctl sessions config <完整会话键>` 看覆盖,`set-key … --inherit` 摘掉,或 `reset … --yes`
-  清空重配。压缩规则的固定 Key 在控制台「路由 → 压缩模型」里重选。
+  清空重配。压缩专用的固定 Key 在控制台左侧「压缩设置」里重选。
 
 **Key 明文不在日志里**:日志只有 `key_id` / `key_source`;控制台只拿得到掩码(`key_masked`)。
 命令行 `sessions` 子命令也**不接受 Key 明文**(argv 会进 shell 历史与 `ps` 输出)。
@@ -259,11 +249,11 @@ curl -sS -X PUT http://127.0.0.1:8788/api/providers/<渠道ID> \
 - **客户端没带会话头**(自定义客户端、中间有别的代理剥了头)→ 退到内容指纹 `fp:` / `cxf:`。
   此时"同内容即同对话";内容变了就是新对话,看起来就是"粘性丢了"。日志里的 `session_kind`
   会告诉你走的是哪一档。
-- **手动改绑压过策略**:被钉定的对话不会按策略轮转。`./mixctl sessions` 里带 `★钉定` 的就是它。
-- **会话过期**:空闲 `MIXR_SESSION_TTL_MIN`(默认 720 分钟 = 12 小时)后自动过期,下一条请求重新
-  按策略分配。粘性异常先看是不是超过了 12 小时。
-- **内容分流命中的请求不参与会话粘性**:它只代表"这一条请求"走那条路,不代表对话换了渠道。
-  所以看到某一条请求落点不同,不一定是 bug——查那条请求的 `rule` 与日志里的 `sticky` 字段。
+- **手动改绑压过自动落点**:被钉定的对话不会被固定顺序重新分配。`./mixctl sessions` 里带 `★钉定` 的就是它。
+- **会话过期**:空闲 `MIXR_SESSION_TTL_MIN`(默认 720 分钟 = 12 小时)后自动过期,下一条请求按固定选择顺序
+  重新解析。粘性异常先看是不是超过了 12 小时。
+- **已知压缩请求不参与会话粘性**:它只代表"这一条请求"走压缩目标,不代表对话换了渠道。
+  所以看到某一条请求落点不同,不一定是 bug——查那条请求的日志里的 `sticky` 字段。
 - **槽位请求不改对话绑定**:槽位(如 `mixr-haiku` 的标题生成)按槽位表直落,**不会**把对话重新绑到
   槽位渠道。这是有意的:否则下一条主模型请求会跟着跑偏。反过来,被手动改绑过的对话也不会把槽位
   请求拽到被钉定的渠道上。
@@ -277,8 +267,11 @@ curl -sS -X PUT http://127.0.0.1:8788/api/providers/<渠道ID> \
 
 **症状**:压缩请求走了主模型渠道,或压缩窗口"保存成功"但没感觉。
 
-压缩识别是**内容分流**,判据很严:**只读最后一条 user 消息的直接文本块**,必须以发行版 CLI 的
+压缩识别的判据很严:**只读最后一条 user 消息的直接文本块**,必须以发行版 CLI 的
 压缩固定前导开头,并包含摘要模板。system、历史消息、工具结果、仅仅引用特征短语的编程任务都不算。
+这一判据是内置的,不能通过编辑规则放宽;要改压缩落点,去左侧「压缩设置」选渠道、模型与 Key。
+以前写在 `routes.json` 里的自定义内容规则不再执行,所以"以前靠一条自己的规则截到压缩请求"
+这种做法已经不可用。
 
 ```bash
 ./mixctl explain --input preview.json          # 带 --input 时不能再给位置参数(模型名)
@@ -334,16 +327,15 @@ echo '{"app":"claude","model":"m","context":{"compactTexts":["…"]}}' | ./mixct
   路由模式下不用管。
 - **客户端 base_url 填错**:Claude Code 填 `http://127.0.0.1:8787`(**不带 `/v1`**),
   Codex 填 `http://127.0.0.1:8787/v1`(**带 `/v1`**)。
-- **模型名不存在**:路由规则按模型名**子串**匹配,都不命中才走兜底路由;兜底路由没配目标就 503。
-  `./mixctl explain` 能直接告诉你是没命中规则还是目标为空。
-- **ZCode 新模型没出现**:重启客户端并新建会话;控制台显示的是「已注册的接入配置」,
-  **不是**正在运行的 ZCode 会话所选模型。
+- **模型名不存在 / 报 `no_route_error`**:这一版按**精确模型名**匹配,没有子串匹配也没有兜底路由。
+  先确认某个启用且有效的渠道登记了这个模型名,并且**只有一个**渠道登记它。
+  `./mixctl explain` 能直接告诉你是缺登记、歧义,还是槽位/渠道已失效。
 - **`wire_api: responses` 的渠道不能直连**:它只挂 Codex 型通道,直连 `/v1/messages` 必然失败。
   控制台里那颗「切换」按钮是禁用的,请改用路由模式。
 
 客户端配置的读写路径:`MIXR_CLAUDE_SETTINGS`(`~/.claude/settings.json`)、
-`MIXR_CODEX_CONFIG`(`~/.codex/config.toml`)、`MIXR_ZCODE_CONFIG`(`~/.zcode/v2/config.json`)。
-每次改写前都会自动备份。
+`MIXR_CODEX_CONFIG`(`~/.codex/config.toml`)。
+每次改写前都会自动备份。ZCode 接入已移除,`~/.zcode/v2/config.json` 不再由本项目读写。
 
 ### Codex 保存槽位后仍显示旧模型
 
@@ -352,12 +344,13 @@ echo '{"app":"claude","model":"m","context":{"compactTexts":["…"]}}' | ./mixct
 核对转发,不要把显示名未刷新当成热切换失败。
 已登记旧默认 ID 的兼容映射支持现有 CLI 标识及 `codex_desktop/`,但仍须精确登记 ID、
 本地路由凭据、可靠 `cx:` 会话和受管接入配置;未知 `codex_*` 不自动放行。
-若实际得到 `no_route_error`,按 §1 的身份诊断与路由检查处理,不要加全模型兜底。
+若实际得到 `no_route_error`,按 §1 的身份诊断与精确登记检查处理;这一版没有全模型兜底可加。
 
 ### Codex 后台记忆任务报无路由
 
 启用 Codex 原生记忆功能后,提取与整理任务可能使用与主对话不同的内置默认模型。
-主对话正常不代表这些默认模型也有路由。先从日志确认实际失败模型,不要加全模型兜底。
+主对话正常不代表这些默认模型也被登记或绑了槽位。先从日志确认实际失败模型,
+把那个模型名登记到渠道,或为它绑定槽位。
 若已绑定 Codex 的 `main` 槽位,且当前 Codex 支持这两个配置键,可在现有 `[memories]` 表中
 仅补缺失的模型配置,让后台任务沿用该槽位:
 
@@ -420,7 +413,7 @@ lsof -nP -iTCP:8788 -sTCP:LISTEN
 | `attempts` / `failover` | 实际网络尝试次数 / 是否发生过失败转移 |
 | `err` / `err_class` | 终态错误文本 / 错误分型(`authentication`、`rate_limit`、`upstream_server`、`timeout`、`cancelled`…) |
 | `slot` | 命中的槽位;空槽记 `none`,缺字段的旧日志记 `unknown` |
-| `sticky` / `strategy` / `rule` | 是否走了会话粘性 / 用的策略 / 命中的规则 id |
+| `sticky` / `strategy` / `rule` | 是否走了会话粘性 / 用的策略 / 命中的标识。通用规则删除后,`rule` 只在槽位与压缩这类内置目标上有值;旧日志里的历史值照读 |
 | `key_id` / `key_source` | 用的是哪把 Key(**非明文**的来源标记);多 Key 自动备用换号记为 `key_fallback` |
 | `request_id` | 本进程内尝试过程的 id,对应诊断页「实时尝试过程」与 `GET /api/attempts` |
 | `effort` | **真的发上去的那一档**思考强度(原生 Responses 读取出站 reasoning.effort,转换线读取转换结果),不是客户端想要的那档 |
@@ -489,8 +482,8 @@ curl -s 'http://127.0.0.1:8788/api/stats?history=1' | python3 -m json.tool
 ```
 
 `backups` 与 `restore` 都是**本地命令**,只读本地备份,不会创建、改写或删除文件(除非 `restore --yes`)。
-清点当前覆盖 `providers.json`、`~/.claude/settings.json`、`~/.codex/config.toml` **三处**;
-ZCode 的备份暂未纳入。备份保留上限 5 份,轮换在**删除发生之前**预警。
+清点当前覆盖 `providers.json`、`~/.claude/settings.json`、`~/.codex/config.toml` **三处**。
+备份保留上限 5 份,轮换在**删除发生之前**预警。
 
 常见问题:
 
@@ -514,7 +507,7 @@ ZCode 的备份暂未纳入。备份保留上限 5 份,轮换在**删除发生�
 **先看检查结果,再看写入**:
 
 - `config.status = invalid`:**配置文件存在但解析不了**(JSON 语法、`env` 不是对象、
-  TOML 超出支持子集、ZCode 结构不对)。这不是"尚未配置";先修文件或从备份还原。
+  TOML 超出支持子集)。这不是"尚未配置";先修文件或从备份还原。
   向导不会覆盖它。
 - `config.status = error`:没有读权限(`EACCES`,预览/写入回 403)或路径不是普通文件
   (`ENOTFILE`,回 500)。两种情况都拒绝写入。检查文件属主、权限与路径,不要为了通过而改
@@ -530,7 +523,6 @@ ZCode 的备份暂未纳入。备份保留上限 5 份,轮换在**删除发生�
 | `当前选择了 Codex profile…` | `config.toml` 里有 `profile` | 先人工确认 profile 配置,向导不做猜测 |
 | `配置在预览后被修改,接入已中止`(409) | 预览之后文件被别的程序或你改过 | 重新预览,不要复用旧令牌 |
 | `接入前需要显式确认` / `缺少预览令牌` | 没有 `confirm: true` 或令牌已用/过期 | 重新预览;令牌 5 分钟一次性 |
-| `ZCode provider ID mixrouter-managed 已被非本集成占用` | 这个 id 里有别人写的内容 | 确认后手工改名或清理,向导不会覆盖 |
 | `Codex main 槽位须绑定已启用、有模型名和 API Key 的渠道` | 这次写入要带槽位,但 main / reviewer 不完整(未绑定、停用、缺模型或缺 Key) | 先补槽位,或让它只写路由地址与令牌 |
 
 **写入成功但客户端还连旧地址**:先重启客户端(或新建会话),再用

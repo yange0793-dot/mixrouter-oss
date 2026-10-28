@@ -169,7 +169,9 @@ before(async () => {
   // 渠道库从空开始,避免临时目录里可能残留的旧文件把断言搅乱(正常情况下 mkdtemp 就是空的)。
   fs.rmSync(PROVIDERS_FILE, { force: true });
   mod._state.store = { claude: [], codex: [] };
-  mod._state.routes = { rules: [], default: { provider: '', model: '' } };
+  // 只保留空规则表:通用 when/match/default 路由已删除,这里不发任何代理请求,
+  // 落点一律由渠道对象本身决定(模型发现 / 探活 / 逐模型测活)。
+  mod._state.routes = { rules: [] };
   mod._state.slotMap = { claude: {}, codex: {} };
   mod._state.sessions.clear();
   mod._state.cooldowns = {};

@@ -50,7 +50,7 @@ test('mixctl status 比较运行源码指纹,旧进程和未知版本不得报�
     '状态检查只读,不自动重启或写配置');
 });
 
-test('mixctl route zcode sends protocol and describes registration rather than active-session switching', async t => {
+test('mixctl route 只接受 claude/codex:zcode 与多余协议参数都在本地拒绝,不发请求', async t => {
   const requests = [];
   const server = http.createServer((req, res) => {
     let body = '';
@@ -64,20 +64,41 @@ test('mixctl route zcode sends protocol and describes registration rather than a
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => server.close(resolve)));
   const port = server.address().port;
-  for (const wire of ['anthropic', 'responses', 'chat']) {
-    const result = await run(['route', 'zcode', wire], port);
-    assert.equal(result.code, 0);
-    assert.match(result.output, /已注册路由接入:ZCode/);
-    assert.match(result.output, /未修改当前会话或默认模型/);
-    assert.deepEqual(requests.pop(), { path: '/api/router/zcode', body: { wire_api: wire } });
-  }
-  await run(['route', 'zcode'], port);
-  assert.equal(requests.pop().body.wire_api, 'anthropic');
+
+  // ZCode 接入已移除:app 不在白名单里时只打用法,绝不把请求发到服务端。
+  const zcode = await run(['route', 'zcode'], port);
+  assert.match(zcode.output, /用法: mixctl route <claude\|codex>/);
+  assert.equal(requests.length, 0, '被拒的 app 不得发请求');
+
   await run(['route', 'claude'], port);
   assert.deepEqual(requests.pop(), { path: '/api/router/claude', body: {} });
-  const invalid = await run(['route', 'zcode', 'invalid'], port);
-  assert.match(invalid.output, /协议必须/);
-  assert.equal(requests.length, 0);
+  await run(['route', 'claude', '--slots'], port);
+  assert.deepEqual(requests.pop(), { path: '/api/router/claude', body: { slots: true } });
+  await run(['route', 'codex'], port);
+  assert.deepEqual(requests.pop(), { path: '/api/router/codex', body: {} });
+  // --slots 只对 claude 有意义:codex 带上它时在本地拒绝,不写客户端。
+  const before = requests.length;
+  const codexSlots = await run(['route', 'codex', '--slots'], port);
+  assert.match(codexSlots.output, /--slots 只对 claude 有意义/);
+  assert.equal(requests.length, before, '--slots 用在 codex 上不得发请求');
+});
+
+test('mixctl route 成功输出不再提 ZCode「模型选择器」,只讲客户端重启生效', async t => {
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ ok: true, live: { base_url: 'http://127.0.0.1:8787/v1' } }));
+    });
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const port = server.address().port;
+  const r = await run(['route', 'claude'], port);
+  assert.equal(r.code, 0);
+  assert.match(r.output, /已切到路由模式:Claude Code/);
+  assert.doesNotMatch(r.output, /ZCode|模型选择器/);
 });
 
 test('mixctl split --apply:服务端带回的备份轮换预警要打在终端上', async t => {
@@ -143,7 +164,7 @@ test('mixctl explain 把模型名 POST 给 /api/routing/preview 并渲染预测�
       const parsed = JSON.parse(body || '{}');
       requests.push({ path: req.url, body: parsed });
       res.setHeader('Content-Type', 'application/json');
-      // 按请求的 model 返回不同预测:命中槽位 vs 落回兜底
+      // 按请求的 model 返回不同预测:命中槽位 vs 明确没有可走的落点
       if (parsed.model === 'mixr-haiku') {
         res.end(JSON.stringify({ ok: true, input: { app: 'claude', model: 'mixr-haiku', kind: 'messages' },
           matched: { via: 'slot', ruleId: null, slot: 'haiku', strategy: 'round_robin' },
@@ -152,10 +173,13 @@ test('mixctl explain 把模型名 POST 给 /api/routing/preview 并渲染预测�
           effective: [{ providerId: 'pa', providerName: '大渠道', model: 'deepseek-v4-flash', enabled: true, cooldown: false }],
           warnings: [], ghosts: [] }));
       } else {
-        res.end(JSON.stringify({ ok: true, input: { app: 'claude', model: 'mixr-opus', kind: 'messages' },
-          matched: { via: 'default', ruleId: null, slot: null, strategy: 'round_robin' },
+        // 瘦身后没有兜底路由:没绑定的槽位别名一律 no_route_error,
+        // 形状照 /api/routing/preview 的真实返回(ok:false + error + 判定事件)。
+        res.end(JSON.stringify({ ok: false, input: { app: 'claude', model: 'mixr-opus', kind: 'messages' },
+          matched: { via: 'model', ruleId: null, slot: null, strategy: 'round_robin' },
           selection: { strategy: 'round_robin', deterministic: true, predicted: null }, effective: [],
-          warnings: [{ code: 'slot_fell_through', message: '模型名 "mixr-opus" 像槽位别名,但槽位表里没有它' }], ghosts: [] }));
+          warnings: [{ code: 'slot_fell_through', message: '模型名 "mixr-opus" 像槽位别名,但槽位表里没有它' }],
+          error: { code: 'no_route_error', httpStatus: 503, message: '槽位别名 "mixr-opus" 没有可用的目标' }, ghosts: [] }));
       }
     });
   });
@@ -170,8 +194,10 @@ test('mixctl explain 把模型名 POST 给 /api/routing/preview 并渲染预测�
   assert.match(hit.output, /大渠道 \(pa\) @ deepseek-v4-flash/);
 
   const miss = await run(['explain', 'mixr-opus'], port);
-  assert.equal(miss.code, 0);
-  assert.match(miss.output, /命中: default \(兜底\)/);
+  assert.equal(miss.code, 1, '预览报明确失败时 mixctl 以非零退出');
+  assert.match(miss.output, /预览失败 \[no_route_error\]/);
+  assert.match(miss.output, /命中: model/);
+  assert.doesNotMatch(miss.output, /兜底/, '兜底路由已移除,输出里不该再出现这个词');
   assert.match(miss.output, /slot_fell_through/);
 
   // 缺模型名 → 用法提示 + 非零退出,且不打服务端

@@ -48,9 +48,9 @@ const logFor = async () => (await logs())[0];
 
 function configure(wire = 'anthropic', app = 'claude') {
   const provider = { id: 'p', name: 'p', enabled: true, api_key: 'sk-fixture', wire_api: wire,
-    base_url: `http://127.0.0.1:${upstream.address().port}` };
+    models: ['test-model'], model: 'test-model', base_url: `http://127.0.0.1:${upstream.address().port}` };
   mod._state.store = { claude: app === 'claude' ? [provider] : [], codex: app === 'codex' ? [provider] : [] };
-  mod._state.routes = { rules: [], default: mod.normalizeRule({ pool: ['p'], strategy: 'priority' }) };
+  mod._state.routes = { rules: [], default: {} };
   return provider;
 }
 

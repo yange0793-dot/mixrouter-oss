@@ -26,11 +26,9 @@ process.env.MIXR_COOLDOWN_SEC = '60';
 process.env.MIXR_MAX_ATTEMPTS = '2';
 
 const mod = require('../mixrouter.js');
-const { _state, normalizeRule } = mod;
-const POOL = ['pa', 'pb', 'pc'];
-// 三个渠道一个池,轮询策略:哪一条落到哪个渠道不写死(游标是跨请求状态),
-// 断言一律以"这一条实际落在哪"为基准,不去猜顺序。
-const routeFixture = () => { _state.routes = { rules: [normalizeRule({ id: 'flt', match: 'opus', pool: POOL, strategy: 'round_robin', enabled: true })], default: normalizeRule({}) }; };
+const { _state } = mod;
+const PROVIDERS = ['pa', 'pb', 'pc'];
+const routeFixture = () => { _state.routes = { rules: [], default: {} }; };
 
 // ---- 可控上游:请求到了先挂住,等测试放行才回 200 ----
 const pending = [];
@@ -112,7 +110,7 @@ test('setup:本地可控上游 + 代理/控制台端口', async () => {
   upstream.unref();
   const base = `http://127.0.0.1:${upstream.address().port}`;
   const prov = id => ({ id, name: '渠道' + id, base_url: base,
-    api_key: KEY_OF[id], enabled: true, models: ['claude-opus-5'], slots: {} });
+    api_key: KEY_OF[id], enabled: true, models: id === 'pa' ? ['claude-opus-5'] : [], slots: {} });
   const provs = ['pa', 'pb', 'pc'].map(prov);
   _state.store = { claude: provs, codex: [] };
   fs.writeFileSync(path.join(TMP, 'providers.json'), JSON.stringify({ version: 2, current: { claude: null, codex: null }, claude: provs, codex: [] }));
@@ -163,7 +161,7 @@ test('在途请求跨过手动重绑:先钉好的渠道不被旧响应覆盖回�
   const flight = await startProxy(sid);
   const landed = flight.provider;
   // 钉到一个**不是**这条在途请求落点的渠道
-  const target = POOL.find(id => id !== landed);
+  const target = PROVIDERS.find(id => id !== landed);
 
   const pinned = await request(uiPort, 'POST', `/api/sessions/${encodeURIComponent(key)}/pin`, { body: { provider: target } });
   assert.equal(pinned.status, 200, pinned.text);
@@ -213,8 +211,7 @@ test('在途请求跨过覆盖保存:新配置不被旧响应改回,存量覆盖
   assert.equal(afterSave.providerId, landed, '这条请求本来就落在 landed,绑定照常记它');
   assert.equal(afterSave.reqs, 1, '统计照记');
   assert.equal(afterSave.actual.providerId, landed, '实际落点记的是真实那一次');
-  // 下一条请求:路由规则仍会轮到别的渠道,但**固定 Key 覆盖**只对 pb 生效——
-  // 所以这里只核"覆盖还在、能读出来",不假设下一条一定落 pb
+  // 固定 Key 覆盖只对 pb 生效;保存它不改变精确模型落点。
   const row = await rowOf(sid);
   assert.deepEqual(row.required.keys, 1, '三层里的 required 仍是一份可读的覆盖');
 });
@@ -231,10 +228,12 @@ test('钉定渠道不可用时,在途响应不改写钉定,actual 如实记新�
   assert.equal(pin.status, 200, pin.text);
   assert.deepEqual([recordOf(sid).providerId, recordOf(sid).pinned], [X, true], '已钉定 X');
 
-  // 钉定渠道不可用(实测等价于一次 5xx 冷却/停用):请求回退到池里的别人,这条在途响应提交 binding
+  // 钉定渠道停用,模型另有唯一有效登记目标;实际结果不能覆盖显式钉定。
   const px = _state.store.claude.find(p => p.id === X);
-  const wasEnabled = px.enabled;
+  const alternate = _state.store.claude.find(p => p.id === 'pc');
+  const wasEnabled = px.enabled, oldModels = alternate.models;
   px.enabled = false;
+  alternate.models = ['claude-opus-5'];
   try {
     const flight = await startProxy(sid);
     assert.notEqual(flight.provider, X, '钉定渠道不可用时落到了别的渠道(前提成立)');
@@ -254,6 +253,7 @@ test('钉定渠道不可用时,在途响应不改写钉定,actual 如实记新�
     assert.notEqual(row.bound.provider, row.actual.provider, '两层分开,不混成一句"已绑定"');
   } finally {
     px.enabled = wasEnabled;
+    alternate.models = oldModels;
   }
 
   // 钉定渠道恢复后:下一条仍回 X(钉定没被废掉)——这是"永久废掉"那条后果的反证

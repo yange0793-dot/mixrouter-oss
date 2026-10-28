@@ -31,8 +31,7 @@
   rGlobal.__mixrReadinessUi = true;
 
   // 客户端协议不是随便挑的:Claude 只说 Anthropic Messages,Codex 只说 OpenAI Responses,
-  // 上游用哪种由渠道的 wire_api 决定(chat/responses 渠道由 mixrouter 现场转换)。只有 ZCode
-  // 三种都能说,选 Anthropic 复用 Claude 组渠道、选 OpenAI 复用 Codex 组渠道。
+  // 上游用哪种由渠道的 wire_api 决定(chat/responses 渠道由 mixrouter 现场转换)。
   const R_APPS = {
     claude: {
       label: 'Claude Code', cfg: '~/.claude/settings.json', clientWire: 'messages',
@@ -42,14 +41,7 @@
       label: 'Codex', cfg: '~/.codex/config.toml', clientWire: 'responses',
       note: 'Codex 固定发 OpenAI Responses；上游协议由渠道的 wire_api 决定（chat 渠道由 mixrouter 现场转换）。',
     },
-    zcode: {
-      label: 'ZCode', cfg: '~/.zcode/v2/config.json', wires: ['anthropic', 'responses', 'chat'],
-      note: 'ZCode 可选三种客户端协议；选 Anthropic 复用 Claude 组渠道，选 OpenAI 复用 Codex 组渠道。',
-    },
   };
-  const R_WIRE_LABEL = { anthropic: 'Anthropic Messages', responses: 'OpenAI Responses', chat: 'OpenAI Chat Completions' };
-  // ZCode 的 wire 选择 → 客户端实际发出的协议名(与服务端兼容探针的枚举一致)。
-  const R_ZCODE_CLIENT_WIRE = { anthropic: 'messages', responses: 'responses', chat: 'chat' };
   const R_CLIENT_WIRE_LABEL = { messages: 'Anthropic Messages', responses: 'OpenAI Responses', chat: 'OpenAI Chat Completions' };
   const R_OFFLINE_INSPECT = '控制台离线';
   // 兼容测试在后端是最多 3 次上游调用(每次默认 30 秒,总时限约 90 秒)。前端若按 65 秒断开,
@@ -90,7 +82,7 @@
 
   const readinessState = {
     mounted: false, open: false,
-    app: 'claude', zcodeWire: 'anthropic', providerId: '', model: '', keyId: '',
+    app: 'claude', providerId: '', model: '', keyId: '',
     inspect: null, inspectError: '', busy: '',
     importOpen: false, importText: '', importToken: '', importPreview: null, importError: '',
     preview: null, previewError: '', applyResult: null, applyWarnings: [], applyError: '',
@@ -106,12 +98,10 @@
 
   function readinessApps() { return Object.keys(R_APPS); }
   function readinessGroup() {
-    if (readinessState.app === 'zcode') return readinessState.zcodeWire === 'anthropic' ? 'claude' : 'codex';
     return readinessState.app === 'codex' ? 'codex' : 'claude';
   }
   // 兼容测试要的是"客户端会发出什么协议",不是"上游是什么协议"。
   function readinessClientWire() {
-    if (readinessState.app === 'zcode') return R_ZCODE_CLIENT_WIRE[readinessState.zcodeWire] || 'messages';
     return R_APPS[readinessState.app].clientWire;
   }
   function readinessProviders() {
@@ -120,11 +110,6 @@
   }
   function readinessSelectedProvider() {
     return readinessProviders().find(p => p.id === readinessState.providerId) || null;
-  }
-  // ZCode 的默认协议跟随渠道自己的 wire_api:选 Claude 组渠道默认 Anthropic,Codex 组渠道默认 Responses。
-  function readinessDefaultZcodeWire(provider) {
-    const allowed = R_APPS.zcode.wires;
-    return provider && allowed.includes(provider.wire_api) ? provider.wire_api : 'anthropic';
   }
   function readinessDefaultModel(provider) {
     if (!provider) return '';
@@ -178,12 +163,6 @@
   // 具体补齐与有效性以服务端预览为准,不拿向导里选择的渠道冒充实际计划。
   function readinessWriteMode() {
     const app = readinessState.app;
-    if (app === 'zcode') {
-      return {
-        kind: 'zcode', slots: false, model: readinessState.model,
-        note: '按所选客户端协议写入 ZCode 自有 provider（模型与 base URL 由服务端按渠道库生成）。写入不会切换你正在用的会话；之后要在 ZCode 的模型选择器里选 Mixrouter。',
-      };
-    }
     const missing = readinessMissingSlots(app);
     const main = readinessSlotState(app, 'main').slot;
     if (!missing.length) {
@@ -321,16 +300,14 @@
     const s = rState();
     const r = s?.router || {};
     const app = readinessState.app;
-    const base = app === 'zcode' ? (r.zcode_base || r.url || '') : app === 'claude' ? (r.claude_base || r.url || '') : (r.codex_base || r.url || '');
+    const base = app === 'claude' ? (r.claude_base || r.url || '') : (r.codex_base || r.url || '');
     // 客户端侧协议是固定的,上游协议由渠道决定 —— 参数里只写客户端真正要填的那几项。
     const clientWire = R_CLIENT_WIRE_LABEL[readinessClientWire()] || readinessClientWire();
     const upstream = readinessSelectedProvider()?.wire_api || '';
     const model = readinessState.model || 'mixr-main';
     const lines = app === 'claude'
       ? [`ANTHROPIC_BASE_URL=${base || '（路由地址未提供）'}`, 'ANTHROPIC_AUTH_TOKEN=<本机路由令牌，界面不显示明文>', `ANTHROPIC_MODEL=${model}`]
-      : app === 'codex'
-        ? [`base_url = ${base || '（路由地址未提供）'}`, `wire_api = ${upstream || '由渠道决定'}`, `model = ${model}`]
-        : [`base_url: ${base || '（路由地址未提供）'}`, `客户端协议: ${clientWire}`, `模型: ${model}（ZCode 没有槽位表）`];
+        : [`base_url = ${base || '（路由地址未提供）'}`, `wire_api = ${upstream || '由渠道决定'}`, `model = ${model}`];
     return `客户端：${R_APPS[app].label}（未检测到可执行文件）\n配置文件：${R_APPS[app].cfg}\n${lines.join('\n')}`;
   }
   function readinessFallbackHtml() {
@@ -488,9 +465,6 @@
 
   function readinessSlotSetupHtml(p) {
     const app = readinessState.app;
-    if (app === 'zcode') {
-      return '<p class="hint">ZCode 没有槽位表；接入时按所选协议写入 ZCode 自己的 provider 字段，不改 Claude / Codex 槽位。</p>';
-    }
     const names = R_SLOT_NAMES[app] || ['main'];
     const can = !!p && readinessCanWrite();
     const rows = names.map(name => {
@@ -511,7 +485,7 @@
          <button class="small primary" type="button" id="readiness-set-main-both" onclick="readinessSetSlots('claude')" ${can ? '' : 'disabled'}>把全部槽位都设为该渠道</button>`;
     const explain = app === 'codex'
       ? '可以分别设置落点；接入路由时缺失的 main / reviewer 会从第一个已启用、有默认模型和 API Key 的渠道补齐。已有失效槽位不会自动替换；撤销客户端字段后补齐槽位仍保留。'
-      : '只配 main 时，其余槽位不写别名：原本手设的真实模型名会保留，过期的 mixr-* 会被清掉；这些请求会按路由规则分发，而不是按槽位落点。';
+      : '只配 main 时，其余槽位不写别名：原本手设的真实模型名会保留，过期的 mixr-* 会被清掉；这些请求不会落到该渠道的槽位落点。';
     return `<div class="readiness-slots" id="readiness-slot-setup">
       <p class="readiness-section-label">槽位（${app === 'codex' ? 'main / reviewer，接入时补缺项' : 'main 必需'}）</p>
       <ul class="readiness-slot-list">${rows}</ul>
@@ -524,10 +498,6 @@
     const p = readinessSelectedProvider();
     const list = p ? (readinessGroup() === 'codex' ? [p.model].filter(Boolean) : (p.models || [])) : [];
     const keys = p?.keys || [];
-    const wireChoices = R_APPS[readinessState.app].wires;
-    const wireOptions = wireChoices
-      ? wireChoices.map(w => `<option value="${rEsc(w)}" ${w === readinessState.zcodeWire ? 'selected' : ''}>${rEsc(R_WIRE_LABEL[w] || w)}</option>`).join('')
-      : '';
     const keyOptions = ['<option value="">跟随渠道当前 Key</option>']
       .concat(keys.map(k => `<option value="${rEsc(k.id)}" ${k.id === readinessState.keyId ? 'selected' : ''}>${rEsc(k.label || k.id)}${k.key_masked ? ' · ' + rEsc(k.key_masked) : ''}${k.enabled === false ? '（已停用）' : ''}</option>`))
       .join('');
@@ -539,9 +509,7 @@
       ${p ? '' : '<p class="hint">先选择或创建一个渠道。</p>'}
       <div class="readiness-row">
         <label class="field readiness-grow">模型<input type="text" id="readiness-model-input" list="readiness-model-options" value="${rEsc(readinessState.model)}" placeholder="模型名，可带 [1M] 后缀" spellcheck="false" autocomplete="off" oninput="readinessSetModel(this.value)" onchange="readinessRender()" ${p ? '' : 'disabled'}><datalist id="readiness-model-options">${datalist}</datalist></label>
-        ${wireChoices
-          ? `<label class="field">客户端协议<select id="readiness-wire-select" onchange="readinessPickWire(this.value)">${wireOptions}</select></label>`
-          : `<div class="field"><span>客户端协议</span><b class="readiness-fixed" id="readiness-wire-fixed">${rEsc(R_CLIENT_WIRE_LABEL[R_APPS[readinessState.app].clientWire])}（固定）</b></div>`}
+        <div class="field"><span>客户端协议</span><b class="readiness-fixed" id="readiness-wire-fixed">${rEsc(R_CLIENT_WIRE_LABEL[R_APPS[readinessState.app].clientWire])}（固定）</b></div>
         <label class="field">Key<select id="readiness-key-select" onchange="readinessSetKey(this.value);readinessRender()" ${keys.length ? '' : 'disabled'}>${keyOptions}</select></label>
       </div>
       <p class="hint">${rEsc(R_APPS[readinessState.app].note)} 渠道在库里的 wire_api 不因这里的选择被修改；写入时以预览列出的字段为准。</p>
@@ -622,9 +590,7 @@
           ${readinessWarningList(readinessState.applyWarnings).length ? `<ul class="readiness-warnings">${readinessWarningList(readinessState.applyWarnings).map(w => `<li>${rEsc(w)}</li>`).join('')}</ul>` : ''}
           <p class="hint">${readinessState.app === 'claude'
             ? 'Claude Code 需重启会话生效。'
-            : readinessState.app === 'codex'
-              ? '首次接入需打开使用新配置的 Codex 客户端；已接入路由的槽位调整从下一次请求生效。已打开的 Codex 客户端会缓存模型标签，新客户端读取同步列表。'
-              : `写入只改了 ZCode 的接入配置，不会切换你正在用的会话：请在 ZCode 的模型选择器里选择 Mixrouter${readinessState.model ? ' · ' + rEsc(readinessState.model) : ''}（必要时重启客户端），再开新会话。`} 如要回退，使用下面的撤销入口。</p>
+            : '首次接入需打开使用新配置的 Codex 客户端；已接入路由的槽位调整从下一次请求生效。已打开的 Codex 客户端会缓存模型标签，新客户端读取同步列表。'} 如要回退，使用下面的撤销入口。</p>
         </div>`
       : readinessState.applyError
         ? `<div class="banner offline show" role="alert" id="readiness-apply-error" tabindex="-1">写入失败：${rEsc(readinessState.applyError)}</div>`
@@ -861,7 +827,6 @@
   function readinessSetApp(app) {
     if (!R_APPS[app]) return;
     readinessState.app = app;
-    readinessState.zcodeWire = 'anthropic';
     readinessState.providerId = '';
     readinessState.model = '';
     readinessState.keyId = '';
@@ -917,7 +882,6 @@
     readinessState.providerId = p ? p.id : '';
     readinessState.model = p ? readinessDefaultModel(p) : '';
     readinessState.keyId = p ? readinessDefaultKey(p) : '';
-    if (readinessState.app === 'zcode') readinessState.zcodeWire = readinessDefaultZcodeWire(p);
     readinessState.preview = null;
     readinessState.previewError = '';
     readinessState.applyResult = null;
@@ -926,22 +890,6 @@
     readinessState.test = null;
     readinessState.testError = '';
     if (opt.render !== false) readinessRender();
-  }
-
-  function readinessPickWire(wire) {
-    if (readinessState.app !== 'zcode') return;
-    if (!R_APPS.zcode.wires.includes(wire)) return;
-    readinessState.zcodeWire = wire;
-    readinessState.preview = null;
-    readinessState.test = null;
-    readinessState.testError = '';
-    // ZCode 换了协议就等于换了渠道库分组:旧渠道不在新组里时明确清空,不拿另一组的渠道硬测。
-    const list = readinessProviders();
-    if (!list.some(p => p.id === readinessState.providerId)) {
-      if (list.length) readinessPickProvider(list[0].id, { render: false });
-      else { readinessState.providerId = ''; readinessState.model = ''; readinessState.keyId = ''; }
-    }
-    readinessRender();
   }
 
   function readinessSetModel(value) {
@@ -968,14 +916,13 @@
   }
 
   async function readinessSetMain() {
-    if (readinessState.app === 'zcode') return;
     return readinessSetSlots(readinessState.app, { all: false });
   }
 
   // 逐个 putSlot:每个槽位单独一次 PUT /api/slots,失败就停在那一步并保留原因(不部分成功还报"已配齐")。
   async function readinessSetSlots(app, { all = true } = {}) {
     const p = readinessSelectedProvider();
-    if (!p || app === 'zcode') return;
+    if (!p) return;
     if (!readinessCanWrite()) return rToast(readinessBlockedReason() || '当前不能写入', 'err');
     if (typeof putSlot !== 'function') return rToast('槽位接口未就绪', 'err');
     const names = all
@@ -1117,8 +1064,8 @@
       const res = await readinessCall(`/api/providers/${encodeURIComponent(p.id)}/compatibility`, {
         method: 'POST',
         body: JSON.stringify({
-          // app 决定 client_wire 怎么解释:Codex 的 chat 是「Responses→chat 上游」,
-          // ZCode 的 chat 才是「chat 客户端→chat 上游」。缺了 app 服务端只能按渠道分组猜。
+          // app 决定 client_wire 怎么解释:Codex 的 chat 是「Responses→chat 上游」。
+          // 缺了 app 服务端只能按渠道分组猜。
           app: readinessState.app,
           model: readinessState.model,
           key_id: readinessState.keyId || undefined,
@@ -1160,10 +1107,7 @@
         key_id: readinessState.keyId || undefined,
         client_wire: readinessClientWire(),
       };
-      if (readinessState.app === 'zcode') {
-        options.wire_api = readinessState.zcodeWire;
-        options.model = readinessState.model;
-      } else if (mode.slots) options.slots = true;
+      if (mode.slots) options.slots = true;
       const res = await readinessCall(`/api/onboarding/${encodeURIComponent(readinessState.app)}/preview`, {
         method: 'POST',
         body: JSON.stringify(options),
@@ -1634,7 +1578,6 @@
     if (!view) return;
     readinessState.mounted = true;
     readinessState.app = rCurApp();
-    readinessState.zcodeWire = 'anthropic';
 
     const entry = document.createElement('section');
     entry.id = 'readiness-entry';
@@ -1752,7 +1695,6 @@
   function readinessUiState() {
     return {
       app: readinessState.app,
-      zcodeWire: readinessState.zcodeWire,
       clientWire: readinessClientWire(),
       group: readinessGroup(),
       providerId: readinessState.providerId,
@@ -1767,7 +1709,7 @@
     readinessOpen, readinessOpenUndo, readinessOpenFromOverview, readinessClose, readinessRender,
     readinessPickClient, readinessInspect, readinessPickProvider, readinessNewProvider,
     readinessToggleImport, readinessSetImportText, readinessImportPreview, readinessImportApply,
-    readinessSetModel, readinessSetKey, readinessPickWire, readinessSetMain, readinessSetSlots,
+    readinessSetModel, readinessSetKey, readinessSetMain, readinessSetSlots,
     readinessRunTest, readinessPreviewWrite, readinessApplyWrite,
     readinessUndoPreview, readinessUndoApply, readinessCopyParams,
     readinessPoolToggle, readinessPoolSetProvider, readinessPoolSetModel, readinessPoolMove,

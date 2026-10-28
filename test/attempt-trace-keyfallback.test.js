@@ -113,17 +113,14 @@ test('setup:mock 上游 + 两个服务 + 一个多账号渠道', async () => {
       id: providerIdOf(group), name: `${group} 渠道`,
       base_url: `http://127.0.0.1:${mockPort}`,
       enabled: true, key_fallback: true, active_key: `${group}-a`,
-      keys: keysOf(group), models: MODELS,
+      // 每个渠道登记**带组名后缀**的模型名:瘦身后落点只由"精确已登记模型"决定,
+      // 同名模型登记在两个渠道就是明确歧义。请求写 `m-401-swap401` 就只会落到这条渠道。
+      keys: keysOf(group), models: MODELS.map(m => `${m}-${group}`),
     })),
     codex: [],
   }));
-  // 路由:模型名 → 同名渠道(每个用例的模型只落到自己的渠道)
-  fs.writeFileSync(path.join(TMP, 'routes.json'), JSON.stringify({
-    rules: Object.keys(PAIRS).flatMap(group => MODELS.map(m => ({
-      id: `r-${group}-${m}`, match: `${m}-${group}`, provider: providerIdOf(group), model: m, enabled: true,
-    }))),
-    default: { provider: '', model: '' },
-  }));
+  // routes.json 只承载压缩设置;普通请求不走任何规则。
+  fs.writeFileSync(path.join(TMP, 'routes.json'), JSON.stringify({ rules: [] }));
   // 钉死的账号走**槽位** key_id:一条稳定的产品路径,验"钉死就不换"。
   fs.writeFileSync(path.join(TMP, 'slots.json'), JSON.stringify({
     // 槽位名只能用 CLAUDE_SLOTS 里的那几个(opus/sonnet/haiku/subagent/main),
@@ -176,7 +173,7 @@ test('403 / 404 只记模型级:同一账号换其它模型仍可用', async () 
   const rec = health.find(k => k.key_id === 'model403-a' && k.status === 403);
   assert.ok(rec, '403 要被记下来');
   assert.strictEqual(rec.scope, 'model', '403 不能判成"账号全坏"');
-  assert.strictEqual(rec.model, 'm-403');
+  assert.strictEqual(rec.model, 'm-403-model403', '记录的落点模型是渠道登记的那一个');
 
   // 同一账号的另一个模型仍会回到账号1 —— 这就是"模型级"的可观测差异
   perKey.clear(); seen.length = 0;

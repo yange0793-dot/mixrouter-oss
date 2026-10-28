@@ -1,6 +1,6 @@
 'use strict';
 // v3.4 上游可靠性测试:错误分型、三段超时(首字节/流式空闲/非流式总)、客户端断开收尾、
-// 4xx 直通、重试次数与间隔、default 路由策略、加权池比例、/api/health 视图。
+// 4xx 直通、重试次数与间隔、槽位后备策略、/api/health 视图。
 //
 // 熔断器与渠道冷却都已整体删除(失败禁用渠道的行为不存在),所以这里不再测开路/半开;
 // 原来靠"熔断开路后不再打上游"表达的意图,改由「重试次数」与「上游调用上界」直接钉住。
@@ -30,7 +30,7 @@ process.env.MIXR_NONSTREAM_TOTAL_TIMEOUT_MS = '800';
 process.env.MIXR_RETRY_DELAY_MS = '0';
 
 const mod = require('../mixrouter.js');
-const { sessionIdentity, errorClass, normalizeRule, _state } = mod;
+const { sessionIdentity, errorClass, _state } = mod;
 const { createAttemptRunner } = require('../lib/proxy/attempts.js');
 
 // ---------------------------------------------------------------- 纯函数
@@ -214,12 +214,13 @@ async function rawRequestGuarded(port, method, reqPath, opts, ms = 5000) {
 }
 const callWithSession = (sessionId, extra = {}) => rawRequestGuarded(proxyPort, 'POST', '/v1/messages', {
   headers: { 'Content-Type': 'application/json', 'x-claude-code-session-id': sessionId },
-  body: { model: 'claude-opus-5', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }], ...extra.body },
+  body: { model: 'mixr-main', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }], ...extra.body },
 });
 const lastLog = async () => JSON.parse((await rawRequest(uiPort, 'GET', '/api/logs?limit=1')).text).logs[0];
 
-function setRoutes(rules, def = { provider: '', model: '' }) {
-  _state.routes = { rules: rules.map(normalizeRule), default: normalizeRule(def) };
+function setSlot(primary, pool = [], strategy = 'priority') {
+  _state.routes = { rules: [], default: {} };
+  _state.slotMap = { claude: { main: { provider: primary, model: 'claude-opus-5', pool, strategy } }, codex: {} };
   resetRouting();
 }
 function resetRouting() {
@@ -267,7 +268,7 @@ test('setup:三段超时 + 各类假上游', async () => {
 });
 
 test('首字节超时:上游装死时换下一个渠道,不把请求打回客户端', async () => {
-  setRoutes([{ id: 'rt', match: 'opus', pool: ['psilent', 'pa'], strategy: 'priority', enabled: true }]);
+  setSlot('psilent', ['pa']);
   const r = await callWithSession('fb-1');
   assert.strictEqual(r.status, 200);
   assert.strictEqual(r.headers['x-mixrouter-provider'], 'provA', '装死渠道超时后应转移到 pa');
@@ -278,7 +279,7 @@ test('首字节超时:上游装死时换下一个渠道,不把请求打回客户
 });
 
 test('流式空闲超时:上游发完头就装死,客户端不会被晾到天荒地老', async () => {
-  setRoutes([{ id: 'ri', match: 'opus', pool: ['pstall'], strategy: 'priority', enabled: true }]);
+  setSlot('pstall');
   const r = await callWithSession('idle-1', { body: { stream: true } });
   assert.strictEqual(r.status, 200);
   assert.ok(r.text.includes('message_start'), '已转发的部分应已送达');
@@ -289,7 +290,7 @@ test('流式空闲超时:上游发完头就装死,客户端不会被晾到天荒
 });
 
 test('非流式总超时:上游拖着半个 JSON 不结束,代理掐断并收尾', async () => {
-  setRoutes([{ id: 'rn', match: 'opus', pool: ['pslow'], strategy: 'priority', enabled: true }]);
+  setSlot('pslow');
   const r = await callWithSession('body-1', { body: { stream: false } });
   assert.strictEqual(r.status, 200, '响应头已回给客户端,只能掐断而不是改状态码');
   assert.ok(r.text.startsWith('{"id":"msg_partial"'));
@@ -299,13 +300,13 @@ test('非流式总超时:上游拖着半个 JSON 不结束,代理掐断并收尾
 });
 
 test('客户端中途断开:掐掉上游、记一条 cancelled,不烧后台渠道额度', async () => {
-  setRoutes([{ id: 'rc', match: 'opus', pool: ['pslowSse'], strategy: 'priority', enabled: true }]);
+  setSlot('pslowSse');
   const before = (await rawRequest(uiPort, 'GET', '/api/logs?limit=1')).text;
   const creq = http.request({
     hostname: '127.0.0.1', port: proxyPort, method: 'POST', path: '/v1/messages',
     headers: { 'Content-Type': 'application/json', 'x-claude-code-session-id': 'cancel-1' },
   }, cres => { cres.once('data', () => creq.destroy()); });
-  creq.end(JSON.stringify({ model: 'claude-opus-5', max_tokens: 8, stream: true, messages: [{ role: 'user', content: 'hi' }] }));
+  creq.end(JSON.stringify({ model: 'mixr-main', max_tokens: 8, stream: true, messages: [{ role: 'user', content: 'hi' }] }));
   await new Promise(ok => setTimeout(ok, 800));
   assert.strictEqual(ports.slowSseState.aborted, true, '客户端断开后上游连接应被掐断');
   const log = await lastLog();
@@ -315,7 +316,7 @@ test('客户端中途断开:掐掉上游、记一条 cancelled,不烧后台渠�
 });
 
 test('4xx 非重试错误:原样透传、不进冷却、分型 authentication', async () => {
-  setRoutes([{ id: 'r4', match: 'opus', pool: ['p401', 'pa'], strategy: 'priority', enabled: true }]);
+  setSlot('p401', ['pa']);
   const r = await callWithSession('auth-1');
   assert.strictEqual(r.status, 401, '401 应原样透传给客户端');
   const log = await lastLog();
@@ -326,8 +327,8 @@ test('4xx 非重试错误:原样透传、不进冷却、分型 authentication', 
   assert.strictEqual((await lastLog()).provider, 'auth401', '失败不改变后续请求的 priority 首选');
 });
 
-test('default 路由也吃配置的策略:priority 不再退回轮转', async () => {
-  setRoutes([], { provider: '', model: '', pool: ['pa', 'pb'], strategy: 'priority' });
+test('槽位 priority 策略保持明确主渠道,不轮换到备用', async () => {
+  setSlot('pa', ['pb']);
   const a = await callWithSession('def-1');
   const b = await callWithSession('def-2');
   assert.strictEqual(a.headers['x-mixrouter-provider'], 'provA');
@@ -337,27 +338,21 @@ test('default 路由也吃配置的策略:priority 不再退回轮转', async ()
   assert.strictEqual(c.headers['x-mixrouter-provider'], 'provA', '旧冷却表不改变 priority 首选');
 });
 
-test('加权池:旧冷却表不改变 3:1 轮转比例', async t => {
-  setRoutes([{ id: 'rw', match: 'opus', pool: [{ provider: 'pa', weight: 3 }, { provider: 'pb', weight: 1 }], strategy: 'weighted', enabled: true }]);
-  // 每次请求前都写一遍旧冷却表:它必须被忽略。
-  const seedOldTable = () => { _state.cooldowns = { pa: Date.now() + 60000 }; };
+test('槽位轮换:旧冷却表不移除任何候选', async () => {
+  setSlot('pa', ['pb'], 'round_robin');
   const during = [];
   for (let i = 0; i < 4; i++) {
-    seedOldTable();
-    during.push((await callWithSession(`w-c-${i}`)).headers['x-mixrouter-provider']);
+    _state.cooldowns = { pa: Date.now() + 60000 };
+    during.push((await callWithSession(`rr-${i}`)).headers['x-mixrouter-provider']);
   }
-  assert.equal(during.filter(x => x === 'provA').length, 3, '旧冷却表不改变 3:1 加权比例');
-  // 写成已过期的值也一样:判定恒为不在冷却。
+  assert.equal(during.filter(x => x === 'provA').length, 2);
+  assert.equal(during.filter(x => x === 'provB').length, 2);
   _state.cooldowns = { pa: Date.now() - 1 };
   assert.strictEqual(mod.inCooldown('pa'), false, '旧冷却判定恒为 false');
-  const after = [];
-  for (let i = 0; i < 8; i++) after.push((await callWithSession(`w-r-${i}`)).headers['x-mixrouter-provider']);
-  const nA = after.filter(x => x === 'provA').length;
-  assert.ok(nA >= 1, `pa 应参与轮转,实际 ${JSON.stringify(after)}`);
 });
 
 test('上游恒失败:同一渠道被重试到调用上界,整个过程不算故障转移', async () => {
-  setRoutes([{ id: 'rb', match: 'opus', pool: ['pbad'], strategy: 'priority', enabled: true }]);
+  setSlot('pbad');
   ports.failState.hits = 0;
   const r = await callWithSession('retry-same-1');
   // 最后一发就是上游的真实状态码(500 原样透传),不再被本地改写成 502
@@ -371,7 +366,7 @@ test('上游恒失败:同一渠道被重试到调用上界,整个过程不算故
 });
 
 test('上游恒失败:换渠道后 failover 只为真正的转移置位', async () => {
-  setRoutes([{ id: 'rb2', match: 'opus', pool: ['pbad', 'pa'], strategy: 'priority', enabled: true }]);
+  setSlot('pbad', ['pa']);
   ports.failState.hits = 0;
   const r = await callWithSession('retry-mixed-1');
   assert.strictEqual(r.status, 200);
@@ -383,7 +378,7 @@ test('上游恒失败:换渠道后 failover 只为真正的转移置位', async 
 });
 
 test('旧冷却表写满也照常转发,不会 502 甩锅', async () => {
-  setRoutes([{ id: 'rcd', match: 'opus', pool: ['pa', 'pb'], strategy: 'priority', enabled: true }]);
+  setSlot('pa', ['pb']);
   _state.cooldowns = { pa: Date.now() + 60000, pb: Date.now() + 60000 };
   const r = await callWithSession('all-cold-1');
   assert.strictEqual(r.status, 200, '旧冷却表不影响转发,请求照常发出');
@@ -391,7 +386,7 @@ test('旧冷却表写满也照常转发,不会 502 甩锅', async () => {
 });
 
 test('/api/health:只读视图带超时/重试配置与各渠道可用性', async () => {
-  setRoutes([{ id: 'rh', match: 'opus', pool: ['pa', 'pb'], strategy: 'round_robin', enabled: true }]);
+  setSlot('pa', ['pb'], 'round_robin');
   await callWithSession('health-1'); // 有一条成功记录
   const r = await rawRequest(uiPort, 'GET', '/api/health');
   assert.strictEqual(r.status, 200);
@@ -440,7 +435,7 @@ test('/api/health:只读视图带超时/重试配置与各渠道可用性', asyn
 });
 
 test('全池连不上:502 返回客户端,日志状态如实落盘', async () => {
-  setRoutes([{ id: 'rd', match: 'opus', pool: ['pdead'], strategy: 'priority', enabled: true }]);
+  setSlot('pdead');
   const r = await callWithSession('dead-1');
   assert.strictEqual(r.status, 502);
   const log = await lastLog();

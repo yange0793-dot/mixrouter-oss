@@ -20,7 +20,9 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
-const zcodeConfig = require('./lib/zcode-config');
+// 通用校验小工具(与任何客户端无关)。原先待在 lib/zcode-config.js 里,ZCode 接入移除后
+// 单列成 lib/validation.js,免得公共功能反向依赖某个客户端的配置模块。
+const { invalid, isObject } = require('./lib/validation');
 // saveJson 原来定义在本文件里;机制已合并进 lib/atomic-write.js
 // (同一个仓库不留两份逐字相同的实现),这里只把名字接过来,
 // 下面的调用点与注入 createSessionStore 的 deps 一字不用改。
@@ -87,7 +89,6 @@ const { createReadinessApi } = require('./lib/http/readiness-api');
 const { createAttemptTraceStore } = require('./lib/observability/attempt-trace');
 const { explainError } = require('./lib/observability/error-guidance');
 const { createKeyFallback } = require('./lib/routing/key-fallback');
-const { createHarnessPool } = require('./lib/harness-pool');
 // Codex 配置的读写引擎:解析/校验/外科手术式改写 + 能力目录同步。
 // **这是全树唯一的 TOML 实现**(第二期合并完成):lib/toml.js 与 lib/codex-toml.js 现在只是
 // 它的薄适配(名字转发,没有自己的算法)。旧名字保留是为了既有导出面与测试,
@@ -237,16 +238,18 @@ function loadStore() {
   return { claude: (raw && raw.claude) || [], codex: (raw && raw.codex) || [] };
 }
 let store = loadStore();
-let current = { claude: null, codex: null, zcode: null };
+// current 只记两组客户端的当前落点。历史 providers.json 里的 current.zcode 不再读取,
+// 也不在落盘时写回(下一次 saveStore 只写 claude/codex)。
+let current = { claude: null, codex: null };
 { const raw = loadJson(PROVIDERS_FILE, null); if (raw && raw.current) current = { ...current, ...raw.current }; }
 
 // 落盘渠道库。**这是全仓唯一会覆盖 providers.json 的地方**,所以备份也收到这里一处,而不是
 // 散到四个调用点各写一遍(withStoreRollback、拆分配置、删渠道时的清引用、退出前的收尾落盘)。
 //
 // 为什么这个文件非备份不可:它是唯一装**全部渠道明文 api_key** 的文件,而它此前是全仓
-// 唯一"会被改写、却没有任何备份"的活文件 —— 客户端配置(settings.json / config.toml /
-// zcode config)每次改写前都留一份,连 lib/backup/targets.js 都早把 providers.json 列成一个
-// 备份池(`[data]`),可那个池子从建成起就恒为 0 份:清点报的是"这里查过、没有",看着像
+// 唯一"会被改写、却没有任何备份"的活文件 —— 客户端配置(settings.json / config.toml)
+// 每次改写前都留一份,连 lib/backup/targets.js 都早把 providers.json 列成一个备份池
+// (`[data]`),可那个池子从建成起就恒为 0 份:清点报的是"这里查过、没有",看着像
 // "目前还没有备份",实际是**永远不会有**。一次写坏的渠道库 = 全部渠道与 key 一起没了。
 //
 // 两个附带结果,都是这条路径本来就该有的:
@@ -343,7 +346,7 @@ function applyClientSwitch(app, write, value) {
     catch (rb) {
       throw Object.assign(new Error(`写入客户端配置失败: ${e.message};回退渠道库也失败: ${rb.message} —— 盘上已不一致,请检查 providers.json`), { statusCode: 500 });
     }
-    // **原样透传 4xx**(校验类的拒绝:settings.json 解析不了、ZCode 的 wire_api 不认识……)。
+    // **原样透传 4xx**(校验类的拒绝:settings.json 解析不了、wire_api 不认识……)。
     // 那不是"写客户端配置失败",是"你给的参数不对",回 500 会把用户引到错误的方向;
     // 而且这条路上的 4xx 一定是**在改客户端之前**抛的,所以连"可能已经写了一半"都不成立。
     const code = e.statusCode || 500;
@@ -351,9 +354,8 @@ function applyClientSwitch(app, write, value) {
   }
 }
 
-// 切换失败时给用户的那句话。zcode 那条是自己的配置格式问题(与渠道库无关),措辞单列。
+// 切换失败时给用户的那句话。
 function clientSwitchMessage(app, e) {
-  if (app === 'zcode' && !e.statusCode) return '写入 ZCode 配置失败，请检查配置格式、权限及自有 provider 冲突';
   // 两步各自点名了就不用再套一层;其余仍保持原来的"写入配置失败: <原文>",
   // 免得为这次改动顺手动了一批用户看得见的文案。
   if (/^写入(渠道库|客户端配置)失败/.test(e.message)) return e.message;
@@ -385,45 +387,36 @@ function channelSecrets() {
   return out;
 }
 
-// 规则字段:
-//   match    请求模型名子串(逗号分隔多个,大小写不敏感)
-//   provider 单一目标渠道;pool 非空时优先用池(会话粘性分发)
-//   pool     渠道池,元素为渠道 id 或 {provider, model, weight}
-//   strategy round_robin(默认) | weighted | least_used | random
+// routes.json 现在**只装压缩规则**(普通分流规则与可配置 default 已删除,不再执行)。
+//   provider 单一目标渠道;pool 非空时优先用池
+//   strategy round_robin(默认) | weighted | least_used | random | priority
 //   priority 数值大者先匹配(默认 0);同值按数组顺序
-//   app      适用客户端组 claude | codex;留空 = 两组通用(池成员按组自动取舍)
-//   when     附加匹配条件,全部满足才命中:{ session, ua, token } 均为子串
-const defaultRoutes = () => ({
-  rules: [
-    { id: 'r1', match: 'opus, claude-3-opus', provider: '', model: '', pool: [], strategy: 'round_robin', priority: 0, when: {}, enabled: true },
-    { id: 'r2', match: 'sonnet',              provider: '', model: '', pool: [], strategy: 'round_robin', priority: 0, when: {}, enabled: true },
-    { id: 'r3', match: 'haiku',               provider: '', model: '', pool: [], strategy: 'round_robin', priority: 0, when: {}, enabled: true },
-    { id: 'r4', match: 'fable',               provider: '', model: '', pool: [], strategy: 'round_robin', priority: 0, when: {}, enabled: true },
-  ],
-  default: { provider: '', model: '', pool: [], strategy: 'round_robin' },
-});
+//   app      适用客户端组 claude | codex;留空 = 两组通用
+//   when.body 压缩规则的身份(只认 compact-signature 登记过的两条)
+//
+// 历史磁盘数据不破坏:旧文件里的普通规则照旧读进内存(既不执行也不在控制台暴露),
+// 下次保存时原样写回;想加压缩规则的用户不会因此丢一份手改过的旧配置。
 let routes = loadJson(ROUTES_FILE, null);
-if (!routes || !Array.isArray(routes.rules)) routes = defaultRoutes();
-else routes = { rules: routes.rules.map(r => rulesLib.normalizeRule(r, { preserveInvalidPin: true })),
-  default: rulesLib.normalizeRule(routes.default || {}, { preserveInvalidPin: true }) };
-// 可选参数是给 PUT /api/routes 用的:那条路径要**先落盘、成功了再把新值提交到内存**,
+if (!routes || !Array.isArray(routes.rules)) routes = { rules: [] };
+else routes = { rules: routes.rules.map(r => rulesLib.normalizeRule(r, { preserveInvalidPin: true })) };
+// 可选参数是给压缩选择那条写路径用的:那条路径要**先落盘、成功了再把新值提交到内存**,
 // 否则落盘失败时接口回 500、内存里却已经是新规则 —— 而转发读的正是内存。
 const saveRoutes = (value = routes) => saveJson(ROUTES_FILE, value);
 
-// 启动时把"规则绑了个不存在的渠道"直接喊出来。这种规则平时安安静静,
-// 直到请求打上来才 503,而报错还说"没有匹配的路由,或路由未绑定渠道"——
-// 控制台里那条规则明明显示着"已绑定"。用户只能自己一条条翻规则找僵尸引用。
-// 删渠道时虽然会顺手解开引用,但 routes.json 可能是手改的、或从旧备份恢复的。
+// 启动时把"压缩规则绑了个不存在的渠道"直接喊出来。这种规则平时安安静静,
+// 直到压缩请求打上来才 503。删渠道时虽然会顺手解开引用,但 routes.json 可能是手改的、
+// 或从旧备份恢复的。
 function reportGhostRoutes() {
   const bad = [];
-  // 兜底路由经 normalizeRule 也会拿到一个 id,不能靠"有没有 id"区分它和普通规则
   const scan = (r, label) => {
     for (const g of ghostRefs(r)) bad.push(`${label} 的${g.where}指向已不存在的渠道 ${g.id}`);
   };
-  for (const r of routes.rules || []) scan(r, `规则 ${r && r.id ? r.id : '?'}(match "${(r && r.match) || '*'}")`);
-  scan(routes.default, '兜底路由');
+  for (const r of routes.rules || []) {
+    if (!compactLib.compactKind(r)) continue;
+    scan(r, `压缩规则 ${r && r.id ? r.id : '?'}`);
+  }
   if (bad.length) {
-    console.warn(`[mixrouter] 路由里有 ${bad.length} 处僵尸引用(渠道已删除,规则还指着它)——命中这些规则的请求会直接 503:\n  - ${bad.join('\n  - ')}\n  请在控制台 http://127.0.0.1:${UI_PORT} 的「路由」页重新选择目标渠道。`);
+    console.warn(`[mixrouter] 压缩规则里有 ${bad.length} 处僵尸引用(渠道已删除,规则还指着它)——压缩请求会直接 503:\n  - ${bad.join('\n  - ')}\n  请在控制台 http://127.0.0.1:${UI_PORT} 的「压缩设置」页重新选择目标渠道。`);
   }
   return bad;
 }
@@ -607,7 +600,6 @@ function healthStatus() {
 // pickMember 是例外:它去掉了从来没人读过的第三个按位形参,调用点同步改过。
 const poolMembers = (rule, app = 'claude') => poolLib.poolMembers(storeOf(app), rule, app);
 const ghostRefs = rule => poolLib.ghostRefs(findProvider, rule);
-const ruleBelongsToApp = (rule, app) => rulesLib.ruleBelongsToApp(rule, app, providerApp);
 const strategyOf = strategyLib.strategyOf;
 const pickWeighted = strategyLib.pickWeighted;
 // 第三个按位形参 key 是既存死参数:lib/routing/strategy.js 的 pickMember 从头到尾没读过
@@ -678,14 +670,12 @@ function startLogRetention() {
   scheduleRetention(first && first.responses && first.responses.truncated ? RETENTION_CATCHUP_MS : RETENTION_SWEEP_EVERY_MS);
 }
 
-// 内容分流(when.body)的匹配文本由 lib/session/identity.js 的 bodyRouteText 提供
-// (只看 system/instructions + 最后一条消息,历史不进匹配文本)
+// 压缩规则的匹配文本由 lib/session/identity.js 的 compactTexts 提供
+// (只看 system/instructions + 最后一条 user 的直接文本,历史不进匹配文本)
 // ---------------------------------------------------------------- 路由解析
-// match 为请求模型名的子串,逗号分隔多个,大小写不敏感
-// 先按 priority 降序(同值保持数组顺序),命中首个启用且满足 when 的规则
-// 路由目标来自哪一组由端点决定:Anthropic 端点取 Claude 组,OpenAI 端点取 Codex 组
-// 具体匹配顺序与返回形状见 lib/routing/resolve.js
-const matchWhen = rulesLib.matchWhen;
+// 只剩三种来源:压缩内容规则 → 精确槽位别名 → 精确已登记模型(无通用子串/兜底回退)。
+// 路由目标来自哪一组由端点决定:Anthropic 端点取 Claude 组,OpenAI 端点取 Codex 组。
+// 具体判定顺序与返回形状见 lib/routing/resolve.js。
 const resolveRoute = createResolver({
   getRoutes: () => routes, storeOf: app => storeOf(app),
   resolveSlot: (app, modelIn) => resolveSlot(app, modelIn),
@@ -758,20 +748,6 @@ function sseResult(wire, text) {
   return { ok: terminal, error: terminal ? '' : '上游流没有给出合法终态就结束了' };
 }
 
-const harness = createHarnessPool({
-  file: path.join(DATA_DIR, 'harness.json'),
-  profilePath: process.env.MIXR_HARNESS_PROFILE || path.join(process.env.DSH_HOME || path.join(os.homedir(), '.dsh'), 'profiles', 'desktop', 'cordis.patch.yml'),
-  getProviders: () => ['claude', 'codex'].flatMap(app => storeOf(app).map(provider => ({ ...provider, app }))),
-  routerURL: ROUTER_URL, routerToken: ROUTER_TOKEN,
-});
-function harnessProvider(id) {
-  for (const app of ['claude', 'codex']) {
-    const provider = storeOf(app).find(candidate => candidate.id === id);
-    if (provider) return { ...provider, wire_api: wireOf(provider, app) };
-  }
-  return undefined;
-}
-
 // ---------------------------------------------------------------- 代理服务
 // 端点 → 客户端组与协议:Claude 组说 Anthropic,Codex 组说 OpenAI
 // 端点识别与协议→上游路径换算见 lib/routing/endpoints.js
@@ -781,7 +757,8 @@ const wireOf = endpoints.wireOf;
 const upstreamPathOf = endpoints.upstreamPathOf;
 const joinUpstreamPath = endpoints.joinUpstreamPath;
 
-// GET /v1/models:只读清单(Codex 组渠道的模型 + 路由目标模型 + Codex 槽位别名),给会探模型的客户端用
+// GET /v1/models:只读清单(Codex 组渠道登记的模型 + Codex 槽位别名及其落点模型),给会探模型的客户端用。
+// 路由表(压缩规则)不进这份清单:压缩是 Claude 组内部行为,不该被 Codex 客户端当成可选模型。
 function modelList() {
   const seen = new Set(), data = [];
   const add = (id, owner) => {
@@ -802,11 +779,6 @@ function modelList() {
     const resolved = resolveSlot('codex', slotAlias('codex', name));
     if (resolved?.provider && resolved.provider.enabled !== false && resolved.model)
       add(resolved.model, resolved.provider.name);
-  }
-  for (const r of [...(routes.rules || []), routes.default || {}]) {
-    if (!r) continue;
-    if (r.model) add(r.model, 'route');
-    for (const m of r.pool || []) if (typeof m === 'object' && m && m.model) add(m.model, 'route');
   }
   return { object: 'list', data };
 }
@@ -880,7 +852,7 @@ const attemptDeps = {
   http, https,
   storeOf,
   slotMapOf: () => slotMap, sessionConfig, compactLib,
-  refreshProvider: (provider, app, plan) => plan.harness ? harnessProvider(provider.id) : storeOf(app).find(candidate => candidate.id === provider.id),
+  refreshProvider: (provider, app) => storeOf(app).find(candidate => candidate.id === provider.id),
   wireOf, upstreamPathOf, joinUpstreamPath,
   buildUpstreamHeaders, buildOpenAiHeaders, applyModel, toolFilter,
   safeHeader, hasCtlChar, transportAgent, createResponseArchive, channelSecrets, clientToken,
@@ -903,7 +875,6 @@ const prepareRequest = createPreparer({
   UI_PORT, MAX_ATTEMPTS,
   storeOf, sessionRecord, sessionConfig, sessionKeyOf, sessionIdentity, sessionLabel,
   bodyRouteText, compactTexts, resolveRoute, compactLib, wireOf,
-  resolveHarness: (model, kind) => harness.resolve(model, kind),
   resolveSessionTarget, sessionEntry, clientToken,
   captureRequest: key => sess.captureRequest(key),
 }).prepareRequest;
@@ -916,7 +887,6 @@ const proxyHandler = proxyHttp.createProxyHandler({
   onBodyDrainTimeout: () => { bodyDrainTimeouts++; },
   randomUUID: () => crypto.randomUUID(),
   httpBody, protoError, classifyProxyRequest, ENDPOINTS, modelList, sessionKeyOf,
-  harnessModelList: () => harness.models(),
   prepareRequest, createRequestContext, runAttempts, sessionIdentity,
   routeErrorIdentity: (req, ident) => `[Codex identity: native=${codexConfig.nativeClient(req.headers['user-agent'])}, local_auth=${clientToken(req) === ROUTER_TOKEN}, reliable_session=${String(ident.key).startsWith('cx:')}]`,
   appendRejectedLog: (entry, req) => requestLog.append(scrubDeep(entry, [clientToken(req)].filter(Boolean))),
@@ -960,7 +930,7 @@ function readClientConfig(file) {
   if (!stripped.trim()) return { cfg: {} };               // 空文件/纯空白:同上
   try {
     const cfg = JSON.parse(stripped);
-    if (!zcodeConfig.isObject(cfg) || (cfg.env !== undefined && !zcodeConfig.isObject(cfg.env)))
+    if (!isObject(cfg) || (cfg.env !== undefined && !isObject(cfg.env)))
       throw new Error('配置及 env 必须是 JSON 对象');
     return { cfg };
   }
@@ -1228,65 +1198,11 @@ function switchCodexRouter(options = {}) {
   slotMap = next;
   return result;
 }
+// 路由模式:只服务 claude / codex 两组客户端。ZCode 接入已删除,传别的 app 明确拒绝。
 function switchRouter(app, options = {}) {
-  if (app === 'zcode') return switchZcodeRouter(options);
   if (app === 'codex') return switchCodexRouter(options);
   if (app === 'claude') return switchClaudeRouter(options);
-  throw zcodeConfig.invalid('未知客户端 app');
-}
-
-const zcodeModelsOf = p => [...new Set([
-  ...(Array.isArray(p.models) ? p.models : []), p.model,
-  ...Object.values(p.slots || {}),
-].filter(m => typeof m === 'string' && m.trim()).map(m => m.trim()))];
-
-function zcodeSpec(p) {
-  const app = providerApp(p.id);
-  if (!app) throw zcodeConfig.invalid('渠道不存在');
-  if (p.enabled === false) throw zcodeConfig.invalid('渠道已停用，无法注册 ZCode');
-  if (!p.api_key) throw zcodeConfig.invalid('渠道未配置 API Key');
-  const models = zcodeModelsOf(p);
-  if (!models.length) throw zcodeConfig.invalid('渠道没有可用模型，无法注册 ZCode');
-  const wire = wireOf(p, app);
-  return { target: p.id, base_url: zcodeConfig.baseURL(p.base_url, wire), api_key: p.api_key,
-    wire_api: wire, models, model: models[0] };
-}
-
-function zcodeRouterSpec(options = {}) {
-  if (!zcodeConfig.isObject(options)) throw zcodeConfig.invalid('请求体必须是 JSON 对象');
-  const wire = options.wire_api === undefined ? 'anthropic' : options.wire_api;
-  if (typeof wire !== 'string' || !Object.hasOwn(zcodeConfig.KINDS, wire)) throw zcodeConfig.invalid('wire_api 必须是 anthropic、responses 或 chat');
-  if (options.model !== undefined && (typeof options.model !== 'string' || !options.model.trim()))
-    throw zcodeConfig.invalid('model 必须是非空字符串');
-  const app = wire === 'anthropic' ? 'claude' : 'codex';
-  // Responses can use either OpenAI upstream via the existing responses→chat adapter.
-  const usable = p => p && p.enabled !== false && p.api_key &&
-    (wire !== 'chat' || wireOf(p, app) === 'chat');
-  const models = new Set(storeOf(app).filter(usable).flatMap(zcodeModelsOf));
-  // Explicit route/pool model overrides are real configured models too. Never
-  // synthesize IDs from substring match patterns (e.g. "opus, sonnet").
-  for (const r of [...routes.rules, routes.default || {}]) {
-    if (r.enabled === false || !ruleBelongsToApp(r, app)) continue;
-    for (const member of poolMembers(r, app)) {
-      if (usable(member.provider) && typeof member.model === 'string' && member.model.trim()) models.add(member.model.trim());
-    }
-  }
-  if (!models.size) throw zcodeConfig.invalid('对应协议没有已启用渠道的可用模型');
-  const model = options.model === undefined ? [...models][0] : options.model.trim();
-  if (!models.has(model)) throw zcodeConfig.invalid('model 不在对应协议的可用模型列表中');
-  return { target: ROUTER_ID, base_url: zcodeConfig.baseURL(ROUTER_URL, wire), api_key: ROUTER_TOKEN,
-    wire_api: wire, models: [...models], model };
-}
-
-function switchZcode(p) { zcodeConfig.writeConfig(zcodeSpec(p)); }
-function switchZcodeRouter(options = {}) { zcodeConfig.writeConfig(zcodeRouterSpec(options)); }
-function liveZcodeState() {
-  return zcodeConfig.liveState(meta => {
-    if (!current.zcode || current.zcode !== meta.target) return null;
-    if (current.zcode === ROUTER_ID) return zcodeRouterSpec({ wire_api: meta.wire_api, model: meta.model });
-    const p = findProvider(current.zcode);
-    return p ? zcodeSpec(p) : null;
-  }, ROUTER_URL);
+  throw invalid('未知客户端 app(只支持 claude / codex)');
 }
 
 // 读取客户端当前实际生效的上游(与渠道库比对,给 UI 显示"配置漂移"用)
@@ -1328,7 +1244,6 @@ function liveState() {
     } catch {}
   }
   live.codex.hot_routing = { enabled: !!hotEnabled, legacy_models: legacyModels, native_picker_refresh: 'next-client' };
-  live.zcode = liveZcodeState();
   return live;
 }
 
@@ -1380,8 +1295,8 @@ const apiHandler = createConsoleHandler({
   sessionList, sessionRecord, storeOf, findProvider, providerApp, ghostRefs,
   mutateSessions, saveRoutes, saveSlots, saveStore, syncCodexStore: () => withCodexSync(saveStore), requestLog, compactWindow,
   slotsPublic, validateSlotPut, commitSlotUpdate,
-  usageSummary, readinessApi, activeRequests: () => activeRequestCount, harness,
-  switchClaude, switchCodex, switchZcode, switchRouter,
+  usageSummary, readinessApi, activeRequests: () => activeRequestCount,
+  switchClaude, switchCodex, switchRouter,
 });
 
 // ---------------------------------------------------------------- 启动
@@ -1479,10 +1394,10 @@ module.exports = {
   sweepLogsNow, startLogRetention, LOG_RETAIN_DAYS, RETENTION_SWEEP_EVERY_MS,
   resolveRoute, applyModel, safeHeader, extractUsage, maskKey, tomlStr, validBaseUrl,
   switchClaude, switchCodex, switchClaudeRouter, switchCodexRouter, switchRouter,
-  switchZcode, switchZcodeRouter, zcodeSpec, zcodeRouterSpec, liveZcodeState, joinUpstreamPath,
+  joinUpstreamPath,
   liveState, testProvider, codexTopLevel, writeCodexConfig, updateCodexConfig,
   // v3 会话分发
-  sessionIdentity, sessionLabel, parseSessionId, matchWhen, normalizeRule, poolMembers, ruleBelongsToApp, bodyRouteText,
+  sessionIdentity, sessionLabel, parseSessionId, normalizeRule, poolMembers, bodyRouteText,
   ghostRefs, reportGhostRoutes,
   sessionList, buildUpstreamHeaders, clientToken, strategyOf, applyLabel,
   // v3.1 OpenAI 端点(Codex 组)

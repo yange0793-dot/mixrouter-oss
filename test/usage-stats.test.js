@@ -19,7 +19,6 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'mixr-usage-'));
 process.env.MIXR_DATA_DIR = TMP;
 process.env.MIXR_CLAUDE_SETTINGS = path.join(TMP, 'settings.json');
 process.env.MIXR_CODEX_CONFIG = path.join(TMP, 'config.toml');
-process.env.MIXR_ZCODE_CONFIG = path.join(TMP, 'zcode-config.json');
 
 const LOG_DIR = path.join(TMP, 'logs');
 const LOG = path.join(LOG_DIR, 'requests.jsonl');
@@ -83,10 +82,7 @@ test('setup:mock 上游 + 两个服务 + 一条可用路由', async () => {
     claude: [{ id: 'p-mock', name: '回显渠道', base_url: `http://127.0.0.1:${mockPort}`, api_key: SECRET, enabled: true, models: ['echo-model'] }],
     codex: [],
   }));
-  fs.writeFileSync(path.join(TMP, 'routes.json'), JSON.stringify({
-    rules: [{ id: 'r-echo', match: 'echo-model', provider: 'p-mock', model: 'echo-model', enabled: true }],
-    default: { provider: '', model: '' },
-  }));
+  fs.writeFileSync(path.join(TMP, 'routes.json'), JSON.stringify({ rules: [], default: {} }));
   fs.writeFileSync(path.join(TMP, 'slots.json'), JSON.stringify({ version: 1, claude: {}, codex: {} }));
   mod = require('../mixrouter.js');
   proxySrv = await mod.listen(0, mod.proxyHandler);

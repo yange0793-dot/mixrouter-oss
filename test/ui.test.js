@@ -10,6 +10,7 @@ const html = fs.readFileSync(path.join(__dirname, '../public/index.html'), 'utf8
 const source = fs.readFileSync(path.join(__dirname, '../public/js/app.js'), 'utf8');
 const script = new vm.Script(source, { filename: 'public/js/app.js' });
 const { createExplainer } = require('../lib/routing/explain');
+const { createSlotTable } = require('../lib/routing/slots');
 
 function fixture() {
   return {
@@ -26,14 +27,12 @@ function fixture() {
         { id: 'o2', name: 'Chat gateway', base_url: 'https://chat.example/v1', model: 'text-model', wire_api: 'chat', enabled: false },
       ],
     },
-    current: { claude: 'a1', codex: null, zcode: null },
+    current: { claude: 'a1', codex: null },
     live: {
       claude: { base_url: 'https://anthropic.example', model: 'claude-special', match: true, router: false },
       codex: { base_url: '', match: true, router: false },
-      zcode: { base_url: '', model: '', match: true, router: false },
     },
-    router: { id: '@router', url: 'http://127.0.0.1:8787', claude_base: 'http://127.0.0.1:8787', codex_base: 'http://127.0.0.1:8787/v1', zcode_base: 'http://127.0.0.1:8787/custom' },
-    routes: { rules: [{ id: 'r1', match: 'claude', provider: 'a1', model: '', enabled: true, pool: [], when: {} }], default: { provider: 'a1', model: '', pool: [] } },
+    router: { id: '@router', url: 'http://127.0.0.1:8787', claude_base: 'http://127.0.0.1:8787', codex_base: 'http://127.0.0.1:8787/v1' },
     slots: {
       claude: ['main', 'opus', 'sonnet', 'haiku', 'subagent'].map(name => ({
         name, alias: 'mixr-' + name,
@@ -170,14 +169,14 @@ async function harness(data = fixture(), opts = {}) {
     // 导出才用得到:造一个假 <a> 并把它的 download/href 记下来(不真下载)。
     createElement: tag => { const el = new Element('', tag); el.click = () => downloads.push({ download: el.download, href: el.href }); return el; },
   };
-  for (const id of ['rules-box', 'def-box', 'save-routes', 'add-rule']) get(id).parentElement = get('view-routes');
   // 概览页与设置页的控件也要有自己的视图容器:凡断言"某控件在自己的视图里"的用例都靠它。
   for (const id of ['overview-todo', 'overview-clients', 'overview-endpoints', 'ov-version', 'ov-revision']) get(id).parentElement = get('view-overview');
   for (const id of ['backup-status', 'backup-dirs', 'health-status', 'health-body', 'preview-status', 'preview-body', 'preview-app', 'preview-model', 'metrics-msg']) get(id).parentElement = get('view-settings');
   for (const [parent, ids] of [['compact-panel', ['compact-provider', 'compact-model', 'compact-model-custom', 'compact-key']],
     ['compact-window-panel', ['window-scope', 'window-project', 'window-value']]]) {
     for (const id of ids) get(id).parentElement = get(parent);
-    get(parent).parentElement = get('view-routes');
+    // 压缩模型与压缩窗口现在同属独立的「压缩设置」视图(通用路由页已移除)。
+    get(parent).parentElement = get('view-compact');
   }
   get('codex-compact-panel').appendChild(get('codex-compact-input'));
   get('codex-models').appendChild(get('codex-compact-panel'));
@@ -274,9 +273,7 @@ async function harness(data = fixture(), opts = {}) {
       }
       if (url === '/api/compact' && options.method === 'POST') {
         data.compact = { ...data.compact, revision: 'saved-revision', mode: 'single', selection: { provider: body.provider, model: body.model, ...(Object.hasOwn(body, 'key_id') ? { key_id: body.key_id } : {}) } };
-        data.routes_revision = 'saved-revision';
-        data.routes = { ...data.routes, rules: data.routes.rules.map(r => ({ ...r })) };
-        return { ok: true, json: async () => ({ ok: true, compact: structuredClone(data.compact), routes: structuredClone(data.routes) }) };
+        return { ok: true, json: async () => ({ ok: true, compact: structuredClone(data.compact) }) };
       }
       if (url === '/api/logs' || url.startsWith('/api/logs?')) return { ok: true, json: async () => ({ logs: [] }) };
       // ---- 设置页的三条只读端点。造的是"能读到"的常态;失败注入由用例自己覆写 fetch。
@@ -293,13 +290,23 @@ async function harness(data = fixture(), opts = {}) {
       }
       if (url === '/api/routing/preview') {
         if (failPreview) throw new Error('simulated preview failure');
+        // 预览复用**真实** resolver:分发只有"精确槽位别名 → 唯一已登记模型"两条,没有通用规则兜底。
+        // 所以夹具按这两条造:每个渠道都得有一把可用的 Key(usableProvider 要求),槽位表取自夹具的 slots。
         const store = Object.fromEntries(['claude', 'codex'].map(app => [app, data.providers[app].map(p => ({
-          ...p, api_key: 'sk-ui-fixture', keys: (p.keys || []).map(k => ({ ...k, key: 'sk-ui-fixture-' + k.id })),
+          ...p, api_key: 'sk-ui-fixture',
+          keys: (p.keys && p.keys.length ? p.keys : [{ id: 'kfix', label: 'fixture', enabled: true }])
+            .map(k => ({ ...k, key: 'sk-ui-fixture-' + (k.id || 'kfix') })),
         }))]));
+        const findProvider = id => [...store.claude, ...store.codex].find(p => p.id === id);
+        const providerApp = id => store.codex.some(p => p.id === id) ? 'codex' : 'claude';
+        const slotMap = Object.fromEntries(['claude', 'codex'].map(app => [app,
+          Object.fromEntries((data.slots?.[app] || []).map(slot => [slot.name, slot]))]));
+        const slotTable = createSlotTable({ storeOf: app => store[app], findProvider, providerApp });
         const explain = createExplainer({
-          getRoutes: () => data.routes, storeOf: app => store[app], resolveSlot: () => null,
-          findProvider: id => [...store.claude, ...store.codex].find(p => p.id === id),
-          providerApp: id => store.codex.some(p => p.id === id) ? 'codex' : 'claude',
+          // 真实服务端里压缩规则存在 routes.json;预览只需要一个可调用的读函数。
+          getRoutes: () => data.compactRoutes || { rules: [] }, storeOf: app => store[app],
+          resolveSlot: (app, modelIn) => slotTable.resolveSlot(slotMap, app, modelIn),
+          findProvider, providerApp,
           listPools: () => ({}), inCooldown: () => false, healthEligible: () => true,
           sessionCounts: () => data.previewCounts || {},
         });
@@ -347,9 +354,8 @@ function memoryStorage(initial = {}) {
   };
 }
 
-test('压缩选择独立于通用路由草稿，显示实际池模型，后台刷新不覆盖自定义值', async () => {
+test('压缩选择独立于已移除的通用路由，显示实际池模型，后台刷新不覆盖自定义值', async () => {
   const data = fixture();
-  data.routes_revision = 'rev-one';
   data.compact = { key_selection_supported: true, revision: 'rev-one', mode: 'mixed', selection: null, providers: [data.providers.claude[0]],
     rules: [{ id: 'renamed', kind: 'global', enabled: true, strategy: 'priority', has_pool: true,
       targets: [{ provider: 'a1', name: 'Alpha', model: 'actual-pool-model', enabled: true, key_id: '', key_label: 'Account One', key_available: true }] }] };
@@ -357,23 +363,21 @@ test('压缩选择独立于通用路由草稿，显示实际池模型，后台�
   assert.match(h.get('compact-current').innerHTML, /actual-pool-model/);
   assert.equal(h.run('compactDraft.provider'), '', '混合落点不能假显示成单一已选渠道');
   h.run("pickCompactProvider('a1'); pickCompactModel('__custom__'); document.getElementById('compact-model-custom').value = 'draft-model'; setCompactCustom('draft-model')");
-  assert.equal(h.run('routesDirty'), false);
-  for (const listener of h.get('view-routes').events.input) listener({ target: h.get('compact-model-custom') });
-  assert.equal(h.run('routesDirty'), false, '压缩控件冒泡事件不能污染通用路由草稿');
   assert.equal(h.run('compactDirty'), true);
   data.compact.revision = 'rev-two'; await h.run('refresh()');
   assert.equal(h.run('compactDraft.model'), 'draft-model');
   assert.equal(h.get('compact-model-custom').value, 'draft-model');
   assert.match(h.get('compact-msg').textContent, /服务端/);
-  await h.run('saveRoutes()');
-  assert.equal(h.requests.some(r => r.url === '/api/routes' && r.method === 'PUT'), false, '压缩草稿未保存时不能写回旧通用草稿');
-  h.run('compactDirty = false; routesDirty = true');
+  // 通用规则编辑器与它的写入端点都已移除:任何页面交互都不该再产生 /api/routes 请求。
+  assert.equal(h.requests.some(r => r.url === '/api/routes'), false, '通用规则编辑器已移除,不该再有任何 /api/routes 请求');
+  // 服务端版本已经变了:此时保存必须要求重新载入,而不是把旧版本号提交上去。
   await h.run('saveCompact()');
-  assert.equal(h.requests.some(r => r.url === '/api/compact' && r.method === 'POST'), false, '通用草稿未保存时不能提交压缩选择');
+  assert.equal(h.requests.some(r => r.url === '/api/compact' && r.method === 'POST'), false, '服务端版本变了就不能提交压缩选择');
+  assert.match(h.get('toast').textContent, /重新载入/);
 });
 
 test('压缩保存带版本号、确认替换备池，自动刷新保留保存中的后续编辑', async () => {
-  const data = fixture(); data.routes_revision = 'rev-one';
+  const data = fixture();
   data.compact = { key_selection_supported: true, revision: 'rev-one', mode: 'single', selection: { provider: 'a1', model: 'claude-special', key_id: '' },
     providers: [data.providers.claude[0]], rules: [] };
   const h = await harness(data);
@@ -384,12 +388,12 @@ test('压缩保存带版本号、确认替换备池，自动刷新保留保存�
   const req = h.requests.findLast(r => r.url === '/api/compact' && r.method === 'POST');
   assert.deepEqual(req.body, { provider: 'a1', model: 'new-model', key_id: '', expected_revision: 'rev-one' });
   assert.equal(h.run('compactDirty'), false);
-  assert.equal(h.run('routesBaseRevision'), 'saved-revision');
-  assert.equal(h.run('JSON.stringify(routesDraft) === JSON.stringify(state.routes)'), true);
+  assert.equal(h.run('compactBase'), 'saved-revision', '保存后草稿基线跟着服务端新版本走');
+  assert.equal(h.run('state.compact.selection.model'), 'new-model');
 });
 
 test('压缩提交等待响应时的新编辑仍留在草稿，确认期间变更不冒充已保存', async () => {
-  const data = fixture(); data.routes_revision = 'rev-one';
+  const data = fixture();
   data.compact = { key_selection_supported: true, revision: 'rev-one', mode: 'single', selection: { provider: 'a1', model: 'claude-special', key_id: '' }, providers: [data.providers.claude[0]], rules: [] };
   const h = await harness(data);
   h.run("pickCompactModel('__custom__'); setCompactCustom('submitted'); globalThis.pendingCompact = null; const realFetch = fetch; globalThis.fetch = (url, opt) => url === '/api/compact' ? new Promise(resolve => { pendingCompact = async () => resolve(await realFetch(url,opt)); }) : realFetch(url,opt)");
@@ -403,7 +407,7 @@ test('压缩提交等待响应时的新编辑仍留在草稿，确认期间变�
 });
 
 test('压缩确认框打开后改了草稿，保存原选择不能清除新草稿', async () => {
-  const data = fixture(); data.routes_revision = 'rev-one';
+  const data = fixture();
   data.compact = { key_selection_supported: true, revision: 'rev-one', mode: 'single', selection: { provider: 'a1', model: 'claude-special', key_id: '' }, providers: [data.providers.claude[0]], rules: [] };
   const h = await harness(data);
   h.run("pickCompactModel('__custom__'); setCompactCustom('before-confirm')");
@@ -474,8 +478,6 @@ test('压缩 Key 仅显示标签与 ID，固定选择不改 active_key 或通用
   assert.match(h.get('compact-key').innerHTML, /value="k-off" disabled/);
   assert.doesNotMatch(h.get('compact-key').innerHTML + h.get('compact-key-hint').textContent, /raw-fixture-secret|masked-fixture-secret/);
   h.run("pickCompactKey('k2')");
-  for (const event of ['input', 'change']) for (const listener of h.get('view-routes').events[event]) listener({ target: h.get('compact-key') });
-  assert.equal(h.run('routesDirty'), false);
   assert.equal(h.run('compactDirty'), true);
   const saving = h.run('saveCompact()');
   assert.match(h.get('confirm-text').textContent, /两条压缩规则.*Account Two（k2）.*普通模型.*active_key.*不变/);
@@ -529,7 +531,6 @@ test('Key 草稿在刷新、确认和保存等待期间保持独立，不被保�
   assert.equal(h.run('compactDraft.key_id'), '');
   assert.equal(h.get('compact-key').value, '');
   assert.equal(h.run('compactDirty'), true);
-  assert.equal(h.run('routesDirty'), false);
 });
 
 test('压缩窗口显示各层来源与覆盖警告，不自动写配置', async () => {
@@ -709,15 +710,12 @@ test('项目符号链接经服务端规范化后可保存，异步读取不覆�
   assert.equal(h.get('window-project').value, '/tmp/another-project');
 });
 
-test('窗口面板事件不污染通用路由草稿，未保存窗口值阻止离页', async () => {
+test('窗口面板事件不污染压缩草稿，未保存窗口值阻止离页', async () => {
   const data = fixture(); data.compact = { key_selection_supported: true, revision: 'rev-one', mode: 'single', selection: { provider: 'a1', model: 'claude-special', key_id: '' }, providers: [data.providers.claude[0]], rules: [] };
   const h = await harness(data); await h.run('loadCompactWindow()');
   h.run("setWindowValue('300k')");
-  for (const event of ['input', 'change']) for (const listener of h.get('view-routes').events[event]) {
-    listener({ target: h.get('window-value') });
-    listener({ target: h.get('window-scope') });
-  }
-  assert.equal(h.run('routesDirty'), false);
+  assert.equal(h.run('compactDirty'), false, '窗口草稿不能把压缩模型标成未保存');
+  assert.equal(h.requests.some(r => r.url === '/api/routes'), false, '窗口输入不该产生 /api/routes 请求');
   assert.equal(h.get('save-compact').disabled, false, '窗口草稿不得锁定独立压缩模型控件');
   const beforeUnload = h.windowListeners.get('beforeunload');
   assert.ok(beforeUnload?.length);
@@ -843,9 +841,10 @@ test('分槽统计忽略过期异步响应，刷新不更换编辑节点或丢�
   const data = fixture();
   data.compact = { key_selection_supported: true, revision: 'rev-one', mode: 'single', selection: { provider: 'a1', model: 'claude-special', key_id: '' }, providers: [data.providers.claude[0]], rules: [] };
   const h = await harness(data); mockSlotStats(h, slotStatsFixture());
-  h.run("pickCompactModel('__custom__'); setCompactCustom('unfinished-model'); setWindowValue('300k'); routesDraft.rules[0].match = 'unfinished-rule'; markRoutesDirty()");
+  h.run("pickCompactModel('__custom__'); setCompactCustom('unfinished-model'); setWindowValue('300k')");
   const field = h.get('compact-model-custom'); field.value = 'unfinished-model'; field.focus();
-  const rules = h.get('rules-box'), writes = rules.htmlWrites;
+  // 编辑节点身份:压缩渠道下拉是 renderCompactEditor 每次重绘都会重建的那一个,拿它当"没被重建"的观察点。
+  const provider = h.get('compact-provider'), writes = provider.htmlWrites;
   h.run('globalThis.pendingStats = []; fetch = () => new Promise(resolve => pendingStats.push(resolve))');
   const first = h.run('loadStats()'), second = h.run('loadStats()');
   h.run('pendingStats[1]({ ok: true, json: async () => slotStatsResponse })'); await second;
@@ -858,8 +857,8 @@ test('分槽统计忽略过期异步响应，刷新不更换编辑节点或丢�
   assert.equal(h.document.activeElement, field);
   assert.equal(field.value, 'unfinished-model');
   assert.equal(h.get('window-value').value, '300k');
-  assert.equal(h.run('routesDraft.rules[0].match'), 'unfinished-rule');
-  assert.equal(rules.htmlWrites, writes);
+  assert.equal(h.run('compactDraft.model'), 'unfinished-model');
+  assert.equal(provider.htmlWrites, writes);
 });
 
 test('日志页进入与五秒自动刷新都读取分槽统计，关闭刷新后不请求', async () => {
@@ -952,12 +951,10 @@ test('会话搜索按短 id / 完整 id / 对话名 / 渠道名子串过滤,并�
 
 test('搜索只重渲染,不动服务端快照与任何草稿', async () => {
   const data = fixture();
-  data.routes_revision = 'rev-one';
   data.compact = { key_selection_supported: true, revision: 'rev-one', mode: 'single', selection: { provider: 'a1', model: 'claude-special', key_id: '' },
     providers: [data.providers.claude[0]], rules: [] };
   const h = await harness(data);
-  h.run("view = 'routes'");
-  h.run("routesDraft.rules[0].match = 'edited-by-user'; markRoutesDirty()");
+  h.run("view = 'compact'");
   h.run("pickCompactProvider('a1'); pickCompactModel('__custom__'); setCompactCustom('draft-model')");
   const sessionsBefore = h.run('JSON.stringify(state.sessions)');
   const writesBefore = h.requests.length;
@@ -966,9 +963,7 @@ test('搜索只重渲染,不动服务端快照与任何草稿', async () => {
   h.run("setSessQuery('bbb')");
   assert.equal(h.run('JSON.stringify(state.sessions)'), sessionsBefore, '搜索不得改动服务端快照里的会话');
   assert.equal(h.run('state.sessions.length'), 3, '被筛掉的行仍然留在 state 里');
-  assert.equal(h.run('routesDraft.rules[0].match'), 'edited-by-user', '通用路由草稿不受影响');
   assert.equal(h.run('compactDraft.model'), 'draft-model', '压缩草稿不受影响');
-  assert.equal(h.run('routesDirty'), true);
   assert.equal(h.run('compactDirty'), true);
   assert.equal(h.requests.length, writesBefore, '搜索不发任何请求(尤其不能把被筛掉的会话删掉)');
 
@@ -1013,26 +1008,6 @@ test('五个固定槽无 fable，模型编辑保持备池的部分更新语义',
   assert.deepEqual(data.slots.claude[0].pool, [{ provider: 'a2', model: 'backup-model' }]);
 });
 
-test('ZCode is a client over two protocol stores; counts never duplicate the repository', async () => {
-  const h = await harness();
-  h.run("setApp('zcode'); setZcodeWire('anthropic')");
-  assert.equal(h.run('providerGroup()'), 'claude');
-  assert.equal(h.run('providers().length'), 2);
-  assert.equal(h.get('count-zcode').textContent, 4);
-  assert.equal(h.get('metric-providers').textContent, 2);
-  assert.equal(h.get('metric-requests').textContent, '12');
-  assert.equal(h.get('metric-tokens').textContent, '140');
-  for (const wire of ['responses', 'chat']) {
-    h.run(`setZcodeWire('${wire}')`);
-    assert.equal(h.run('providerGroup()'), 'codex');
-    assert.equal(h.run('providers().length'), 2); // No hard filtering by wire.
-    assert.equal((h.get('prov-grid').innerHTML.match(/<article /g) || []).length, 2);
-  }
-  assert.equal(h.run('state.providers.zcode'), undefined);
-  h.run("setApp('claude')");
-  assert.equal(h.run('providerGroup()'), 'claude');
-});
-
 test('provider search combines name, URL, models, slots and enabled-state filters', async () => {
   const h = await harness();
   const search = (query, filter = 'all') => {
@@ -1047,7 +1022,8 @@ test('provider search combines name, URL, models, slots and enabled-state filter
   h.get('empty-action').onclick();
   assert.equal(h.get('provider-search').value, '');
   assert.equal(h.get('provider-filter').value, 'all');
-  h.run("setApp('zcode'); setZcodeWire('chat')");
+  // 两组渠道各自搜得到自己的模型;搜不到的名字必须真的搜不到。
+  h.run("setApp('codex')");
   assert.equal(search('gpt-test'), 1);
   assert.equal(search('missing-model'), 0);
 });
@@ -1079,44 +1055,6 @@ test('多 Key 弹窗:老式单 Key 渠道预置「账号1」,顶栏那行不再�
   ]);
 });
 
-test('ZCode create/edit saves use the selected protocol group, including chat default', async () => {
-  const h = await harness();
-  for (const [wire, group] of [['anthropic', 'claude'], ['responses', 'codex'], ['chat', 'codex']]) {
-    h.run(`setApp('zcode'); setZcodeWire('${wire}'); openProvider()`);
-    h.get('m-name').value = 'New channel'; h.get('m-base').value = 'https://new.example/v1'; h.get('m-model').value = 'model-a';
-    await h.run('saveProvider()');
-    const req = h.requests.filter(r => r.method === 'POST' && r.url === '/api/providers').at(-1);
-    assert.equal(req.body.app, group);
-    if (group === 'codex') assert.equal(req.body.wire_api, wire);
-    assert.equal(h.get('workspace').inert, false);
-  }
-  h.run("setZcodeWire('chat'); openProvider('o1')");
-  assert.equal(h.get('m-wire').value, 'responses'); // Preserve actual channel protocol when editing.
-  await h.run('saveProvider()');
-  const edited = h.requests.findLast(r => r.method === 'PUT' && r.url === '/api/providers/o1');
-  assert.equal(edited.body.app, 'codex');
-  assert.equal(edited.body.wire_api, 'responses');
-  assert.equal(h.requests.some(r => r.body?.app === 'zcode'), false);
-});
-
-test('ZCode switch sends app=zcode; router sends the chosen wire; other clients preserve empty bodies', async () => {
-  const h = await harness();
-  h.run("setApp('zcode'); setZcodeWire('responses')");
-  await h.confirm("switchProvider('o1')");
-  assert.deepEqual(h.requests.findLast(r => r.url === '/api/switch/o1').body, { app: 'zcode' });
-  h.run("setZcodeWire('chat')");
-  await h.confirm('switchRouterMode()');
-  assert.deepEqual(h.requests.findLast(r => r.url === '/api/router/zcode').body, { wire_api: 'chat' });
-  assert.equal(h.run("routerBase('zcode')"), h.data.router.zcode_base);
-  delete h.data.router.zcode_base; await h.run('refresh()');
-  assert.equal(h.run("routerBase('zcode')"), h.data.router.url);
-  h.run("setApp('claude')");
-  await h.confirm("switchProvider('a1')");
-  assert.equal(h.requests.findLast(r => r.url === '/api/switch/a1').body, undefined);
-  h.run("setApp('codex')"); await h.confirm('switchRouterMode()');
-  assert.equal(h.requests.findLast(r => r.url === '/api/router/codex').body, undefined);
-});
-
 test('Codex has no manual slot apply or reasoning controls, while Claude apply stays available', async () => {
   const h = await harness();
   h.run("setApp('codex')");
@@ -1134,37 +1072,6 @@ test('Codex has no manual slot apply or reasoning controls, while Claude apply s
   await h.confirm('applySlotsClaude()');
   assert.deepEqual(h.requests.findLast(r => r.url === '/api/router/claude').body, { slots: true });
   assert.equal(h.requests.some(r => r.method === 'POST' && r.url === '/api/router/codex'), false);
-});
-
-test('old backend cannot receive ZCode write requests that might target another client', async () => {
-  const data = fixture(); delete data.current.zcode; delete data.live.zcode;
-  const h = await harness(data);
-  h.run("setApp('zcode')");
-  assert.equal(h.get('btn-router').disabled, true);
-  await h.run("switchProvider('a1')"); await h.run('switchRouterMode()');
-  assert.equal(h.requests.some(r => r.method === 'POST'), false);
-});
-
-test('polling preserves route DOM identity, focus, drafts, and unsaved values across views', async () => {
-  const h = await harness();
-  h.run("view = 'routes'");
-  const input = h.get('rule-0-match'), rules = h.get('rules-box'), defaults = h.get('def-box');
-  input.focus(); input.value = 'unfinished, draft';
-  h.run("routesDraft.rules[0].match = 'unfinished, draft'; markRoutesDirty()");
-  const before = [rules.htmlWrites, defaults.htmlWrites];
-  h.data.routes.rules[0].match = 'external-update';
-  for (let n = 0; n < 3; n++) await h.run('refresh()');
-  assert.deepEqual([rules.htmlWrites, defaults.htmlWrites], before);
-  assert.equal(h.get('rule-0-match'), input);
-  assert.equal(h.document.activeElement, input);
-  assert.equal(input.value, 'unfinished, draft');
-  assert.equal(h.run('routesDraft.rules[0].match'), 'unfinished, draft');
-  assert.equal(h.run('routesDirty'), true);
-  h.run("view = 'providers'"); await h.run('refresh()'); h.run("view = 'routes'"); await h.run('refresh()');
-  assert.deepEqual([rules.htmlWrites, defaults.htmlWrites], before);
-  await h.confirm('reloadRoutes()');
-  assert.equal(h.run('routesDraft.rules[0].match'), 'external-update');
-  assert.equal(h.run('routesDirty'), false);
 });
 
 test('disconnect leaves a labelled stale snapshot, not a green online state, then recovers', async () => {
@@ -1209,10 +1116,14 @@ test('dialog traps Tab in both directions, Escape cancels and returns focus, tab
   assert.equal(h.get('workspace').inert, false);
   const confirmation = h.run("askConfirm('Delete', 'Are you sure?')");
   keydown({ key: 'Escape' }); assert.equal(await confirmation, false);
+  // 标签只有 claude / codex 两个,End 落到最后一个。
   h.tabs.events.keydown[0]({ key: 'End', preventDefault() {} });
-  assert.equal(h.run('curApp'), 'zcode');
-  assert.equal(h.get('tab-zcode').getAttribute('aria-selected'), 'true');
-  assert.equal(h.document.activeElement, h.get('tab-zcode'));
+  assert.equal(h.run('curApp'), 'codex');
+  assert.equal(h.get('tab-codex').getAttribute('aria-selected'), 'true');
+  assert.equal(h.document.activeElement, h.get('tab-codex'));
+  h.tabs.events.keydown[0]({ key: 'Home', preventDefault() {} });
+  assert.equal(h.run('curApp'), 'claude', 'Home 回到第一个标签');
+  assert.equal(h.get('tab-claude').getAttribute('aria-selected'), 'true');
 });
 
 test('Codex main/reviewer selectors are always visible and save independently', async () => {
@@ -1686,7 +1597,7 @@ test('Codex one-edit PUT uses returned slots and live config immediately without
   assert.equal(h.run('state.live.codex.model'), 'mixr-main');
   assert.equal(h.run('state.live.codex.model_catalog_json'), '/tmp/codex-catalog.json');
   assert.match(h.get('liveinfo').innerHTML, /gpt-other/);
-  assert.match(h.get('liveinfo').innerHTML, /路由槽位调整从下一次请求生效/);
+  assert.match(h.get('liveinfo').innerHTML, /槽位调整从下一次请求生效/);
   assert.doesNotMatch(h.get('liveinfo').innerHTML, /Codex 需重启生效/);
   assert.match(h.get('codex-config-details').innerHTML, /250,000 tokens/);
   assert.doesNotMatch(h.get('codex-config-details').innerHTML, /gpt-raw-default|配置中的主模型|重启|推理档位/);
@@ -1770,10 +1681,10 @@ test('provider overview resolves configured slots without claiming a live reques
   assert.match(h.get('slots-rows').innerHTML, /setSlot\('claude','main'/);
 });
 
-test('当前配置摘要对三个客户端同构:字段一致、连接详情可展开、展开状态与离线口径都不走样', async () => {
+test('当前配置摘要对两个客户端同构:字段一致、连接详情可展开、展开状态与离线口径都不走样', async () => {
   const h = await harness();
   h.run("view = 'providers'");
-  for (const app of ['claude', 'codex', 'zcode']) {
+  for (const app of ['claude', 'codex']) {
     h.run(`connectionExpanded.${app} = false; setApp('${app}')`);
     const info = h.get('liveinfo').innerHTML;
     for (const field of ['配置供应商', '默认模型', '接入方式', 'connection-details', '连接配置']) assert.match(info, new RegExp(field));
@@ -1790,9 +1701,9 @@ test('当前配置摘要对三个客户端同构:字段一致、连接详情可�
   await h.run('refresh()');
   assert.match(h.get('liveinfo').innerHTML, /connection-details" open/, '5 秒刷新不能把展开状态收回去');
   assert.equal(h.run('connectionExpanded.claude'), false, '展开状态按客户端分开记');
-  // 离线:三个客户端一律降级成「待确认」,不许残留「已写入配置」
+  // 离线:两个客户端一律降级成「待确认」,不许残留「已写入配置」
   h.disconnect(); await h.run('refresh()');
-  for (const app of ['claude', 'codex', 'zcode']) {
+  for (const app of ['claude', 'codex']) {
     h.run(`setApp('${app}')`);
     const info = h.get('liveinfo').innerHTML;
     assert.match(info, /待确认/);
@@ -1859,14 +1770,17 @@ test('视图/客户端切换通知可选 workspace 模块,模块缺席或抛错�
   const h = await harness();
   h.run("globalThis.__views = []; globalThis.__apps = []; globalThis.workspaceViewChanged = name => __views.push(name); globalThis.workspaceAppChanged = app => __apps.push(app)");
   h.run("showView('diagnostics')");
-  h.run("showView('routes')");
-  assert.equal(h.run('JSON.stringify(__views)'), '["diagnostics","routes"]');
+  h.run("showView('compact')");
+  assert.equal(h.run('JSON.stringify(__views)'), '["diagnostics","compact"]');
   h.run("setApp('codex')");
   h.run("setApp('claude')");
   assert.equal(h.run('JSON.stringify(__apps)'), '["codex","claude"]');
-  h.run("delete globalThis.workspaceViewChanged; delete globalThis.workspaceAppChanged; showView('providers'); setApp('zcode')");
+  h.run("delete globalThis.workspaceViewChanged; delete globalThis.workspaceAppChanged; showView('providers'); setApp('codex')");
   assert.equal(h.run('view'), 'providers', '没有 workspace 模块时视图照常切换');
-  assert.equal(h.run('curApp'), 'zcode');
+  assert.equal(h.run('curApp'), 'codex');
+  // 已移除的客户端名不再能切过去:setApp 对未知 app 直接忽略。
+  h.run("setApp('zcode')");
+  assert.equal(h.run('curApp'), 'codex', 'ZCode 不再是可切换客户端');
   // 外壳模块抛错:主页面照常切换,错误只记一条 console.error(这里临时接住,免得绿色
   // 测试输出里冒出看着像失败的堆栈)。
   const reported = [];
@@ -1882,7 +1796,7 @@ test('视图/客户端切换通知可选 workspace 模块,模块缺席或抛错�
 
 test('客户端侧栏:直达正确渠道库且只高亮一个客户端,不依赖外壳模块', async () => {
   const h = await harness();
-  for (const app of ['codex', 'zcode', 'claude']) {
+  for (const app of ['codex', 'claude']) {
     h.run(`document.querySelectorAll('nav a').find(a => a.dataset.app === '${app}').click()`);
     assert.equal(h.run('view'), 'providers');
     assert.equal(h.run('curApp'), app);
@@ -1942,9 +1856,9 @@ test('live configuration mismatch never labels the stored provider as the actual
 test('generated handlers compile safely for quotes, apostrophes, and HTML in provider identifiers', async () => {
   const data = fixture(); data.providers.claude[0].id = `a'"<&`; data.providers.claude[0].name = '<script>bad()</script>';
   const h = await harness(data);
-  h.run("view = 'providers'; renderProviders()");   // 渠道卡片与规则卡都要先渲染出来才扫得到
+  h.run("view = 'providers'; renderProviders()");   // 渠道卡片要先渲染出来才扫得到
   const decode = s => s.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
-  for (const fragment of [html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ''), h.get('prov-grid').innerHTML, h.get('rules-box').innerHTML, h.get('def-box').innerHTML]) {
+  for (const fragment of [html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ''), h.get('prov-grid').innerHTML]) {
     for (const match of fragment.matchAll(/\bon(?:click|input|change|submit)="([^"]*)"/g)) new vm.Script(`(function(event){${decode(match[1])}})`);
   }
   assert.equal(h.get('prov-grid').innerHTML.includes('<script>bad()'), false);
@@ -2019,34 +1933,6 @@ test('渠道弹窗:模型列表按行编辑,下拉是本组登记过的模型名
   assert.equal(put.body.slots, undefined, '渠道级槽位不再由弹窗改写');
   h.run("removeModelDraft(1)");
   assert.doesNotMatch(rows(), /brand-new-model/);
-});
-
-test('路由绑了已删除的渠道时,控制台要把那个幽灵摆出来,而不是显示成"未绑定"', async () => {
-  // 渠道被删了,规则里还留着它的 id(routes.json 手改或从旧备份恢复就会这样)。
-  // 以前这个 id 不在下拉列表里,浏览器默认显示第一项"未绑定",可草稿里仍是那个幽灵 id:
-  // 界面说没绑定、保存时又原样传回去,用户看不出是哪条规则出了问题——服务端现在会拒,
-  // 报的正是他界面上根本找不到的那个 id。
-  const ghost = 'pmu48wblh75h6';
-  const d = fixture();
-  d.routes.rules = [
-    { id: 'rghost', match: 'kimi-k3', provider: ghost, model: '', pool: [], strategy: 'round_robin', priority: 0, app: '', when: {}, enabled: true },
-    { id: 'rpool', match: 'pooled', provider: '', pool: [{ provider: ghost }, { provider: 'a1' }], strategy: 'round_robin', priority: 0, app: '', when: {}, enabled: true },
-  ];
-  const h = await harness(d);
-  const box = () => h.get('rules-box').innerHTML;
-
-  assert.match(box(), /渠道已删除/, '单选目标里的幽灵要显式摆出来');
-  assert.match(box(), new RegExp(ghost), '要把那个 id 露出来,用户才知道是哪个');
-  assert.match(box(), /⚠/, '要有醒目标记');
-  // 池里的幽灵成员同理,而且必须能摘掉(否则保存永远被拒、用户无路可走)
-  assert.match(box(), /移除/, '池里的幽灵成员要能一键移除');
-  h.run(`dropPoolMember(1, ${JSON.stringify(ghost)})`);
-  assert.equal(h.run('routesDraft.rules[1].pool.length'), 1, '移除后池里只剩真渠道');
-  assert.equal(h.run('routesDraft.rules[1].pool[0].provider'), 'a1');
-  // 只有第 2 条规则(池)被摘干净;第 1 条规则的单选目标仍指着幽灵,它的标记该留着
-  assert.equal((box().match(/渠道已删除（/g) || []).length, 1, '移除后池里不该再有幽灵项');
-  assert.match(box(), /目标渠道<select[^>]*><option value="">未绑定<\/option><option value="pmu48wblh75h6" selected>⚠ 渠道已删除/,
-    '第 1 条规则的单选幽灵仍在(它本来就该在,等用户自己改选)');
 });
 
 test('写入配置带回的备份池轮换:并进同一条提示显示,且用 warn 样式(不是 ok,也不是 err)', async () => {
@@ -2157,15 +2043,16 @@ test('「应用槽位到客户端」带回备份轮换:并进同一条提示,且
 //   · 最近实际落点只认会话的 actual,没有就写「暂无」,绝不拿路由预览冒充
 //   · 设置页只读那四个端点,且不请求任何配置正文
 
-test('概览:八个视图里最靠前的一页,只读,且不放任何可写控件', async () => {
+test('概览:七个视图里最靠前的一页,只读,且不放任何可写控件', async () => {
   const h = await harness();
   assert.equal(h.run('view'), 'overview', '默认视图是概览');
-  assert.equal(h.run('VIEWS.length'), 8);
-  assert.deepEqual(Array.from(h.run('VIEWS')), ['overview', 'usage', 'providers', 'harness', 'routes', 'sessions', 'diagnostics', 'settings']);
+  assert.equal(h.run('VIEWS.length'), 7);
+  assert.deepEqual(Array.from(h.run('VIEWS')), ['overview', 'usage', 'providers', 'compact', 'sessions', 'diagnostics', 'settings']);
+  assert.equal(h.run("VIEW_LABELS.compact"), '压缩设置');
   assert.equal(h.run("VIEW_LABELS.diagnostics"), '诊断');
   assert.equal(h.run("VIEW_LABELS.settings"), '设置与备份');
   // 其余视图节默认都藏起来,由 showView 统一开关
-  for (const v of ['overview', 'usage', 'providers', 'harness', 'routes', 'sessions', 'diagnostics', 'settings']) {
+  for (const v of ['overview', 'usage', 'providers', 'compact', 'sessions', 'diagnostics', 'settings']) {
     const el = h.get('view-' + v);
     assert.ok(el, `视图节 view-${v} 必须存在`);
     if (v !== 'overview') assert.equal(el.style.display, 'none', `view-${v} 默认必须是 display:none`);
@@ -2216,7 +2103,8 @@ test('概览的需处理事项:有问题时逐条列出并给跳转,没问题时
   const data = fixture();
   data.providers.claude.push({ id: 'a3', name: 'Never Used', base_url: 'https://x.example', models: ['m'], enabled: false });
   data.cooldowns = [{ provider: 'a1', until: Date.now() + 60000, name: 'Alpha' }];
-  data.routes.rules.push({ id: 'rghost', match: 'kimi-k3', provider: 'pmu48wblh75h6', model: '', pool: [], strategy: 'round_robin', priority: 0, app: '', when: {}, enabled: true });
+  // 僵尸引用的判据现在是**槽位表**:槽位指向一条已删除的渠道。通用规则不再参与。
+  data.slots.claude.find(s => s.name === 'subagent').provider = 'pmu48wblh75h6';
   data.sessions[0].routing = { keys: { a1: 'k-gone' }, slots: {} };   // Key 已失效 ⇒ 会话有失效引用
   const h = await harness(data);
   const todo = h.get('overview-todo').innerHTML;
@@ -2224,15 +2112,15 @@ test('概览的需处理事项:有问题时逐条列出并给跳转,没问题时
   assert.match(todo, /Never Used/, '要能看出是哪些渠道');
   assert.match(todo, /1 把 Key 已停用/, '失效 Key 要报总数');       // a1 的 k-off
   assert.doesNotMatch(todo, /渠道冷却中/, '不再展示冷却状态');
-  assert.match(todo, /路由里有失效引用/, '僵尸引用要报');
+  assert.match(todo, /槽位里有失效引用/, '僵尸引用要报');
   assert.match(todo, /pmu48wblh75h6/, '要把那个 id 露出来');
   assert.match(todo, /1 个会话的 Key \/ 槽位覆盖里存在已失效的引用/, '会话失效覆盖要报总数');
   // 每条都带一个跳到管它那一页的按钮,且只调 showView
   const jumps = [...todo.matchAll(/data-jump="([^"]+)"/g)].map(m => m[1]).sort();
-  assert.deepEqual(jumps, ['providers', 'providers', 'routes', 'sessions']);
+  assert.deepEqual(jumps, ['providers', 'providers', 'providers', 'sessions']);
   const before = h.requests.filter(r => r.method !== 'GET').length;
-  h.run("showView('routes')");
-  assert.equal(h.run('view'), 'routes', '跳转按钮只切视图');
+  h.run("showView('compact')");
+  assert.equal(h.run('view'), 'compact', '跳转按钮只切视图');
   assert.equal(h.requests.filter(r => r.method !== 'GET').length, before, '跳转不发任何写请求');
 });
 
@@ -2248,14 +2136,14 @@ test('概览:版本/修订/进程/运行时长/客户端接入三行/接入地�
   assert.equal(h.get('ov-cooldowns').textContent, '按协议归组 · 失败后仍可重试');
   // 三行客户端状态:复用 liveFacts 的口径(claude 夹具是已写入直连)
   const clients = h.get('overview-clients').innerHTML;
-  for (const label of ['Claude Code', 'Codex', 'ZCode']) assert.match(clients, new RegExp(label));
+  for (const label of ['Claude Code', 'Codex']) assert.match(clients, new RegExp(label));
+  assert.doesNotMatch(clients, /ZCode/, 'ZCode 不再是受管客户端');
   assert.match(clients, /直连/, 'claude 夹具 live.base_url 有值且非 router ⇒ 直连');
   assert.match(clients, /已写入配置/);
   assert.match(clients, /~\/\.claude\/settings\.json/);
   // 接入地址:"我在哪里填什么"
   const endpoints = h.get('overview-endpoints').innerHTML;
   assert.match(endpoints, /http:\/\/127\.0\.0\.1:8787\/v1/, 'codex_base 要摆出来');
-  assert.match(endpoints, /http:\/\/127\.0\.0\.1:8787\/custom/, 'zcode_base 要摆出来');
 });
 
 test('概览与渠道页共用 liveFacts 的口径:离线时都降级成「待确认」,不各自判一套', async () => {
@@ -2306,7 +2194,8 @@ test('渠道页:冷却状态从 /api/health 与 /api/state 读出,健康端点�
   const h2 = await harness(data);
   h2.fail({ health: true });
   h2.run("view = 'providers'; renderProviders()");
-  h2.run("routesDraft.rules[0].match = 'unfinished-rule'; markRoutesDirty()");
+  // 别的页的草稿:压缩窗口(val)不依赖 state.compact,拿它当"设置页/概览页的失败别串到别处"的观察点。
+  h2.run("setWindowValue('300k')");
   await h2.run('loadHealth()');
   const grid = h2.get('prov-grid').innerHTML;
   assert.match(grid, /Alpha/, '健康挂了渠道卡片照样要有内容');
@@ -2314,60 +2203,15 @@ test('渠道页:冷却状态从 /api/health 与 /api/state 读出,健康端点�
   assert.match(h2.get('prov-health').textContent, /健康状态未读取/);
   assert.equal(h2.get('prov-health').hidden, false);
   assert.match(h2.get('health-status').textContent, /读取失败/);
-  assert.equal(h2.run('routesDirty'), true, '健康读失败不影响别的页草稿');
-  assert.equal(h2.run("routesDraft.rules[0].match"), 'unfinished-rule');
-});
-
-test('路由页:规则显示主目标/后备/协议/配置来源,最近实际落点只认会话 actual,没有就是「暂无」', async () => {
-  const data = fixture();
-  data.providers.claude[0].wire_api = 'chat';
-  data.routes.rules = [
-    { id: 'r1', match: 'claude', provider: 'a1', model: '', pool: [], strategy: 'round_robin', priority: 0, app: '', when: {}, enabled: true },
-    { id: 'r2', match: 'pooled', provider: '', pool: [{ provider: 'a1' }, { provider: 'a2' }], strategy: 'least_used', priority: 0, app: 'claude', when: {}, enabled: true },
-  ];
-  // 会话 aaa 的 actual 落在 a1(标准夹具里 aaa 是 actual:null,这里显式给一条真实请求记录),
-  // ccc 没有 actual。落点只认 actual,不认绑定。
-  data.sessions[0].actual = { provider: 'a1', provider_name: 'Alpha', model: 'claude-special', rule: 'r1', slot: '', sticky: false, status: 200, in: 1, out: 1, ms: 40, ts: 1700000003000 };
-  data.sessions[0].actual_source = 'request';
-  const h = await harness(data);
-  h.run("view = 'routes'; renderRoutes()");
-  const box = h.get('rules-box').innerHTML;
-  assert.match(box, /配置来源/, '规则卡要标出配置来源');
-  assert.match(box, /通用规则 · 按目标归组/, '未声明 app 的规则 = 通用规则');
-  assert.match(box, /显式规则 · 限定 Claude \/ Anthropic/, '声明了 app 的规则 = 显式规则');
-  assert.match(box, /分配策略/, '要标出分配策略');
-  assert.match(box, /单一渠道/);
-  assert.match(box, /最少会话/, '池策略按 STRAT_LABEL 的短名显示');
-  assert.match(box, /协议/, '要标出协议');
-  assert.match(box, /Alpha · chat（转换）/, '协议取该渠道的 wire_api');
-  // 第 1 条规则的目标是 a1,而会话 aaa 的 actual.provider 是 a1 ⇒ 有实际落点
-  assert.match(box, /最近实际落点[\s\S]{0,200}?Alpha（200）/, '有 actual 就要显示真实落点与状态码');
-  // 夹具里第二条规则只指向 a1,没有任何会话落到过它之外的地方;但 a1 的 actual 属于第 1 条
-  // —— 落点是按渠道聚合的,不按规则 id,这一点要在文案上诚实(写"最近实际落点",不写"本规则")
-  const defBox = h.get('def-box').innerHTML;
-  assert.match(defBox, /最近实际落点/, '默认路由也要有这一角');
-  assert.match(defBox, /Alpha（200）/, '默认路由的目标也是 a1,同样能看到实际落点');
-});
-
-test('路由页:没有任何实际请求记录时,最近实际落点显示「暂无」,不许拿绑定渠道名冒充', async () => {
-  const data = fixture();
-  data.sessions = data.sessions.map(s => ({ ...s, actual: null, actual_source: 'none', actual_text: '暂无' }));
-  const h = await harness(data);
-  h.run("view = 'routes'; renderRoutes()");
-  const box = h.get('rules-box').innerHTML;
-  // 规则绑的是 Alpha,但一条真实请求都没有 ⇒ 只能写「暂无」
-  assert.match(box, /最近实际落点<\/span><span>暂无<\/span>/, '没有 actual 就是「暂无」');
-  assert.doesNotMatch(box, /最近实际落点<\/span><span>Alpha/, '绝不许拿绑定渠道名当实际落点');
-  // 反向:预览端点根本没被这条路径调用过(预览是预测,不是实际落点)
-  assert.equal(h.requests.some(r => r.url === '/api/routing/preview'), false, '渲染路由页不得调用预览冒充实际落点');
+  assert.equal(h2.run('windowDirty'), true, '健康读失败不影响别的页草稿');
+  assert.equal(h2.get('window-value').value, '300k');
 });
 
 test('压缩分账:保存成功 / 已写盘 / 服务已加载 / 客户端需重开 四段可分别读到,不揉成一句「已生效」', async () => {
   const data = fixture();
-  data.routes_revision = 'rev-one';
   data.compact = { key_selection_supported: true, revision: 'rev-one', mode: 'single', selection: { provider: 'a1', model: 'claude-special', key_id: '' }, providers: [data.providers.claude[0]], rules: [] };
   const h = await harness(data);
-  h.run("view = 'routes'");
+  h.run("view = 'compact'");
   // 还没保存过:四段全是"尚未保存过",不假装任何一段成立
   const before = h.get('compact-status').innerHTML;
   assert.match(before, /保存结果/);
@@ -2385,10 +2229,9 @@ test('压缩分账:保存成功 / 已写盘 / 服务已加载 / 客户端需重�
 
 test('压缩分账:保存失败时前三段不冒充成立,客户端需重开仍独立可读', async () => {
   const data = fixture();
-  data.routes_revision = 'rev-one';
   data.compact = { key_selection_supported: true, revision: 'rev-one', mode: 'single', selection: { provider: 'a1', model: 'claude-special', key_id: '' }, providers: [data.providers.claude[0]], rules: [] };
   const h = await harness(data);
-  h.run("view = 'routes'");
+  h.run("view = 'compact'");
   h.run("pickCompactProvider('a1'); pickCompactModel('__custom__'); setCompactCustom('x')");
   h.run("globalThis.__realFetch = fetch; fetch = async (url, opt) => { if (url === '/api/compact') throw new Error('simulated compact failure'); return __realFetch(url, opt); }");
   await h.confirm('saveCompact()');
@@ -2402,7 +2245,7 @@ test('压缩分账:保存失败时前三段不冒充成立,客户端需重开仍
 
 test('压缩分账:窗口保存的"服务已加载"不适用、"客户端需重开"成立,与压缩模型分开表达', async () => {
   const h = await harness();
-  h.run("view = 'routes'");
+  h.run("view = 'compact'");
   await h.run('loadCompactWindow()');
   h.run("setWindowValue('300k')");
   assert.match(h.get('window-status').innerHTML, /客户端需重开：尚未保存过/);
@@ -2470,31 +2313,36 @@ test('设置页:路由解释明确写成预测,不当成实际落点', async () 
   await new Promise(resolve => setImmediate(resolve));
   const panel = html.slice(html.indexOf('id="settings-preview-title"'), html.indexOf('id="settings-export-title"'));
   assert.match(panel, /预测,不是实际落点|这是预测/, '面板文案要把预测和实际分开');
-  assert.match(panel, /不消耗轮询游标/, '要说明只读');
-  await h.run('loadPreview()');
+  assert.match(panel, /不消耗轮询游标/, '要说明先只读');
+  // 分发只认精确槽位别名与唯一已登记模型:这里用夹具里绑了 Alpha 的 mixr-main 槽位。
+  h.run("document.getElementById('preview-model').value = 'mixr-main'; loadPreview()");
+  await new Promise(resolve => setImmediate(resolve));
   assert.match(h.get('preview-body').innerHTML, /这是预测，不是实际落点/, '结果里也要重申');
   assert.match(h.get('preview-body').innerHTML, /Alpha/, '候选要列出来');
   assert.match(h.get('preview-body').innerHTML, /<dt>预测首选<\/dt><dd>Alpha<\/dd>/, '读取真实 API 的 selection.predicted,不能把候选当预测');
   assert.match(h.get('preview-status').textContent, /解释完成/);
 });
 
-test('设置页:预测读取策略选择的成员而不是候选列表第一项', async () => {
+test('设置页:预测读取槽位池策略选择的成员而不是候选列表第一项', async () => {
   const data = fixture();
-  data.providers.claude[1].enabled = true;
-  data.routes = { rules: [], default: { pool: ['a1', 'a2'], strategy: 'least_used' } };
+  data.providers.claude[1] = { ...data.providers.claude[1], enabled: true };
+  // 槽位池:主渠道 Alpha + 备渠道 Disabled。least_used 按活跃会话数选,不按池序取第一个。
+  data.slots.claude[0] = { ...data.slots.claude[0], pool: [{ provider: 'a2' }], strategy: 'least_used' };
   data.previewCounts = { a1: 2, a2: 0 };
   const h = await harness(data);
-  await h.run('loadPreview()');
+  h.run("document.getElementById('preview-model').value = 'mixr-main'; loadPreview()");
+  await new Promise(resolve => setImmediate(resolve));
   assert.match(h.get('preview-body').innerHTML, /<dt>预测首选<\/dt><dd>Disabled<\/dd>/);
   assert.match(h.get('preview-body').innerHTML, /Alpha/, '候选首项仍然是 Alpha');
 });
 
 test('设置页:多候选随机策略的 predicted 为空时不冒充首个候选', async () => {
   const data = fixture();
-  data.providers.claude[1].enabled = true;
-  data.routes = { rules: [], default: { pool: ['a1', 'a2'], strategy: 'random' } };
+  data.providers.claude[1] = { ...data.providers.claude[1], enabled: true };
+  data.slots.claude[0] = { ...data.slots.claude[0], pool: [{ provider: 'a2' }], strategy: 'random' };
   const h = await harness(data);
-  await h.run('loadPreview()');
+  h.run("document.getElementById('preview-model').value = 'mixr-main'; loadPreview()");
+  await new Promise(resolve => setImmediate(resolve));
   assert.match(h.get('preview-body').innerHTML, /<dt>预测首选<\/dt><dd>无法确定\(如随机策略\)<\/dd>/);
   assert.match(h.get('preview-body').innerHTML, /Alpha/);
   assert.match(h.get('preview-status').textContent, /解释完成/);
@@ -2517,12 +2365,10 @@ test('设置页:指标导出走 Blob 下载,不引入依赖,失败不冒充成�
 
 test('概览/设置页的 fetch 失败不影响其它页草稿(任务 7 口径)', async () => {
   const data = fixture();
-  data.routes_revision = 'rev-one';
   data.compact = { key_selection_supported: true, revision: 'rev-one', mode: 'single', selection: { provider: 'a1', model: 'claude-special', key_id: '' }, providers: [data.providers.claude[0]], rules: [] };
   const h = await harness(data);
   h.fail({ health: true, backups: true, preview: true, metrics: true });
-  h.run("routesDraft.rules[0].match = 'unfinished-rule'; markRoutesDirty()");
-  h.run("pickCompactProvider('a1'); pickCompactModel('__custom__'); setCompactCustom('draft-model')");
+  h.run("view = 'compact'; pickCompactProvider('a1'); pickCompactModel('__custom__'); setCompactCustom('draft-model')");
   h.run("setWindowValue('300k')");
   const sessionBefore = h.run('JSON.stringify(state.sessions)');
 
@@ -2535,18 +2381,17 @@ test('概览/设置页的 fetch 失败不影响其它页草稿(任务 7 口径)'
   assert.match(h.get('backup-status').textContent, /读取失败/);
   assert.match(h.get('health-status').textContent, /读取失败/);
   assert.match(h.get('preview-status').textContent, /失败/);
-  assert.equal(h.run("routesDraft.rules[0].match"), 'unfinished-rule', '通用路由草稿不受影响');
   assert.equal(h.run('compactDraft.model'), 'draft-model', '压缩草稿不受影响');
   assert.equal(h.run('windowDirty'), true, '窗口草稿不受影响');
   assert.equal(h.get('window-value').value, '300k', '窗口草稿的输入值也不受影响');
-  assert.equal(h.run('routesDirty'), true);
   assert.equal(h.run('compactDirty'), true);
   assert.equal(h.run('JSON.stringify(state.sessions)'), sessionBefore, '服务端快照没被改动');
   // 回到概览也一样:失败的是设置页自己的那几块
   h.run("showView('overview')");
   await h.run('refresh()');
   assert.match(h.get('overview-todo').innerHTML, /没有需要处理的事项|已停用/, '概览照常渲染');
-  assert.equal(h.run("routesDraft.rules[0].match"), 'unfinished-rule');
+  assert.equal(h.run('compactDraft.model'), 'draft-model', '回到概览也不能抹掉压缩草稿');
+  assert.equal(h.run('windowDirty'), true, '窗口草稿同样还在');
 });
 
 test('视图切换:gotoLogs 走 showView,视图改名后会话页的「日志」按钮仍然可用', async () => {
@@ -2565,15 +2410,15 @@ test('视图切换:gotoLogs 走 showView,视图改名后会话页的「日志」
   assert.equal(h.run('logsTimer'), null, '离开诊断页要停掉自动刷新');
 });
 
-test('视图切换:八个视图各切一次,视图节显隐与面包屑都对得上', async () => {
+test('视图切换:七个视图各切一次,视图节显隐与面包屑都对得上', async () => {
   const h = await harness();
   // 这里只跑 app.js,外壳(workspace.js)不在虚拟 DOM 里,所以标题是 showView 写的通用名。
   // 真实页面上外壳在此之后把渠道页改写成「<客户端> 渠道」,那条由 workspace-ui.test.js 覆盖。
-  for (const [v, label] of [['overview', '概览'], ['usage', '用量统计'], ['providers', '渠道与 Key'], ['harness', 'DeepSeek Harness'], ['routes', '路由'], ['sessions', '会话'], ['diagnostics', '诊断'], ['settings', '设置与备份']]) {
+  for (const [v, label] of [['overview', '概览'], ['usage', '用量统计'], ['providers', '渠道与 Key'], ['compact', '压缩设置'], ['sessions', '会话'], ['diagnostics', '诊断'], ['settings', '设置与备份']]) {
     h.run(`showView(${JSON.stringify(v)})`);
     assert.equal(h.run('view'), v);
     assert.equal(h.get('breadcrumb-view').textContent, label, `${v} 的面包屑`);
-    for (const other of ['overview', 'usage', 'providers', 'harness', 'routes', 'sessions', 'diagnostics', 'settings']) {
+    for (const other of ['overview', 'usage', 'providers', 'compact', 'sessions', 'diagnostics', 'settings']) {
       const display = h.get('view-' + other).style.display;
       if (other === v) assert.notEqual(display, 'none', `${v} 自己要显示`);
       else assert.equal(display, 'none', `${other} 在 ${v} 时应当隐藏`);

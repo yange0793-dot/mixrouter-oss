@@ -24,7 +24,7 @@ const {
   sessionIdentity, sessionLabel, codexHeaderSessionId, codexBodySessionId, codexFirstUserText,
   responsesToChat, chatJsonToResponses, chatToolChoice, extractUsageOpenAI, extractUsageFor,
   classifyProxyRequest, wireOf, buildOpenAiHeaders, writeCodexConfig, switchCodexRouter, switchClaudeRouter,
-  liveState, ROUTER_ID, ROUTER_URL, ROUTER_TOKEN, ROUTER_SECTION, normalizeRule, _state,
+  liveState, ROUTER_ID, ROUTER_URL, ROUTER_TOKEN, ROUTER_SECTION, _state,
 } = mod;
 
 // 会吐工具调用的 chat 上游:验证响应方向的 function_call 翻译
@@ -90,8 +90,17 @@ async function callCodex(sessionId, { model = 'gpt-5.6-sol', body = {}, headers 
   return { status: r.status, headers: r.headers, text: r.text, hit: got, key: got ? got.headers.authorization : null };
 }
 const lastLog = async () => JSON.parse((await rawRequest(uiPort, 'GET', '/api/logs?limit=1')).text).logs[0];
-const setRoutes = (rules, def = { provider: '', model: '' }) => {
-  _state.routes = { rules: rules.map(normalizeRule), default: normalizeRule(def) };
+// 瘦身后普通请求只有三种落点:压缩规则 → 精确槽位别名 → 唯一登记模型。
+// 需要"一个模型配多条渠道"的场景(轮转/失败转移)只能由槽位备池表达,
+// 所以这里的夹具一律写成 Codex 槽位;模型名各渠道互不相同,免得撞上"同名模型歧义"。
+const useCodexSlot = (name, slot) => {
+  _state.routes = { rules: [] };
+  _state.slotMap = { claude: {}, codex: { [name]: slot } };
+  _state.resetPools();
+};
+const clearSlots = () => {
+  _state.routes = { rules: [] };
+  _state.slotMap = { claude: {}, codex: {} };
   _state.resetPools();
 };
 
@@ -113,9 +122,9 @@ test('setup:mock 上游(含工具调用/故障两组)+ 代理与控制台', asyn
       { id: 'k1', name: 'codex一', base_url: base, api_key: 'sk-k1', enabled: true, model: 'gpt-5.6-sol', wire_api: 'responses' },
       { id: 'k2', name: 'codex二', base_url: base, api_key: 'sk-k2', enabled: true, model: 'gpt-5.6-terra', wire_api: 'responses' },
       { id: 'k3', name: 'chat系', base_url: base, api_key: 'sk-k3', enabled: true, model: 'glm-5.3-flash', wire_api: 'chat' },
-      { id: 'ktool', name: '工具渠道', base_url: `http://127.0.0.1:${toolPort}`, api_key: 'sk-tool', enabled: true, model: 'gpt-5.6-sol', wire_api: 'chat' },
-      { id: 'kbad', name: '坏渠道', base_url: `http://127.0.0.1:${failPort}`, api_key: 'sk-bad', enabled: true, model: 'gpt-5.6-sol', wire_api: 'responses' },
-      { id: 'kdead', name: '连不上', base_url: 'http://127.0.0.1:1', api_key: 'sk-dead', enabled: true, model: 'gpt-5.6-sol', wire_api: 'responses' },
+      { id: 'ktool', name: '工具渠道', base_url: `http://127.0.0.1:${toolPort}`, api_key: 'sk-tool', enabled: true, model: 'gpt-tool', wire_api: 'chat' },
+      { id: 'kbad', name: '坏渠道', base_url: `http://127.0.0.1:${failPort}`, api_key: 'sk-bad', enabled: true, model: 'gpt-bad', wire_api: 'responses' },
+      { id: 'kdead', name: '连不上', base_url: 'http://127.0.0.1:1', api_key: 'sk-dead', enabled: true, model: 'gpt-dead', wire_api: 'responses' },
     ],
   };
   fs.writeFileSync(path.join(TMP, 'providers.json'), JSON.stringify({ version: 2, current: { claude: null, codex: null }, ...provs }));
@@ -265,7 +274,7 @@ test('buildOpenAiHeaders:带 Bearer 与客户端 UA,不撒 Anthropic 头,透传�
 
 // ---------------------------------------------------------------- 集成:responses 直通
 test('responses 端点:落到 responses 协议渠道时原样转发,usage/模型/日志都对', async () => {
-  setRoutes([{ id: 'rx', match: 'gpt', pool: ['k1'], strategy: 'round_robin', enabled: true }]);
+  clearSlots();
   _state.sessions.clear();
   const r = await callCodex('resp-1');
   assert.strictEqual(r.status, 200);
@@ -290,9 +299,9 @@ test('responses 端点:落到 responses 协议渠道时原样转发,usage/模型
 });
 
 test('responses 端点:非流式请求也照样工作', async () => {
-  setRoutes([{ id: 'rn', match: 'gpt', pool: ['k2'], enabled: true }]);
+  clearSlots();
   _state.sessions.clear();
-  const r = await callCodex('resp-nostream', { body: { stream: false } });
+  const r = await callCodex('resp-nostream', { model: 'gpt-5.6-terra', body: { stream: false } });
   assert.strictEqual(r.status, 200);
   assert.strictEqual(r.hit.body.stream, false);
   assert.ok(r.text.includes('"object":"response"'));
@@ -301,7 +310,7 @@ test('responses 端点:非流式请求也照样工作', async () => {
 
 // ---------------------------------------------------------------- 集成:responses → chat 翻译
 test('responses → chat 上游:请求被翻译成 chat,响应被翻译回 responses SSE', async () => {
-  setRoutes([{ id: 'rc', match: 'glm', pool: ['k3'], enabled: true }]);
+  clearSlots();
   _state.sessions.clear();
   const before = mock.requests.length;
   const r = await rawRequest(proxyPort, 'POST', '/v1/responses', {
@@ -338,11 +347,11 @@ test('responses → chat 上游:请求被翻译成 chat,响应被翻译回 respo
 });
 
 test('responses → chat 上游:上游吐工具调用时翻译出 function_call item', async () => {
-  setRoutes([{ id: 'rt', match: 'gpt-5.6-sol', pool: ['ktool'], enabled: true }]);
+  clearSlots();
   _state.sessions.clear();
   const r = await rawRequest(proxyPort, 'POST', '/v1/responses', {
     headers: { 'Content-Type': 'application/json', 'session-id': 'tr-tool' },
-    body: CODEX_BODY('gpt-5.6-sol'),
+    body: CODEX_BODY('gpt-tool'),
   });
   assert.ok(r.text.includes('"type":"function_call"'));
   assert.ok(r.text.includes('"name":"exec_command"'));
@@ -352,11 +361,12 @@ test('responses → chat 上游:上游吐工具调用时翻译出 function_call 
 });
 
 test('responses → chat 上游:上游无视 stream 整包回 JSON 时,代理自己摊成 responses SSE', async () => {
-  setRoutes([{ id: 'rj', match: 'json-only', pool: [{ provider: 'k3', model: 'json-only-1' }], enabled: true }]);
+  // 落点模型 k3 自己没登记(它登记 glm-5.3-flash),用槽位把它改写成 json-only-1
+  useCodexSlot('main', { provider: 'k3', model: 'json-only-1' });
   _state.sessions.clear();
   const r = await rawRequest(proxyPort, 'POST', '/v1/responses', {
     headers: { 'Content-Type': 'application/json', 'session-id': 'tr-json' },
-    body: CODEX_BODY('json-only-1'),
+    body: CODEX_BODY('mixr-main'),
   });
   assert.strictEqual(r.status, 200);
   assert.ok(r.headers['content-type'].includes('text/event-stream'), '客户端要流就给流');
@@ -368,7 +378,7 @@ test('responses → chat 上游:上游无视 stream 整包回 JSON 时,代理自
 
 // ---------------------------------------------------------------- 集成:chat 端点
 test('chat/completions 端点:chat 协议渠道直通', async () => {
-  setRoutes([{ id: 'rcc', match: 'glm', pool: ['k3'], enabled: true }]);
+  clearSlots();
   _state.sessions.clear();
   const r = await rawRequest(proxyPort, 'POST', '/v1/chat/completions', {
     headers: { 'Content-Type': 'application/json' },
@@ -383,7 +393,7 @@ test('chat/completions 端点:chat 协议渠道直通', async () => {
 });
 
 test('chat/completions 端点:目标只会说 responses 时明确报错(不静默降级)', async () => {
-  setRoutes([{ id: 'rmm', match: 'gpt', pool: ['k1'], enabled: true }]);
+  clearSlots();
   _state.sessions.clear();
   const r = await rawRequest(proxyPort, 'POST', '/v1/chat/completions', {
     headers: { 'Content-Type': 'application/json' },
@@ -396,31 +406,40 @@ test('chat/completions 端点:目标只会说 responses 时明确报错(不静�
 });
 
 // ---------------------------------------------------------------- 集成:路由与策略
-test('Codex 池按会话粘性分流:三个对话落到不同渠道,对话内不换', async () => {
-  setRoutes([{ id: 'rp', match: 'gpt', pool: ['k1', 'k2', 'kdead'], strategy: 'round_robin', enabled: true }]);
+test('Codex 槽位备池按 round_robin 轮转,且槽位请求不写会话粘性', async () => {
+  useCodexSlot('main', { provider: 'k1', model: 'slot-model',
+    pool: [{ provider: 'k2' }, { provider: 'kdead' }], strategy: 'round_robin' });
   _state.sessions.clear();
   _state.cooldowns = {};
-  const a = await callCodex('cx-a');
-  const b = await callCodex('cx-b');
-  assert.notStrictEqual(a.hit.headers.authorization, b.hit.headers.authorization, '两个对话应分到不同渠道');
-  assert.strictEqual((await callCodex('cx-a')).hit.headers.authorization, a.hit.headers.authorization, '同一对话必须粘住');
+  const a = await callCodex('cx-a', { model: 'mixr-main' });
+  const b = await callCodex('cx-b', { model: 'mixr-main' });
+  assert.notStrictEqual(a.hit.headers.authorization, b.hit.headers.authorization, '两个请求应轮转到不同渠道');
   const log = await lastLog();
-  assert.strictEqual(log.sticky, true);
+  // 槽位只代表"这一条请求照槽位表走",不代表对话换了渠道 —— 不得写粘性或显式钉定。
+  // 会话记录本身仍会建(统计/标签要用),但绑定字段必须留空。
+  assert.strictEqual(log.sticky, false);
+  assert.strictEqual(log.slot, 'main');
   assert.strictEqual(log.pool, 3);
+  for (const key of ['cx:cx-a', 'cx:cx-b']) {
+    const record = _state.sessions.get(key);
+    if (!record) continue;
+    assert.strictEqual(record.providerId || '', '', `槽位请求不得给 ${key} 写渠道绑定`);
+    assert.strictEqual(record.pinned || false, false, `槽位请求不得给 ${key} 写钉定`);
+  }
 });
 
-test('Codex 通路的失败转移:首选 5xx / 连不上都自动换下一个', async () => {
-  setRoutes([{ id: 'rf', match: 'gpt', pool: ['kbad', 'k1'], strategy: 'round_robin', enabled: true }]);
+test('Codex 通路的失败转移:主渠道 5xx 时换备池成员', async () => {
+  useCodexSlot('main', { provider: 'kbad', model: 'slot-model', pool: [{ provider: 'k1' }], strategy: 'priority' });
   _state.sessions.clear();
   _state.cooldowns = {};
-  const r = await callCodex('cx-fail');
+  const r = await callCodex('cx-fail', { model: 'mixr-main' });
   assert.strictEqual(r.status, 200, '上游 5xx 不该把错误甩给 codex');
   assert.strictEqual(r.hit.headers.authorization, 'Bearer sk-k1');
   assert.strictEqual((await lastLog()).failover, true);
 });
 
 test('Codex 通路的错误体是 OpenAI 形状,且提示指向 Codex 组', async () => {
-  setRoutes([{ id: 'rg', match: 'nowhere-model', pool: ['k1'], enabled: true }]);
+  clearSlots();
   _state.sessions.clear();
   const r = await callCodex('cx-noroute', { model: 'gpt-unknown' });
   assert.strictEqual(r.status, 503);
@@ -430,41 +449,48 @@ test('Codex 通路的错误体是 OpenAI 形状,且提示指向 Codex 组', asyn
   assert.strictEqual(j.type, undefined, '不该是 Anthropic 形状');
 });
 
-test('只绑 Claude 渠道的规则不会挡住 Codex 请求(继续往下匹配)', async () => {
-  setRoutes([
-    { id: 'claude-only', match: 'gpt', provider: 'p1', priority: 10, enabled: true },
-    { id: 'codex-rule', match: 'gpt', pool: ['k2'], priority: 0, enabled: true },
-  ]);
+test('同一模型名在两组各自登记:按端点取本组渠道,不串组', async () => {
+  clearSlots();
   _state.sessions.clear();
-  const r = await callCodex('cx-skip');
-  assert.strictEqual(r.status, 200);
-  assert.strictEqual(r.hit.headers.authorization, 'Bearer sk-k2');
-  assert.strictEqual((await lastLog()).rule, 'codex-rule');
+  const savedClaude = structuredClone(_state.store.claude);
+  const savedCodex = structuredClone(_state.store.codex);
+  _state.store.claude[0].models = ['shared-model'];
+  _state.store.codex.find(p => p.id === 'k2').models = ['shared-model'];
+  try {
+    const cx = await callCodex('cx-groups', { model: 'shared-model' });
+    assert.strictEqual(cx.status, 200, cx.text);
+    assert.strictEqual(cx.hit.headers.authorization, 'Bearer sk-k2', 'Codex 端点只认 Codex 组渠道');
+    assert.strictEqual(cx.hit.body.model, 'shared-model');
+    const cc = await rawRequest(proxyPort, 'POST', '/v1/messages', {
+      headers: { 'Content-Type': 'application/json', 'x-claude-code-session-id': 'cc-groups' },
+      body: { model: 'shared-model', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] },
+    });
+    assert.strictEqual(cc.status, 200, cc.text);
+    assert.strictEqual(mock.requests.at(-1).url, '/v1/messages');
+    assert.strictEqual(mock.requests.at(-1).headers['x-api-key'], 'sk-claude', 'Claude 端点只认 Claude 组渠道');
+  } finally {
+    _state.store.claude = savedClaude; _state.store.codex = savedCodex;
+  }
 });
 
-test('规则可显式声明适用分组(app),混组时互不干扰', async () => {
-  setRoutes([
-    { id: 'cx-only', match: 'sonnet', app: 'codex', pool: ['k1'], enabled: true },
-    { id: 'cc-only', match: 'sonnet', app: 'claude', provider: 'p1', enabled: true },
-  ]);
+test('同名模型登记在多个 Codex 渠道 = 明确歧义,不随便挑一个', async () => {
+  clearSlots();
   _state.sessions.clear();
-  // Codex 端点:cx-only 命中(虽然模型名一样)
-  const cx = await callCodex('cx-app', { model: 'sonnet-x' });
-  assert.strictEqual(cx.hit.headers.authorization, 'Bearer sk-k1');
-  // Claude 端点:cc-only 命中
-  const cc = await rawRequest(proxyPort, 'POST', '/v1/messages', {
-    headers: { 'Content-Type': 'application/json', 'x-claude-code-session-id': 'cc-app' },
-    body: { model: 'sonnet-x', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] },
-  });
-  assert.strictEqual(cc.status, 200);
-  assert.strictEqual(mock.requests.at(-1).url, '/v1/messages');
-  assert.strictEqual(mock.requests.at(-1).headers['x-api-key'], 'sk-claude');
+  const savedCodex = structuredClone(_state.store.codex);
+  _state.store.codex.find(p => p.id === 'k2').models = ['gpt-5.6-sol'];
+  try {
+    const before = mock.requests.length;
+    const r = await callCodex('cx-ambiguous');
+    assert.strictEqual(r.status, 409, r.text);
+    assert.strictEqual(JSON.parse(r.text).error.code, 'model_ambiguous_error');
+    assert.strictEqual(mock.requests.length, before, '歧义请求不允许打到任何上游');
+  } finally { _state.store.codex = savedCodex; }
 });
 
 test('Codex 池支持成员级模型覆盖(codex 渠道自带模型名)', async () => {
-  setRoutes([{ id: 'rov', match: 'gpt', pool: [{ provider: 'k2', model: 'gpt-5.6-sol-override' }], enabled: true }]);
+  useCodexSlot('main', { provider: 'k2', model: 'gpt-5.6-sol-override' });
   _state.sessions.clear();
-  const r = await callCodex('cx-ov');
+  const r = await callCodex('cx-ov', { model: 'mixr-main' });
   assert.strictEqual(r.hit.body.model, 'gpt-5.6-sol-override');
   assert.strictEqual(r.headers['x-mixrouter-model'], 'gpt-5.6-sol-override');
 });
@@ -494,24 +520,29 @@ test('Codex Chat 槽模型覆盖贯穿 Responses 翻译与 Chat 直通', async (
   } finally { _state.slotMap = previous; }
 });
 
-test('Claude 通路不受影响:规则仍只认 Claude 组,模型改写真常', async () => {
-  setRoutes([{ id: 'rcl', match: 'opus', provider: 'p1', model: 'claude-opus-5[1M]', enabled: true }]);
+test('Claude 通路:登记的 [1M] 后缀照样剥掉并补 beta 头', async () => {
+  clearSlots();
   _state.sessions.clear();
-  const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {
-    headers: { 'Content-Type': 'application/json', 'x-claude-code-session-id': 'cc-1' },
-    body: { model: 'claude-opus-5', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] },
-  });
-  assert.strictEqual(r.status, 200);
-  assert.strictEqual(mock.requests.at(-1).body.model, 'claude-opus-5');
-  assert.ok(mock.requests.at(-1).headers['anthropic-beta'].includes('context-1m'));
-  assert.strictEqual(r.headers['x-mixrouter-app'], 'claude');
+  const savedClaude = structuredClone(_state.store.claude);
+  // 渠道登记带后缀,请求写裸名:归一化后必须互相认得出,出站带裸名 + context-1m beta 头
+  _state.store.claude[0].models = ['claude-opus-5[1M]'];
+  try {
+    const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {
+      headers: { 'Content-Type': 'application/json', 'x-claude-code-session-id': 'cc-1' },
+      body: { model: 'claude-opus-5', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] },
+    });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(mock.requests.at(-1).body.model, 'claude-opus-5');
+    assert.ok(mock.requests.at(-1).headers['anthropic-beta'].includes('context-1m'));
+    assert.strictEqual(r.headers['x-mixrouter-app'], 'claude');
+  } finally { _state.store.claude = savedClaude; }
 });
 
 // ---------------------------------------------------------------- 会话 API / 日志 / 状态
 test('会话 API:Codex 对话只能绑 Codex 组渠道', async () => {
-  setRoutes([{ id: 'rs', match: 'gpt', pool: ['k1', 'k2'], strategy: 'round_robin', enabled: true }]);
+  useCodexSlot('main', { provider: 'k1', model: 'slot-model' });
   _state.sessions.clear();
-  await callCodex('cx-api');
+  await callCodex('cx-api', { model: 'mixr-main' });
   const list = JSON.parse((await rawRequest(uiPort, 'GET', '/api/sessions')).text).sessions;
   const mine = list.find(s => s.key === 'cx:cx-api');
   assert.ok(mine, 'Codex 会话要出现在会话列表里');
@@ -522,14 +553,36 @@ test('会话 API:Codex 对话只能绑 Codex 组渠道', async () => {
   const ok = await rawRequest(uiPort, 'POST', '/api/sessions/cx%3Acx-api/pin', { body: { provider: 'k2' } });
   assert.strictEqual(ok.status, 200);
   assert.strictEqual(JSON.parse(ok.text).session.provider_name, 'codex二');
-  assert.strictEqual((await callCodex('cx-api')).hit.headers.authorization, 'Bearer sk-k2', '改绑后走新渠道');
 
   const cross = await rawRequest(uiPort, 'POST', '/api/sessions/cx%3Acx-api/pin', { body: { provider: 'p1' } });
   assert.strictEqual(cross.status, 404, '不能把 Codex 对话绑到 Claude 组渠道');
 });
 
+test('会话钉定解开同名模型歧义,取消钉定后重新明确失败', async () => {
+  clearSlots();
+  _state.sessions.clear();
+  const savedCodex = structuredClone(_state.store.codex);
+  _state.store.codex.find(p => p.id === 'k1').models = ['dual-model'];
+  _state.store.codex.find(p => p.id === 'k2').models = ['dual-model'];
+  try {
+    // 先打一条唯一模型的请求,让这条会话有真实记录(歧义请求本身不建档,也就无从钉定)
+    assert.strictEqual((await callCodex('cx-pin', { model: 'gpt-5.6-sol' })).status, 200);
+    const before = mock.requests.length;
+    const ambiguous = await callCodex('cx-pin', { model: 'dual-model' });
+    assert.strictEqual(ambiguous.status, 409, ambiguous.text);
+    assert.strictEqual(mock.requests.length, before, '歧义不得擅自选一家渠道');
+    const pin = await rawRequest(uiPort, 'POST', '/api/sessions/cx%3Acx-pin/pin', { body: { provider: 'k2' } });
+    assert.strictEqual(pin.status, 200, pin.text);
+    const resolved = await callCodex('cx-pin', { model: 'dual-model' });
+    assert.strictEqual(resolved.status, 200, resolved.text);
+    assert.strictEqual(resolved.hit.headers.authorization, 'Bearer sk-k2', '钉定指定哪家就走哪家');
+    await rawRequest(uiPort, 'POST', '/api/sessions/cx%3Acx-pin/pin', { body: { provider: '' } });
+    assert.strictEqual((await callCodex('cx-pin', { model: 'dual-model' })).status, 409, '解除钉定后歧义重新明确失败');
+  } finally { _state.store.codex = savedCodex; }
+});
+
 test('日志按 app 过滤:Codex 与 Claude 的请求分得开', async () => {
-  setRoutes([{ id: 'rl', match: 'gpt', pool: ['k1'], enabled: true }]);
+  clearSlots();
   _state.sessions.clear();
   await callCodex('cx-log');
   const logs = JSON.parse((await rawRequest(uiPort, 'GET', '/api/logs?app=codex&limit=50')).text).logs;

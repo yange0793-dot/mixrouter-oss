@@ -59,7 +59,8 @@ test('scrubEnv:清掉 MIXR_* 残值,把 HOME/数据目录/TMPDIR 全部重定向
   const env = scrubEnv({
     PATH: '/bin', KEEP_ME: '1',
     MIXR_DATA_DIR: '/real/data', MIXROUTER_PORT: '8787', MIXUI_PORT: '8788',
-    DSH_HOME: '/real-dsh', MIXR_HARNESS_PROFILE: '/real-dsh/profile.yml',
+    MIXR_ZCODE_CONFIG: '/real-zcode/config.json', DSH_HOME: '/real-dsh',
+    MIXR_HARNESS_PROFILE: '/real-dsh/profile.yml',
     NODE_OPTIONS: '--require ./leak.js', NODE_PATH: '/leak', NODE_TEST_CONTEXT: 'child-v8',
   }, dirs);
 
@@ -74,8 +75,10 @@ test('scrubEnv:清掉 MIXR_* 残值,把 HOME/数据目录/TMPDIR 全部重定向
   assert.equal(env.TEMP, dirs.tmp);
   assert.equal(env.MIXR_DATA_DIR, dirs.data);
   assert.equal(env.MIXR_CLAUDE_SETTINGS, path.join(dirs.home, '.claude', 'settings.json'));
-  assert.equal(env.DSH_HOME, path.join(dirs.home, '.dsh'));
-  assert.equal(env.MIXR_HARNESS_PROFILE, path.join(dirs.home, '.dsh', 'profiles', 'desktop', 'cordis.patch.yml'));
+  assert.equal(env.MIXR_CODEX_CONFIG, path.join(dirs.home, '.codex', 'config.toml'));
+  // 已移除的 ZCode / Harness 集成不再有专属落点:残值被清掉,也不会被重新指到临时目录。
+  for (const key of ['MIXR_ZCODE_CONFIG', 'DSH_HOME', 'MIXR_HARNESS_PROFILE'])
+    assert.equal(key in env, false, `${key} 不该被继承,也不该再被设置`);
   assert.equal(env.MIXR_UPSTREAM_PROXY, '', '必须显式置空,不能回落到调用方 shell');
   assert.equal(env.npm_config_cache, path.join(dirs.tmp, 'npm-cache'));
 });

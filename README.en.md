@@ -6,8 +6,8 @@
 [![Node](https://img.shields.io/badge/node-%E2%89%A518-brightgreen)](package.json)
 
 A single-user model router for your own machine: one zero-dependency Node process serves both
-the Anthropic and OpenAI protocols, routes requests to the providers you configure by model name
-and session identity, and exposes a loopback-only browser console.
+the Anthropic and OpenAI protocols, routes requests to the providers you configure by exact model
+name, and exposes a loopback-only browser console.
 
 [中文](README.md)
 
@@ -23,10 +23,10 @@ pages for exact field and command reference.
 
 Good fit:
 
-- You use Claude Code, Codex, or ZCode on your own machine and want them to talk to self-hosted
+- You use Claude Code or Codex on your own machine and want them to talk to self-hosted
   or third-party providers.
-- You have several providers or several keys and need routing by model, session, or subagent
-  slot, with a console that shows where a request will land.
+- You have several providers or several keys and need routing by model slot or exact model name,
+  with a console that shows where a request will land.
 - You want models that only expose OpenAI-style endpoints to work in Claude Code without
   installing a second proxy.
 
@@ -44,16 +44,20 @@ Not a good fit:
 ## What it does
 
 - **Two protocols, one port.** Claude Code's `/v1/messages` and Codex's `/v1/responses` and
-  `/v1/chat/completions` all go to `127.0.0.1:8787` and are dispatched by model name and
-  session identity.
+  `/v1/chat/completions` all go to `127.0.0.1:8787` and are dispatched by exact model name.
+- **Fixed selection order.** A recognised compaction request, then a slot alias
+  (`mixr-<slot>`), then the single enabled and valid provider that registered that exact model
+  name. There is no substring matching, no configurable default route, and no picking one
+  candidate for you: an unregistered model or two providers registering the same model fail
+  explicitly with the reason.
 - **In-process protocol translation.** Models that only sit behind OpenAI-style endpoints can
   still serve Claude Code. Requests to a provider marked `wire_api: responses` are translated to
   Responses; `wire_api: chat` is translated to Chat Completions. No second proxy on the client
   side.
 - **Session affinity, best effort.** Conversations from the same agent can use different keys
   on different providers, while a conversation is kept on one provider when possible. This is
-  not a hard guarantee: rebinding after failure, failover, manual pinning, and
-  session overrides can all change the target.
+  not a hard guarantee: key fallback, retries, manual pinning, and session overrides can all
+  change the target.
 - **Slot routing and backup pools.** Bind a provider and model to a `mixr-<slot>` alias so the
   main chain and subagents can use separate accounts. Claude and Codex slots select the provider
   and target model independently, including custom targets, without changing provider defaults.
@@ -73,9 +77,12 @@ Not a good fit:
   is changed, with a backup before writing. Known context windows show the 90% ceiling;
   unknown windows are not guessed. Codex must reload its configuration; active sessions and
   context-window settings are not changed automatically.
-- **Harness main model and allowlist.** A separate page selects the main model and permitted
-  subagent models, reusing the provider catalog and protocol translation without fixed task roles
-  or changes to other client slots. Route saving is separate from previewing and confirming client writes.
+- **Compaction settings (separate view).** The **Compaction settings** entry in the sidebar holds
+  the compaction-only provider, model, and key, plus Claude Code's `autoCompactWindow` (user,
+  project, and project-local layers; `100k`–`1M` or `auto`). It affects only requests recognised
+  as compaction and the client file on disk; it does not change the main model, slots, or normal
+  forwarding. The recognition rule and value semantics are unchanged; see
+  [Routing and sessions](docs/routing-and-sessions.md) (Chinese).
 - **First-run onboarding.** The providers page walks through checking the client, picking or
   importing a provider, choosing a model and protocol, optionally running a compatibility test,
   then previewing and confirming the write. Only managed fields are shown, the client file is
@@ -88,14 +95,14 @@ Not a good fit:
   reports the time and scope of that single run.
 - **Error guidance and attempt traces.** Proxy-generated error codes, 401/402/403/429/5xx,
   timeouts, and network failures are explained as conclusion, impact, next step, and the console
-  page to open. The diagnostics page shows bounded retries and failover targets; the log field
-  `request_id` links a request to its trace. A 403 is never reported as a dead key.
+  page to open. The diagnostics page shows bounded retries and the actual landing target; the log
+  field `request_id` links a request to its trace. A 403 is never reported as a dead key.
 - **Optional multi-key fallback.** Enabled per provider. Normal requests stay on one account;
   401/402 (account-level) and 403/404/429 (model-level) are the only failures that may switch
   keys. Pinned session keys and compact-only keys never switch, and `active_key` is never
   rewritten.
-- **Local console.** `127.0.0.1:8788` manages providers, routes, sessions, slots, logs, and
-  backups. Open Claude Code, Codex, or ZCode providers directly from the sidebar, choose list or
+- **Local console.** `127.0.0.1:8788` manages providers, sessions, slots, compaction settings,
+  logs, and backups. Open Claude Code or Codex providers directly from the sidebar, choose list or
   card views for providers, and expand model slots when needed. Fetch upstream models using a Base URL
   and API key while creating or editing a provider,
   then search and select models to add; manual entry remains available.
@@ -111,6 +118,11 @@ Not a good fit:
 ![Local console, Usage page: four metric cards, a calendar heatmap, and request/provider/model tables sharing one filter set](docs/images/console-usage.jpg)
 
 *Demo data; no real providers or credentials.*
+
+> Both screenshots were taken from v3.9.0, when the sidebar still had ZCode and Harness entries and
+> the providers page still carried the general routing rules editor. This version connects only
+> Claude Code and Codex, and compaction has its own **Compaction settings** view. New screenshots
+> are pending; no mock-up is provided here that would misrepresent the current UI.
 
 ## Quick start
 
@@ -137,7 +149,7 @@ curl --fail http://127.0.0.1:8787/healthz
 open http://127.0.0.1:8788/     # macOS; open the same address in a browser elsewhere
 ```
 
-Select Claude Code, Codex, or ZCode in the console sidebar, add a provider and model,
+Select Claude Code or Codex in the console sidebar, add a provider and model,
 then connect that client to the local router. For a fresh install, prefer the onboarding wizard
 (「接入向导」) at the top of the **Providers** page: check the client, add or import a provider,
 choose a model, optionally run one compatibility test, then preview and confirm the write.
@@ -151,7 +163,6 @@ is rewritten):
 ```bash
 ./mixctl route claude --slots   # Claude Code, also writes slot aliases
 ./mixctl route codex            # Codex
-./mixctl route zcode            # ZCode, Anthropic protocol by default
 ```
 
 ### Check the local setup
@@ -169,9 +180,12 @@ directory is the same one used by `npm run local`; for an older `npm start` data
 `--data-dir <absolute path>`. The JSON output contains the data directory path, so check it for
 your username and local paths before sharing.
 
-If you do not want to start from an empty console, use `providers.example.json` and
-`routes.example.json` in the repository root as templates. They contain placeholder values only;
-do not use them as real configuration.
+If you do not want to start from an empty console, use `providers.example.json` in the repository
+root to create providers and to see how model slots are written (placeholder values only; do not
+use them as real configuration). `routes.example.json` now carries **compaction settings only**:
+do not hand-write `match` / `when` / `priority` / `default` into it. Normal requests no longer
+execute those legacy fields; pick the provider, model, and key in the console's
+**Compaction settings** view instead.
 
 ## Install and releases
 
@@ -230,10 +244,10 @@ The linked pages are in Chinese; the table says what each one covers.
 | Document | Contents |
 | --- | --- |
 | [Install, run, and uninstall](docs/installation.md) | Choosing a start entry, downloading and verifying a release, data directory and ports, uninstall boundaries |
-| [Quick start](docs/quick-start.md) | Where to change what: start the service, add providers, configure routes, connect clients, run tests |
+| [Quick start](docs/quick-start.md) | Where to change what: start the service, add providers, configure slots, compaction settings, connect clients, run tests |
 | [First-run and self-service recovery](docs/user-readiness.md) | Onboarding wizard, provider import, compatibility test, slot backup pools, error guidance and attempt traces, undo, diagnostic report, multi-key fallback, service and upgrade entries |
 | [CLI and runtime boundaries](docs/cli.md) | Every `mixctl` subcommand, ports and data directory, slots and sessions, logs and archives, backup/restore, read-only diagnostics, local self-check |
-| [Routing and sessions](docs/routing-and-sessions.md) | Match order, session identity, slots, pool strategies, session overrides, protocol translation |
+| [Routing and sessions](docs/routing-and-sessions.md) | Fixed selection order, session identity, slots and backup pools, session overrides, compaction settings, protocol translation |
 | [Troubleshooting](docs/troubleshooting.md) | Symptom-oriented: 503 classes, retries, invalid keys, affinity anomalies, log locations, onboarding/compatibility/upgrade failures, multi-key fallback |
 | [Reference](docs/reference.md) | Full mechanisms and fields, all environment variables, diagnostic limits |
 | [Upgrade and rollback](docs/upgrade-and-rollback.md) | Source upgrades and rollbacks, data directory, client config recovery, install-script boundaries |
@@ -245,16 +259,21 @@ The linked pages are in Chinese; the table says what each one covers.
 
 ## Important boundaries
 
-- **Lightweight Harness integration.** Only the main model and subagent allowlist pool are managed.
-  Saving routes does not write client files: preview and confirm connection separately on the
-  DeepSeek Harness page. Tools, permissions, and workspace settings stay native. Pool updates
-  require reconnecting and starting new sessions. The native ordinary-subagent entry point enforces
-  explicit selections; this is not a blanket workflow/fork/team policy. See [Harness integration](docs/harness.md) (Chinese).
+- **Routing is exact matching, with no general rules.** There is no legacy `match` substring,
+  no `when` conditions, no `priority` ordering, and no configurable `default` fallback. The target
+  comes only from the fixed order (compaction, then slot, then the single registered model); a
+  model with no exact registration, or one registered by two providers, fails explicitly instead
+  of silently switching models or providers. An old `routes.json` stays in the data directory;
+  its rules and `default` are **no longer executed**, startup does not delete it, and it now holds
+  only compaction settings (saving compaction settings rewrites it in normalised form, dropping
+  the old condition fields). `PUT /api/routes` and the Harness endpoints `/api/harness*` and
+  `/harness/v1/*` have been removed.
 - **Bounded resource-binding recovery.** Known upstream errors permit one validated projection
   of complete native Responses history; later attempts resend that same projection on the same
   provider/model/key within existing budgets. Only supported output-item IDs are removed; tool
   pairing, custom/additional-tool IDs, and encrypted reasoning are retained. Arbitrary 400 errors,
-  missing history, Anthropic/Chat tool IDs, and signatures are not rewritten.
+  missing history, Anthropic/Chat tool IDs, and signatures are not rewritten. See
+  [Reference](docs/reference.md#5-上游健康超时重试) (Chinese).
 - **Loopback only, literal Host.** The proxy and console accept only `127.0.0.1:port` or
   `[::1]:port`; `localhost` and custom domains get a 403. Write requests reject cross-site or
   cross-origin sources, and the proxy accepts only `Content-Type: application/json` POSTs.

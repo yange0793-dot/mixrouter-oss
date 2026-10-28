@@ -51,17 +51,14 @@ before(async () => {
   upstream.on('connection', socket => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
   await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve));
   const base_url = `http://127.0.0.1:${upstream.address().port}`;
-  const provider = (id, wire_api) => ({ id, name: id, base_url, wire_api, api_key: 'sk-fixture', enabled: true });
+  // 目标由渠道登记的模型名精确决定(每个模型只在一个渠道登记),不再写通用 match 规则。
+  const provider = (id, wire_api, models) => ({ id, name: id, base_url, wire_api, api_key: 'sk-fixture',
+    enabled: true, ...(models ? { models } : {}), ...(wire_api === 'responses' || wire_api === 'chat' ? { model: models[0] } : {}) });
   fs.writeFileSync(path.join(TMP, 'providers.json'), JSON.stringify({
-    claude: [provider('native', 'anthropic'), provider('converted', 'chat')],
-    codex: [provider('response', 'responses'), provider('chat', 'chat')],
+    claude: [provider('native', 'anthropic', ['native-model']), provider('converted', 'chat', ['converted-model'])],
+    codex: [provider('response', 'responses', ['response-model']), provider('chat', 'chat', ['chat-model'])],
   }));
-  fs.writeFileSync(path.join(TMP, 'routes.json'), JSON.stringify({ rules: [
-    { id: 'r-native', app: 'claude', match: 'native-model', provider: 'native', enabled: true },
-    { id: 'r-converted', app: 'claude', match: 'converted-model', provider: 'converted', enabled: true },
-    { id: 'r-response', app: 'codex', match: 'response-model', provider: 'response', enabled: true },
-    { id: 'r-chat', app: 'codex', match: 'chat-model', provider: 'chat', enabled: true },
-  ], default: {} }));
+  fs.writeFileSync(path.join(TMP, 'routes.json'), JSON.stringify({ rules: [], default: {} }));
   mod = require('../mixrouter');
   proxy = await mod.listen(0, mod.proxyHandler);
   ui = await mod.listen(0, mod.apiHandler);

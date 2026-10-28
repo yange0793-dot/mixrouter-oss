@@ -40,7 +40,7 @@ function history() {
       parameters: { type: 'object', properties: { label: { type: 'string' }, id: { type: 'string' } }, required: ['label'], additionalProperties: false } },
     { type: 'custom', name: 'echo_fixture', format: { type: 'grammar', syntax: 'regex', definition: 'fixture_[a-z]+' } },
   ] }];
-  const body = { model: 'fixture-codex-model', stream: true, store: false,
+  const body = { model: SLOT, stream: true, store: false,
     prompt_cache_key: 'fixture-cache', prompt_cache_retention: '24h',
     reasoning: { effort: 'max', summary: 'detailed' }, include: ['reasoning.encrypted_content'],
     text: { format: { type: 'text' }, verbosity: 'medium' }, parallel_tool_calls: false,
@@ -83,7 +83,7 @@ function freeze(value) {
   return value;
 }
 function pairWithOutputId(id = 'fco-only-fixture') {
-  return { model: 'fixture-codex-model', stream: true, input: [
+  return { model: SLOT, stream: true, input: [
     { type: 'function_call', call_id: 'pair-fixture', namespace: 'fixture_tools', name: 'summarize', arguments: '{"label":"fixture"}' },
     { type: 'function_call_output', id, call_id: 'pair-fixture', output: 'fixture result' },
   ] };
@@ -91,6 +91,10 @@ function pairWithOutputId(id = 'fco-only-fixture') {
 
 let upstream, proxy, reply, seen, fixtureId = 0, generationCount;
 const sockets = new Set();
+// 精确槽位:通用 match/default 规则删除后,多渠道(含备池)只能靠槽位别名 + 同一落点模型表达。
+const SLOT = 'mixr-main', SLOT_MODEL = 'fixture-codex-model';
+// 出站体:槽位把请求别名换成落点模型,其余字节一律照抄客户端请求。
+const outbound = body => ({ ...structuredClone(body), model: SLOT_MODEL });
 function configure({ other = true } = {}) {
   const provider = id => ({ id, name: id, enabled: true, api_key: 'synthetic-primary-key', wire_api: 'responses',
     base_url: `http://127.0.0.1:${upstream.address().port}/${id}`, models: ['fixture-codex-model'], key_fallback: true,
@@ -99,7 +103,9 @@ function configure({ other = true } = {}) {
       { id: `fixture-b-${fixtureId}`, label: 'fixture b', key: 'synthetic-alternate-key', enabled: true },
     ] });
   mod._state.store = { claude: [], codex: [provider('fixture-primary'), ...(other ? [provider('fixture-secondary')] : [])] };
-  mod._state.routes = { rules: [], default: mod.normalizeRule({ pool: other ? ['fixture-primary', 'fixture-secondary'] : ['fixture-primary'], strategy: 'priority' }) };
+  mod._state.slotMap = { claude: {}, codex: { main: { provider: 'fixture-primary', model: SLOT_MODEL,
+    ...(other ? { pool: ['fixture-secondary'] } : {}) } } };
+  mod._state.routes = { rules: [] };
 }
 function answer(res, bytes = successBytes, status = 200, mime = 'text/event-stream', headers = {}) {
   if (status === 200 && bytes === successBytes) generationCount++;
@@ -232,8 +238,8 @@ for (const mode of ['wrapped-json-sse-mime', 'wrapped-sse-event']) test(`full pr
   const result = await ask(body);
   assert.equal(result.status, 200, result.text); assert.deepEqual(result.bytes, Buffer.from(successBytes));
   assert.equal(seen.length, 2, 'one safe replay follows the recognized Azure failure');
-  assert.deepEqual(JSON.parse(seen[0].bytes), original);
-  assert.deepEqual(JSON.parse(seen[1].bytes), expectedProjection(original));
+  assert.deepEqual(JSON.parse(seen[0].bytes), outbound(original));
+  assert.deepEqual(JSON.parse(seen[1].bytes), expectedProjection(outbound(original)));
   assert.deepEqual(body, original); assertSameBinding();
   assert.equal(lastLog().attempts, 2); assert.equal(lastLog().effort, 'max');
   assert.equal(lastLog().in, 23); assert.equal(lastLog().out, 7); assert.equal(lastLog().cache_read, 5);
@@ -248,7 +254,7 @@ test('full proxy permits output-id-only history recovery', async () => {
   const body = pairWithOutputId(), original = structuredClone(body);
   reply = (_req, res) => seen.length === 1 ? answer(res, JSON.stringify(wrappedError()), 400) : answer(res);
   const result = await ask(body); assert.equal(result.status, 200, result.text); assert.equal(seen.length, 2);
-  assert.deepEqual(JSON.parse(seen[1].bytes), expectedProjection(original)); assert.deepEqual(body, original); assertSameBinding();
+  assert.deepEqual(JSON.parse(seen[1].bytes), expectedProjection(outbound(original))); assert.deepEqual(body, original); assertSameBinding();
 });
 
 test('repeated wrapped Azure errors project once, retain identical retry bytes and terminate at shared cap', async () => {
@@ -258,7 +264,7 @@ test('repeated wrapped Azure errors project once, retain identical retry bytes a
   const result = await ask(body);
   assert.equal(seen.length, 5); assert.equal(lastLog().attempts, 5); assert.equal(result.status, 400);
   assert.equal(result.text, JSON.stringify(wrappedError('fixture-5'))); assert.equal(result.headers['x-request-id'], 'fixture-last-5');
-  assert.deepEqual(JSON.parse(seen[0].bytes), original); assert.deepEqual(JSON.parse(seen[1].bytes), expectedProjection(original));
+  assert.deepEqual(JSON.parse(seen[0].bytes), outbound(original)); assert.deepEqual(JSON.parse(seen[1].bytes), expectedProjection(outbound(original)));
   for (const request of seen.slice(2)) assert.deepEqual(request.bytes, seen[1].bytes, 'later attempts reuse the single projection');
   assert.deepEqual(body, original); assertSameBinding(); assert.equal(generationCount, 0);
 });
@@ -290,7 +296,7 @@ for (const [label, mutate, code] of invalidHistories) test(`recognized Azure ${l
   reply = (_req, res) => answer(res, raw, 400, 'text/event-stream', { 'x-request-id': 'fixture-rejected' });
   const result = await ask(body); assert.equal(result.status, 400); assert.equal(result.text, raw);
   assert.equal(result.headers['x-request-id'], 'fixture-rejected'); assert.equal(seen.length, 1); assert.equal(lastLog().attempts, 1);
-  assert.deepEqual(body, original); assert.deepEqual(JSON.parse(seen[0].bytes), original); assert.equal(generationCount, 0);
+  assert.deepEqual(body, original); assert.deepEqual(JSON.parse(seen[0].bytes), outbound(original)); assert.equal(generationCount, 0);
   if (code === 'invalid_tool_pair') assert.equal(lastLog().resource_recovery_skipped, 'invalid_tool_pair');
 });
 
@@ -300,6 +306,6 @@ for (const message of ['Invalid input: function_call_output id has an invalid fo
     reply = (_req, res) => answer(res, raw, 400, 'text/event-stream');
     const result = await ask(body); assert.equal(result.status, 400); assert.equal(result.text, raw); assert.equal(seen.length, 1);
     assert.equal(lastLog().attempts, 1); assert.equal(lastLog().resource_recovery_skipped, undefined);
-    assert.deepEqual(body, original); assert.deepEqual(JSON.parse(seen[0].bytes), original); assert.equal(generationCount, 0);
+    assert.deepEqual(body, original); assert.deepEqual(JSON.parse(seen[0].bytes), outbound(original)); assert.equal(generationCount, 0);
   });
 }

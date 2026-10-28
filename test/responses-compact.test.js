@@ -95,15 +95,18 @@ before(async () => {
     ],
   };
   fs.writeFileSync(path.join(TMP, 'providers.json'), JSON.stringify({ version: 2, current: { claude: null, codex: null }, ...providers }));
-  fs.writeFileSync(path.join(TMP, 'routes.json'), JSON.stringify({ rules: [], default: { provider: '', model: '' } }));
+  fs.writeFileSync(path.join(TMP, 'routes.json'), JSON.stringify({ rules: [] }));
   _state.store = providers;
-  _state.routes = {
-    rules: [
-      { id: 'rc-resp', app: 'codex', match: 'gpt', pool: ['k-resp'], enabled: true },
-      { id: 'rc-chat', app: 'codex', match: 'glm', pool: ['k-chat'], enabled: true },
-    ].map(mod.normalizeRule),
-    default: mod.normalizeRule({ provider: '', model: '' }),
+  // 精确槽位:每个槽位钉死一个「渠道 + 落点模型」,请求模型写别名 mixr-<槽名>。
+  // 通用 match/default 路由已删除,不能再靠 'gpt'/'glm' 子串决定落在哪个渠道。
+  _state.slotMap = {
+    claude: {},
+    codex: {
+      main: { provider: 'k-resp', model: 'gpt-5.6-sol' },
+      chat: { provider: 'k-chat', model: 'glm-5.3-flash' },
+    },
   };
+  _state.routes = { rules: [] };
   _state.resetPools();
   _state.sessions.clear();
   _state.cooldowns = {};
@@ -161,7 +164,7 @@ test('compact 落到 responses 渠道:原样透传到 /v1/responses/compact,字�
     // 压缩类请求常见的附加字段:透传语义下必须原样出现在出站体里
     prompt_cache_key: 'cache-keep-me',
   };
-  const r = await compact(payload, { model: 'gpt-5.6-sol' });
+  const r = await compact(payload, { model: 'mixr-main' });
 
   assert.equal(r.status, 200);
   assert.ok(r.hit, '应当打到上游');
@@ -192,7 +195,7 @@ test('compact 落到 responses 渠道:原样透传到 /v1/responses/compact,字�
 // ---------------------------------------------------------------- Chat 渠道:501 且不打上游
 test('compact 落到 chat 渠道:回 501 unsupported_compaction,不打上游', async () => {
   const before = mock.requests.length;
-  const r = await compact({ instructions: 'x', input: [], store: false }, { model: 'glm-5.3-flash' });
+  const r = await compact({ instructions: 'x', input: [], store: false }, { model: 'mixr-chat' });
 
   assert.equal(r.status, 501);
   assert.equal(mock.requests.length, before, 'chat 渠道收不了原生压缩,不该白打一次上游');
@@ -206,18 +209,19 @@ test('compact 落到 chat 渠道:回 501 unsupported_compaction,不打上游', a
   assert.equal(body.error.type, 'invalid_request', 'openaiError 会把 _error 后缀去掉当 type');
   assert.deepEqual(Object.keys(body).sort(), ['error'], '不夹带 Anthropic 形状的字段');
 
-  const log = (await logs('?model=glm-5.3-flash'))[0];
+  // 501 发生在出站之前:只有请求模型(槽位别名)落进日志,没有落点模型可记
+  const log = (await logs('?model=mixr-chat'))[0];
   assert.equal(log.status, 501);
   assert.equal(log.err_class, 'unsupported_compaction', '这是能力边界,不是渠道故障:不能算渠道失败');
   assert.equal(log.kind, 'responses/compact');
-  assert.equal(log.model_in, 'glm-5.3-flash');
+  assert.equal(log.model_in, 'mixr-chat');
   assert.equal(log.attempts, 0, '没打上游就不该记尝试次数');
 });
 
 test('compact 的失败不会把 chat 渠道标成不可用(后续请求照常)', async () => {
   // 501 是能力边界而不是上游故障:冷却若被它触发,会把一条健康的 chat 渠道
   // 从优先候选里摘掉,同池的普通 responses 请求跟着一起遭殃。
-  const r = await compact({ instructions: 'y', input: [], store: false }, { model: 'glm-5.3-flash' });
+  const r = await compact({ instructions: 'y', input: [], store: false }, { model: 'mixr-chat' });
   assert.equal(r.status, 501);
   const view = mod.healthStatus().providers.find(p => p.provider === 'k-chat');
   assert.ok(view, 'chat 渠道应当出现在健康视图里');
@@ -225,7 +229,7 @@ test('compact 的失败不会把 chat 渠道标成不可用(后续请求照常)'
   assert.equal(view.eligible, true);
   const follow = await request(proxyPort, 'POST', '/v1/responses', {
     headers: { 'Content-Type': 'application/json', 'session-id': 'after-501' },
-    body: { model: 'glm-5.3-flash', stream: false, input: [] },
+    body: { model: 'mixr-chat', stream: false, input: [] },
   });
   assert.equal(follow.status, 200, 'chat 渠道在 501 之后仍然可用');
 });

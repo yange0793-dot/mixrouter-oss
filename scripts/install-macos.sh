@@ -6,7 +6,7 @@
 #   备份位置"在写盘之前先摆出来给人看。它**不会**:
 #     · 不执行 launchctl bootstrap / bootout / kickstart,不启动、不重启、不停止任何服务;
 #     · 不写入 ~/Library/LaunchAgents(现有的 LaunchAgent 一个字节都不碰);
-#     · 不改任何客户端配置(~/.claude/settings.json、~/.codex/config.toml、~/.zcode/v2/config.json);
+#     · 不改任何客户端配置(~/.claude/settings.json、~/.codex/config.toml);
 #     · 不碰运行数据目录里的 providers.json / routes.json / slots.json / sessions.json / logs / backups;
 #     · 不设 current 之外的文件系统状态;切换服务是**别人在授权之后**的事。
 #   建议的服务配置会以文件形式落在发布目录的 launchd/ 下,并打印与现有 plist 的差异 ——
@@ -60,8 +60,8 @@ usage() {
   -h | --help      显示本帮助
 
 本脚本不执行任何服务管理命令(不装载、不卸载、不重启、不重新拉起服务),不写入
-~/Library/LaunchAgents,也不改 ~/.claude/settings.json / ~/.codex/config.toml /
-~/.zcode/v2/config.json。它只把源码装进一个不可变的发布目录,并先把「目标目录 /
+~/Library/LaunchAgents,也不改 ~/.claude/settings.json / ~/.codex/config.toml。
+它只把源码装进一个不可变的发布目录,并先把「目标目录 /
 服务配置差异 / 备份位置」摆出来给人看。落地服务配置与切换服务是授权之后的另一件事。
 ⚠ 脚本开发完成不等于已获得在线运行授权。
 USAGE
@@ -188,7 +188,6 @@ BACKUP_ROOT="$(get backupRoot)"
 LAUNCH_AGENT_DIR="$(get launchAgentDir)"
 CLAUDE_SETTINGS="$(get claudeSettings)"
 CODEX_CONFIG="$(get codexConfig)"
-ZCODE_CONFIG="$(get zcodeConfig)"
 PORT_PROXY="$(get proxyPort)"
 PORT_UI="$(get uiPort)"
 RELEASE_ITEMS="$(get releaseItems)"
@@ -359,7 +358,6 @@ note "④ $CURRENT_LINK 符号链接(指向新发布目录;不重启、不影响
 printf '\n本脚本不写入:\n'
 note "客户端配置: $CLAUDE_SETTINGS"
 note "            $CODEX_CONFIG"
-note "            $ZCODE_CONFIG"
 note "LaunchAgent: $LAUNCH_AGENT_DIR(只读出来做差异对比,不写入)"
 if [ -n "$CONFIG_SKIPS" ]; then
   printf '\n已存在、本次跳过(不覆盖)的配置文件:\n'

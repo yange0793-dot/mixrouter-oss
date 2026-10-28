@@ -23,9 +23,12 @@ const smoke = require('../scripts/smoke-offline.js');
 // ---------------------------------------------------------------- 隔离
 
 test('childEnv:调用方 shell 里的 MIXR_/MIXROUTER_/MIXUI_ 残值一律不带给子进程', () => {
-  const keys = ['MIXR_DATA_DIR', 'MIXR_CLAUDE_SETTINGS', 'MIXR_CODEX_CONFIG', 'MIXR_ZCODE_CONFIG',
+  const keys = ['MIXR_DATA_DIR', 'MIXR_CLAUDE_SETTINGS', 'MIXR_CODEX_CONFIG',
     'MIXR_UPSTREAM_PROXY', 'MIXR_UPSTREAM_PROXY_BYPASS', 'MIXROUTER_PORT',
-    'MIXUI_PORT', 'MIXROUTER_ALT_PORTS', 'MIXR_TOTAL_DEADLINE_MS', 'DSH_HOME', 'MIXR_HARNESS_PROFILE'];
+    'MIXUI_PORT', 'MIXROUTER_ALT_PORTS', 'MIXR_TOTAL_DEADLINE_MS',
+    // 已移除的 Harness 集成留下的 DSH_HOME 不带 MIXR_ 前缀,只能按名字剔 —— 放进这组
+    // 残值里才能真的验证它没被带下去。
+    'DSH_HOME'];
   const saved = {};
   for (const k of keys) { saved[k] = process.env[k]; process.env[k] = 'MUST-NOT-LEAK'; }
   try {
@@ -36,9 +39,9 @@ test('childEnv:调用方 shell 里的 MIXR_/MIXROUTER_/MIXUI_ 残值一律不带
     assert.strictEqual(env.HOME, '/tmp/h');
     assert.strictEqual(env.MIXR_CLAUDE_SETTINGS, '/tmp/h/.claude/settings.json');
     assert.strictEqual(env.MIXR_CODEX_CONFIG, '/tmp/h/.codex/config.toml');
-    assert.strictEqual(env.MIXR_ZCODE_CONFIG, '/tmp/h/.zcode/v2/config.json');
-    assert.strictEqual(env.DSH_HOME, '/tmp/h/.dsh');
-    assert.strictEqual(env.MIXR_HARNESS_PROFILE, '/tmp/h/.dsh/profiles/desktop/cordis.patch.yml');
+    // 已移除的客户端/集成:既不继承残值,也不再显式重定向(没有落点可指)。
+    for (const k of ['MIXR_ZCODE_CONFIG', 'MIXR_HARNESS_PROFILE']) assert.strictEqual(env[k], undefined, k);
+    assert.strictEqual(env.DSH_HOME, undefined, 'DSH_HOME 残值不该带下去');
     assert.strictEqual(env.MIXROUTER_PORT, '1111');
     assert.strictEqual(env.MIXUI_PORT, '2222');
   } finally {

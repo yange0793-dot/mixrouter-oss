@@ -2,8 +2,8 @@
 // 示例配置与槽位契约的一致性检查。
 //
 // 目的不是"跑一遍 JSON.parse",而是钉住三件容易在改文档时静默坏掉的事:
-//   1. providers.example.json 与 routes.example.json **互相自洽**——路由里出现的每个渠道 id
-//      都能在示例渠道库里找到,且在同一协议组;没有遗留的 fable / 渠道级 slots 字段;
+//   1. providers.example.json 的登记模型与精确落点自洽;routes.example.json 不带通用规则;
+//      没有遗留的 fable / 渠道级 slots 字段;
 //   2. 示例里的 key、域名都是占位值,不会被误当成可直接运行的凭据;
 //   3. 槽位表接受的形状(含 pool / strategy)与这里写的说明一致,列表里没有 fable。
 // 只读仓库内的示例文件;不建临时目录、不起服务、不联网。
@@ -11,8 +11,6 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { normalizeRule } = require('../lib/routing/rules');
-const { poolMembers, ghostRefs } = require('../lib/routing/pool');
 const { createSlotTable, CLAUDE_SLOTS, CLAUDE_SLOT_ENV, slotAlias, CODEX_SLOT_NAME_RE } = require('../lib/routing/slots');
 const { createResolver } = require('../lib/routing/resolve');
 
@@ -50,63 +48,33 @@ test('providers.example.json:示例凭据与域名都是占位值', () => {
   }
 });
 
-test('routes.example.json:每条规则都能归一化,且目标都在示例渠道库里', () => {
-  assert.ok(Array.isArray(routesFile.rules) && routesFile.rules.length);
-  for (const raw of routesFile.rules) {
-    const rule = normalizeRule(raw);
-    assert.equal(rule.enabled, raw.enabled, `${raw.id} 的 enabled 被归一化改动了`);
-    assert.equal(rule.app, raw.app || '', `${raw.id} 的 app 取值无效`);
-    // ghostRefs 只看"渠道 id 是否真实存在",与分组无关;这里要求示例里一个僵尸引用都没有。
-    assert.deepEqual(ghostRefs(findProvider, rule), [], `${raw.id} 指向了不存在的渠道`);
-    const app = rule.app || 'claude';
-    for (const m of rule.pool) {
-      const id = typeof m === 'string' ? m : m.provider;
-      assert.equal(groupOf(id), app, `${raw.id} 的池成员 ${id} 不属于 ${app} 组`);
-    }
-    if (rule.provider) assert.equal(groupOf(rule.provider), app, `${raw.id} 的单一目标不属于 ${app} 组`);
-    // 同一份规则在真实解析里应当至少能挑出成员(池成员全停用/不存在时会是空)。
-    const members = poolMembers(app === 'codex' ? providers.codex : providers.claude, rule, app);
-    assert.ok(members.length, `${raw.id} 在示例渠道库下挑不出任何成员`);
-    assert.equal(new Set(members.map(m => m.provider.id)).size, members.length, `${raw.id} 的池成员重复`);
-  }
-  const def = normalizeRule(routesFile.default);
-  assert.deepEqual(ghostRefs(findProvider, def), [], '默认路由指向了不存在的渠道');
+test('routes.example.json:只承载压缩设置,不预置匹配规则和默认目标', () => {
+  assert.deepEqual(routesFile.rules, []);
+  assert.equal(Object.hasOwn(routesFile, 'default'), false, '可配置默认目标已删除,示例里也不留这个字段');
+  assert.match(routesFile._说明, /压缩设置/);
+  assert.match(routesFile._说明, /不执行.*match\/when.*default/);
 });
 
-test('routes.example.json:空默认路由是有意的(没有目标时明确 503)', () => {
-  const def = normalizeRule(routesFile.default);
-  assert.equal(def.provider, '');
-  assert.deepEqual(def.pool, []);
-  assert.match(routesFile.default._注释, /503|no_route/, '默认路由为空时必须写在注释里说明后果');
-});
-
-test('示例路由真能解析:两组各命中一条规则,未知模型落到空默认路由', () => {
-  const routes = {
-    rules: routesFile.rules.map(r => normalizeRule(r)),
-    default: normalizeRule(routesFile.default),
-  };
+test('示例登记模型精确落点:同名渠道拒绝猜测,未知模型没有默认回退', () => {
   const resolve = createResolver({
-    getRoutes: () => routes,
+    getRoutes: () => routesFile,
     storeOf: app => providers[app],
     resolveSlot: () => null,
     findProvider,
     providerApp: id => groupOf(id),
   });
-  const hit = (model, app) => resolve(model, { ua: 'claude-cli/2.1.0' }, app);
-
-  const opus = hit('claude-opus-5', 'claude');
-  assert.equal(opus.rule.id, 'r-claude-pool');
-  assert.equal(opus.members.length, 2, '池里两个渠道都可用');
-  assert.equal(opus.model, 'claude-opus-5[1M]', '池成员各自的目标模型生效');
-
-  assert.equal(hit('claude-sonnet-5', 'claude').rule.id, 'r-claude-sonnet');
-  assert.equal(hit('gpt-5-codex', 'codex').rule.id, 'r-codex-gpt');
-  assert.equal(hit('glm-5', 'codex').rule.id, 'r-codex-glm');
-
-  // 停用的规则不命中;默认路由没有目标 → members 为空,实跑会 503 no_route_error。
-  const haiku = hit('claude-haiku-5', 'claude');
-  assert.equal(haiku.rule, null);
-  assert.deepEqual(haiku.members, []);
+  const hit = (model, app) => resolve(model, {}, app);
+  for (const model of ['claude-opus-5', 'claude-sonnet-5']) {
+    assert.deepEqual(hit(model, 'claude').members, [], '两家登记同名模型时须用槽位明确选择');
+  }
+  for (const [model, id] of [['gpt-5-codex', 'c1'], ['glm-5', 'c2']]) {
+    const selected = hit(model, 'codex');
+    assert.equal(selected.provider.id, id);
+    assert.equal(selected.model, model);
+    assert.equal(selected.members.length, 1);
+  }
+  assert.deepEqual(hit('claude-haiku-5', 'claude').members, []);
+  assert.deepEqual(hit('prefix-gpt-5-codex', 'codex').members, [], '精确模型不接受子串');
 });
 
 test('槽位表:五个 Claude 固定槽、没有 fable、别名与 env 一一对应', () => {

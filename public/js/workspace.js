@@ -10,20 +10,19 @@
  *   workspaceAppChanged(app)。没有这个文件时那两个 typeof 检查直接跳过,页面照常工作。
  */
 (function () {
-  const VIEWS = ['overview', 'usage', 'providers', 'routes', 'harness', 'sessions', 'diagnostics', 'settings'];
-  const APPS = ['claude', 'codex', 'zcode'];
+  const VIEWS = ['overview', 'usage', 'providers', 'compact', 'sessions', 'diagnostics', 'settings'];
+  const APPS = ['claude', 'codex'];
   const LABELS = {
     overview: '概览',
     usage: '用量统计',
     providers: '渠道与 Key',
-    routes: '路由',
-    harness: 'Harness',
+    compact: '压缩设置',
     sessions: '会话',
     diagnostics: '诊断',
     settings: '设置与备份',
   };
-  // 渠道页的标题按客户端写:侧栏的三个客户端入口都落在同一个视图上,标题必须能说明现在看的是谁。
-  const CLIENTS = { claude: 'Claude Code', codex: 'Codex', zcode: 'ZCode' };
+  // 渠道页的标题按客户端写:侧栏的两个客户端入口都落在同一个视图上,标题必须能说明现在看的是谁。
+  const CLIENTS = { claude: 'Claude Code', codex: 'Codex' };
   const KEYS = { view: 'mixr.ui.view', app: 'mixr.ui.app', theme: 'mixr.ui.theme', rail: 'mixr.ui.rail' };
   const THEMES = ['system', 'light', 'dark'];
   const DEFAULT_THEME = 'system';
@@ -138,7 +137,10 @@
     // skip-link 指向正文锚点 #main:它不是视图,但也绝不能当成"非法视图"跳回概览。
     if (raw === 'main') return { view: null, app: null, invalid: false, anchor: 'main' };
     const parts = raw.split('?');
-    const name = parts[0];
+    let name = parts[0];
+    // 旧深链:#routes 的通用路由编辑器已删除,压缩设置独立成 #compact —— 直接归一到新视图,
+    // 老书签还能落到管压缩的那一页,而不是掉回概览。已删掉的其它视图按非法视图回默认。
+    if (name === 'routes') name = 'compact';
     if (!VIEWS.includes(name)) return { view: null, app: null, invalid: true };
     let app = null;
     if (name === 'providers') {
@@ -147,6 +149,7 @@
         if (at < 0) continue;
         if (pair.slice(0, at) === 'app') {
           const value = pair.slice(at + 1);
+          // 已删除的客户端(如 zcode)不再有效:落回默认客户端,不改写用户已经打开的其他页面。
           if (APPS.includes(value)) app = value;
         }
       }
@@ -278,15 +281,13 @@
   // 顶栏图标只是当前页的注脚:渠道页按客户端区分,其余按视图。字符串全是本文件里的常量。
   const ICONS = {
     overview: '<rect x="2.5" y="2.5" width="5.2" height="5.2" rx="1.2"/><rect x="10.3" y="2.5" width="5.2" height="5.2" rx="1.2"/><rect x="2.5" y="10.3" width="5.2" height="5.2" rx="1.2"/><rect x="10.3" y="10.3" width="5.2" height="5.2" rx="1.2"/>',
-    routes: '<circle cx="4" cy="9" r="1.8"/><circle cx="14" cy="4.5" r="1.8"/><circle cx="14" cy="13.5" r="1.8"/><path d="M5.8 9c2 0 3-4.5 6.4-4.5M5.8 9c2 0 3 4.5 6.4 4.5"/>',
-    harness: '<rect x="6.5" y="2.5" width="5" height="5" rx="1.2"/><path d="M9 7.5v3M4 10.5h10M4 10.5v2M14 10.5v2"/><circle cx="4" cy="14" r="1.5"/><circle cx="14" cy="14" r="1.5"/>',
+    compact: '<path d="M3 5.5h12M3 12.5h12"/><path d="M6.5 5.5 9 3l2.5 2.5M6.5 12.5 9 15l2.5-2.5"/>',
     sessions: '<path d="M3 4h12v7.5H8L4.5 14v-2.5H3z"/><path d="M6 7h6"/>',
     usage: '<path d="M2.5 14.5h13"/><path d="M5 14V9M9 14V5M13 14v-3"/>',
     diagnostics: '<path d="M2 9h3l2-4 3 8 2-4h4"/>',
     settings: '<path d="M3 5.5h12M3 12.5h12"/><circle cx="7" cy="5.5" r="1.6"/><circle cx="11.5" cy="12.5" r="1.6"/>',
     claude: '<rect x="2.5" y="3" width="13" height="5" rx="1.5"/><rect x="2.5" y="10" width="13" height="5" rx="1.5"/><path d="M5.5 5.5h.01M5.5 12.5h.01"/>',
     codex: '<path d="M3 5.5 9 3l6 2.5v7L9 15l-6-2.5z"/><path d="M3 5.5 9 8l6-2.5M9 8v7"/>',
-    zcode: '<path d="M4 4h10l-10 10h10"/>',
   };
   function setViewIcon(viewName, appName) {
     const icon = el('topbar-view-icon');
@@ -522,15 +523,13 @@
   const PALETTE = [
     { view: 'overview', label: '概览', hint: '状态、待办与客户端接入' },
     { view: 'providers', label: '渠道与 Key', hint: '上游渠道与客户端接入', keywords: 'provider key' },
-    { view: 'routes', label: '路由规则', hint: '匹配、压缩与默认路由', keywords: 'route rule' },
-    { view: 'harness', label: 'Harness', hint: '主模型与子代理候选池', keywords: 'deepseek harness pool' },
+    { view: 'compact', label: '压缩设置', hint: '压缩模型与三层压缩窗口', keywords: 'compact window 压缩' },
     { view: 'sessions', label: '会话绑定', hint: '按会话配置渠道与 Key', keywords: 'session' },
     { view: 'usage', label: '用量统计', hint: '请求、tokens 与缓存命中', keywords: 'usage token' },
     { view: 'diagnostics', label: '诊断', hint: '请求日志与分槽用量', keywords: 'log logs' },
     { view: 'settings', label: '设置与备份', hint: '备份清点、健康与导出', keywords: 'settings backup' },
     { view: 'providers', app: 'claude', label: 'Claude Code 渠道', hint: '渠道与 Key', keywords: 'claude anthropic' },
     { view: 'providers', app: 'codex', label: 'Codex 渠道', hint: '渠道与 Key', keywords: 'codex openai' },
-    { view: 'providers', app: 'zcode', label: 'ZCode 渠道', hint: '渠道与 Key', keywords: 'zcode' },
   ];
 
   function paletteMatches(query) {

@@ -16,7 +16,7 @@
 
 | 步骤 | 做什么 | 不会做什么 |
 | --- | --- | --- |
-| 1 检查客户端 | 读 PATH 里有没有 `claude` / `codex` / `zcode`,读客户端配置文件的当前内容 | 不执行客户端、不读 `--version`、不改任何文件 |
+| 1 检查客户端 | 读 PATH 里有没有 `claude` / `codex`,读客户端配置文件的当前内容 | 不执行客户端、不读 `--version`、不改任何文件 |
 | 2 渠道 | 选已有渠道,或新建,或粘贴 JSON 导入 | 不在这一步写客户端配置 |
 | 3 模型与主槽 | 选模型、Key、客户端协议;可选「设为主槽 main」 | 不改渠道库里的 `wire_api` |
 | 4 兼容测试 | 可选;最多 3 次真实生成请求,分四项报告 | 不执行工具、不改真实会话绑定 |
@@ -46,8 +46,8 @@
   写入前对比配置文件指纹:预览之后文件被外部改过就返回 409,不拿旧快照去写。
 - 写入走的是与 `./mixctl route` 相同的切换函数,写前按现有逻辑自动备份;
   写入后按**磁盘实际值**记账,不是按预览的预测值记账。
-- 第 2–3 步选的渠道、模型与 Key 用于**兼容测试**和 ZCode 的接入字段;Claude / Codex 的写入
-  只改接入字段,**不会**自动新建渠道、改路由规则或把选中的渠道绑成主槽——要绑槽位,
+- 第 2–3 步选的渠道、模型与 Key 用于**兼容测试**;Claude / Codex 的写入
+  只改接入字段,**不会**自动新建渠道、改槽位归属或把选中的渠道绑成主槽——要绑槽位,
   用第 3 步的槽位按钮或在槽位表里配置:
   - Claude:可选「只设为主槽 main」或「把全部槽位都设为该渠道」。只配 main 时其余槽位不写别名,
     原本手设的真实模型名会保留,过期的 `mixr-*` 会被清掉。
@@ -66,8 +66,7 @@
   - Claude Code:`env` 里的 `ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN`,
     以及接入时一并写入的五个槽位 env 键;
   - Codex:顶层 `model` / `model_provider` / `review_model` / `model_catalog_json`,
-    以及 `[model_providers.mixr-router]` 段的字段;
-  - ZCode:`provider["mixrouter-managed"]` 的声明字段与模型条目。
+    以及 `[model_providers.mixr-router]` 段的字段。
   Codex 的撤销只还原 `model_catalog_json` 字段,不删除接入时生成的目录文件;
   `model_reasoning_effort` 不属于接入受管字段,后来调整强度不妨碍撤销。
 - **任何一个受管字段在接入后被改过,撤销整体拒绝**并列出冲突(当前值 / 期望值 / 想还原的值),
@@ -79,8 +78,6 @@
 
 - Codex 当前选择了 `profile` 时,向导拒绝预览与写入(需要先人工确认 profile 配置)。
 - 写入时若清理了其它 `mixr-*` provider 段,预览会警告;**撤销只恢复本次受管字段,不恢复那些段**。
-- 写入 ZCode 的 provider ID 固定为 `mixrouter-managed`;该 ID 已被非本工具写入的内容占用时,
-  预览直接拒绝,不覆盖。
 - 首次切换接入后,客户端需重新读取连接配置(按客户端选择重新打开或新建会话)。
   Codex 已通过本机路由发送别名请求后,保存槽位对后续请求热生效,不用再次应用或重启;
   原生选择器缓存目录和显示名,重新打开客户端才读取新目录;转发更新不依赖界面刷新。
@@ -120,7 +117,7 @@
 直接调用 `lib/provider-import.js` 时原始文本上限是 2 MB。`PROXY_MANAGED` 这类路由占位值
 不会被当成真实 Key 导入。
 
-导入**只写渠道库**,不改客户端配置、不改路由规则、不切换当前生效渠道。
+导入**只写渠道库**,不改客户端配置、不改槽位表、不切换当前生效渠道。
 
 ---
 
@@ -202,7 +199,7 @@ Codex 组切换过去时只显示一句说明,不提供编辑入口:Codex 的 `m
 - 内容只在本进程内存里:**最多 100 条、每条最多 40 个事件、15 分钟未更新即过期**。
   重启服务后清空,不能当历史记录。
 - 字段是白名单:只有请求 id、时间、阶段、尝试序号、渠道 id、模型名、`key_id`、状态码、
-  错误 code、等待毫秒,以及 app / 协议线 / 槽位 / 规则这类元数据。
+  错误 code、等待毫秒,以及 app / 协议线 / 槽位这类元数据。
   **不含 prompt、会话标签、Key 明文、上游 URL 或上游错误正文。**
 - 尝试过程是旁路:不参与候选选择、预算或终态判定;没有它代理行为不变。
 - 请求日志里的 `request_id` 就是这里的 trace id,可以互相对照。
@@ -216,7 +213,7 @@ Codex 组切换过去时只显示一句说明,不提供编辑入口:Codex 的 `m
   "title": "一句话结论",
   "impact": "影响:账号坏了、模型没了、还是这一发运气不好",
   "action": "下一步做什么,去控制台哪一页",
-  "target": "#providers | #routes | #diagnostics | … | ''",
+  "target": "#providers | #compact | #diagnostics | … | ''",
   "uncertain": true
 }
 ```
@@ -242,7 +239,7 @@ Codex 组切换过去时只显示一句说明,不提供编辑入口:Codex 的 `m
 
 - `schema_version`、`generated_at`、`version`;
 - 运行时:`platform` / `arch` / `node`;
-- 三个客户端的**配置状态枚举**(`router` / `configured` / `missing` / `unreadable`),不是路径;
+- Claude 与 Codex 两组的**配置状态枚举**(`router` / `configured` / `missing` / `unreadable`),不是路径;
 - 渠道计数:每组总数、启用数、已配置 Key 数;
 - 超时、重试等**数值型**设置在用的值;
 - 请求计数按(app、状态类、协议线)聚合,以及 tokens 计数与内存窗口容量。
@@ -353,7 +350,7 @@ npm run upgrade -- --rollback-to <旧发布目录> --apply --yes
 
 | 方法与路径 | 作用 | 写操作 |
 | --- | --- | --- |
-| `GET /api/onboarding/<claude\|codex\|zcode>` | 检查客户端安装、配置状态、是否已路由 | 否 |
+| `GET /api/onboarding/<claude\|codex>` | 检查客户端安装、配置状态、是否已路由 | 否 |
 | `POST /api/onboarding/<app>/preview` | 预览受管字段差异,签发一次性令牌 | 否 |
 | `POST /api/onboarding/<app>/apply` | 确认写入(`token` + `confirm: true`) | 是 |
 | `POST /api/onboarding/<app>/undo-preview` | 预览撤销与冲突 | 否 |

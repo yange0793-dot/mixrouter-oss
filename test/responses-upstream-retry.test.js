@@ -26,6 +26,8 @@ const completed = () => ({ id: 'successful-attempt', object: 'response', status:
   usage: { input_tokens: 8, output_tokens: 3 } });
 let upstream, proxy, reply, hits, seen, finishedResponses;
 const sockets = new Set();
+// 精确槽位:通用 match/default 规则删除后,多渠道(含备池)只能靠槽位别名 + 同一落点模型表达。
+const SLOT = 'mixr-main', SLOT_MODEL = 'fixture-model';
 function success(res, json = false) {
   res.writeHead(200, { 'Content-Type': json ? 'application/json' : 'text/event-stream' });
   res.end(json ? JSON.stringify(completed()) : frame({ type: 'response.completed', response: completed() }));
@@ -34,14 +36,14 @@ function rejectUpstream(res, event = failed(), json = false) {
   res.writeHead(200, { 'Content-Type': json ? 'application/json' : 'text/event-stream' });
   res.end(json ? JSON.stringify(event.response) : frame(event));
 }
-function configure({ override, pinned = false, other = false } = {}) {
+function configure({ pinned = false, other = false } = {}) {
   const provider = id => ({ id, name: id, enabled: true, api_key: 'sk-fixture', wire_api: 'responses',
     base_url: `http://127.0.0.1:${upstream.address().port}/${id}`, models: ['fixture-model'] });
   mod._state.store = { claude: [], codex: [provider('primary'), ...(other ? [provider('secondary')] : [])] };
-  mod._state.routes = { rules: [], default: mod.normalizeRule({
-    ...(pinned ? { provider: 'primary' } : { pool: other ? ['primary', 'secondary'] : ['primary'], strategy: 'priority' }),
-    ...(override === undefined ? {} : { upstream_stream: override }),
-  }) };
+  // 槽位钉定主渠道;备池只在需要换渠道的用例里加。上游流式开关已随规则一起废弃。
+  mod._state.slotMap = { claude: {}, codex: { main: { provider: 'primary', model: SLOT_MODEL,
+    ...(!pinned && other ? { pool: ['secondary'] } : {}) } } };
+  mod._state.routes = { rules: [] };
 }
 function ask({ stream = true, session = 'retry-fixture' } = {}, onResponse) {
   return new Promise((resolve, reject) => {
@@ -55,7 +57,7 @@ function ask({ stream = true, session = 'retry-fixture' } = {}, onResponse) {
     });
     req.on('error', reject);
     req.setTimeout(2500, () => req.destroy(new Error('fixture timeout')));
-    req.end(JSON.stringify({ model: 'fixture-model', stream, input: 'fixture' }));
+    req.end(JSON.stringify({ model: SLOT, stream, input: 'fixture' }));
   });
 }
 function lastLog() {
@@ -117,9 +119,11 @@ test('仅生命周期和心跳未提交:跨块 CRLF 失败帧仍可重试', asyn
   assertSuccess(await ask(), 2);
 });
 
-for (const [stream, override, json] of [[false, undefined, true], [true, false, true], [false, true, false]]) {
-  test(`空 upstream_error 对 JSON/显式格式转换同样重试 (client=${stream}, override=${override})`, async () => {
-    configure({ override });
+// 上游流式开关已废弃:出站形态由协议默认决定。客户端非流 → 上游整包 JSON;
+// 客户端要流 → 上游 SSE。两种形状的空 upstream_error 都必须重试。
+for (const [stream, json] of [[false, true], [true, false]]) {
+  test(`空 upstream_error 对 JSON/SSE 两种形状同样重试 (client=${stream})`, async () => {
+    configure();
     reply = (_req, res) => hits === 1 ? rejectUpstream(res, failed(), json) : success(res, json);
     assertSuccess(await ask({ stream }), 2);
   });
@@ -186,7 +190,7 @@ test('重试等待期间客户端取消不能继续发上游', async () => {
       headers: { 'Content-Type': 'application/json' } });
     client.once('error', error => error.code === 'ECONNRESET' ? resolve() : reject(error));
     client.once('close', resolve);
-    client.end(JSON.stringify({ model: 'fixture-model', stream: true, input: 'fixture' }));
+    client.end(JSON.stringify({ model: SLOT, stream: true, input: 'fixture' }));
   });
   await new Promise(resolve => setTimeout(resolve, 60));
   assert.equal(hits, 1);
@@ -278,7 +282,7 @@ test('旧连接错误不能覆盖末次 HTTP/协议错误', async () => {
   assert.equal(lastLog().err_class, 'upstream_request');
   assert.match(result.text, /last real error/);
   hits = 0;
-  configure({ override: false });
+  configure();
   reply = (req, res) => {
     if (hits === 1) return req.socket.destroy();
     res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"status":"in_progress","output":[]}');

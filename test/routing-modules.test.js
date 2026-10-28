@@ -18,6 +18,7 @@ const { createResolver } = require(path.join(ROOT, 'lib/routing/resolve.js'));
 const { createSessionStore } = require(path.join(ROOT, 'lib/routing/sessions.js'));
 const identity = require(path.join(ROOT, 'lib/session/identity.js'));
 const slotsLib = require(path.join(ROOT, 'lib/routing/slots.js'));
+const { COMPACT_RULES } = require(path.join(ROOT, 'lib/routing/compact-signature.js'));
 
 // ---------------------------------------------------------------- 端点识别
 test('classifyProxyRequest:带查询串/末尾斜杠都认,未知路径返回 null', () => {
@@ -85,29 +86,24 @@ test('validBaseUrl:只认无凭据的 http(s)', () => {
   assert.equal(headersLib.validBaseUrl(undefined), false);
 });
 
-// ---------------------------------------------------------------- 规则归一化与匹配
-test('normalizeRule:when.* 只收字符串/数字,对象要抛 400 而不是存成 [object Object]', () => {
-  // message 与 statusCode 与 lib/zcode-config.js 的 invalid() 保持同形(路由层不再依赖它)
-  const assertInvalid = (rule, field) => {
-    assert.throws(() => rulesLib.normalizeRule(rule),
-      e => e.statusCode === 400 && e.message === `路由规则的 when.${field} 必须是字符串`);
-  };
-  assertInvalid({ when: { body: {} } }, 'body');
-  assertInvalid({ when: { session: [] } }, 'session');
-  assertInvalid({ when: { ua: true } }, 'ua');
-  assertInvalid({ when: { token: false } }, 'token');
-  // null/''/undefined 是"没设这个条件",直接丢字段而不是抛(与拆分前一致)
-  assert.deepEqual(rulesLib.normalizeRule({ when: { token: null } }).when, {});
-  assert.deepEqual(rulesLib.normalizeRule({ when: { token: '' } }).when, {});
-  assert.deepEqual(rulesLib.normalizeRule({ when: { token: undefined } }).when, {});
-  // 数字是合法的 when 值(会被收敛成字符串)
-  assert.deepEqual(rulesLib.normalizeRule({ when: { token: 0 } }).when, { token: '0' });
-  const r = rulesLib.normalizeRule({ when: { body: 'summarize', ua: 123 }, priority: '7' });
-  assert.equal(r.when.body, 'summarize');
-  assert.equal(r.when.ua, '123');
-  assert.equal(r.priority, 7);
-  // 空值直接丢字段,不落成空串之外的垃圾
-  assert.deepEqual(rulesLib.normalizeRule({ when: { session: '', ua: null } }).when, {});
+// ---------------------------------------------------------------- 规则归一化
+// 通用分流(match 子串 / when.session|ua|token)已删除,归一化只剩压缩规则要用的那几项。
+test('normalizeRule:when 只保留 body,通用条件字段静默丢弃', () => {
+  // when.body 是压缩规则的判据:坏类型必须当场报 400,否则存进去只会静默失配。
+  assert.throws(() => rulesLib.normalizeRule({ when: { body: {} } }),
+    e => e.statusCode === 400 && e.message === '路由规则的 when.body 必须是字符串');
+  // 已删除的通用条件:留着会让控制台看着"配了条件",实际不生效 —— 一并不收。
+  const r = rulesLib.normalizeRule({ when: { session: 's', ua: 'u', token: 't', body: 'b' } });
+  assert.deepEqual(r.when, { body: 'b' });
+  assert.deepEqual(rulesLib.normalizeRule({ when: { token: 'only' } }).when, {}, '只剩已删除字段 → 空条件');
+  // null/''/undefined 是"没设这个条件",直接丢字段
+  assert.deepEqual(rulesLib.normalizeRule({ when: { body: null } }).when, {});
+  assert.deepEqual(rulesLib.normalizeRule({ when: { body: '' } }).when, {});
+  // 数字是合法值(会被收敛成字符串)
+  assert.deepEqual(rulesLib.normalizeRule({ when: { body: 0 } }).when, { body: '0' });
+  const n = rulesLib.normalizeRule({ when: { body: 'summarize' }, priority: '7' });
+  assert.equal(n.when.body, 'summarize');
+  assert.equal(n.priority, 7);
 });
 
 test('normalizeRule:pool 里字符串与对象混用都收,坏元素剔除,策略越界回落', () => {
@@ -124,39 +120,24 @@ test('normalizeRule:pool 里字符串与对象混用都收,坏元素剔除,策�
   assert.equal(rulesLib.normalizeRule({ priority: 'abc' }).priority, 0);
 });
 
-test('matchHits:逗号分隔、大小写不敏感、空 match 返回空数组', () => {
-  assert.deepEqual(rulesLib.matchHits({ match: 'Opus, claude-3-opus ,, ' }), ['opus', 'claude-3-opus']);
-  assert.deepEqual(rulesLib.matchHits({ match: '' }), []);
-  assert.deepEqual(rulesLib.matchHits(null), []);
+test('normalizeRule:压缩专用 Key 与 pool 互斥,坏 key_id 当场 400', () => {
+  const compactBody = COMPACT_RULES[0].body;
+  assert.throws(() => rulesLib.normalizeRule({ when: { body: compactBody }, key_id: 'k1', pool: ['pa'] }),
+    e => e.statusCode === 400 && /不能同时配置 pool/.test(e.message));
+  assert.throws(() => rulesLib.normalizeRule({ when: { body: compactBody }, key_id: 'a\nb' }),
+    e => e.statusCode === 400 && /key_id/.test(e.message));
+  // 读盘保留坏 pin 的池形状,让运行时明确拒绝,而不是洗成单选后默默发包
+  const kept = rulesLib.normalizeRule({ when: { body: compactBody }, key_id: 'k1', pool: 'pa' }, { preserveInvalidPin: true });
+  assert.deepEqual(kept.pool, ['pa']);
+  assert.equal(kept.key_id, 'k1');
 });
 
-test('matchWhen:全字段与语义、空条件恒真、body 走惰性回调', () => {
-  let calls = 0;
-  const ctx = { session: 'cc:abc', ua: 'claude-cli/2.1', token: 'tk1', bodyText: () => { calls++; return 'DETAILED SUMMARY'; } };
-  assert.equal(rulesLib.matchWhen({}, ctx), true);
-  assert.equal(rulesLib.matchWhen({ when: { session: 'abc', ua: 'CLAUDE-CLI', token: 'tk1', body: 'summary' } }, ctx), true);
-  assert.equal(rulesLib.matchWhen({ when: { session: 'abc', token: 'nope' } }, ctx), false);
-  // 只有真有 body 条件时才取匹配文本(压缩请求体可以上百 KB)
-  calls = 0;
-  rulesLib.matchWhen({ when: { ua: 'claude' } }, ctx);
-  assert.equal(calls, 0);
-  // 没有 bodyText 回调时报"不匹配"而不是抛
-  assert.equal(rulesLib.matchWhen({ when: { body: 'x' } }, {}), false);
-  assert.equal(rulesLib.matchWhen(undefined, undefined), true);
-});
-
-test('ruleBelongsToApp:显式 app 只在自组生效;Codex 组跳过纯 Claude 规则', () => {
-  const providerApp = id => ({ pc: 'claude', px: 'codex' }[id] || null);
-  assert.equal(rulesLib.ruleBelongsToApp({ app: 'codex' }, 'claude', providerApp), false);
-  assert.equal(rulesLib.ruleBelongsToApp({ app: 'codex' }, 'codex', providerApp), true);
-  // 没声明 app:Claude 通路保持原语义(一律算命中,好让停用/删除有明确报错)
-  assert.equal(rulesLib.ruleBelongsToApp({ provider: 'px' }, 'claude', providerApp), true);
-  // Codex 通路:只绑 Claude 渠道的规则让位给后面的规则
-  assert.equal(rulesLib.ruleBelongsToApp({ provider: 'pc' }, 'codex', providerApp), false);
-  assert.equal(rulesLib.ruleBelongsToApp({ pool: ['pc', { provider: 'px' }] }, 'codex', providerApp), true);
-  assert.equal(rulesLib.ruleBelongsToApp({}, 'codex', providerApp), true);
-  // 幽灵引用(渠道根本查不到)仍算本组规则:报错比静默跳过有用
-  assert.equal(rulesLib.ruleBelongsToApp({ provider: 'gone' }, 'codex', providerApp), true);
+test('ruleAppliesToApp:显式 app 只在自己那组生效,没声明则两组通用', () => {
+  assert.equal(rulesLib.ruleAppliesToApp({ app: 'codex' }, 'claude'), false);
+  assert.equal(rulesLib.ruleAppliesToApp({ app: 'codex' }, 'codex'), true);
+  assert.equal(rulesLib.ruleAppliesToApp({ app: 'claude' }, 'claude'), true);
+  assert.equal(rulesLib.ruleAppliesToApp({}, 'codex'), true);
+  assert.equal(rulesLib.ruleAppliesToApp(null, 'claude'), true);
 });
 
 test('rulesByPriority:高 priority 先,同值保持数组顺序,且不改动调用者的数组', () => {
@@ -475,97 +456,141 @@ test('applyLabel:内部文案不覆盖真标签;关标签开关时不写', () =>
 });
 
 // ---------------------------------------------------------------- 路由解析
+// 瘦身后只剩三步:压缩内容规则 → 精确槽位 → 精确已登记模型。没有通用 match、没有 when、
+// 没有可配置 default:未登记就是 503,多个渠道登记同一模型就是 409,都不猜。
+const P = (id, models, extra = {}) => ({ id, name: id, api_key: 'sk-' + id, enabled: true, ...(models ? { models } : {}), ...extra });
 const stubResolver = (over = {}) => {
   const store = {
-    claude: over.claude || [{ id: 'pc1', name: 'C1' }, { id: 'pc2', name: 'C2' }],
-    codex: over.codex || [{ id: 'px1', name: 'X1', model: 'xm' }],
+    claude: over.claude || [P('pc1', ['c-model']), P('pc2', ['c-model-2'])],
+    codex: over.codex || [P('px1', ['xm'], { model: 'xm' })],
   };
   const findProvider = id => store.claude.find(p => p.id === id) || store.codex.find(p => p.id === id) || null;
-  const providerApp = id => store.claude.some(p => p.id === id) ? 'claude' : (store.codex.some(p => p.id === id) ? 'codex' : null);
-  const routesRef = { current: over.routes || { rules: [], default: {} } };
+  const routesRef = { current: over.routes || { rules: [] } };
   const resolveRoute = createResolver({
     getRoutes: () => routesRef.current,
     storeOf: app => (app === 'codex' ? store.codex : store.claude),
     resolveSlot: over.resolveSlot || (() => null),
-    findProvider, providerApp,
+    findProvider,
   });
   return { resolveRoute, routesRef, findProvider };
 };
+const compactRule = (extra = {}) => ({ id: 'compact', match: '', app: 'claude', enabled: true, priority: 90,
+  when: { body: COMPACT_RULES[0].body }, provider: 'pc1', model: 'compact-model', pool: [], ...extra });
+const summaryTexts = () => [require(path.join(ROOT, 'lib/routing/compact-signature.js')).FIXED_PREFIX
+  + 'Your task is to create a detailed summary of this conversation.'];
 
-test('resolveRoute:内容分流 > 槽位别名 > 普通规则 > 兜底', () => {
+test('resolveRoute:压缩 > 槽位 > 精确模型,三步各自打上 stage', () => {
   const { resolveRoute } = stubResolver({
-    routes: {
-      rules: [
-        { id: 'plain', match: 'sonnet', provider: 'pc1', priority: 0, enabled: true, pool: [] },
-        { id: 'content', match: '', provider: 'pc2', priority: -5, enabled: true, pool: [], when: { body: 'summarize' } },
-      ],
-      default: { provider: 'pc1', model: '', pool: [] },
-    },
+    routes: { rules: [compactRule()] },
     resolveSlot: (app, modelIn) => (modelIn === 'mixr-haiku'
       ? { name: 'haiku', model: 'slotm', rule: { id: 'slot:claude/haiku', provider: 'pc2', model: 'slotm', pool: [], enabled: true } }
       : null),
   });
-  const ctx = { bodyText: () => 'please summarize' };
-  // 内容分流规则 priority 更低也先评估,并且不限模型
-  assert.equal(resolveRoute('sonnet', ctx).rule.id, 'content');
-  assert.equal(resolveRoute('sonnet', ctx).content, true);
-  // 内容不匹配时,槽位别名压过普通规则的子串匹配
-  assert.equal(resolveRoute('mixr-haiku', {}).slot, 'haiku');
-  assert.equal(resolveRoute('mixr-haiku', {}).model, 'slotm');
-  // 普通规则
-  assert.equal(resolveRoute('claude-sonnet-4', {}).rule.id, 'plain');
-  // 兜底:rule 为 null,沿用请求模型
-  const dft = resolveRoute('unknown-model', {});
-  assert.equal(dft.rule, null);
-  assert.equal(dft.provider.id, 'pc1');
-  assert.equal(dft.model, 'unknown-model');
+  // 压缩请求先于槽位与精确模型
+  const compact = resolveRoute('mixr-haiku', { compactTexts: summaryTexts });
+  assert.equal(compact.stage, 'compact');
+  assert.equal(compact.content, true, '兼容字段 content 仍在');
+  assert.equal(compact.rule.id, 'compact');
+  assert.equal(compact.provider.id, 'pc1');
+  assert.equal(compact.model, 'compact-model');
+  // 非压缩请求:槽位别名压过精确模型
+  const slot = resolveRoute('mixr-haiku', {});
+  assert.equal(slot.stage, 'slot');
+  assert.equal(slot.slot, 'haiku');
+  assert.equal(slot.model, 'slotm');
+  // 其余按已登记模型精确落点
+  const exact = resolveRoute('c-model-2', {});
+  assert.equal(exact.stage, 'model');
+  assert.equal(exact.rule.id, 'model:pc2');
+  assert.equal(exact.provider.id, 'pc2');
+  assert.equal(exact.strategy, 'round_robin');
 });
 
-test('resolveRoute:高 priority 先匹配;同 priority 按数组顺序;禁用规则跳过', () => {
+test('resolveRoute:未登记模型明确 503 no_route,不给兜底也不偷换模型', () => {
+  const { resolveRoute } = stubResolver();
+  const r = resolveRoute('unknown-model', {});
+  assert.equal(r.stage, 'model');
+  assert.deepEqual(r.members, []);
+  assert.equal(r.provider, null);
+  assert.equal(r.rule, null);
+  assert.equal(r.error.type, 'no_route_error');
+  assert.equal(r.error.status, 503);
+  assert.deepEqual(r.candidates, []);
+  assert.match(r.error.message, /unknown-model/);
+});
+
+test('resolveRoute:多个渠道登记同一模型 → 409 歧义,不按数组顺序挑', () => {
+  const { resolveRoute } = stubResolver({ claude: [P('pc1', ['shared']), P('pc2', ['shared'])] });
+  const r = resolveRoute('shared', {});
+  assert.equal(r.error.type, 'model_ambiguous_error');
+  assert.equal(r.error.status, 409);
+  assert.deepEqual(r.candidates, ['pc1', 'pc2']);
+  assert.deepEqual(r.members, []);
+  // 错误文案要点名是哪些渠道,用户才知道该删谁
+  assert.match(r.error.message, /pc1/);
+  assert.match(r.error.message, /pc2/);
+});
+
+test('resolveRoute:显式钉定可解歧义;钉到不在候选里的渠道仍报歧义', () => {
+  const { resolveRoute } = stubResolver({ claude: [P('pc1', ['shared']), P('pc2', ['shared'])] });
+  const pinned = resolveRoute('shared', { pin: 'pc2' });
+  assert.equal(pinned.stage, 'model');
+  assert.equal(pinned.provider.id, 'pc2');
+  assert.deepEqual(pinned.members.map(m => m.provider.id), ['pc2'], '钉定只落一个成员,不再带整池');
+  const elsewhere = resolveRoute('shared', { pin: 'ghost' });
+  assert.equal(elsewhere.error.type, 'model_ambiguous_error');
+});
+
+test('resolveRoute:模型名剥 [1m] 后缀且大小写不敏感;子串不算命中', () => {
+  const { resolveRoute } = stubResolver({ claude: [P('pc1', ['Claude-Opus-5[1M]'])] });
+  assert.equal(resolveRoute('claude-opus-5', {}).provider.id, 'pc1');
+  assert.equal(resolveRoute('CLAUDE-OPUS-5[1m]', {}).provider.id, 'pc1');
+  // 落点模型取渠道登记的原名(下游按它发包)
+  assert.equal(resolveRoute('claude-opus-5', {}).model, 'Claude-Opus-5[1M]');
+  assert.equal(resolveRoute('claude-opus', {}).error.type, 'no_route_error', '子串不再命中');
+});
+
+test('resolveRoute:停用、没有可用 Key 的渠道不算登记命中', () => {
+  const { resolveRoute } = stubResolver({ claude: [
+    P('off', ['m1'], { enabled: false }),
+    P('nokey', ['m2'], { api_key: '' }),
+    P('emptyring', ['m3'], { api_key: '', keys: [{ id: 'k', key: '  ' }] }),
+  ] });
+  for (const m of ['m1', 'm2', 'm3']) assert.equal(resolveRoute(m, {}).error.type, 'no_route_error', m);
+  // 消掉停用那个之后,剩下那个就是唯一命中
+  const one = stubResolver({ claude: [P('off', ['m1'], { enabled: false }), P('on', ['m1'])] });
+  assert.equal(one.resolveRoute('m1', {}).provider.id, 'on');
+});
+
+test('resolveRoute:Codex 槽位别名查不到时保留旧行为(不带 error,由 prepare 出槽位文案)', () => {
   const { resolveRoute } = stubResolver({
-    routes: {
-      rules: [
-        { id: 'first', match: 'opus', provider: 'pc1', priority: 0, enabled: true, pool: [] },
-        { id: 'second', match: 'opus', provider: 'pc2', priority: 0, enabled: true, pool: [] },
-        { id: 'top', match: 'opus', provider: 'pc2', priority: 9, enabled: false, pool: [] },
-      ],
-      default: {},
-    },
+    codex: [P('px1', ['xm'], { model: 'xm', wire_api: 'responses' })],
   });
-  assert.equal(resolveRoute('opus', {}).rule.id, 'first');
-  assert.equal(resolveRoute('OPUS', {}).rule.id, 'first', '模型名大小写不敏感');
-  assert.equal(resolveRoute('my-opus-x', {}).rule.id, 'first', '子串匹配');
+  const r = resolveRoute('mixr-main', {}, 'codex');
+  assert.equal(r.stage, 'slot');
+  assert.equal(r.slot, 'main');
+  assert.equal(r.error, undefined, '这条必须由 prepare 报 503 槽位文案,不能变成 model 阶段的 no_route');
+  assert.deepEqual(r.members, []);
 });
 
 test('resolveRoute:不改动调用者的 routes/ctx 对象,也不改请求上下文', () => {
-  const routes = {
-    rules: [
-      { id: 'lo', match: 'a', provider: 'pc1', priority: 0, enabled: true, pool: [] },
-      { id: 'hi', match: 'a', provider: 'pc2', priority: 3, enabled: true, pool: [] },
-    ],
-    default: { provider: 'pc1', pool: [] },
-  };
+  const routes = { rules: [compactRule({ id: 'lo', priority: 0 }), compactRule({ id: 'hi', priority: 3 })] };
   const { resolveRoute } = stubResolver({ routes });
-  const ctx = { ua: 'curl/8', bodyText: () => 'x' };
+  const ctx = { compactTexts: summaryTexts };
   const ctxSnapshot = JSON.stringify(ctx);
-  resolveRoute('a', ctx);
+  resolveRoute('c-model', ctx);
   assert.deepEqual(routes.rules.map(r => r.id), ['lo', 'hi'], '排序必须是视图,不能就地打乱规则数组');
   assert.equal(JSON.stringify(ctx), ctxSnapshot);
 });
 
-test('resolveRoute:畸形 modelIn / 空路由表 / 幽灵引用都不抛', () => {
-  const { resolveRoute } = stubResolver({ routes: { rules: [], default: { provider: 'pc2', pool: [] } } });
+test('resolveRoute:畸形 modelIn / 空规则表都不抛', () => {
+  const { resolveRoute } = stubResolver({ routes: { rules: [] } });
   for (const m of [null, undefined, 0, {}, [], 'x'.repeat(5000)]) {
     assert.doesNotThrow(() => resolveRoute(m, {}));
   }
   const empty = stubResolver({ routes: {} });
-  assert.equal(empty.resolveRoute('x', {}).rule, null);
+  assert.equal(empty.resolveRoute('x', {}).error.type, 'no_route_error');
   assert.deepEqual(empty.resolveRoute('x', {}).members, []);
-
-  const ghost = stubResolver({ routes: { rules: [{ id: 'g', match: 'x', provider: 'gone', enabled: true, pool: [] }], default: {} } });
-  const r = ghost.resolveRoute('x', {});
-  assert.deepEqual(r.ghosts, [{ where: '单一目标', id: 'gone' }]);
-  assert.equal(r.provider, null);
 });
 
 // ---------------------------------------------------------------- 与主模块的接线
@@ -575,7 +600,6 @@ const ISOLATED_ENV = {
   MIXR_DATA_DIR: 'data',
   MIXR_CLAUDE_SETTINGS: 'claude/settings.json',
   MIXR_CODEX_CONFIG: 'codex/config.toml',
-  MIXR_ZCODE_CONFIG: 'zcode/v2/config.json',
 };
 function fixture(t) {
   const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'mixr-mod-'));
@@ -602,7 +626,6 @@ test('模块间不再重复定义:主文件里的公开接口与拆分模块是�
   fixture(t);
   const mod = require(path.join(ROOT, 'mixrouter.js'));
   // 这些名字是既有测试与运行时共用的;断言它们仍由同一实现提供(不是各自抄了一份)
-  assert.equal(mod.matchWhen, rulesLib.matchWhen);
   assert.equal(mod.normalizeRule({ match: 'x' }).match, 'x');
   assert.equal(mod.strategyOf, strategyLib.strategyOf);
   assert.equal(mod.safeHeader('a'), 'a');
@@ -613,6 +636,9 @@ test('模块间不再重复定义:主文件里的公开接口与拆分模块是�
   assert.equal(typeof mod.resolveRoute, 'function');
   assert.equal(typeof mod._state.sessions, 'object');
   assert.equal(mod._state.sessions instanceof Map, true);
+  // 通用分流整体删除后,这些入口不该还挂在主文件的导出面上
+  for (const gone of ['matchWhen', 'ruleBelongsToApp', 'matchHits', 'whenMissFields'])
+    assert.equal(mod[gone], undefined, `${gone} 已随通用分流一起删除`);
   // 路由层不再反向依赖客户端配置模块
   assert.equal(require(path.join(ROOT, 'lib/routing/rules.js')).normalizeRule({ match: 'y' }).match, 'y');
 });

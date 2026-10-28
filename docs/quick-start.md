@@ -74,7 +74,7 @@ open http://127.0.0.1:8788/                   # macOS;其他系统浏览器打�
 | --- | --- | --- |
 | `MIXROUTER_PORT` / `MIXUI_PORT` | 8787 / 8788 | 代理口 / 控制台口 |
 | `MIXROUTER_ALT_PORTS` | 空 | 逗号分隔,在这些端口上也服务同一个代理(`mixrouter.js` 的 `altPorts()`) |
-| `MIXR_DATA_DIR` | 仓库根 | `providers.json` / `routes.json` / `slots.json` / `sessions.json` / `logs/` 的总目录 |
+| `MIXR_DATA_DIR` | 仓库根 | `providers.json` / `routes.json`(现在只承载压缩设置)/ `slots.json` / `sessions.json` / `logs/` 的总目录 |
 
 > 端口设成 `0` 时**不要拿 `/api/state` 的 `proxy_port` / `ui_port` 当真实端口**:
 > 那两个字段回的是配置常量,真实绑定端口只在启动横幅里。这条细节与全部路径类变量的
@@ -102,10 +102,10 @@ npm run upgrade -- --version vX.Y.Z --download --apply --yes   # 显式执行
 
 ## 1. 加一个渠道(在哪改)
 
-**首选在控制台改**:`http://127.0.0.1:8788/` → 左侧选择 Claude Code / Codex / ZCode → 「新建渠道」。
+**首选在控制台改**:`http://127.0.0.1:8788/` → 左侧选择 Claude Code / Codex → 「新建渠道」。
 字段落进 `<MIXR_DATA_DIR>/providers.json`,接口是 `POST /api/providers`。
 
-三个客户端共用渠道管理页,左侧入口直接切到对应客户端;页内标签也可切换。
+两个客户端共用渠道管理页,左侧入口直接切到对应客户端;页内标签也可切换。
 渠道库默认列表显示,右上可切成卡片;搜索与启用状态筛选对两种视图都生效。
 Claude 主模型和子代理的编辑入口在渠道库下方「模型槽位配置」,展开后配置与应用。
 Codex 的主模型与审查模型在连接配置下方直接显示,各自选择渠道与落点模型;
@@ -178,44 +178,52 @@ Codex 页的「自动压缩阈值」可填 token 数、`250k` 或 `0.5m`,确认�
 
 ---
 
-## 2. 配路由规则与默认路由(在哪改)
+## 2. 配模型槽位与压缩设置(在哪改)
 
-**在控制台「路由」页改**,落进 `<MIXR_DATA_DIR>/routes.json`,接口是 `PUT /api/routes`
-(带 `expected_revision`,版本对不上回 409)。命令行可以只看不写:`./mixctl ls`。
+这一版**没有通用路由规则,也没有默认路由**。一条请求落到哪里,只由三件事决定
+(完整定义见 [`routing-and-sessions.md`](routing-and-sessions.md)§1):
 
-规则字段(`lib/routing/rules.js` 的 `normalizeRule`):
+1. 已知压缩请求 → 「压缩设置」里的渠道/模型/Key;
+2. 模型名精确等于 `mixr-<槽名>` → 该槽位(含会话槽位覆盖与槽位后备池);
+3. 模型名与某个**已登记**模型名相同(忽略大小写、去掉末尾 `[1M]`),且**恰好一个**
+   启用且有效的渠道登记了它 → 该渠道。
 
-| 字段 | 说明 |
-| --- | --- |
-| `match` | 请求模型名的**子串**,逗号分隔多个,大小写不敏感 |
-| `provider` | 单一目标渠道 id |
-| `pool` | 渠道池。成员写成字符串即用规则的目标模型;写成对象可各自给 `{provider, model, weight}` |
-| `strategy` | `round_robin`(默认)/ `weighted` / `least_used` / `random` / `priority` |
-| `model` | 目标模型;留空 = 透传请求模型;带 `[1M]` = 剥后缀并加 `anthropic-beta` 头(仅 Claude 通路) |
-| `priority` | 数值大的先匹配;同优先级按数组顺序 |
-| `app` | 这条规则只对哪一组生效:`claude` / `codex` / 留空 = 两组通用 |
-| `when` | 附加匹配条件,**全部**满足才命中;字段只有 `session` / `ua` / `token` / `body`,均为大小写不敏感子串 |
-| `enabled` | `false` 即停用 |
+所以"配路由"现在只有两种做法,**不要手写规则**:
 
-`default`(默认路由)是同一个形状的对象,**它尊重自己配置的 `strategy`**,不是一律轮转。
-都不命中时走它。模板见 `routes.example.json`。
+- **用槽位**(推荐,尤其一个模型名要落到固定渠道时):在控制台「渠道与 Key」页的
+  「模型槽位配置」里把 `main` / `opus` / `sonnet` / `haiku` / `subagent` 分别绑到「渠道 @ 模型」,
+  Codex 槽位同理。写入客户端 env 的别名见 §3;`./mixctl slots` 可只读查看,
+  `./mixctl split` 可一次配好主链与子代理两路。
+- **靠精确登记**:在渠道的模型列表里登记准确模型名,并保证**只有这一个**启用且有效的渠道
+  登记它。两个渠道登记同一个名字时请求会明确失败(歧义),不是随便挑一个。
 
-两条保存时的硬约束(违反时 `PUT /api/routes` 返回 400;手改文件后的请求行为另见下文):
+失败是明确的,不会回退到别的模型或渠道:
 
-- 目标渠道必须真实存在。指向已删除渠道的规则会被 `PUT /api/routes` 拒绝;若 `routes.json`
-  是手改或从旧备份恢复出来的,服务启动时会用 `reportGhostRoutes()` 把僵尸引用打到日志里
-  ——**命中这类规则的请求会 503**。
-- 规则自己声明了 `app`,却绑了另一组的渠道,会被拒;没声明 `app` 的规则允许只服务另一组
-  (另一组会跳过它继续往下匹配)。
+| 现象 | 原因 | 处置 |
+| --- | --- | --- |
+| `no_route_error` | 模型名没有精确登记,或槽位绑定的渠道已删除 | 去渠道库登记该模型,或修好槽位 |
+| `model_ambiguous_error`(HTTP 409) | 多个启用且有效的渠道登记了同一模型名 | 改用槽位别名指定目标、停用/删除多余登记,或把本对话钉定到其中一个 |
+| `provider_disabled_error` | 命中的渠道被停用 | 在渠道卡片上重新启用 |
 
-**压缩模型/Key 单独一块**:控制台「路由 → 压缩模型」,接口 `GET/POST /api/compact`。
-它替换两条压缩规则的旧备池,不改主模型和普通路由。Key 默认跟随渠道当前账号;选了固定
-`key_id` 就只用于压缩请求,不改渠道的 `active_key`;固定 Key 只支持单渠道,不能与 `pool` 并用。
-**压缩上下文窗口**是另一块(`GET/POST /api/compact/window`),改的是 Claude Code 磁盘配置里的
-`autoCompactWindow`,可选用户全局 / 项目 `.claude/settings.json` / 项目本地
-`.claude/settings.local.json` 三层,项目层要填项目绝对路径。
+旧版 `routes.json` 的 `match` / `when` / `priority` / `rules` / `default` 字段**不再执行**,
+服务启动也不会删除这个文件;`PUT /api/routes` 接口已移除。
+保存「压缩设置」或服务正常退出时,`routes.json` 会用归一化结果整体重写,旧条件字段与
+顶层 `default` 不会写回;要留原文请先备份。
+`routes.example.json` 现在**只承载压缩设置**,不要再往里手填规则;渠道与槽位的写法参考
+`providers.example.json`。
 
-> 会话级分发、槽位、池策略、压缩判据的细节见 [`routing-and-sessions.md`](routing-and-sessions.md)。
+**压缩设置**是左侧独立的视图(`#compact`,旧 `#routes` 链接会跳到这里),取代了原来
+「路由」页里那块压缩配置;页面不再有规则编辑器:
+
+- **压缩模型 / Key**:接口 `GET/POST /api/compact`。它选择压缩专用渠道、模型与该渠道的 Key,
+  不改主模型和普通转发。Key 默认跟随渠道当前账号;选了固定 `key_id` 就只用于压缩请求,
+  不改渠道的 `active_key`;固定 Key 只支持单渠道,不能与 `pool` 并用。
+- **压缩上下文窗口**:接口 `GET/POST /api/compact/window`,改的是 Claude Code 磁盘配置里的
+  `autoCompactWindow`,可选用户全局 / 项目 `.claude/settings.json` / 项目本地
+  `.claude/settings.local.json` 三层,项目层要填项目绝对路径,取值 `100k`–`1M` 或 `auto`。
+  字段含义、阈值与生效边界与之前完全一致。
+
+> 会话身份、槽位与后备池、会话覆盖、压缩判据的细节见 [`routing-and-sessions.md`](routing-and-sessions.md)。
 
 ---
 
@@ -242,7 +250,7 @@ Codex 页的「自动压缩阈值」可填 token 数、`250k` 或 `0.5m`,确认�
 ```
 ANTHROPIC_BASE_URL   = http://127.0.0.1:8787      # 不带 /v1
 ANTHROPIC_AUTH_TOKEN = 任意占位值                  # 代理不校验
-# 模型名与槽位保持不动 —— 路由规则就是按它匹配的
+# 模型名与槽位保持不动 —— 路由就是按它精确匹配的
 ```
 
 槽位别名由 `--slots` 写入,键名见 `lib/routing/slots.js` 的 `CLAUDE_SLOT_ENV`:
@@ -285,25 +293,9 @@ experimental_bearer_token = "mixrouter-local"            # 占位,不能为空
 `./mixctl route codex` 是**外科手术式**改写:顶层原位替换、追加 `[model_providers.mixr-*]`
 section,用户自己的 section 一字不动,二次切换会清掉旧的 mixr section。
 
-### ZCode(三种协议都行)
-
-```bash
-./mixctl route zcode                # 默认 Anthropic
-./mixctl route zcode responses      # OpenAI Responses
-./mixctl route zcode chat           # OpenAI Chat
-```
-
-只写桌面端 `~/.zcode/v2/config.json` 的自有 provider 条目,**不修改默认模型、已有会话、
-其它服务商或 CLI 扩展配置**。配完在 ZCode 的模型选择器里选 **Mixrouter · …**;新条目没出现
-就重启客户端并新建会话。
-
-| 接入协议 | ZCode provider kind | 复用渠道组 |
-| --- | --- | --- |
-| Anthropic | `anthropic` | Claude / Anthropic |
-| OpenAI Responses | `openai` | Codex / OpenAI |
-| OpenAI Chat | `openai-compatible` | Codex / OpenAI 中的 chat 渠道 |
-
-> ZCode 接入的写入边界见 [`reference.md`](reference.md) 与[命令行与运行边界](cli.md#3-客户端接入)。
+> 本版只接入 Claude Code 与 Codex。旧的 `./mixctl route zcode` 已移除;
+> `~/.zcode/v2/config.json` 不再由本项目读写。如果以前用它接过,按
+> [升级与回退](upgrade-and-rollback.md#4-把客户端恢复成原来的配置)里原来留下的备份手工撤销。
 
 ### 代理端点一览(不用背,记住"两个口")
 
@@ -325,7 +317,7 @@ section,用户自己的 section 一字不动,二次切换会清掉旧的 mixr se
 左侧「用量统计」按当前可用日志汇总,不使用供应商账单,也不估算费用。
 
 - 顶部选择协议组、供应商、实际模型、时间与请求状态。指标卡、热力图和下方明细共用这些条件。
-  Anthropic / OpenAI 是协议分组,不代表能区分 Claude Code、桌面客户端和 ZCode。
+  Anthropic / OpenAI 是协议分组,不代表能区分 Claude Code 与 Codex 客户端。
 - 四张指标卡显示请求数、总 tokens、缓存命中率与成功率。总 tokens = 新增输入 + 输出 + 缓存读;
   缓存命中率 = 缓存读 / (新增输入 + 缓存读)。缺少测量值时显示「—」。
 - 热力图按本地日期排列,周一在上,可切换 Tokens / 请求。悬停、键盘或「按日查看数据」都能读数。
@@ -349,7 +341,7 @@ npm run smoke            # = node scripts/smoke-offline.js,离线端到端验收
 不要把它当成安装失败。`npm run smoke` 两个入口都能跑。
 
 `npm test` 走的是 `scripts/run-tests.js`,不是裸 `node --test`。它在跑之前把 `HOME`、
-`TMPDIR`、`MIXR_DATA_DIR`、三个客户端配置路径统一重定向到临时目录,并**过滤掉调用方环境里
+`TMPDIR`、`MIXR_DATA_DIR`、Claude / Codex 的客户端配置路径统一重定向到临时目录,并**过滤掉调用方环境里
 所有 `MIXR_` / `MIXROUTER_` / `MIXUI_` 变量**。所以它**永远不碰你的真实配置**,也用不到任何
 安装步骤。直接 `node --test` 会跳过这层隔离与总时限。
 

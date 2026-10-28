@@ -476,29 +476,6 @@ test('Claude 客户端协议固定 Messages，不把上游 wire 当成客户端�
   assert.match(h.get('readiness-body').innerHTML, /上游协议由渠道的 wire_api 决定/);
 });
 
-test('ZCode 客户端协议仍可选三种，选 OpenAI 后渠道来自 Codex 组', async () => {
-  const h = await harness();
-  h.fetchStub(async (url) => {
-    if (url === '/api/onboarding/zcode') return reply(200, { app: 'zcode', binary: { found: true, executable: true, path: '/usr/local/bin/zcode' }, config: { path: '~/.zcode/v2/config.json', status: 'missing' } });
-    if (url === '/api/state') return reply(200, fixture());
-    return reply(200, { ok: true });
-  });
-  await h.run('readinessOpen()');
-  h.run("readinessPickClient('zcode')");
-  await flush();
-  assert.ok(h.document.getElementById('readiness-wire-select'), 'ZCode 保留协议下拉');
-  h.run("readinessPickWire('responses')");
-  const picked = plain(h.run('readinessUiState()'));
-  assert.deepEqual({ ...picked, compatTimeoutMs: undefined }, {
-    app: 'zcode', zcodeWire: 'responses', clientWire: 'responses', group: 'codex',
-    providerId: 'o1', model: 'gpt-test', keyId: '', busy: '', compatTimeoutMs: undefined,
-  });
-  h.run("readinessPickWire('anthropic')");
-  const back = plain(h.run('readinessUiState()'));
-  assert.equal(back.providerId, 'a1');
-  assert.equal(back.clientWire, 'messages', 'ZCode 选 Anthropic 时客户端协议叫 messages');
-});
-
 test('Codex 槽位设置独立于初次接入，缺项明示自动补齐而非只写路由地址', async () => {
   const h = await harness();
   const slots = [];
@@ -624,14 +601,14 @@ test('未检测到客户端时给出可复制的接入参数，明文令牌不�
 test('配置无法解析：不显示成未配置，写入禁用但兼容测试仍可运行', async () => {
   const h = await harness();
   h.fetchStub(async (url) => {
-    if (url === '/api/onboarding/zcode') return reply(200, { app: 'zcode', binary: { found: true, path: '/usr/local/bin/zcode' }, config: { state: 'invalid', path: '~/.zcode/v2/config.json', error: 'Unexpected token }' } });
+    if (url === '/api/onboarding/codex') return reply(200, { app: 'codex', binary: { found: true, path: '/usr/local/bin/codex' }, config: { state: 'invalid', path: '~/.codex/config.toml', error: 'Unexpected token }' } });
     if (url === '/api/state') return reply(200, fixture());
     return reply(200, { ok: true });
   });
   await h.run('readinessOpen()');
-  h.run("readinessPickClient('zcode')");
+  h.run("readinessPickClient('codex')");
   await flush();
-  assert.equal(h.get('readiness-client-zcode').attributes['aria-selected'], 'true');
+  assert.equal(h.get('readiness-client-codex').attributes['aria-selected'], 'true');
   assert.equal(h.get('readiness-client-claude').attributes['aria-selected'], 'false');
   const body = h.get('readiness-body').innerHTML;
   assert.match(body, /配置无法解析/);
@@ -643,7 +620,7 @@ test('配置无法解析：不显示成未配置，写入禁用但兼容测试�
   h.run('readinessSyncButtons()');
   assert.equal(h.get('readiness-test-btn').disabled, false, '兼容测试只发上游请求，不因客户端配置坏掉被禁');
   h.run('readinessPreviewWrite()');
-  assert.equal(h.find('/api/onboarding/zcode/preview').length, 0);
+  assert.equal(h.find('/api/onboarding/codex/preview').length, 0);
 });
 
 test('槽位未配置时只写路由地址，并在预览前说明这次会写什么', async () => {
@@ -664,26 +641,6 @@ test('槽位未配置时只写路由地址，并在预览前说明这次会写�
   const body = plain(h.find('/api/onboarding/claude/preview')[0].body);
   assert.equal('slots' in body, false, '槽位缺失时不声明 slots,否则会写出用不到的别名');
   assert.equal(body.provider_id, 'a1');
-});
-
-test('ZCode 预览按所选协议与模型写入，用 wire_api 而不是 client_wire', async () => {
-  const h = await harness();
-  h.fetchStub(async (url) => {
-    if (url === '/api/onboarding/zcode') return reply(200, { app: 'zcode', binary: { found: true, executable: true, path: '/usr/local/bin/zcode' }, config: { path: '~/.zcode/v2/config.json', status: 'missing' } });
-    if (url === '/api/onboarding/zcode/preview') return reply(200, { token: 'tz', changes: [], warnings: [] });
-    if (url === '/api/state') return reply(200, fixture());
-    return reply(200, { ok: true });
-  });
-  await h.run('readinessOpen()');
-  h.run("readinessPickClient('zcode')");
-  await flush();
-  h.run("readinessPickWire('responses')");
-  h.run("readinessSetModel('gpt-test')");
-  await h.run('readinessPreviewWrite()');
-  const body = plain(h.find('/api/onboarding/zcode/preview')[0].body);
-  assert.equal(body.wire_api, 'responses');
-  assert.equal(body.model, 'gpt-test');
-  assert.equal(body.provider_id, 'o1', '换到 responses 后渠道来自 Codex 组');
 });
 
 test('重复写入没有字段差异时不谎报「已落盘」，也不说服务端没回传清单', async () => {
@@ -789,30 +746,6 @@ test('离线时向导与报告入口不发请求，也不把离线说成未配�
   assert.equal(h.run('online'), true);
   assert.equal(h.get('readiness-report-preview').disabled, false);
   assert.equal(h.get('readiness-preview-btn').disabled, false);
-});
-
-test('ZCode 写入后的提示要求用户去模型选择器选 Mixrouter，不声称自动切换会话', async () => {
-  const h = await harness();
-  h.fetchStub(async (url) => {
-    if (url === '/api/onboarding/zcode') return reply(200, { app: 'zcode', binary: { found: true, executable: true, path: '/usr/local/bin/zcode' }, config: { path: '~/.zcode/v2/config.json', status: 'missing' } });
-    if (url === '/api/onboarding/zcode/preview') return reply(200, { token: 'tz', changes: [{ field: 'provider.mixrouter-managed.model', after: 'gpt-test' }], warnings: [] });
-    if (url === '/api/onboarding/zcode/apply') return reply(200, { ok: true, changed: [{ field: 'provider.mixrouter-managed.model', after: 'gpt-test' }], ledger_saved: true, warnings: [] });
-    if (url === '/api/state') return reply(200, fixture());
-    return reply(200, { ok: true });
-  });
-  await h.run('readinessOpen()');
-  h.run("readinessPickClient('zcode')");
-  await flush();
-  h.run("readinessPickWire('responses')");
-  h.run("readinessSetModel('gpt-test')");
-  await h.run('readinessPreviewWrite()');
-  h.get('readiness-write-confirm').checked = true;
-  h.run('readinessSyncButtons()');
-  await h.run('readinessApplyWrite()');
-  const body = h.get('readiness-body').innerHTML;
-  assert.match(body, /模型选择器里选择 Mixrouter/);
-  assert.match(body, /不会切换你正在用的会话/);
-  assert.match(body, /Mixrouter · gpt-test/);
 });
 
 test('首帧没拿到状态快照时说「正在读取」，不谎称离线', async () => {

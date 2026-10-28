@@ -140,7 +140,7 @@
       return '<p class="attempt-flow-guide hint" role="status">正在读取失败解释…</p>';
     }
     if (hit.error) return `<p class="attempt-flow-guide hint">失败解释读取失败：${esc(hit.error)}</p>`;
-    // target 只接受内部页面 hash(#routes 这类)。服务端已按白名单收窄,这里再挡一次:
+    // target 只接受内部页面 hash(#compact 这类)。服务端已按白名单收窄,这里再挡一次:
     // 一个 href 一旦允许任意字符串,`javascript:` 就成了可执行入口,而这段文本的最终来源
     // 仍是一条 HTTP 响应 —— 两处都挡,谁被改坏都还有另一半。
     const target = /^#[a-z]+$/.test(String(hit.target || '')) ? ` <a href="${esc(hit.target)}">到控制台对应页面</a>` : '';

@@ -89,11 +89,12 @@ test('所有协议及失败重试在公共响应入口归档，正文不混入�
   });
   await new Promise(ok => upstream.listen(0, '127.0.0.1', ok));
   const base = `http://127.0.0.1:${upstream.address().port}`;
-  const provider = (id, wire) => ({ id, name: id, base_url: base, api_key: secret, enabled: true, models: [], model: id, wire_api: wire });
+  // 渠道登记各自的落点模型:通用 match 规则删除后,请求模型必须精确等于某条渠道登记的名字。
+  const provider = (id, wire, model) => ({ id, name: id, base_url: base, api_key: secret, enabled: true, models: [], model, wire_api: wire });
   fs.mkdirSync(path.join(root, 'logs'), { mode: 0o700 });
   fs.writeFileSync(path.join(root, 'providers.json'), JSON.stringify({ version: 2, current: {},
-    claude: [provider('raw', 'anthropic'), provider('chat', 'chat'), provider('resp', 'responses')],
-    codex: [provider('codex-chat', 'chat'), provider('codex-resp', 'responses')] }));
+    claude: [provider('raw', 'anthropic', 'raw'), provider('chat', 'chat', 'retry-success'), provider('resp', 'responses', 'resp')],
+    codex: [provider('codex-chat', 'chat', 'codex-chat'), provider('codex-resp', 'responses', 'codex-resp')] }));
   const cases = [
     ['claude', 'case-raw', 'raw', '/v1/messages'],
     ['claude', 'case-chat', 'chat', '/v1/messages'],
@@ -101,19 +102,24 @@ test('所有协议及失败重试在公共响应入口归档，正文不混入�
     ['codex', 'case-codex-chat', 'codex-chat', '/v1/chat/completions'],
     ['codex', 'case-codex-resp', 'codex-resp', '/v1/responses'],
   ];
-  fs.writeFileSync(path.join(root, 'routes.json'), JSON.stringify({ rules: [
-    ...cases.map(([app, model, provider]) => ({ id: model, match: model, app, provider, model, enabled: true })),
-    { id: 'retry', match: 'retry', app: 'claude', provider: 'raw', enabled: true, strategy: 'priority',
-      pool: [{ provider: 'raw', model: 'retry-fail' }, { provider: 'chat', model: 'retry-success' }] },
-  ], default: {} }));
+  fs.writeFileSync(path.join(root, 'routes.json'), JSON.stringify({ rules: [] }));
   const mod = require('../mixrouter');
+  // 每个用例模型只登记在它自己的渠道上:精确登记模型就是这条用例的落点。
+  for (const [app, model, providerId] of cases) {
+    const list = mod._state.store[app];
+    const target = list.find(p => p.id === providerId);
+    target.models = [...new Set([...(target.models || []), model])];
+    target.model = model;
+  }
+  // 重试用例:主渠道 raw 打 retry-fail,备成员 chat 用 retry-success(同一槽位备池)。
+  mod._state.slotMap = { claude: { main: { provider: 'raw', model: 'retry-fail', pool: [{ provider: 'chat', model: 'retry-success' }] } }, codex: {} };
   const proxy = await mod.listen(0, mod.proxyHandler);
   t.after(() => { proxy.close(); upstream.close(); });
   for (const [, model, , endpoint] of cases) {
     const response = await request(proxy.address().port, endpoint, model);
     assert.equal(response.status, 200, response.text);
   }
-  assert.equal((await request(proxy.address().port, '/v1/messages', 'retry')).status, 200);
+  assert.equal((await request(proxy.address().port, '/v1/messages', 'mixr-main')).status, 200);
   const rows = await waitForCount(7);
   assert.equal(rows.length, 7);
   const corpus = rows.map(r => fs.readdirSync(r.dir).filter(n => !n.endsWith('.tmp'))

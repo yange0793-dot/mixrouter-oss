@@ -83,67 +83,65 @@ test('tomlStr 转义反斜杠与双引号', () => {
   assert.strictEqual(tomlStr(null), '""');
 });
 
-test('resolveRoute 首个启用且命中的规则生效,大小写不敏感', () => {
-  _state.store = { claude: [{ id: 'p1' }, { id: 'p2' }], codex: [] };
-  _state.routes = { rules: [
-    { id: 'r1', match: 'opus, claude-3-opus', provider: 'p1', model: 'routed-opus', enabled: false },
-    { id: 'r2', match: 'opus', provider: 'p2', model: '', enabled: true },
-  ], default: { provider: '', model: '' } };
-  const r = resolveRoute('Claude-OPUS-5');
-  assert.strictEqual(r.rule.id, 'r2');          // r1 停用被跳过
-  assert.strictEqual(r.provider.id, 'p2');
-  assert.strictEqual(r.model, 'Claude-OPUS-5'); // r.model 为空 → 透传请求模型
-});
+// ---- 精确落点:只认已登记模型(通用 match/when/default 已删除)----
+const provider = (id, models, extra = {}) => ({ id, name: id, models, api_key: 'sk-' + id, enabled: true, ...extra });
 
-test('resolveRoute 规则指向不存在的渠道时 provider 为 null', () => {
-  _state.routes = { rules: [{ id: 'r1', match: 'opus', provider: 'ghost', model: '', enabled: true }], default: { provider: '', model: '' } };
+test('resolveRoute 精确登记模型:大小写不敏感、剥 [1m] 后缀后全等才命中', () => {
+  _state.store = { claude: [provider('p1', ['Claude-OPUS-5']), provider('p2', ['other-model'])], codex: [] };
+  _state.routes = { rules: [], default: { provider: '', model: '' } };
   const r = resolveRoute('claude-opus-5');
-  assert.strictEqual(r.rule.id, 'r1');
+  assert.strictEqual(r.stage, 'model');
+  assert.strictEqual(r.rule.id, 'model:p1');
+  assert.strictEqual(r.provider.id, 'p1');
+  assert.strictEqual(r.model, 'Claude-OPUS-5');
+  // [1m] 只影响窗口,不影响落点;返回的仍是登记原值
+  assert.strictEqual(resolveRoute('CLAUDE-OPUS-5[1m]').provider.id, 'p1');
+  // 子串不再命中
+  assert.strictEqual(resolveRoute('claude-opus').provider, null);
+});
+
+test('resolveRoute 未登记模型:members 为空并明确报 no_route,不偷选其它渠道', () => {
+  _state.store = { claude: [provider('p1', ['m1'])], codex: [] };
+  const r = resolveRoute('nope-model');
+  assert.strictEqual(r.stage, 'model');
+  assert.deepStrictEqual(r.members, []);
   assert.strictEqual(r.provider, null);
+  assert.strictEqual(r.error.type, 'no_route_error');
+  assert.strictEqual(r.error.status, 503);
 });
 
-test('resolveRoute 无命中时走 default,可覆盖模型', () => {
-  _state.routes = { rules: [{ id: 'r1', match: 'opus', provider: 'p1', model: '', enabled: true }],
-    default: { provider: 'p2', model: 'fallback-model' } };
-  const r = resolveRoute('claude-sonnet-5');
-  assert.strictEqual(r.rule, null);
-  assert.strictEqual(r.provider.id, 'p2');
-  assert.strictEqual(r.model, 'fallback-model');
+test('resolveRoute 多渠道登记同一模型:歧义明确失败,不按顺序偷选', () => {
+  _state.store = { claude: [provider('p1', ['shared']), provider('p2', ['shared']), provider('p3', ['solo'])], codex: [] };
+  const r = resolveRoute('shared');
+  assert.deepStrictEqual(r.members, []);
+  assert.strictEqual(r.error.type, 'model_ambiguous_error');
+  assert.strictEqual(r.error.status, 409);
+  assert.deepStrictEqual(r.candidates, ['p1', 'p2']);
+  // 其它模型不受影响
+  assert.strictEqual(resolveRoute('solo').provider.id, 'p3');
 });
 
-test('resolveRoute when.body 内容分流:先于普通规则,不限模型也能命中', () => {
-  _state.store = { claude: [{ id: 'p1' }, { id: 'p2' }], codex: [] };
-  _state.routes = { rules: [
-    { id: 'r1', match: 'main', provider: 'p1', model: 'normal-model', enabled: true },
-    { id: 'r2', match: '', provider: 'p2', model: 'sol-model', when: { body: 'detailed summary of the conversation' }, enabled: true },
-  ], default: { provider: '', model: '' } };
-  const hit = resolveRoute('mixr-main', { bodyText: () => 'x create a detailed summary of the conversation so far y' });
-  assert.strictEqual(hit.rule.id, 'r2');
+test('resolveRoute 停用或没有 Key 的渠道不算登记命中', () => {
+  _state.store = { claude: [
+    provider('off', ['m1'], { enabled: false }),
+    provider('nokey', ['m2'], { api_key: '' }),
+  ], codex: [] };
+  assert.strictEqual(resolveRoute('m1').error.type, 'no_route_error');
+  assert.strictEqual(resolveRoute('m2').error.type, 'no_route_error');
+});
+
+test('resolveRoute 精确槽位优先于已登记模型,并保留槽位备池策略', () => {
+  _state.store = { claude: [provider('p1', ['mixr-main']), provider('p2', ['slot-model'])], codex: [] };
+  _state.slotMap = { claude: { main: { provider: 'p2', model: 'slot-model',
+    pool: [{ provider: 'p1', model: 'slot-model' }], strategy: 'priority' } }, codex: {} };
+  const hit = resolveRoute('mixr-main');
+  assert.strictEqual(hit.stage, 'slot');
+  assert.strictEqual(hit.slot, 'main');
+  assert.strictEqual(hit.rule.id, 'slot:claude/main');
   assert.strictEqual(hit.provider.id, 'p2');
-  assert.strictEqual(hit.model, 'sol-model');
-  assert.strictEqual(hit.content, true);
-  // 请求体没那段文本 → 内容规则不命中,照走普通规则
-  const miss = resolveRoute('mixr-main', { bodyText: () => 'a normal turn' });
-  assert.strictEqual(miss.rule.id, 'r1');
-  assert.strictEqual(miss.content, undefined);
-  // match 有值时按模型名限定:换个模型名就不再命中这条内容规则
-  _state.routes = { rules: [
-    { id: 'r3', match: 'mixr-main', provider: 'p2', model: 'limited-model', when: { body: 'detailed summary' }, enabled: true },
-  ], default: { provider: 'p1', model: 'fallback' } };
-  assert.strictEqual(resolveRoute('mixr-main', { bodyText: () => 'detailed summary' }).rule.id, 'r3');
-  assert.strictEqual(resolveRoute('mixr-haiku', { bodyText: () => 'detailed summary' }).rule, null);
-});
-
-test('resolveRoute when.body 支持主备池且保留策略', () => {
-  _state.store = { claude: [{ id: 'p1' }, { id: 'p2' }], codex: [] };
-  _state.routes = { rules: [
-    { id: 'r1', match: '', strategy: 'priority', when: { body: 'summary of the conversation' }, enabled: true,
-      pool: [{ provider: 'p1', model: 'primary' }, { provider: 'p2', model: 'backup' }] },
-  ], default: { provider: '', model: '' } };
-  const hit = resolveRoute('anything', { bodyText: () => 'summary of the conversation' });
-  assert.strictEqual(hit.content, true);
   assert.strictEqual(hit.strategy, 'priority');
-  assert.deepStrictEqual(hit.members.map(m => [m.provider.id, m.model]), [['p1', 'primary'], ['p2', 'backup']]);
+  assert.deepStrictEqual(hit.members.map(m => [m.provider.id, m.model]),
+    [['p2', 'slot-model'], ['p1', 'slot-model']]);
 });
 
 test('validBaseUrl 只收 http(s) URL', () => {

@@ -156,7 +156,8 @@ test('计划里列出的客户端配置与 LaunchAgent 路径都在 $HOME 下,�
 
   assert.ok(out.includes(path.join(home, '.claude', 'settings.json')), '没列出 Claude 配置路径');
   assert.ok(out.includes(path.join(home, '.codex', 'config.toml')), '没列出 Codex 配置路径');
-  assert.ok(out.includes(path.join(home, '.zcode', 'v2', 'config.json')), '没列出 ZCode 配置路径');
+  // ZCode 接入已移除:安装计划不再列出它的配置路径。
+  assert.ok(!out.includes('.zcode'), '不该再列出已移除的 ZCode 配置路径');
   assert.ok(out.includes(path.join(home, 'Library', 'LaunchAgents')), '没列出 LaunchAgent 目录');
   assert.ok(out.includes('不写入'), '没有声明"这些地方不写入"');
   // 输出里允许出现的绝对路径只有两类:**调用方给的那个 HOME**,以及**调用方给的那个源码目录**

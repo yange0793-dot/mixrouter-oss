@@ -32,8 +32,11 @@ function testArgs(files, help) {
 }
 
 function testEnv(parent, root) {
+  // DSH_HOME 是已移除的 Harness 集成留下的变量名,不在 MIXR_* 前缀里,必须按名字单独剔掉:
+  // 调用方 shell 里留着一个旧 DSH_HOME,就会让每个测试进程都指到真实目录去。
   const env = Object.fromEntries(Object.entries(parent)
-    .filter(([key]) => !/^(MIXR_|MIXROUTER_|MIXUI_)/.test(key) && key !== 'NODE_TEST_CONTEXT'));
+    .filter(([key]) => !/^(MIXR_|MIXROUTER_|MIXUI_)/.test(key)
+      && key !== 'NODE_TEST_CONTEXT' && key !== 'DSH_HOME'));
   // 从 node:test 派生时不能继承 child-v8,否则内层 --test 会跳过全部文件却退出 0。
   const home = path.join(root, 'home');
   return {
@@ -47,9 +50,6 @@ function testEnv(parent, root) {
     MIXR_DATA_DIR: path.join(root, 'data'),
     MIXR_CLAUDE_SETTINGS: path.join(home, '.claude', 'settings.json'),
     MIXR_CODEX_CONFIG: path.join(home, '.codex', 'config.toml'),
-    MIXR_ZCODE_CONFIG: path.join(home, '.zcode', 'v2', 'config.json'),
-    DSH_HOME: path.join(home, '.dsh'),
-    MIXR_HARNESS_PROFILE: path.join(home, '.dsh', 'profiles', 'desktop', 'cordis.patch.yml'),
     MIXR_UPSTREAM_PROXY: '',
     MIXROUTER_PORT: '0',
     MIXUI_PORT: '0',

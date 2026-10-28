@@ -165,13 +165,8 @@ test('setup:直通与转换两个渠道 + 桩上游', async () => {
     ],
     codex: [],
   }));
-  fs.writeFileSync(path.join(TMP, 'routes.json'), JSON.stringify({
-    rules: [
-      { id: 'r-direct', match: 'claude-direct', provider: 'pa', model: 'claude-direct', enabled: true },
-      { id: 'r-conv', match: 'claude-conv', provider: 'pr', model: 'claude-conv', enabled: true },
-    ],
-    default: { provider: 'pa', model: 'claude-direct' },
-  }));
+  // 通用 match/default 规则已删除:两条渠道各自登记自己的模型名,请求模型精确命中即可。
+  fs.writeFileSync(path.join(TMP, 'routes.json'), JSON.stringify({ rules: [] }));
   mod = require('../mixrouter.js');
   proxySrv = await mod.listen(0, mod.proxyHandler);
   uiSrv = await mod.listen(0, mod.apiHandler);

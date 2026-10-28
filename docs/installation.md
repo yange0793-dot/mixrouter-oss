@@ -157,7 +157,7 @@ node scripts/upgrade-release.js --archive /path/mixrouter-<版本>.tar.gz --appl
    删除源码目录不会自动卸载常驻服务。用 `scripts/service.js` 装的登录服务可以这样卸载:
    `node scripts/service.js uninstall --apply --yes --unload`(只删带 `mixrouter-managed`
    标记的那一份 plist)。
-2. 如果通过控制台把 Claude Code、Codex 或 ZCode 指到了 Mixrouter,
+2. 如果通过控制台把 Claude Code 或 Codex 指到了 Mixrouter,
    先恢复对应客户端配置,具体见[恢复客户端配置](upgrade-and-rollback.md#4-把客户端恢复成原来的配置)。
    只停止路由器而不恢复配置,客户端会继续连接已停止的本机端口。
 3. 确认需要保留的配置已备份后,删除下载/解压的代码目录即可。

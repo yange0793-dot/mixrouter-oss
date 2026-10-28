@@ -1,6 +1,13 @@
 'use strict';
-// 路由 dry-run 预览:匹配阶段与未命中原因 / kind 协议过滤 / 策略可预测性 /
-// **零副作用**(游标不前移、不建会话、不动冷却) / 白名单不泄露敏感字段。
+// 路由 dry-run 预览:三步命中(压缩 / 槽位 / 已登记模型)与未命中原因 / kind 协议过滤 /
+// 策略可预测性 / **零副作用**(游标不前移、不建会话、不动冷却) / 白名单不泄露敏感字段。
+//
+// 瘦身之后没有通用 match/when 规则,也没有可配置兜底:预览能解释的只有
+//   1) 压缩内容规则是否命中(带 when.body 且属于 compact-signature 登记的两条)
+//   2) 精确槽位别名是否命中(含备池策略)
+//   3) 已登记模型的精确选择("唯一命中"才落,"多个渠道登记同一模型"是歧义 409,
+//      "没有渠道登记"是 no_route 503)
+//
 // 绝大多数用例是手工合成 fixture + 注入式 deps,不接真实上游。例外只有两处,都在下面写明:
 //   · P4 一节要验**生产路径**的 _state.pools,会惰性 require mixrouter.js(见下);
 //   · 文件顶部已把数据/配置目录指向 mkdtemp,故即便 require 也绝不读真实 providers/sessions/routes/slots。
@@ -18,18 +25,18 @@ const TMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mixr-preview-'));
 process.env.MIXR_DATA_DIR = TMP_DIR;
 process.env.MIXR_CLAUDE_SETTINGS = path.join(TMP_DIR, 'claude', 'settings.json');
 process.env.MIXR_CODEX_CONFIG = path.join(TMP_DIR, 'codex', 'config.toml');
-process.env.MIXR_ZCODE_CONFIG = path.join(TMP_DIR, 'zcode', 'config.json');
 test.after(() => { try { fs.rmSync(TMP_DIR, { recursive: true, force: true }); } catch {} });
 
 const { createExplainer, sanitizeProvider, describeStrategy, PREVIEW_LIMITS, SAFE_PROVIDER_FIELDS } =
   require('../lib/routing/explain.js');
-const { createResolver, whenMissFields } = require('../lib/routing/resolve.js');
+const { createResolver } = require('../lib/routing/resolve.js');
 const { pickMember } = require('../lib/routing/strategy.js');
 const { FIXED_PREFIX, COMPACT_RULES } = require('../lib/routing/compact-signature.js');
 
 // ---------------------------------------------------------------- fixture
 // 渠道:含 base_url / api_key / keys 等**敏感字段**,用来验证它们不会出现在预览结果里。
 // 值一律是可识别的假串(LEAK-*),便于泄漏时一眼定位;**绝不**填真凭据。
+// 每个渠道登记一个独有模型名:多个渠道登记同一个模型在实跑里是 409 歧义,不能拿来当普通夹具。
 const P = (id, extra = {}) => ({
   id, name: '渠道-' + id, base_url: 'https://secret.example/v1', api_key: 'sk-SECRET-' + id,
   keys: [{ id: 'k1', key: 'sk-SECRET-KEY-' + id }], active_key: 'k1',
@@ -39,7 +46,8 @@ const P = (id, extra = {}) => ({
 
 const STORE = {
   claude: [P('pa'), P('pb'), P('pc'), P('pdead', { enabled: false })],
-  codex: [P('px', { model: 'xm', wire_api: 'responses' }), P('pchat', { model: 'cm', wire_api: 'chat' })],
+  codex: [P('px', { models: ['m-px'], model: 'xm', wire_api: 'responses' }),
+    P('pchat', { models: ['m-pchat'], model: 'cm', wire_api: 'chat' })],
 };
 
 // 供测试注入的 deps;可变部分放在 opts 里,便于逐条用例调整
@@ -47,60 +55,69 @@ function mkDeps(opts = {}) {
   const store = opts.store || STORE;
   const findProvider = id => store.claude.find(p => p.id === id) || store.codex.find(p => p.id === id) || null;
   const providerApp = id => store.claude.some(p => p.id === id) ? 'claude' : (store.codex.some(p => p.id === id) ? 'codex' : null);
-  const livePools = opts.pools || { r1: 0 };
-  const liveCooldowns = opts.cooldowns || {};
+  const livePools = opts.pools || {};
   return {
-    getRoutes: () => opts.routes || { rules: [], default: {} },
+    getRoutes: () => opts.routes || { rules: [] },
     storeOf: app => (app === 'codex' ? store.codex : store.claude),
     resolveSlot: opts.resolveSlot || (() => null),
     findProvider, providerApp,
     listPools: () => livePools,
-    inCooldown: id => (liveCooldowns[id] || 0) > (opts.now || 0),
     healthEligible: opts.healthEligible || (() => true),
     sessionCounts: () => opts.counts || {},
     uiPort: 8788,
     limits: opts.limits,
-    _livePools: livePools, _liveCooldowns: liveCooldowns,
+    _livePools: livePools,
+    ...(opts.deps || {}),
   };
 }
 
-const rule = (o = {}) => ({ id: 'r', match: '', provider: 'pa', model: '', pool: [], strategy: 'round_robin',
-  priority: 0, app: '', when: {}, enabled: true, ...o });
+// 槽位规则:与 lib/routing/slots.js 产出的形状一致(id 以 slot: 开头)。
+const slotRule = (app, name, o = {}) => ({ id: `slot:${app}/${name}`, match: 'mixr-' + name, provider: 'pa',
+  model: 'm-pa', pool: [], strategy: 'round_robin', priority: 1000, app, when: {}, enabled: true, ...o });
+// 带备池的槽位:members 来自 pool(主渠道排池首),用来验证策略与候选池。
+const slotPoolRule = (o = {}) => slotRule('claude', 'haiku', {
+  provider: 'pa', model: 'm-pa',
+  pool: [{ provider: 'pa', model: 'm-pa' }, { provider: 'pb', model: 'm-pb' }],
+  strategy: 'priority', ...o });
 
 // ---------------------------------------------------------------- 阶段与命中顺序
-test('预览:内容分流规则命中,且 priority 更低也先于普通规则评估', () => {
-  const routes = { rules: [
-    rule({ id: 'plain', match: 'opus', provider: 'pa', priority: 0 }),
-    rule({ id: 'content', match: '', provider: 'pb', priority: -5, when: { body: 'summarize' } }),
-  ], default: { provider: 'pc' } };
+test('预览:压缩请求命中压缩规则,并先于槽位与已登记模型', () => {
+  const routes = { rules: [{ id: 'compact-global', app: 'claude', enabled: true, priority: 90,
+    when: { body: COMPACT_RULES[0].body }, provider: 'pc', model: 'm-pc', pool: [], strategy: 'priority' }] };
+  const summary = FIXED_PREFIX + 'Your task is to create a detailed summary of this conversation.';
   const ex = createExplainer(mkDeps({ routes }));
-  const r = ex({ app: 'claude', model: 'opus', context: { bodyText: 'please summarize now' } });
+  const r = ex({ app: 'claude', model: 'm-pa', context: { compactTexts: [summary] } });
   assert.equal(r.ok, true);
-  assert.equal(r.matched.via, 'content');
-  assert.equal(r.matched.ruleId, 'content');
-  assert.equal(r.candidates[0].providerId, 'pb');
-  const s0 = r.stages.find(s => s.stage === 'content');
-  assert.equal(s0.hit, 'content');
+  assert.equal(r.matched.via, 'compact');
+  assert.equal(r.matched.ruleId, 'compact-global');
+  assert.equal(r.candidates[0].providerId, 'pc');
+  const s0 = r.stages.find(s => s.stage === 'compact');
+  assert.equal(s0.hit, 'compact-global');
+  // 同一模型名的普通请求不受压缩规则影响,按已登记模型落点
+  const plain = ex({ app: 'claude', model: 'm-pa' });
+  assert.equal(plain.matched.via, 'model');
+  assert.equal(plain.candidates[0].providerId, 'pa');
+  assert.equal(plain.stages.find(s => s.stage === 'compact').hit, null);
 });
 
-test('预览:槽位别名压过普通规则的子串匹配', () => {
-  const routes = { rules: [rule({ id: 'plain', match: 'haiku', provider: 'pa' })], default: { provider: 'pc' } };
-  const deps = mkDeps({ routes, resolveSlot: (app, model) => (String(model).toLowerCase() === 'mixr-haiku'
-    ? { name: 'haiku', model: 'hm', rule: rule({ id: 'slot:claude/haiku', provider: 'pb', model: 'hm' }) } : null) });
+test('预览:槽位别名压过已登记模型', () => {
+  const deps = mkDeps({ resolveSlot: (app, model) => (String(model).toLowerCase() === 'mixr-haiku'
+    ? { name: 'haiku', model: 'slot-model', rule: slotRule('claude', 'haiku', { provider: 'pb', model: 'slot-model' }) }
+    : null) });
+  // m-pa 是登记在 pa 上的模型;但请求走槽位别名,必须落到槽位
   const r = createExplainer(deps)({ app: 'claude', model: 'mixr-haiku' });
   assert.equal(r.matched.via, 'slot');
   assert.equal(r.matched.slot, 'haiku');
   assert.equal(r.matched.ruleId, 'slot:claude/haiku');
   assert.equal(r.candidates[0].providerId, 'pb');
+  assert.equal(r.candidates[0].model, 'slot-model');
 });
 
 test('预览:槽位备池不复用对话粘性或钉定,与真实 session store 的选择一致', () => {
   for (const pinned of [false, true]) {
     const session = { providerId: 'pb', pinned, lastUsed: 1000, model: 'conversation-model' };
     const bindings = new Map([['cc:slot-pool', session]]);
-    const slotRule = rule({ id: 'slot:claude/haiku', provider: 'pa', model: 'slot-model',
-      pool: ['pa', 'pb'], strategy: 'priority' });
-    const deps = mkDeps({ resolveSlot: () => ({ name: 'haiku', model: 'slot-model', rule: slotRule }) });
+    const deps = mkDeps({ resolveSlot: () => ({ name: 'haiku', model: 'm-pa', rule: slotPoolRule() }) });
     deps.sessionSnapshot = () => ({ bindings, now: 1000, ttlMs: 1000, max: 50 });
     const snapshot = JSON.stringify([...bindings]);
     const result = createExplainer(deps)({ app: 'claude', model: 'mixr-haiku', context: { session: 'cc:slot-pool' } });
@@ -112,98 +129,87 @@ test('预览:槽位备池不复用对话粘性或钉定,与真实 session store 
   }
 });
 
-test('预览:普通规则按 priority 降序、同值按数组顺序,命中首个', () => {
-  const routes = { rules: [
-    rule({ id: 'first', match: 'opus', provider: 'pa', priority: 0 }),
-    rule({ id: 'second', match: 'opus', provider: 'pb', priority: 0 }),
-    rule({ id: 'top', match: 'opus', provider: 'pc', priority: 9, enabled: false }),
-  ], default: { provider: 'pc' } };
-  const r = createExplainer(mkDeps({ routes }))({ app: 'claude', model: 'opus' });
-  assert.equal(r.matched.via, 'rule');
-  assert.equal(r.matched.ruleId, 'first');
+test('预览:已登记模型唯一命中才落点,候选池就是那一个成员', () => {
+  const r = createExplainer(mkDeps())({ app: 'claude', model: 'm-pb' });
+  assert.equal(r.ok, true);
+  assert.equal(r.matched.via, 'model');
+  assert.equal(r.matched.ruleId, 'model:pb');
+  assert.equal(r.matched.rule.provider, 'pb');
+  assert.deepEqual(r.candidates.map(c => c.providerId), ['pb']);
+  assert.equal(r.selection.source, 'strategy');
+  assert.equal(r.selection.predicted.providerId, 'pb');
 });
 
-test('预览:都不中时走兜底,ruleId 为 null 且 stages 里有 default used', () => {
-  const routes = { rules: [rule({ id: 'r1', match: 'zzz', provider: 'pa' })], default: { provider: 'pb' } };
-  const r = createExplainer(mkDeps({ routes }))({ app: 'claude', model: 'nomatch' });
-  assert.equal(r.matched.via, 'default');
-  assert.equal(r.matched.ruleId, null);
-  assert.equal(r.stages.at(-1).stage, 'default');
-  assert.equal(r.stages.at(-1).outcome, 'used');
-  assert.equal(r.candidates[0].providerId, 'pb');
+test('预览:多个渠道登记同一模型 → 歧义 409,不按顺序挑一个', () => {
+  const store = { claude: [P('pa', { models: ['dup'] }), P('pb', { models: ['dup'] })], codex: [] };
+  const r = createExplainer(mkDeps({ store }))({ app: 'claude', model: 'dup' });
+  assert.equal(r.ok, false);
+  assert.equal(r.error.code, 'model_ambiguous_error');
+  assert.equal(r.error.httpStatus, 409);
+  assert.match(r.error.message, /渠道-pa/);
+  assert.match(r.error.message, /渠道-pb/);
+  assert.equal(r.selection, null, '歧义早于选择,不该出现半截 selection');
+});
+
+test('预览:没有渠道登记该模型 → no_route 503(没有兜底可选)', () => {
+  const r = createExplainer(mkDeps())({ app: 'claude', model: 'nobody-registered-this' });
+  assert.equal(r.ok, false);
+  assert.equal(r.error.code, 'no_route_error');
+  assert.equal(r.error.httpStatus, 503);
+  assert.match(r.error.message, /nobody-registered-this/);
 });
 
 // ---------------------------------------------------------------- 未命中原因
-test('预览:四种未命中原因都能说清(disabled/当body缺失/app不匹配/match不中)', () => {
+test('预览:压缩阶段把"停用/别组/正文不是真压缩"三种未命中说清', () => {
+  const summary = FIXED_PREFIX + 'Your task is to create a detailed summary of this conversation.';
   const routes = { rules: [
-    rule({ id: 'dis', match: 'x', enabled: false }),
-    rule({ id: 'nobody', match: 'x' }),                                  // 无 when.body → 内容阶段不评
-    rule({ id: 'app', match: 'x', when: { body: 'q' }, app: 'codex' }),  // 只服务 codex
-    rule({ id: 'miss', match: 'x', when: { body: 'q' } }),               // 模型名不匹配
-  ], default: { provider: 'pa' } };
-  const r = createExplainer(mkDeps({ routes }))({ app: 'claude', model: 'nothing', context: { bodyText: 'q' } });
-  const ev = r.stages.find(s => s.stage === 'content').evaluated;
+    { id: 'dis', app: 'claude', enabled: false, priority: 99, when: { body: COMPACT_RULES[0].body }, provider: 'pc', model: 'm-pc', pool: [] },
+    { id: 'other-app', app: 'codex', enabled: true, priority: 98, when: { body: COMPACT_RULES[0].body }, provider: 'px', model: 'm-px', pool: [] },
+    { id: 'miss', app: 'claude', enabled: true, priority: 97, when: { body: COMPACT_RULES[0].body }, provider: 'pc', model: 'm-pc', pool: [] },
+  ] };
+  // compactTexts 里是普通正文(引用了特征串但不是真压缩指令)→ compact_miss
+  const r = createExplainer(mkDeps({ routes }))({ app: 'claude', model: 'm-pa', context: { compactTexts: ['ordinary text'] } });
+  const ev = r.stages.find(s => s.stage === 'compact').evaluated;
   const byId = Object.fromEntries(ev.map(e => [e.ruleId, e.reason]));
   assert.equal(byId.dis, 'disabled');
-  assert.equal(byId.nobody, 'when_body_absent');
-  assert.equal(byId.app, 'app_mismatch');
-  assert.equal(byId.miss, 'match_miss');
+  assert.equal(byId['other-app'], 'app_mismatch');
+  assert.equal(byId.miss, 'compact_miss');
   assert.ok(ev.every(e => e.outcome === 'skip'));
+  // 真压缩正文时同样的规则按 priority 命中最高那条可用规则
+  const hit = createExplainer(mkDeps({ routes }))({ app: 'claude', model: 'm-pa', context: { compactTexts: [summary] } });
+  assert.equal(hit.matched.ruleId, 'miss', '停用与别组的规则都不该命中');
 });
 
-test('预览:when 没对上时只报条件名,不报请求侧的值', () => {
-  const routes = { rules: [rule({ id: 'w', match: 'x', when: { body: 'q', ua: 'yes' } })], default: {} };
+test('预览:未命中原因里不回显请求侧的正文与凭据原文', () => {
+  const routes = { rules: [{ id: 'c', app: 'claude', enabled: true, priority: 90,
+    when: { body: COMPACT_RULES[0].body }, provider: 'pc', model: 'm-pc', pool: [] }] };
   const r = createExplainer(mkDeps({ routes }))({
-    app: 'claude', model: 'x',
-    context: { bodyText: 'q', ua: 'ACTUAL-UA-SECRET', token: 'ACTUAL-TOKEN-SECRET' },
+    app: 'claude', model: 'm-pa',
+    context: { bodyText: 'ACTUAL-BODY-SECRET', ua: 'ACTUAL-UA-SECRET', token: 'ACTUAL-TOKEN-SECRET', compactTexts: ['x'] },
   });
-  const ev = r.stages.find(s => s.stage === 'content').evaluated[0];
-  assert.equal(ev.reason, 'when_mismatch');
-  assert.deepEqual(ev.detail.fields, ['ua']);
   const json = JSON.stringify(r);
-  assert.equal(json.includes('ACTUAL-UA-SECRET'), false, '请求侧 ua 原文不得出现在结果里');
-  assert.equal(json.includes('ACTUAL-TOKEN-SECRET'), false, '请求侧 token 原文不得出现在结果里');
-});
-
-test('预览:match 为空的规则在普通阶段报 no_match', () => {
-  const routes = { rules: [rule({ id: 'empty', match: '', provider: 'pa' })], default: { provider: 'pb' } };
-  const r = createExplainer(mkDeps({ routes }))({ app: 'claude', model: 'x' });
-  const ev = r.stages.find(s => s.stage === 'rule').evaluated[0];
-  assert.equal(ev.reason, 'no_match');
-  assert.deepEqual(ev.detail.patterns, []);
-});
-
-test('预览:whenMissFields 与 matchWhen 对同一输入给出同一判定(不许两套语义)', () => {
-  const { matchWhen } = require('../lib/routing/rules.js');
-  const cases = [
-    [{ when: {} }, {}],
-    [{ when: { ua: 'claude' } }, { ua: 'CLAUDE-cli/2' }],
-    [{ when: { ua: 'claude' } }, { ua: 'curl' }],
-    [{ when: { body: 'sum' } }, { bodyText: () => 'please SUM it' }],
-    [{ when: { body: 'sum' } }, { bodyText: () => 'nothing' }],
-    [{ when: { session: 'a', ua: 'b' } }, { session: 'a', ua: 'b' }],
-    [{ when: { session: 'a', ua: 'b' } }, { session: 'a', ua: 'z' }],
-    [{ when: { body: 'x' } }, {}],
-  ];
-  for (const [r, ctx] of cases) {
-    const viaMatchWhen = matchWhen(r, ctx);
-    const viaMiss = whenMissFields(r, ctx) === null;
-    assert.equal(viaMiss, viaMatchWhen, `不一致: ${JSON.stringify(r)} / ${JSON.stringify(ctx)}`);
-  }
+  for (const secret of ['ACTUAL-BODY-SECRET', 'ACTUAL-UA-SECRET', 'ACTUAL-TOKEN-SECRET'])
+    assert.equal(json.includes(secret), false, `${secret} 不得出现在结果里`);
+  // 只报"有没有、多长"
+  assert.deepEqual(r.input.context, { hasSession: false, hasUa: true, hasToken: true, hasBodyText: true,
+    bodyTextLen: 'ACTUAL-BODY-SECRET'.length });
 });
 
 // ---------------------------------------------------------------- kind 协议过滤
 test('预览:chat/completions 命中全是 responses 渠道 → wire_api_mismatch 400', () => {
-  const routes = { rules: [rule({ id: 'c', match: 'gpt', provider: 'px' })], default: {} };
-  const r = createExplainer(mkDeps({ routes }))({ app: 'codex', model: 'gpt', kind: 'chat/completions' });
+  // Codex 组:模型只登记在 responses 渠道上,客户端却走 chat 端点
+  const r = createExplainer(mkDeps())({ app: 'codex', model: 'm-px', kind: 'chat/completions' });
   assert.equal(r.ok, false);
   assert.equal(r.error.code, 'wire_api_mismatch_error');
   assert.equal(r.error.httpStatus, 400);
 });
 
 test('预览:chat/completions 混合渠道时只留 chat,并列出被丢弃的', () => {
-  const routes = { rules: [rule({ id: 'c', match: 'gpt', pool: ['px', 'pchat'] })], default: {} };
-  const r = createExplainer(mkDeps({ routes }))({ app: 'codex', model: 'gpt', kind: 'chat/completions' });
+  // 槽位备池同时含 responses 与 chat 渠道:kind 过滤只留 chat
+  const rule = slotRule('codex', 'main', { provider: 'px', model: 'm-px',
+    pool: [{ provider: 'px', model: 'm-px' }, { provider: 'pchat', model: 'm-pchat' }], strategy: 'priority' });
+  const r = createExplainer(mkDeps({ resolveSlot: () => ({ name: 'main', model: 'm-px', rule }) }))(
+    { app: 'codex', model: 'mixr-main', kind: 'chat/completions' });
   assert.equal(r.ok, true);
   assert.deepEqual(r.kindFilter.kept, ['pchat']);
   assert.deepEqual(r.kindFilter.dropped, [{ providerId: 'px', wire: 'responses', reason: 'wire_not_chat' }]);
@@ -211,8 +217,7 @@ test('预览:chat/completions 混合渠道时只留 chat,并列出被丢弃的',
 });
 
 test('预览:kind 省略时按 app 推断,且不做协议过滤', () => {
-  const routes = { rules: [rule({ id: 'c', match: 'gpt', provider: 'px' })], default: {} };
-  const r = createExplainer(mkDeps({ routes }))({ app: 'codex', model: 'gpt' });
+  const r = createExplainer(mkDeps())({ app: 'codex', model: 'm-px' });
   assert.equal(r.input.kind, 'responses');
   assert.equal(r.kindFilter, null);
   assert.equal(r.ok, true);
@@ -226,26 +231,31 @@ test('预览:kind 与 app 不匹配 → kind_app_mismatch 400', () => {
 });
 
 // ---------------------------------------------------------------- 策略与"不承诺"
-test('预览:priority 取池序第一个可用,旧冷却表不影响首选', () => {
-  const routes = { rules: [rule({ id: 'pp', match: 'x', pool: ['pa', 'pb'], strategy: 'priority' })], default: {} };
-  const r1 = createExplainer(mkDeps({ routes }))({ app: 'claude', model: 'x' });
+test('预览:priority 取池序第一个可用', () => {
+  const deps = mkDeps({ resolveSlot: () => ({ name: 'haiku', model: 'm-pa', rule: slotPoolRule() }) });
+  const r1 = createExplainer(deps)({ app: 'claude', model: 'mixr-haiku' });
   assert.equal(r1.selection.deterministic, true);
   assert.equal(r1.selection.predicted.providerId, 'pa');
-  const r2 = createExplainer(mkDeps({ routes, cooldowns: { pa: 1e9 } }))({ app: 'claude', model: 'x' });
-  assert.equal(r2.selection.predicted.providerId, 'pa');
+  // 健康预检把主渠道判为不可用时才降级(实跑装配处恒为 true,这里用注入模拟)
+  const r2 = createExplainer(mkDeps({ resolveSlot: () => ({ name: 'haiku', model: 'm-pa', rule: slotPoolRule() }),
+    healthEligible: id => id !== 'pa' }))({ app: 'claude', model: 'mixr-haiku' });
+  assert.equal(r2.selection.predicted.providerId, 'pb');
 });
 
 test('预览:round_robin 预测当前游标的下一位,note 写明预览不消耗游标', () => {
-  const routes = { rules: [rule({ id: 'r1', match: 'x', pool: ['pa', 'pb'] })], default: {} };
-  const r = createExplainer(mkDeps({ routes, pools: { r1: 1 } }))({ app: 'claude', model: 'x' });
+  const rule = slotPoolRule({ id: 'slot:claude/haiku', strategy: 'round_robin' });
+  const r = createExplainer(mkDeps({ resolveSlot: () => ({ name: 'haiku', model: 'm-pa', rule }),
+    pools: { 'slot:claude/haiku': 1 } }))({ app: 'claude', model: 'mixr-haiku' });
   assert.equal(r.selection.deterministic, true);
   assert.equal(r.selection.predicted.providerId, 'pb', '游标为 1 → 池序第 1 个');
   assert.match(r.selection.note, /预览不消耗/);
 });
 
 test('预览:random 明确不预测(只给候选),不假装能预知', () => {
-  const routes = { rules: [rule({ id: 'rr', match: 'x', pool: ['pa', 'pb', 'pc'], strategy: 'random' })], default: {} };
-  const r = createExplainer(mkDeps({ routes }))({ app: 'claude', model: 'x' });
+  const rule = slotRule('claude', 'haiku', { provider: 'pa', model: 'm-pa', strategy: 'random',
+    pool: [{ provider: 'pa', model: 'm-pa' }, { provider: 'pb', model: 'm-pb' }, { provider: 'pc', model: 'm-pc' }] });
+  const r = createExplainer(mkDeps({ resolveSlot: () => ({ name: 'haiku', model: 'm-pa', rule }) }))(
+    { app: 'claude', model: 'mixr-haiku' });
   assert.equal(r.selection.deterministic, false);
   assert.equal(r.selection.predicted, null, 'random 不准给出 predicted');
   assert.deepEqual(r.selection.candidates, ['pa', 'pb', 'pc']);
@@ -253,25 +263,30 @@ test('预览:random 明确不预测(只给候选),不假装能预知', () => {
 });
 
 test('预览:weighted 基于当前余量给预测,并写明预览不消耗余量', () => {
-  const routes = { rules: [rule({ id: 'rw', match: 'x', pool: [{ provider: 'pa', weight: 3 }, { provider: 'pb', weight: 1 }], strategy: 'weighted' })], default: {} };
-  const r = createExplainer(mkDeps({ routes }))({ app: 'claude', model: 'x' });
+  const rule = slotRule('claude', 'haiku', { provider: 'pa', model: 'm-pa', strategy: 'weighted',
+    pool: [{ provider: 'pa', model: 'm-pa', weight: 3 }, { provider: 'pb', model: 'm-pb', weight: 1 }] });
+  const r = createExplainer(mkDeps({ resolveSlot: () => ({ name: 'haiku', model: 'm-pa', rule }) }))(
+    { app: 'claude', model: 'mixr-haiku' });
   assert.equal(r.selection.deterministic, true);
   assert.ok(r.selection.predicted);
   assert.match(r.selection.note, /预览不消耗余量/);
 });
 
 test('预览:least_used 按传入的活跃会话数取最小', () => {
-  const routes = { rules: [rule({ id: 'lu', match: 'x', pool: ['pa', 'pb', 'pc'], strategy: 'least_used' })], default: {} };
-  const r = createExplainer(mkDeps({ routes, counts: { pa: 5, pb: 1, pc: 3 } }))({ app: 'claude', model: 'x' });
+  const rule = slotRule('claude', 'haiku', { provider: 'pa', model: 'm-pa', strategy: 'least_used',
+    pool: [{ provider: 'pa' }, { provider: 'pb' }, { provider: 'pc' }] });
+  const r = createExplainer(mkDeps({ resolveSlot: () => ({ name: 'haiku', model: 'm-pa', rule }),
+    counts: { pa: 5, pb: 1, pc: 3 } }))({ app: 'claude', model: 'mixr-haiku' });
   assert.equal(r.selection.predicted.providerId, 'pb');
 });
 
 test('预览:sessionCounts 是按需调用的访问器(不是一次性快照/普通对象)', () => {
-  const routes = { rules: [rule({ id: 'lu', match: 'x', pool: ['pa', 'pb'], strategy: 'least_used' })], default: {} };
+  const rule = slotRule('claude', 'haiku', { provider: 'pa', model: 'm-pa', strategy: 'least_used',
+    pool: [{ provider: 'pa' }, { provider: 'pb' }] });
   let calls = 0;
-  const deps = mkDeps({ routes });
+  const deps = mkDeps({ resolveSlot: () => ({ name: 'haiku', model: 'm-pa', rule }) });
   deps.sessionCounts = () => { calls++; return { pa: 9, pb: 0 }; };
-  const r = createExplainer(deps)({ app: 'claude', model: 'x' });
+  const r = createExplainer(deps)({ app: 'claude', model: 'mixr-haiku' });
   assert.ok(calls >= 1, 'sessionCounts 必须被真正调用,否则 least_used 会退化成取池序第一个');
   assert.equal(r.selection.predicted.providerId, 'pb');
 });
@@ -284,55 +299,54 @@ test('describeStrategy:五种策略的可预测性标注齐全', () => {
 
 // ---------------------------------------------------------------- 零副作用(核心)
 test('零副作用:预览不前移 round_robin 游标,也不改调用者成员对象', () => {
-  const routes = { rules: [rule({ id: 'r1', match: 'x', pool: ['pa', 'pb'] })], default: {} };
-  const deps = mkDeps({ routes, pools: { r1: 0 } });
+  const rule = slotPoolRule({ strategy: 'round_robin' });
+  const deps = mkDeps({ resolveSlot: () => ({ name: 'haiku', model: 'm-pa', rule }),
+    pools: { 'slot:claude/haiku': 0 } });
   const before = JSON.parse(JSON.stringify(deps._livePools));
   const ex = createExplainer(deps);
   for (let i = 0; i < 5; i++) {
-    const r = ex({ app: 'claude', model: 'x' });
+    const r = ex({ app: 'claude', model: 'mixr-haiku' });
     assert.equal(r.selection.predicted.providerId, 'pa', '游标没被消耗,每次都应预测同一项');
   }
   assert.deepEqual(deps._livePools, before, 'live pools 必须一个字节都没变');
 });
 
 test('零副作用:预览不前移 weighted 余量', () => {
-  const routes = { rules: [rule({ id: 'rw', match: 'x', pool: [{ provider: 'pa', weight: 3 }, { provider: 'pb', weight: 1 }], strategy: 'weighted' })], default: {} };
-  const deps = mkDeps({ routes, pools: { __w_rw: [{ provider: { id: 'pa' }, weight: 3, current: 7 }] } });
+  const rule = slotRule('claude', 'haiku', { provider: 'pa', model: 'm-pa', strategy: 'weighted',
+    pool: [{ provider: 'pa', model: 'm-pa', weight: 3 }, { provider: 'pb', model: 'm-pb', weight: 1 }] });
+  const deps = mkDeps({ resolveSlot: () => ({ name: 'haiku', model: 'm-pa', rule }),
+    pools: { __w_slot: [{ provider: { id: 'pa' }, weight: 3, current: 7 }] } });
   const before = JSON.parse(JSON.stringify(deps._livePools));
   const seen = new Set();
   const ex = createExplainer(deps);
-  for (let i = 0; i < 4; i++) seen.add(ex({ app: 'claude', model: 'x' }).selection.predicted.providerId);
+  for (let i = 0; i < 4; i++) seen.add(ex({ app: 'claude', model: 'mixr-haiku' }).selection.predicted.providerId);
   assert.equal(seen.size, 1, '预览不消耗余量,预测应恒定');
   assert.deepEqual(deps._livePools, before, 'weighted 余量不得被改写');
 });
 
 test('零副作用:不建会话、不改粘性(写会话的入口根本没有被调用)', () => {
-  const routes = { rules: [rule({ id: 'r1', match: 'x', pool: ['pa'] })], default: {} };
   let touched = 0;
-  const deps = mkDeps({ routes });
+  const deps = mkDeps();
   // 哨兵:任何"写会话"的动作被调用就计数并抛
   for (const name of ['entry', 'resolveTarget', 'bindSession', 'flush', 'saveSoon', 'prune']) {
     deps[name] = () => { touched++; throw new Error(`预览不该调用 ${name}`); };
   }
   const ex = createExplainer(deps);
-  const r = ex({ app: 'claude', model: 'x', context: { session: 'cc:abc' } });
+  const r = ex({ app: 'claude', model: 'm-pa', context: { session: 'cc:abc' } });
   assert.equal(r.ok, true);
   assert.equal(touched, 0, '预览路径上不得出现任何写会话/剪枝动作');
 });
 
 test('零副作用:不标记冷却,也不改冷却表', () => {
-  const routes = { rules: [rule({ id: 'r1', match: 'x', pool: ['pa', 'pb'] })], default: {} };
-  const deps = mkDeps({ routes, cooldowns: { pa: 1e9 } });
-  const before = JSON.parse(JSON.stringify(deps._liveCooldowns));
   let touched = 0;
+  const deps = mkDeps();
   deps.markCooldown = () => { touched++; throw new Error('预览不该标记冷却'); };
-  const r = createExplainer(deps)({ app: 'claude', model: 'x' });
+  const r = createExplainer(deps)({ app: 'claude', model: 'm-pa' });
   assert.equal(r.ok, true);
   assert.equal(touched, 0);
   // 冷却已移除:候选不再带 cooldown 字段,可用性只看 healthEligible
-  assert.equal('cooldown' in r.candidates.find(c => c.providerId === 'pa'), false);
-  assert.equal(r.candidates.find(c => c.providerId === 'pa').eligible, true);
-  assert.deepEqual(deps._liveCooldowns, before, '冷却表不得被改写');
+  assert.equal('cooldown' in r.candidates[0], false);
+  assert.equal(r.candidates[0].eligible, true);
 });
 
 test('零副作用:不发上游请求(预览模块不 require 任何网络模块)', () => {
@@ -345,32 +359,32 @@ test('零副作用:不发上游请求(预览模块不 require 任何网络模块
 
 test('零副作用:不改槽位状态(只经注入的 resolveSlot 只读调用)', () => {
   let slotCalls = 0, slotWrites = 0;
-  const deps = mkDeps({ routes: { rules: [], default: { provider: 'pa' } } });
-  deps.resolveSlot = (app, model) => { slotCalls++; return null; };
+  const deps = mkDeps();
+  deps.resolveSlot = () => { slotCalls++; return null; };
   deps.setSlot = () => { slotWrites++; throw new Error('预览不该写槽位'); };
   const r = createExplainer(deps)({ app: 'claude', model: 'mixr-nope' });
   assert.equal(slotCalls, 1);
   assert.equal(slotWrites, 0);
-  assert.equal(r.ok, true);
-  // 像别名但不存在 → 如实告知并按兜底继续
+  // 像别名但不存在 → 如实告知;之后按已登记模型继续,而它也没登记 → 明确 no_route
   assert.ok(r.warnings.some(w => w.code === 'slot_fell_through'));
+  assert.equal(r.error.code, 'no_route_error');
+  assert.equal(r.matched.via, 'model');
 });
 
-test('槽位存在但没绑渠道时,预览明说它落到了普通规则(slot_unbound_falls_through)', () => {
-  // 用户看到预览命中了普通规则,却不知道自己槽位根本没绑 —— 那才是误导。
-  const deps = mkDeps({ routes: { rules: [rule({ id: 'plain', match: 'x', provider: 'pa' })], default: {} } });
+test('槽位存在但没绑渠道时,预览明说它落到了精确模型阶段(slot_unbound_falls_through)', () => {
+  // 用户看到预览命中了模型落点,却不知道自己槽位根本没绑 —— 那才是误导。
+  const deps = mkDeps();
   deps.slotExists = (app, alias) => alias === 'mixr-haiku';   // 别名在表里,但未绑渠道
   const r = createExplainer(deps)({ app: 'claude', model: 'mixr-haiku' });
   const ev = r.stages.find(s => s.stage === 'slot');
   assert.equal(ev.outcome, 'slot_unbound_falls_through');
   assert.deepEqual(ev.detail, { alias: 'mixr-haiku' });
   assert.ok(r.warnings.some(w => w.code === 'slot_unbound'), '必须给出"槽位没绑渠道"的明确警告');
-  assert.equal(r.matched.via, 'rule', '按实际行为:落到普通规则');
+  assert.equal(r.matched.via, 'model', '按实际行为:落到精确模型阶段(这里没登记,故 no_route)');
 });
 
 test('未提供 slotExists 时退回笼统的 no_such_slot,不猜', () => {
-  const deps = mkDeps({ routes: { rules: [], default: { provider: 'pa' } } });
-  const r = createExplainer(deps)({ app: 'claude', model: 'mixr-nope' });
+  const r = createExplainer(mkDeps())({ app: 'claude', model: 'mixr-nope' });
   assert.equal(r.stages.find(s => s.stage === 'slot').outcome, 'no_such_slot');
 });
 
@@ -379,11 +393,12 @@ test('未提供 slotExists 时退回笼统的 no_such_slot,不猜', () => {
 // selection.predicted / stages / matched.rule),不是 sanitizeProvider() 的直接输出 ——
 // 断后者会在"白名单被导出但出口没走它"时照样绿,等于没守。
 test('安全:预览结果整体(含 candidates/effective/predicted/stages/matched)不含任何敏感键名与值', () => {
-  const routes = { rules: [rule({ id: 'r1', match: 'x', pool: ['pa', 'pb'] })], default: {} };
-  const r = createExplainer(mkDeps({ routes }))({ app: 'claude', model: 'x' });
+  const rule = slotPoolRule();
+  const r = createExplainer(mkDeps({ resolveSlot: () => ({ name: 'haiku', model: 'm-pa', rule }) }))(
+    { app: 'claude', model: 'mixr-haiku' });
   // 覆盖所有会带 provider 数据的出口,缺一个就等于那条出口无人守
   assert.ok(r.candidates.length && r.effective.length && r.selection.predicted, '三个出口都要有数据,否则断言空转');
-  assert.ok(r.matched.rule, 'matched.rule 也要有数据(规则命中时才有)');
+  assert.ok(r.matched.rule, 'matched.rule 也要有数据(槽位命中时才有)');
   assert.ok(r.stages.length, 'stages 也要有内容');
   const json = JSON.stringify(r);
   const LEAKS = [
@@ -393,8 +408,7 @@ test('安全:预览结果整体(含 candidates/effective/predicted/stages/matche
     'https://', 'secret.example', 'sk-SECRET', 'LEAK-query', 'LEAK-header',
   ];
   for (const leak of LEAKS) assert.equal(json.includes(leak), false, `结果里不得出现 ${leak}`);
-  // 逐出口再确认一次键名(JSON 文本断言可能被同名字段掩盖)。
-  // 出口清单按主会话要求覆盖到 matched.rule 与 stages[].evaluated[]。
+  // 逐出口再确认一次键名(JSON 文本断言可能被同名字段掩盖)
   const outlets = [
     ...r.candidates, ...r.effective, r.selection.predicted, r.matched.rule,
     ...r.stages.flatMap(s => s.evaluated || []),
@@ -407,10 +421,7 @@ test('安全:预览结果整体(含 candidates/effective/predicted/stages/matche
 });
 
 test('安全:provider 白名单是真关口 —— toCandidate 取不到白名单外的字段', () => {
-  // F-B:白名单必须与出口是同一份字段表。用带全量敏感字段的 provider,
-  // 断言出口拿不到它们;再断言 providerName/wire 仍正确(证明没有把出口改坏)。
-  const routes = { rules: [rule({ id: 'r1', match: 'x', pool: ['pa'] })], default: {} };
-  const r = createExplainer(mkDeps({ routes }))({ app: 'claude', model: 'x' });
+  const r = createExplainer(mkDeps())({ app: 'claude', model: 'm-pa' });
   const c = r.candidates[0];
   assert.equal(c.providerId, 'pa');
   assert.equal(c.providerName, '渠道-pa');
@@ -439,26 +450,24 @@ test('安全:白名单必须两半同时成立 —— 非白名单的一个值�
   };
   // 单独造一个 store,不往共享的 STORE 上挂 —— 免得污染后续用例
   const store = { claude: [P('pa', LEAK), P('pb')], codex: [] };
-  const routes = { rules: [rule({ id: 'r1', match: 'x', model: 'mm', pool: ['pa', 'pb'] })], default: {} };
-  const r = createExplainer(mkDeps({ routes, store }))({ app: 'claude', model: 'x' });
+  const rule = slotPoolRule({ model: 'mm', pool: [{ provider: 'pa', model: 'mm' }, { provider: 'pb', model: 'mm' }] });
+  const r = createExplainer(mkDeps({ store, resolveSlot: () => ({ name: 'haiku', model: 'mm', rule }) }))(
+    { app: 'claude', model: 'mixr-haiku' });
   assert.ok(r.candidates.length && r.effective.length && r.selection.predicted, '三个出口都要有数据,否则断言空转');
 
   // ⚠ 本条的三个断言各自被哪一种注入单独抓红,已实测(不要想当然):
-  //   · 出口逐字段 `in` 查(下面 _outletKeyCheck)      ← `toCandidate` 加 `base_url: p.base_url`
+  //   · 出口逐字段 `in` 查(下面 outlets)                ← `toCandidate` 加 `base_url: p.base_url`
   //     白名单此时**完好**:base_url 被剥成 undefined,JSON.stringify 会连键一起丢掉,
   //     所以只断 JSON 文本完全看不见 —— 键已经进了出口,只有 `in` 看得见。
-  //   · 源头 `sanitizeProvider` 输出查(最末尾那段) ← `sanitizeProvider → return p`
+  //   · 源头 `sanitizeProvider` 输出查(最末尾那段)  ← `sanitizeProvider → return p`
   //     此时出口反而干净:toCandidate 逐字段读、不展开 provider,透传也带不出多余字段。
-  //   · JSON 文本查(第一个循环)                     ← 上面两者**同时**破才会红。
+  //   · JSON 文本查(第一个循环)                   ← 上面两者**同时**破才会红。
   // 也就是说任何单独一条都盖不住全部三种回归,三条缺一不可;去掉任一条都有注入能溜过去。
   const json = JSON.stringify(r);
-  // 之一:非白名单字段的键名与值都不得出现在序列化结果里(值一律 fake,绝不填真凭据形态)
   for (const [k, v] of Object.entries(LEAK)) {
     assert.equal(json.includes(k), false, `结果里不得出现键名 ${k}`);
     assert.equal(json.includes(v), false, `结果里不得出现 ${k} 的值`);
   }
-  // 之二:逐出口按 `in` 再查键名。不可省 —— 值为 undefined 时 JSON.stringify 会把键整个丢掉,
-  // 只断 JSON 文本就漏掉"键已经加进出口、只是当下取不到值"这类回归(实测见上)。
   const outlets = [...r.candidates, ...r.effective, r.selection.predicted];
   for (const o of outlets) {
     assert.ok(o, '出口不得为空,否则下面这圈空转');
@@ -473,7 +482,7 @@ test('安全:白名单必须两半同时成立 —— 非白名单的一个值�
   assert.equal(c.enabled, true);
   assert.equal(c.wire, 'anthropic', 'wire 由 wireOf 读 wire_api 得到,它必须在白名单里');
   assert.equal(r.effective[0].providerId, 'pa');
-  assert.equal(r.selection.predicted.providerId, 'pa', '游标 r1=0,池首是 pa');
+  assert.equal(r.selection.predicted.providerId, 'pa', '游标缺省 0,池首是 pa');
 
   // 源头再确认一次:白名单字段被留下、其余被丢掉(而不是"整个 provider 被丢光")
   const s = sanitizeProvider(store.claude[0]);
@@ -481,31 +490,30 @@ test('安全:白名单必须两半同时成立 —— 非白名单的一个值�
   for (const k of Object.keys(LEAK)) assert.equal(k in s, false);
 });
 
-test('安全:规则条件 when.token 的原文不回显,只给 present/len', () => {
-  // when.token 是拿去匹配**客户端凭据**的子串,用户可能把 Key 的一段写在那里做分流。
-  // 预览结果是要贴进 issue 的,不能成为凭据材料。
-  const TOKEN_SECRET = 'LEAK-when-token-abcdef';
-  const routes = { rules: [rule({ id: 'rt', match: 'x', provider: 'pa', when: { token: TOKEN_SECRET, ua: 'claude' } })], default: {} };
-  const r = createExplainer(mkDeps({ routes }))({ app: 'claude', model: 'x', context: { token: TOKEN_SECRET, ua: 'claude-cli' } });
-  const json = JSON.stringify(r);
-  assert.equal(json.includes(TOKEN_SECRET), false, 'when.token 原文不得出现在结果任何位置');
-  // 两个出口都要脱敏:stages[].evaluated[].when 与 matched.rule.when
-  const ev = r.stages.find(s => s.stage === 'rule').evaluated[0];
-  assert.deepEqual(ev.when.token, { present: true, len: TOKEN_SECRET.length });
-  assert.deepEqual(r.matched.rule.when.token, { present: true, len: TOKEN_SECRET.length });
-  // 其余条件字段照旧原样 —— 藏了预览就没法解释"为什么没命中"
-  assert.equal(ev.when.ua, 'claude');
-  // 没有 when.token 时不出现这个键
-  const r2 = createExplainer(mkDeps({ routes: { rules: [rule({ id: 'r2', match: 'x', when: { ua: 'z' } })], default: { provider: 'pa' } } }))({ app: 'claude', model: 'x' });
-  const ev2 = r2.stages.find(s => s.stage === 'rule').evaluated[0];
-  assert.equal('token' in ev2.when, false);
+test('安全:压缩规则出口的 when 只剩 body,且就是那条登记特征串', () => {
+  // 判定事件里不再带 when(compact 阶段只报 kind/priority 等规则元数据),when.body 只经
+  // matched.rule 出口出现。出口允许出现的 body 只有 compact-signature 登记的两条(都很短),
+  // 所以这里钉的是"只有 body、且原值"—— 通用 when.session/ua/token 已随判定一起删除。
+  const rule = { id: 'rt', app: 'claude', enabled: true, priority: 90,
+    when: { body: COMPACT_RULES[0].body }, provider: 'pc', model: 'm-pc', pool: [] };
+  const r = createExplainer(mkDeps({ routes: { rules: [rule] } }))(
+    { app: 'claude', model: 'm-pa', context: { compactTexts: [FIXED_PREFIX + 'Your task is to create a detailed summary of this.'] } });
+  assert.equal(r.matched.via, 'compact');
+  assert.deepEqual(Object.keys(r.matched.rule.when), ['body'], '已删除的通用条件字段不得从这个出口漏出来');
+  assert.equal(r.matched.rule.when.body, COMPACT_RULES[0].body);
+  assert.ok(r.matched.rule.when.body.length <= 80, '登记特征串本身很短,不会触发截断');
+  // 旧规则里残留的通用条件即使躺在盘上,也不会出现在出口(规则判定只看 body)
+  const legacy = { ...rule, when: { body: COMPACT_RULES[0].body, token: 'LEAK-legacy-token', ua: 'x' } };
+  const r2 = createExplainer(mkDeps({ routes: { rules: [legacy] } }))(
+    { app: 'claude', model: 'm-pa', context: { compactTexts: [FIXED_PREFIX + 'Your task is to create a detailed summary of this.'] } });
+  assert.deepEqual(r2.matched.rule.when, { body: COMPACT_RULES[0].body });
+  assert.equal(JSON.stringify(r2).includes('LEAK-legacy-token'), false);
 });
 
 test('安全:bodyText 原文与 token 不回显,只回显长度与"有没有"', () => {
-  const routes = { rules: [], default: { provider: 'pa' } };
   const secretBody = 'SUPER-SECRET-BODY-TEXT';
-  const r = createExplainer(mkDeps({ routes }))({
-    app: 'claude', model: 'x', context: { bodyText: secretBody, token: 'SUPER-SECRET-TOKEN', session: 'cc:1', ua: 'ua1' },
+  const r = createExplainer(mkDeps())({
+    app: 'claude', model: 'm-pa', context: { bodyText: secretBody, token: 'SUPER-SECRET-TOKEN', session: 'cc:1', ua: 'ua1' },
   });
   assert.equal(JSON.stringify(r).includes(secretBody), false);
   assert.equal(JSON.stringify(r).includes('SUPER-SECRET-TOKEN'), false);
@@ -520,56 +528,56 @@ test('预览:压缩 pin 无效时明确 503,不泄露凭据也不修改状态', 
     { provider: 'gone', key_id: 'k1' }, { provider: 'pdead', key_id: 'k1' },
   ];
   for (const patch of patches) {
-    const routes = { rules: [rule({ app: 'claude', when: { body: COMPACT_RULES[0].body }, ...patch })], default: {} };
+    const routes = { rules: [{ id: 'c', app: 'claude', enabled: true, priority: 90,
+      when: { body: COMPACT_RULES[0].body }, model: 'm-pa', pool: [], ...patch }] };
     const store = structuredClone(STORE);
     const deps = mkDeps({ routes, store });
-    const before = JSON.stringify({ routes, store, pools: deps._livePools, cooldowns: deps._liveCooldowns });
-    const r = createExplainer(deps)({ app: 'claude', model: 'x', context: { compactTexts: [summary] } });
+    const before = JSON.stringify({ routes, store, pools: deps._livePools });
+    const r = createExplainer(deps)({ app: 'claude', model: 'm-pa', context: { compactTexts: [summary] } });
     assert.equal(r.ok, false);
     assert.equal(r.error.code, 'provider_key_unavailable_error');
     assert.equal(r.error.httpStatus, 503);
     assert.equal(/sk-SECRET|LEAK-|api_key|base_url|active_key/.test(JSON.stringify(r)), false);
-    assert.equal(JSON.stringify({ routes, store, pools: deps._livePools, cooldowns: deps._liveCooldowns }), before);
+    assert.equal(JSON.stringify({ routes, store, pools: deps._livePools }), before);
   }
 });
 
 test('预览:有效压缩 pin 仍给安全候选,普通请求不受坏 pin 影响', () => {
   const summary = FIXED_PREFIX + 'Your task is to create a detailed summary of this conversation.';
-  const compact = rule({ app: 'claude', key_id: 'k1', when: { body: COMPACT_RULES[0].body } });
-  const routes = { rules: [compact], default: { provider: 'pb' } };
+  const compact = { id: 'c', app: 'claude', enabled: true, priority: 90, when: { body: COMPACT_RULES[0].body },
+    provider: 'pa', key_id: 'k1', model: 'm-pa', pool: [] };
+  const routes = { rules: [compact] };
   const ex = createExplainer(mkDeps({ routes }));
   const valid = ex({ app: 'claude', model: 'x', context: { compactTexts: [summary] } });
   assert.equal(valid.ok, true);
   assert.equal(valid.selection.predicted.providerId, 'pa');
+  assert.equal(valid.selection.key_id, 'k1');
+  assert.equal(valid.selection.key_source, 'compact');
   assert.equal(/sk-SECRET|LEAK-|api_key|base_url|active_key/.test(JSON.stringify(valid)), false);
   compact.key_id = 'missing';
-  const ordinary = ex({ app: 'claude', model: 'x', context: { compactTexts: ['ordinary'] } });
-  assert.equal(ordinary.ok, true);
+  const ordinary = ex({ app: 'claude', model: 'm-pb', context: { compactTexts: ['ordinary'] } });
+  assert.equal(ordinary.ok, true, '普通请求不评压缩规则,坏 pin 不影响它');
   assert.equal(ordinary.selection.predicted.providerId, 'pb');
 });
 
 test('预览:单一目标渠道已停用 → provider_disabled 503(与实跑同型)', () => {
-  const routes = { rules: [rule({ id: 'd', match: 'x', provider: 'pdead' })], default: {} };
-  const r = createExplainer(mkDeps({ routes }))({ app: 'claude', model: 'x' });
+  // 停用渠道不参与"已登记模型"命中,只能经槽位绑上来
+  const rule = slotRule('claude', 'haiku', { provider: 'pdead', model: 'm-pdead' });
+  const r = createExplainer(mkDeps({ resolveSlot: () => ({ name: 'haiku', model: 'm-pdead', rule }) }))(
+    { app: 'claude', model: 'mixr-haiku' });
   assert.equal(r.ok, false);
   assert.equal(r.error.code, 'provider_disabled_error');
   assert.equal(r.error.httpStatus, 503);
 });
 
-test('预览:规则指向已删渠道 → no_route 503 且带 ghost 明细', () => {
-  const routes = { rules: [rule({ id: 'g', match: 'x', provider: 'gone' })], default: {} };
-  const r = createExplainer(mkDeps({ routes }))({ app: 'claude', model: 'x' });
+test('预览:槽位绑定的渠道已整条删除 → no_route 503 且带 ghost 明细', () => {
+  const rule = slotRule('claude', 'haiku', { provider: 'gone', model: 'm-gone' });
+  const r = createExplainer(mkDeps({ resolveSlot: () => ({ name: 'haiku', model: 'm-gone', rule }) }))(
+    { app: 'claude', model: 'mixr-haiku' });
   assert.equal(r.ok, false);
   assert.equal(r.error.code, 'no_route_error');
   assert.deepEqual(r.ghosts, [{ where: '单一目标', id: 'gone' }]);
-  assert.match(r.error.message, /不存在/);
-});
-
-test('预览:旧冷却表写满时仍能正常预览,不发"全部不可用"提示', () => {
-  const routes = { rules: [rule({ id: 'r1', match: 'x', pool: ['pa', 'pb'] })], default: {} };
-  const r = createExplainer(mkDeps({ routes, cooldowns: { pa: 1e9, pb: 1e9 } }))({ app: 'claude', model: 'x' });
-  assert.equal(r.ok, true);
-  assert.ok(!r.warnings.some(w => w.code === 'all_members_ineligible'));
+  assert.match(r.error.message, /槽位/);
 });
 
 // ---------------------------------------------------------------- 边界
@@ -583,39 +591,39 @@ test('预览:畸形入参不抛,按错误分型返回', () => {
   assert.equal(ex({ app: 'claude', model: 123 }).error.code, 'bad_model');
   assert.equal(ex({ app: 'claude', model: null }).error.code, 'bad_model');
   assert.equal(ex({ app: 'CLAUDE', model: 'x' }).error.code, 'bad_app');
-  // context 非对象应退化为空而非抛;给一份带兜底渠道的 deps,否则 ok:false 是 no_route 而非入参问题
-  const exWithDefault = createExplainer(mkDeps({ routes: { rules: [], default: { provider: 'pa' } } }));
-  assert.equal(exWithDefault({ app: 'claude', model: 'x', context: 'nope' }).ok, true);
-  assert.equal(exWithDefault({ app: 'claude', model: 'x', context: null }).ok, true);
+  // context 非对象应退化为空而非抛
+  assert.equal(ex({ app: 'claude', model: 'm-pa', context: 'nope' }).ok, true);
+  assert.equal(ex({ app: 'claude', model: 'm-pa', context: null }).ok, true);
 });
 
-test('预览:空路由表 → 走兜底,ruleId 为 null', () => {
-  const r = createExplainer(mkDeps({ routes: { rules: [], default: { provider: 'pa' } } }))({ app: 'claude', model: 'anything' });
+test('预览:空规则表不影响精确模型落点', () => {
+  const r = createExplainer(mkDeps({ routes: { rules: [] } }))({ app: 'claude', model: 'm-pa' });
   assert.equal(r.ok, true);
-  assert.equal(r.matched.via, 'default');
-  assert.equal(r.matched.ruleId, null);
+  assert.equal(r.matched.via, 'model');
+  assert.equal(r.matched.ruleId, 'model:pa');
 });
 
 test('预览:超长模型名与特殊字符不抛(纯查表)', () => {
-  const ex = createExplainer(mkDeps({ routes: { rules: [], default: { provider: 'pa' } } }));
+  const ex = createExplainer(mkDeps());
   for (const m of ['x'.repeat(4000), '__proto__', 'constructor', '\u0000\u0007', '中文模型']) {
     const r = ex({ app: 'claude', model: m });
-    assert.equal(r.ok, true, `model=${m.slice(0, 20)} 应正常预览`);
+    assert.equal(r.ok, false, `model=${m.slice(0, 20)} 未登记,应明确 no_route 而不是抛`);
+    assert.equal(r.error.code, 'no_route_error');
   }
 });
 
 test('预览:事件数超过上限时截断,且 rulesOmitted 等于实际丢弃数、已留痕正好等于上限', () => {
-  // 上限单位是**事件**:content 与 rule 两阶段各自遍历全部规则,故规则数 ≠ 事件数。
-  // 这里造足以产生远超上限的事件数,并按真实丢弃数断言,不接受"大约"。
+  // 上限单位是**事件**:compacted 规则数 + slot 1 条 + model 1 条。
   const LIMIT = 20;
-  const rules = Array.from({ length: 60 }, (_, i) => rule({ id: 'r' + i, match: 'nomatch' + i }));
-  const r = createExplainer(mkDeps({ routes: { rules, default: { provider: 'pa' } }, limits: { maxTraceEvents: LIMIT } }))({ app: 'claude', model: 'zzz' });
+  const rules = Array.from({ length: 60 }, (_, i) => ({ id: 'c' + i, app: 'claude', enabled: true, priority: 90 - i,
+    when: { body: COMPACT_RULES[0].body }, provider: 'pc', model: 'm-pc', pool: [] }));
+  const r = createExplainer(mkDeps({ routes: { rules }, limits: { maxTraceEvents: LIMIT } }))(
+    { app: 'claude', model: 'm-pa', context: { compactTexts: ['not compact'] } });
   assert.equal(r.limits.truncated, true);
   assert.equal(r.limits.rulesTraced, LIMIT, '已留痕事件数必须正好等于上限(不是 <=)');
   assert.ok(r.limits.rulesOmitted > 0, 'rulesOmitted 必须是确切整数');
-  // 独立算一遍期望值(逐项来源都写明,不靠"跑一遍看多少"):
-  //   content 阶段 60 条(when_body_absent) + rule 阶段 60 条(no_match) + slot 阶段 1 条 + default 1 条
-  const expected = 60 + 60 + 1 + 1;
+  // 独立算一遍期望值:60 条压缩规则各 1 条 skip + slot 阶段 1 条 + model 阶段 1 条
+  const expected = 60 + 1 + 1;
   assert.equal(r.limits.rulesTraced + r.limits.rulesOmitted, expected,
     `留痕+丢弃必须等于实际事件总数(${expected})`);
   const warn = r.warnings.find(w => w.code === 'rules_truncated');
@@ -624,91 +632,44 @@ test('预览:事件数超过上限时截断,且 rulesOmitted 等于实际丢弃�
 });
 
 test('预览:未触顶时 rulesOmitted 为 0 且 truncated 为 false', () => {
-  const r = createExplainer(mkDeps({ routes: { rules: [rule({ id: 'r1', match: 'x' })], default: {} } }))({ app: 'claude', model: 'x' });
+  const r = createExplainer(mkDeps())({ app: 'claude', model: 'm-pa' });
   assert.equal(r.limits.truncated, false);
   assert.equal(r.limits.rulesOmitted, 0);
   assert.equal(r.warnings.some(w => w.code === 'rules_truncated'), false);
 });
 
-// ---------------------------------------------------------------- F-A:短路不倒退
-test('F-A:不传 trace 时 whenMissFields 短路,绝不白拼 bodyText(与 matchWhen 同求值路径)', () => {
-  // ctx.bodyText 是惰性回调,压缩请求体可到上百 KB;它存在的意义就是"没真需要就别拼"。
-  // 规则 when.session 不匹配且带 when.body 时,matchWhen 在 session 上就返回了,body 不该被求值。
-  const routes = { rules: [rule({ id: 'rs', match: 'x', when: { session: 'want-me', body: 'sum' } })], default: { provider: 'pa' } };
-  let calls = 0;
-  const ctx = { session: 'other', bodyText: () => { calls++; return 'please sum'; } };
-
-  // 不传 trace:实跑路径,必须 0 次
-  const plain = createResolver(mkDeps({ routes }));
-  const rPlain = plain('x', ctx, 'claude');
-  assert.equal(calls, 0, '不追踪时不得求值 bodyText(否则实跑路径白付代价)');
-
-  // 传 trace:预览要一次说全所有未命中字段,允许求值
-  calls = 0;
-  const traced = createResolver({ ...mkDeps({ routes }), trace: () => {} });
-  const rTraced = traced('x', ctx, 'claude');
-  assert.ok(calls >= 1, '追踪时要求值 bodyText 才能报出全部未命中字段');
-
-  // 前提:这条规则 when.session 不匹配,两侧都应落到兜底(rule 为 null)
-  assert.equal(rPlain.rule, null, 'session 不匹配 → 不该命中该规则');
-  // 只差求值过程,返回值必须一致(用 null 安全的方式比,别假设 rule 一定存在)
-  const shape = r => ({ rule: r.rule ? r.rule.id : null, members: r.members.map(m => m.provider.id), strategy: r.strategy });
-  assert.deepEqual(shape(rPlain), shape(rTraced), '短路只应改变求值过程,不得改变返回值');
-});
-
-test('F-A:短路与 matchWhen 在"先不匹配字段 + 后带 body"时判定一致', () => {
-  const { matchWhen } = require('../lib/routing/rules.js');
-  const cases = [
-    [{ when: { session: 'a', body: 'b' } }, { session: 'zzz', bodyText: () => 'b' }],
-    [{ when: { ua: 'a', body: 'b' } }, { ua: 'zzz', bodyText: () => 'b' }],
-    [{ when: { token: 'a', body: 'b' } }, { token: 'zzz', bodyText: () => 'b' }],
-    [{ when: { session: 'a', body: 'b' } }, { session: 'a', bodyText: () => 'b' }],
-    [{ when: { session: 'a', body: 'b' } }, { session: 'a', bodyText: () => 'nope' }],
-  ];
-  for (const [r, ctx] of cases) {
-    for (const collectAll of [false, true]) {
-      const viaMiss = whenMissFields(r, ctx, collectAll) === null;
-      assert.equal(viaMiss, matchWhen(r, ctx),
-        `不一致 collectAll=${collectAll}: ${JSON.stringify(r)} / ${JSON.stringify(ctx)}`);
-    }
-  }
-});
-
 // ---------------------------------------------------------------- 与真实 resolver 的一致性
 test('预览与真实 resolveRoute 对同一输入给出一致的命中结果', () => {
-  const routes = { rules: [
-    rule({ id: 'content', match: '', provider: 'pb', priority: -1, when: { body: 'sum' } }),
-    rule({ id: 'plain', match: 'opus', provider: 'pa', pool: ['pa', 'pc'] }),
-  ], default: { provider: 'pc' } };
-  const deps = mkDeps({ routes });
+  const routes = { rules: [{ id: 'compact-global', app: 'claude', enabled: true, priority: 90,
+    when: { body: COMPACT_RULES[0].body }, provider: 'pc', model: 'm-pc', pool: [] }] };
+  const summary = FIXED_PREFIX + 'Your task is to create a detailed summary of this conversation.';
+  const deps = mkDeps({ routes, resolveSlot: (app, model) => (model === 'mixr-haiku'
+    ? { name: 'haiku', model: 'm-pa', rule: slotRule('claude', 'haiku') } : null) });
   const resolver = createResolver(deps);
   const ex = createExplainer(deps);
   const cases = [
-    { model: 'opus', context: {} },
-    { model: 'opus', context: { bodyText: 'please sum it' } },
-    { model: 'nothing', context: {} },
-    { model: '', context: {} },
-    { model: 'opus', context: { session: 's' } },
+    { model: 'm-pa', context: {} },
+    { model: 'm-pb', context: {} },
+    { model: 'mixr-haiku', context: {} },
+    { model: 'm-pa', context: { compactTexts: [summary] } },
+    { model: 'unregistered', context: {} },
   ];
   for (const c of cases) {
-    const truth = resolver(c.model, { session: c.context.session, ua: c.context.ua,
-      token: c.context.token, bodyText: c.context.bodyText ? () => c.context.bodyText : undefined }, 'claude');
+    const truth = resolver(c.model, { compactTexts: () => c.context.compactTexts || [] }, 'claude');
     const preview = ex({ app: 'claude', ...c });
     assert.equal(preview.matched.ruleId, truth.rule ? truth.rule.id : null, `ruleId 不一致: ${JSON.stringify(c)}`);
-    assert.equal(preview.matched.via, truth.content ? 'content' : (truth.slot ? 'slot' : (truth.rule ? 'rule' : 'default')));
+    assert.equal(preview.matched.via, truth.stage, `via 不一致: ${JSON.stringify(c)}`);
     assert.deepEqual(preview.candidates.map(x => x.providerId), truth.members.map(m => m.provider.id));
   }
 });
 
 test('预览:不启用 trace 时 resolveRoute 行为与加 trace 之前一致(纯函数等价)', () => {
-  // 用同一份 deps 建两个 resolver:一个带 trace、一个不带,断言返回结果逐字段相同
-  const routes = { rules: [rule({ id: 'r1', match: 'x', pool: ['pa', 'pb'] })], default: { provider: 'pc' } };
-  const plain = createResolver(mkDeps({ routes }));
-  // 传一个真收集器(不是空函数),并把收到的事件数也记下来 —— 要证明的是
-  // "收集器收到多少事件,都不影响返回值"
+  const deps = mkDeps({ resolveSlot: (app, model) => (model === 'mixr-haiku'
+    ? { name: 'haiku', model: 'm-pa', rule: slotPoolRule() } : null) });
+  const plain = createResolver(deps);
   const collected = [];
-  const traced = createResolver({ ...mkDeps({ routes }), trace: ev => collected.push(ev) });
-  for (const args of [['x', {}, 'claude'], ['nope', {}, 'claude'], ['x', { ua: 'u' }, 'codex']]) {
+  const traced = createResolver({ ...deps, trace: ev => collected.push(ev) });
+  for (const args of [['m-pa', {}, 'claude'], ['nope', {}, 'claude'], ['m-px', {}, 'codex'], ['mixr-haiku', {}, 'claude']]) {
     const before = collected.length;
     const a = plain(...args);
     const b = traced(...args);
@@ -717,26 +678,23 @@ test('预览:不启用 trace 时 resolveRoute 行为与加 trace 之前一致(�
     assert.ok(collected.length > before, 'trace 应确实收到了事件(否则这条断言空转)');
   }
   // 同一个输入跑两次(收集器累积更多事件),返回值仍必须相同
-  const a1 = plain('x', {}, 'claude');
-  const b1 = traced('x', {}, 'claude');
-  const b2 = traced('x', {}, 'claude');
-  assert.deepStrictEqual(b1, a1);
-  assert.deepStrictEqual(b2, a1, '收集器已累积更多事件,返回值不得受影响');
+  const a1 = plain('m-pa', {}, 'claude');
+  assert.deepStrictEqual(traced('m-pa', {}, 'claude'), a1);
+  assert.deepStrictEqual(traced('m-pa', {}, 'claude'), a1, '收集器已累积更多事件,返回值不得受影响');
 
-  // 显式版:传一个"只计数、什么都不存"的收集器,断言收到的事件数 > 0 而返回结果与不传时相同
   let hitCount = 0;
-  const counting = createResolver({ ...mkDeps({ routes }), trace: () => { hitCount++; } });
-  const c = counting('x', {}, 'claude');
+  const counting = createResolver({ ...deps, trace: () => { hitCount++; } });
+  const c = counting('m-pa', {}, 'claude');
   assert.ok(hitCount > 0, '计数收集器必须确实收到事件(否则这条断言空转)');
-  assert.deepStrictEqual(c, plain('x', {}, 'claude'), '事件数不影响返回结果');
-  assert.deepStrictEqual(c, b1, '与"存事件的收集器"也给同一个结果');
+  assert.deepStrictEqual(c, a1, '事件数不影响返回结果');
 });
 
 test('预览:trace 抛异常不影响解析结果(预览的问题不该改路由行为)', () => {
-  const routes = { rules: [rule({ id: 'r1', match: 'x', pool: ['pa'] })], default: { provider: 'pc' } };
-  const resolver = createResolver({ ...mkDeps({ routes }), trace: () => {} });
-  const r = resolver('x', {}, 'claude');
-  assert.equal(r.rule.id, 'r1');
+  const deps = mkDeps({ resolveSlot: (app, model) => (model === 'mixr-haiku'
+    ? { name: 'haiku', model: 'm-pa', rule: slotRule('claude', 'haiku') } : null) });
+  const resolver = createResolver({ ...deps, trace: () => {} });
+  const r = resolver('mixr-haiku', {}, 'claude');
+  assert.equal(r.rule.id, 'slot:claude/haiku');
   assert.equal(r.members[0].provider.id, 'pa');
 });
 
@@ -749,21 +707,20 @@ test('预览:PREVIEW_LIMITS 与 SAFE_PROVIDER_FIELDS 的形状稳定', () => {
 
 // ---------------------------------------------------------------- 参数级无副作用
 test('零副作用:不改写调用者传入的 input 与 context', () => {
-  const routes = { rules: [rule({ id: 'r1', match: 'x', pool: [{ provider: 'pa', weight: 2 }] })], default: {} };
-  const input = { app: 'claude', model: 'x', context: { session: 'cc:1', ua: 'ua', token: 'tk', bodyText: 'body' } };
+  const input = { app: 'claude', model: 'm-pa', context: { session: 'cc:1', ua: 'ua', token: 'tk', bodyText: 'body' } };
   const before = JSON.parse(JSON.stringify(input));
-  createExplainer(mkDeps({ routes }))(input);
+  createExplainer(mkDeps())(input);
   assert.deepEqual(input, before, 'input 必须原样不动');
 });
 
 test('零副作用:不改写调用者传入的 routes 规则数组顺序与规则对象', () => {
   const rules = [
-    rule({ id: 'lo', match: 'x', provider: 'pa', priority: 0 }),
-    rule({ id: 'hi', match: 'x', provider: 'pb', priority: 3 }),
+    { id: 'lo', app: 'claude', enabled: true, priority: 0, when: { body: COMPACT_RULES[1].body }, provider: 'pa', model: 'm-pa', pool: [] },
+    { id: 'hi', app: 'claude', enabled: true, priority: 3, when: { body: COMPACT_RULES[0].body }, provider: 'pb', model: 'm-pb', pool: [] },
   ];
-  const routes = { rules, default: { provider: 'pc' } };
+  const routes = { rules };
   const before = JSON.parse(JSON.stringify(routes));
-  createExplainer(mkDeps({ routes }))({ app: 'claude', model: 'x' });
+  createExplainer(mkDeps({ routes }))({ app: 'claude', model: 'm-pa' });
   assert.deepEqual(routes, before, 'routes 不得被就地排序或改写');
 });
 
@@ -804,9 +761,9 @@ function seedStale(s) {
   s.cooldowns = { pa: 0 };
 }
 const depsFromStore = (s, opts = {}) => ({
-  getRoutes: () => opts.routes || { rules: [rule({ id: 'r1', match: 'x', pool: ['pa', 'pb'] })], default: {} },
+  getRoutes: () => opts.routes || { rules: [] },
   storeOf: app => (app === 'codex' ? STORE.codex : STORE.claude),
-  resolveSlot: () => null,
+  resolveSlot: opts.resolveSlot || (() => null),
   findProvider: id => STORE.claude.find(p => p.id === id) || null,
   providerApp: () => 'claude',
   listPools: () => s.pools,                       // 只读引用;浅拷贝由 explain 内部做
@@ -828,7 +785,7 @@ test('F3-1:预览不剪枝 —— 过期会话调用后仍在,旧冷却表不保
 
   // 正证:重置种子后走 explain,会话必须原样保留,冷却表仍为空
   seedStale(s);
-  const r = createExplainer(depsFromStore(s))({ app: 'claude', model: 'x' });
+  const r = createExplainer(depsFromStore(s))({ app: 'claude', model: 'm-pa' });
   assert.equal(r.ok, true);
   assert.equal(s.sessions.has('陈旧会话'), true, '预览不得顺手删用户的会话');
   assert.equal('pa' in s.cooldowns, false, '旧冷却表不再保存条目');
@@ -837,9 +794,10 @@ test('F3-1:预览不剪枝 —— 过期会话调用后仍在,旧冷却表不保
 test('F3-2:预览前后 store 的 pools 逐字节不变(round_robin 游标)', () => {
   const s = mkRealStore();
   seedStale(s);
+  const rule = slotPoolRule({ strategy: 'round_robin' });
   const before = JSON.stringify(s.pools);
-  const ex = createExplainer(depsFromStore(s));
-  for (let i = 0; i < 5; i++) ex({ app: 'claude', model: 'x' });
+  const ex = createExplainer(depsFromStore(s, { resolveSlot: () => ({ name: 'haiku', model: 'm-pa', rule }) }));
+  for (let i = 0; i < 5; i++) ex({ app: 'claude', model: 'mixr-haiku' });
   assert.equal(JSON.stringify(s.pools), before, 'pools 必须一个字节都没变');
 });
 
@@ -848,18 +806,19 @@ test('F3-2 反证:直接经 pickMember 走活游标确实会前移(证明上一�
   const members = [{ provider: { id: 'pa' }, model: '', weight: 1 }, { provider: { id: 'pb' }, model: '', weight: 1 }];
   const before = JSON.stringify(s.pools);
   // 传**活引用**(explain 不会这么干):游标应当被前移
-  pickMember({ id: 'r1' }, members, { eligible: () => true, pools: s.pools });
+  pickMember({ id: 'slot:claude/haiku' }, members, { eligible: () => true, pools: s.pools });
   assert.notEqual(JSON.stringify(s.pools), before, '反证失败:活引用本应前移游标');
 });
 
 test('F3-3:预览前后 weighted 的 current 不变(且反证活引用会改写)', () => {
   const s = mkRealStore();
-  const wrule = rule({ id: 'rw', match: 'x', pool: [{ provider: 'pa', weight: 3 }, { provider: 'pb', weight: 1 }], strategy: 'weighted' });
-  const deps = depsFromStore(s, { routes: { rules: [wrule], default: {} } });
+  const wrule = slotRule('claude', 'haiku', { provider: 'pa', model: 'm-pa', strategy: 'weighted',
+    pool: [{ provider: 'pa', model: 'm-pa', weight: 3 }, { provider: 'pb', model: 'm-pb', weight: 1 }] });
+  const deps = depsFromStore(s, { resolveSlot: () => ({ name: 'haiku', model: 'm-pa', rule: wrule }) });
   const ex = createExplainer(deps);
-  ex({ app: 'claude', model: 'x' });                 // 先让 explain 建一次余量记录
+  ex({ app: 'claude', model: 'mixr-haiku' });        // 先让 explain 建一次余量记录
   const before = JSON.stringify(s.pools);
-  for (let i = 0; i < 4; i++) ex({ app: 'claude', model: 'x' });
+  for (let i = 0; i < 4; i++) ex({ app: 'claude', model: 'mixr-haiku' });
   assert.equal(JSON.stringify(s.pools), before, '预览不得消耗加权余量');
 
   // 反证:传活引用给 pickMember,current 会被改写
@@ -877,7 +836,7 @@ test('F3-4:预览全程不碰会剪枝的会话入口(注入 throw 哨兵)', () 
   for (const name of ['list', 'resolveTarget', 'prune', 'entry', 'markCooldown', 'flush', 'saveSoon']) {
     base[name] = () => { throw new Error(`预览不该调用 ${name}`); };
   }
-  const r = createExplainer(base)({ app: 'claude', model: 'x', context: { session: 'cc:1' } });
+  const r = createExplainer(base)({ app: 'claude', model: 'm-pa', context: { session: 'cc:1' } });
   assert.equal(r.ok, true);
   assert.equal(s.sessions.has('陈旧会话'), true);
 });
@@ -886,37 +845,38 @@ test('F3-4:预览全程不碰会剪枝的会话入口(注入 throw 哨兵)', () 
 // 主会话已在 mixrouter.js 的 _state 里加了 `get pools(){ return sess.pools; }`(必须是 getter:
 // resetPools() 会整份换掉那个对象,写成快照会在重置后指向旧表,断言就变成跟没人用的对象比)。
 // 上面 F3-2/F3-3 用隔离 store 验的是"模块不改传进去的东西";这一节验的是**生产表本身**没动。
-// 规则仍用 fixture,但 listPools 指向**现役服务**的 _state.pools。
-const prodDeps = (routes) => ({ ...mkDeps({ routes }), listPools: () => require('../mixrouter.js')._state.pools });
+// 槽位规则仍用 fixture,但 listPools 指向**现役服务**的 _state.pools。
+const prodDeps = (slot) => ({ ...mkDeps({ resolveSlot: () => slot }), listPools: () => require('../mixrouter.js')._state.pools });
 
 test('P4:explain 前后 _state.pools deepStrictEqual(生产路径,不是隔离 store)', () => {
   const m = require('../mixrouter.js');
   // 先播种一个已知游标,避免"空表前后都空"这种空转。
   // ⚠ resetPools() 是整份替换对象,所以**必须重置之后再取引用** ——
-  //   先取引用再 reset,写的就是一张已经没人用的旧表(这条断言自己就踩过一次,见测试说明)。
+  //   先取引用再 reset,写的就是一张已经没人用的旧表(这条断言自己就踩过一次)。
   m._state.resetPools();
   const p = m._state.pools;
   assert.notEqual(p, undefined, '_state.pools 在 resetPools 之后仍必须是可读对象');
-  p.r1 = 3;
+  p['slot:claude/haiku'] = 3;
   const before = JSON.stringify(m._state.pools);
-  const r = createExplainer(prodDeps({ rules: [rule({ id: 'r1', match: 'x', pool: ['pa', 'pb'] })], default: {} }))({ app: 'claude', model: 'x' });
+  const r = createExplainer(prodDeps({ name: 'haiku', model: 'm-pa', rule: slotPoolRule() }))(
+    { app: 'claude', model: 'mixr-haiku' });
   assert.equal(r.ok, true);
   const p2 = m._state.pools;
   assert.notEqual(p2, undefined, '调用后仍必须是可读对象');
   assert.deepStrictEqual(JSON.parse(JSON.stringify(p2)), JSON.parse(before), '_state.pools 必须一个字节都没变');
-  assert.equal(p2.r1, 3, '播种的游标必须原样还在(不是被重置掉的空表)');
+  assert.equal(p2['slot:claude/haiku'], 3, '播种的游标必须原样还在(不是被重置掉的空表)');
   m._state.resetPools();
 });
 
 test('P4:预览不前移生产 round_robin 游标(且反证:直接 pickMember 走活表确实会前移)', () => {
   const m = require('../mixrouter.js');
   m._state.resetPools();
-  m._state.pools.r1 = 0;
+  m._state.pools['slot:claude/haiku'] = 0;
   const before = JSON.stringify(m._state.pools);
 
-  const ex = createExplainer(prodDeps({ rules: [rule({ id: 'r1', match: 'x', pool: ['pa', 'pb'] })], default: {} }));
+  const ex = createExplainer(prodDeps({ name: 'haiku', model: 'm-pa', rule: slotPoolRule({ strategy: 'round_robin' }) }));
   for (let i = 0; i < 5; i++) {
-    const r = ex({ app: 'claude', model: 'x' });
+    const r = ex({ app: 'claude', model: 'mixr-haiku' });
     assert.equal(r.ok, true);
     assert.equal(r.selection.predicted.providerId, 'pa', '游标没被消耗,每次都应预测同一项');
   }
@@ -924,7 +884,7 @@ test('P4:预览不前移生产 round_robin 游标(且反证:直接 pickMember �
 
   // 反证:传活表给 pickMember 会前移 —— 证明上一条不是空转(不是"压根没走到轮转分支")
   const members = [{ provider: { id: 'pa' }, model: '', weight: 1 }, { provider: { id: 'pb' }, model: '', weight: 1 }];
-  pickMember({ id: 'r1' }, members, { eligible: () => true, pools: m._state.pools });
+  pickMember({ id: 'slot:claude/haiku' }, members, { eligible: () => true, pools: m._state.pools });
   assert.notEqual(JSON.stringify(m._state.pools), before, '反证失败:活表本应被前移');
   m._state.resetPools();
 });
@@ -932,13 +892,14 @@ test('P4:预览不前移生产 round_robin 游标(且反证:直接 pickMember �
 test('P4:预览不消耗生产 weighted 余量', () => {
   const m = require('../mixrouter.js');
   m._state.resetPools();
-  const routes = { rules: [rule({ id: 'rw', match: 'x', pool: [{ provider: 'pa', weight: 3 }, { provider: 'pb', weight: 1 }], strategy: 'weighted' })], default: {} };
-  const exW = createExplainer(prodDeps(routes));
-  exW({ app: 'claude', model: 'x' });                    // 建一次余量记录
+  const rule = slotRule('claude', 'haiku', { provider: 'pa', model: 'm-pa', strategy: 'weighted',
+    pool: [{ provider: 'pa', model: 'm-pa', weight: 3 }, { provider: 'pb', model: 'm-pb', weight: 1 }] });
+  const exW = createExplainer(prodDeps({ name: 'haiku', model: 'm-pa', rule }));
+  exW({ app: 'claude', model: 'mixr-haiku' });      // 建一次余量记录
   // 播种一个非零余量,避免"空表前后都空"空转
-  m._state.pools.__w_rw = [{ provider: { id: 'pa' }, weight: 3, current: 7 }];
+  m._state.pools.__w_slot = [{ provider: { id: 'pa' }, weight: 3, current: 7 }];
   const before = JSON.stringify(m._state.pools);
-  for (let i = 0; i < 4; i++) exW({ app: 'claude', model: 'x' });
+  for (let i = 0; i < 4; i++) exW({ app: 'claude', model: 'mixr-haiku' });
   assert.equal(JSON.stringify(m._state.pools), before, '预览不得消耗生产加权余量');
   m._state.resetPools();
 });
@@ -952,14 +913,15 @@ test('F-KEY:同一规则、同一游标状态下,两个不同 session 预览出�
   // ⚠ 光"两个 session 各预览一次比结果"是**测不出**会话分桶的:分桶实现下两个会话各有一份
   //   全 0 的游标,首次预测都是池序第一个,照样相等(已实测确认这条断言在分桶实现下仍会绿)。
   //   要让它有鉴别力,必须让池表里**存在**一个带会话后缀的键:分桶实现会读到它并错位取值,
-  //   而按规则取游标的实现只读 'r1',两条路径这才分得开。
-  const routes = { rules: [rule({ id: 'r1', match: 'x', pool: ['pa', 'pb', 'pc'] })], default: {} };
-  const deps = mkDeps({ routes, pools: { r1: 0, 'r1|session-AAA': 1 } });
+  //   而按规则取游标的实现只读 'slot:claude/haiku',两条路径这才分得开。
+  const rule = slotPoolRule({ strategy: 'round_robin' });
+  const deps = mkDeps({ resolveSlot: () => ({ name: 'haiku', model: 'm-pa', rule }),
+    pools: { 'slot:claude/haiku': 0, 'slot:claude/haiku|session-AAA': 1 } });
   const ex = createExplainer(deps);
-  const a = ex({ app: 'claude', model: 'x', context: { session: 'session-AAA' } });
-  const b = ex({ app: 'claude', model: 'x', context: { session: 'session-BBB' } });
+  const a = ex({ app: 'claude', model: 'mixr-haiku', context: { session: 'session-AAA' } });
+  const b = ex({ app: 'claude', model: 'mixr-haiku', context: { session: 'session-BBB' } });
   assert.ok(a.selection.predicted);
-  assert.equal(a.selection.predicted.providerId, 'pa', '会话后缀不得影响游标取值(按规则取,应读到 r1=0)');
+  assert.equal(a.selection.predicted.providerId, 'pa', '会话后缀不得影响游标取值(按规则取,应读到 0)');
   assert.equal(b.selection.predicted.providerId, 'pa', '换一个 session 名不得改变落点预测');
   assert.equal(a.selection.predicted.providerId, b.selection.predicted.providerId);
 
@@ -968,11 +930,13 @@ test('F-KEY:同一规则、同一游标状态下,两个不同 session 预览出�
     const pool = strat === 'weighted'
       ? [{ provider: 'pa', weight: 3 }, { provider: 'pb', weight: 1 }]
       : ['pa', 'pb', 'pc'];
-    const rt = { rules: [rule({ id: 'rfe-' + strat, match: 'x', pool, strategy: strat })], default: {} };
-    const depsS = mkDeps({ routes: rt, pools: { ['rfe-' + strat]: 0, ['rfe-' + strat + '|session-X']: 1 } });
+    const rt = slotRule('claude', 'haiku', { provider: 'pa', model: 'm-pa', pool, strategy: strat });
+    const id = 'slot:claude/haiku';
+    const depsS = mkDeps({ resolveSlot: () => ({ name: 'haiku', model: 'm-pa', rule: rt }),
+      pools: { [id]: 0, [id + '|session-X']: 1 } });
     const exS = createExplainer(depsS);
-    const ra = exS({ app: 'claude', model: 'x', context: { session: 'X' } });
-    const rb = exS({ app: 'claude', model: 'x', context: { session: 'Y' } });
+    const ra = exS({ app: 'claude', model: 'mixr-haiku', context: { session: 'X' } });
+    const rb = exS({ app: 'claude', model: 'mixr-haiku', context: { session: 'Y' } });
     assert.equal(ra.selection.deterministic, true, strat + ' 应为可预测策略');
     assert.equal(ra.selection.predicted.providerId, rb.selection.predicted.providerId,
       strat + ':换一个 session 名不得改变落点预测(游标按规则存,不按会话分桶)');
@@ -980,13 +944,15 @@ test('F-KEY:同一规则、同一游标状态下,两个不同 session 预览出�
 });
 
 test('F-KEY 反证:同一 session 连预览两次落点稳定(证明真的走到了挑选分支)', () => {
-  const routes = { rules: [rule({ id: 'r1', match: 'x', pool: ['pa', 'pb'] })], default: {} };
-  const ex = createExplainer(mkDeps({ routes, pools: { r1: 0 } }));
-  const in1 = { app: 'claude', model: 'x', context: { session: 's' } };
+  const rule = slotPoolRule({ strategy: 'round_robin' });
+  const ex = createExplainer(mkDeps({ resolveSlot: () => ({ name: 'haiku', model: 'm-pa', rule }),
+    pools: { 'slot:claude/haiku': 0 } }));
+  const in1 = { app: 'claude', model: 'mixr-haiku', context: { session: 's' } };
   assert.equal(ex(in1).selection.predicted.providerId, 'pa');
   assert.equal(ex(in1).selection.predicted.providerId, 'pa');
   // 反证:把游标手动前移到 1,落点必须跟着变 —— 说明 predicted 确实来自游标
-  const ex2 = createExplainer(mkDeps({ routes, pools: { r1: 1 } }));
+  const ex2 = createExplainer(mkDeps({ resolveSlot: () => ({ name: 'haiku', model: 'm-pa', rule }),
+    pools: { 'slot:claude/haiku': 1 } }));
   assert.equal(ex2(in1).selection.predicted.providerId, 'pb', '游标=1 应取池序第二项');
 });
 
@@ -1015,10 +981,10 @@ test('deps 名单:createExplainer 绝不解构会改会话表的键(resolveTarge
 
   // 反思式交叉验证:真传进去也不会被调用(源码断言 + 行为断言,两条一起才叫钉死)
   let touched = 0;
-  const deps = mkDeps({ routes: { rules: [], default: { provider: 'pa' } } });
+  const deps = mkDeps();
   for (const name of ['resolveTarget', 'list', 'prune', 'sessionList']) {
     deps[name] = () => { touched++; throw new Error(`预览不该调用 ${name}`); };
   }
-  assert.equal(createExplainer(deps)({ app: 'claude', model: 'x' }).ok, true);
+  assert.equal(createExplainer(deps)({ app: 'claude', model: 'm-pa' }).ok, true);
   assert.equal(touched, 0, '即便调用方多传了这些键,预览也不得调用它们');
 });

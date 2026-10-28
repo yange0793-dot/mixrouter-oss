@@ -8,48 +8,33 @@
 
 ## 1. 请求怎么落到渠道
 
-Claude Code / Codex 入口的判定顺序是固定的四段,唯一定义在 `lib/routing/resolve.js`:
+Claude Code / Codex 入口的判定顺序是固定的三段,唯一定义在 `lib/routing/resolve.js`:
 
 | # | 阶段 | 说明 |
 | --- | --- | --- |
-| 1 | 内容分流 | 带 `when.body` 的规则,按 `priority` 降序评估;先于槽位别名与普通规则 |
-| 2 | 槽位别名 | 请求模型名精确等于 `mixr-<槽名>` 时命中,优先于一切普通规则 |
-| 3 | 普通规则 | 按 `priority` 降序,命中首个启用且满足 `when` 的规则 |
-| 4 | 兜底路由 | 都不命中时走 `default`;它尊重自己配置的 `strategy` |
+| 1 | 已知压缩请求 | 只有识别为压缩的请求(§6 判据)走「压缩设置」里的渠道、模型与 Key |
+| 2 | 槽位别名 | 请求模型名精确等于 `mixr-<槽名>`(Claude 组另兼容 `claude-mixr-<槽名>`,末尾 `[1M]` 不参与路由)时命中:会话槽位覆盖优先,其次全局槽位表;槽位后备池按序 |
+| 3 | 精确登记模型 | 模型名与某个已登记模型名相同(忽略大小写、去掉末尾 `[1M]`),且**恰好一个**启用且有效的渠道登记它 |
+
+都没有命中时明确失败(`no_route_error`),原因分三类:模型名没有任何渠道登记;
+**多个**启用且有效的渠道登记了同一模型名(歧义,`model_ambiguous_error`,错误里列出是哪几个渠道;
+该对话已手动钉定在其中一个候选渠道时按钉定落点,不报歧义);
+命中的槽位/渠道已停用或删除(`provider_disabled_error` / `no_route_error`)。
+不会回退到别的模型、别的渠道或任何默认目标。
 
 `mixctl explain` 与 `POST /api/routing/preview` 复用同一个 resolver 的 trace 回调,
 不会出现"预览说一套、实跑另一套"。
 
-### 路由规则字段
+### 已删除的通用匹配
 
-| 字段 | 说明 |
-| --- | --- |
-| `match` | 请求模型名的**子串**,逗号分隔多个,大小写不敏感;留空 = 不按模型名限制(内容分流用) |
-| `provider` | 单一目标渠道 id |
-| `pool` | 渠道池。成员写成字符串即用规则的目标模型;写成对象可各自给 `{provider, model, weight}` |
-| `strategy` | `round_robin`(默认)/ `weighted` / `least_used` / `random` / `priority` |
-| `model` | 目标模型;留空 = 透传请求模型;带 `[1M]` = 剥后缀并加 `anthropic-beta` 头(仅 Claude 通路) |
-| `priority` | 数值大的先匹配;同优先级按数组顺序 |
-| `app` | 这条规则只对哪一组生效:`claude` / `codex` / 留空 = 两组通用 |
-| `when` | 附加条件,**全部**满足才命中;字段只有 `session` / `ua` / `token` / `body`,均为大小写不敏感子串 |
-| `enabled` | `false` 即停用 |
-
-两条硬约束:`PUT /api/routes` **写入时**会以 400 拒绝"目标渠道不存在"与"声明了 `app`
-却绑了另一组渠道"的规则。读盘时不做这两项检查,只把僵尸引用打给日志——所以手改或从旧备份
-恢复出来的规则仍会被加载,**命中这类规则的请求会 503**(而不是写入时那个 400)。
-没声明 `app` 的规则若整条只绑了另一组渠道,那组请求会跳过它继续往下匹配。
-
-**池策略**:
-
-| 策略 | 行为 | 适合 |
-| --- | --- | --- |
-| `round_robin` | 新对话依次落到下一个成员;游标按规则 id 跨请求保留 | 均摊额度,最好预料 |
-| `weighted` | 平滑加权轮询(nginx 式),按成员 `weight` 比例;失败不改变成员的轮转资格 | 主力渠道多分点 |
-| `least_used` | 优先给当前挂载对话最少的成员 | 成员额度不等 |
-| `random` | 随机 | 无特殊要求 |
-| `priority` | 永远取池序里第一个可用渠道,主渠道不可用才落到下一个 | 主备降级 |
-
-渠道和 Key 均不再进行时间冷却。失败不改变后续请求的成员选择;普通重试仍受次数、间隔与总预算约束。
+旧版的 `match`(子串)、`when`(session/ua/token/body)、`priority`、**规则级**渠道池
+(`pool` + `round_robin` / `weighted` / `least_used` / `random`)与可配置 `default`
+兜底都已移除,`rules` / `default` 字段**不再参与任何请求**,`PUT /api/routes` 也不再提供。
+数据目录里的 `routes.json` **保留**,现在只承载压缩设置;服务启动只读不写,不会删除或改写它,
+所以从旧版本升级上来的历史规则数据仍在盘上,只是不再生效。要恢复按规则分流的行为,
+请改用槽位别名或精确登记模型名。注意它仍是活配置文件:保存「压缩设置」或服务正常退出时,
+会用内存里的归一化结果整体重写,已废弃的条件字段与顶层 `default` 不会写回;要留原文请先备份。
+**槽位自己的 `pool` / `strategy` 不受影响**,见第 3 节。
 
 ### 渠道字段
 
@@ -153,7 +138,7 @@ TCP/HTTPS 握手完成就清理建连计时器,后续首响应、推理等待、
 
 ---
 
-## 2. 会话级分发与覆盖
+## 2. 会话身份、粘性与覆盖
 
 ### 对话身份
 
@@ -166,7 +151,7 @@ TCP/HTTPS 握手完成就清理建连计时器,后续首响应、推理等待、
 内容指纹 = 「system/instructions + 首条用户消息」的 sha1,同内容即同对话。
 同一个对话里的所有请求(子代理、`count_tokens`、标题生成)**只要客户端带了同一身份**,
 就共享会话键并默认落在同一个渠道上,从而不打断 prompt 缓存。这个"默认"不是绝对承诺:
-槽位请求按槽位表走、内容分流命中的请求不参与粘性、失败转移会把对话改绑到成功的渠道,
+槽位请求按槽位表走、已知压缩请求不参与粘性、Key 失效换号与失败重试、
 显式改绑与覆盖也会改变落点。
 
 相关变量:`MIXR_SESSION_TTL_MIN`(默认 720)、`MIXR_SESSION_MAX`(1000)、
@@ -174,14 +159,14 @@ TCP/HTTPS 握手完成就清理建连计时器,后续首响应、推理等待、
 
 ### 手动钉定与解绑
 
-- **手动改绑(钉定)**压过策略,且允许指定池外的渠道;`POST /api/sessions/:key/pin`
-  传空 `provider` = 解除钉定,下次请求重新按策略分配。
+- **手动改绑(钉定)**压过自动落点,且允许指定候选之外的渠道;`POST /api/sessions/:key/pin`
+  传空 `provider` = 解除钉定,下次请求重新按固定选择顺序解析。
 - 钉定属于**显式配置**,不会被空闲 TTL 或容量上限自动回收;代价是长跑实例里会长期留在
   会话表,受 `MIXR_SESSION_MAX` 约束。
 - **解除钉定**只清钉定,保留这条会话的 Key / 槽位覆盖;
   **删除会话**(`DELETE /api/sessions/:key`,控制台「解绑」)连同覆盖一起删除。
 - 代理每次请求结束会记录 `actual`(最近实际落点,**照记**)与 `binding`(自动落点)。
-  手动钉定的记录**不允许自动落点回写**——否则一次临时故障回退到池里另一个渠道,
+  手动钉定的记录**不允许自动落点回写**——否则一次临时故障改落到别处,
   就等于把钉定永久废掉。这是"显式配置优先于自动推断"的第一处落地。
 - 会话列表给每条会话三层状态:`configured`(有没有显式配置)、`required`(存下来的要求)、
   `bound`(当前绑定及来源 manual/auto/none)、`actual`(最近真实请求落点)。
@@ -211,7 +196,8 @@ TCP/HTTPS 握手完成就清理建连计时器,后续首响应、推理等待、
 
 **优先级与边界**:
 
-- 普通内容请求:槽位先看会话覆盖,再看全局槽位表;普通路由规则与手动钉定保持原语义。
+- 普通内容请求:槽位先看会话覆盖,再看全局槽位表;没有命中槽位时按精确登记模型匹配,
+  手动钉定保持原语义。已知压缩请求仍优先。
 - 条目不存在就是继承;`--inherit` / `clear-slot` 删条目,`reset` 一次清空。
   改动从后续新请求生效——在途请求持有开始处理时的配置快照。
 - 只适用于传来**同一会话身份**的请求。传了不同 `session_id` 的子代理不自动继承。
@@ -284,7 +270,7 @@ Claude Code / Codex 的全局槽位表存在 `<MIXR_DATA_DIR>/slots.json`(`{vers
 
 **槽位落点的性质**:
 
-- 不走会话粘性、不复用对话钉定、不改变对话绑定;按槽位自己的池策略挑选(见第 5 节)。
+- 不走会话粘性、不复用对话钉定、不改变对话绑定;按槽位自己的后备池顺序挑选(见第 3 节)。
 - 槽位可以配 `pool` 与 `strategy`。`resolveSlot` 会**自动把槽位的 `provider` 排到池首**,
   `pool` 里只需写后备成员;`priority` 策略下主渠道仍是主选。
 - 渠道停用/删除得到明确的 `provider_disabled_error` / `no_route_error`。
@@ -345,7 +331,8 @@ Claude Code / Codex 的全局槽位表存在 `<MIXR_DATA_DIR>/slots.json`(`{vers
 - **`/v1/responses/compact`** 归 Codex 组,`responses` 渠道**原样透传**到上游同名端点,
   不翻译、不降级;`chat` 网关会明确拒绝。
 - **同渠道内自愈**:上游 5xx/429 且还没写出任何字节时,先轮换一代 `prompt_cache_key`
-  重试(`MIXR_CONV_RETRIES`,默认 3),用完才换池里的下一个渠道。
+  重试(`MIXR_CONV_RETRIES`,默认 3);用完后按普通重试收尾。目标渠道由 §1 的固定顺序
+  唯一确定,不存在"池里的下一个渠道"可换。
 - **可选工具参数**:两条转换线返回的工具调用会按本次工具 schema 清掉顶层非必填的空参数
   (`""`、`null`、空数组、空对象),保留必填字段、`false` 和 `0`。
 
@@ -367,19 +354,45 @@ Claude Code / Codex 的全局槽位表存在 `<MIXR_DATA_DIR>/slots.json`(`{vers
 
 ## 5. 上游健康:超时、重试
 
-已知 Azure 输出项资源绑定错误使用协议限定投影:只有不含服务器历史引用、工具类型配对完整的
-原生 Responses input 才移除受支持的 message/reasoning/function_call `id`,保持 `call_id`、
-工具内容、加密推理、custom/additional_tools ID、session 和缓存身份。每请求最多投影一次,
-重复故障同渠道/模型/Key 重发相同投影,计入已有总调用上限和时限。已提交输出后、
-`/responses/compact`、普通 400 或其他协议的签名不改写。含
-`previous_response_id`/`conversation`/`item_reference` 不删除引用,保留原始上游错误。
-详见[资源绑定恢复边界](harness.md#资源绑定错误恢复)。
+**资源绑定错误恢复**:某些多账号网关后端会改变资源落点。原生 Responses 历史中的
+`rs_...`、`fc_...` 等输出项 `id` 绑定生成它们的资源,原样回放可能得到「来自不同资源」错误。
+问题不是本机 session ID。Mixrouter 在共用代理链中识别这类已知错误,不限定某个客户端名;
+安全投影仍按协议区分:
+
+| 请求历史 | 行为 |
+| --- | --- |
+| 原生 Responses,可携带的完整历史且含受支持的输出项资源 ID | 输出前投影一次,仅移除 message/reasoning/function_call 的 `id`;重复故障在原预算内重发同一投影 |
+| 含 `previous_response_id`、`conversation` 或 `item_reference` 等服务器历史引用 | 明确拒绝恢复;混合 input 也无法证明旧历史完整,不删除引用 |
+| Messages / Chat 或未知签名与语义 ID | 返回原有错误,不猜测性删除工具配对或签名 |
+| `/responses/compact`、普通 400、已经发送正文/工具/无法判定的流数据 | 不使用这条资源绑定恢复 |
+
+恢复保留 `call_id`、工具名/参数/结果、正文与 `encrypted_content`,也保留 custom tool 和
+additional_tools 的语义 ID,不修改调用方原始请求。完整历史验证要求工具调用与结果类型配对。
+渠道、模型、Key、session ID 与缓存身份保持不变。每个入站请求最多投影一次,之后仅重发
+同一投影;所有调用共用原有次数、总时限与取消控制。预算不足或不能安全投影时保留实际
+上游错误,不伪造上下文或成功终态,不会额外突破次数上限。
+
+尝试过程里可见 `resource_binding_recovery`;只记元数据,不为此新增正文或加密推理归档。
+「共用识别」不等于「所有协议任意历史都能修复」,也不保证多账号上游此后永不出错。
+没有明确资源绑定错误的零用量、空 completed 或无细节 `PI_AI_ERROR` 不属于这条投影。
+原生 Responses 的输出前断流、纯生命周期 EOF 与明确临时错误另走有界恢复;任何正文、推理、
+工具、未知/部分帧或超限前缀都会关闭透明重试窗口。普通 HTTP 错误仍沿用已有可选 Key 备用
+与重试,不据"无正文"重放所有请求。
+
+不需要 Mixrouter 时,可使用独立的
+[resource-history-bridge](https://github.com/yange0793-dot/resource-history-bridge):
+它是本机 HTTP 桥和 Node.js 库,不依赖 Mixrouter。客户端须能修改 API Base URL 并使用
+Responses;封闭客户端或其他协议不会自动获得资源绑定恢复。独立桥有自己的保守历史类型边界,
+不等同于 Mixrouter 的全部转换能力;接入命令、限制与当前验证范围以该仓库 README 为准。
+
+**资源绑定恢复之外**的错误:本机路由准备阶段的拒绝(无精确登记、歧义、渠道停用、
+固定 Key 不可用)不是这条投影的对象,详见第 1 节与此后的错误分型。
 
 原生 Responses 的输出前连接中断、纯生命周期 EOF、明确临时错误与 HTTP408 也共用原预算
 恢复。完整临时错误帧后同一批字节仅跟空生命周期、注释或严格的 `data: [DONE]` 标记时,
 不会因这段无输出尾部放弃重试。已提交正文/推理/工具、未知/部分帧或超过 64KiB 的前缀不重放;
 空 completed 不改成成功或额外重试。恢复开始后固定出站快照,
-普通 HTTP 错误的已有 Key 备用/路由故障转移不受影响。
+普通 HTTP 错误的已有 Key 备用与槽位后备不受影响。
 
 **加密 reasoning 有损降级**只在官方 AgentRouter HTTPS(`agentrouter.org` 或 `ps.air-outer.com`)
 的原生 Responses 请求上启用。HTTP 400 或 2xx 响应中的错误必须精确包含
@@ -394,7 +407,7 @@ Claude Code / Codex 的全局槽位表存在 `<MIXR_DATA_DIR>/slots.json`(`{vers
 不另开预算。降级后的响应带 `x-mixrouter-recovery: encrypted-reasoning-dropped`,请求日志记
 `retry_reason: encrypted_reasoning_downgrade`。鉴权、额度耗尽、上下文长度错误不触发这条降级;
 已提交输出、截断或压缩错误不重放。上述能力仅在当前 HTTP 请求内恢复,
-未接入 Codex/Harness 客户端 turn 自动续跑。
+未接入 Codex 客户端 turn 自动续跑。
 
 **Codex 的 Chat 输出前恢复**在 Chat → Responses 转换前最多暂存 64KiB SSE 前缀,
 只把严格校验为空的 Chat chunk 或注释视为尚未输出。HTTP 200 SSE 内明确的临时错误
@@ -423,8 +436,8 @@ Claude Code / Codex 的全局槽位表存在 `<MIXR_DATA_DIR>/slots.json`(`{vers
 - **端到端总预算优先**:`MIXR_TOTAL_DEADLINE_MS` 用尽后不再重试,在途请求按超时收尾。
 - **错误分型** `err_class`:`authentication`(401/403)、`rate_limit`(429)、
   `upstream_server`(5xx)、`upstream_request`(其余 4xx)、`timeout`、网络错误码、
-  `network_error`、`cancelled`(客户端主动断开)。转移成功的请求也带首次失败的
-  `err_class` + `failover` 标记。
+  `network_error`、`cancelled`(客户端主动断开)。发生重试或槽位后备、
+  多 Key 备用切换的请求带首次失败的 `err_class` + `failover` 标记。
 - **客户端断开**(取消/进程退出):代理立刻掐掉在途的上游请求,落一条 `err_class: cancelled`
   的日志(状态 499),**不算**渠道失败。
 - **只读健康视图** `GET /api/health`:三段超时与重试配置,以及每个渠道的
@@ -467,19 +480,20 @@ HTTP 端点为 `POST /api/providers/<渠道ID>/models/test`。
 
 ---
 
-## 6. 压缩分流与压缩窗口
+## 6. 压缩设置与压缩窗口
 
-压缩是**内容分流**,不是把整个会话改绑到压缩渠道。它由两条带 `when.body` 的内容规则承载,
-在匹配顺序的第 1 段生效。
+压缩是**独立的一类请求**,不是把整个会话改绑到压缩渠道。判据是固定内置的,
+配置在控制台左侧独立的「压缩设置」视图(`#compact`,旧 `#routes` 链接归一到这里),
+在 §1 选择顺序的第 1 段生效。
 
 **识别判据**:只读**最后一条 user 消息的直接文本**块,必须以发行版 CLI 的压缩固定前导开头,
 并包含摘要模板。system、历史消息、工具结果或仅仅引用特征短语的编程任务都不算。
-普通 `when.body` 规则仍按当前请求的 system/instructions + 最后一条消息做子串匹配,不扫历史。
+这一判据只认已知的压缩请求形态,不再有可由用户编辑的通用内容规则。
 
-**专用模型 / Key**:`GET/POST /api/compact` 选择渠道、模型及该渠道的 Key,一次同步两条
-压缩规则、替换旧备池,**不修改主模型和普通路由**。
+**专用模型 / Key**:`GET/POST /api/compact` 选择渠道、模型及该渠道的 Key,一次同步内置的
+压缩配置、替换旧备池,**不修改主模型和普通转发**。
 
-- Key 默认跟随渠道当前 Key;固定 `key_id` 只影响压缩规则,不改 `active_key`、槽位或普通转发。
+- Key 默认跟随渠道当前 Key;固定 `key_id` 只影响压缩请求,不改 `active_key`、槽位或普通转发。
 - 固定 Key 只支持单渠道,不能与 `pool` 并用;失效时返回 `provider_key_unavailable_error`,
   不悄悄改用当前 Key。下拉只显示标签与 ID,不显示密钥。
 - 单一目标被删后仍显示原渠道与 Key ID(`enabled: false`),让你能看见并修复失效绑定。
@@ -513,7 +527,7 @@ HTTP 端点为 `POST /api/providers/<渠道ID>/models/test`。
 不是关闭自动压缩。缺少值、零、负数、布尔、对象、非整数 token 数和溢出均在写入前拒绝。
 
 - 只改所选全局 Codex 配置里的 `model_auto_compact_token_limit`,不改模型、推理强度、
-  `model_context_window`、目录、权限、MCP、其它客户端或压缩路由。
+  `model_context_window`、目录、权限、MCP、其它客户端或压缩设置。
 - 保存沿用 Codex 的私有备份、原子替换与 revision 冲突检查;版本已变返回 409,
   当前明确选择 profile 时拒绝全局写入。profile、项目与命令行覆盖不在本控件范围内。
 - `compaction` 的 `configured` / `default_limit` / `effective_limit` 是磁盘推算,不是运行测量。
@@ -536,24 +550,23 @@ HTTP 端点为 `POST /api/providers/<渠道ID>/models/test`。
 ./mixctl explain codex gpt-5 --kind chat/completions
 ./mixctl explain claude claude-opus-5 --session cc:完整会话键
 ./mixctl explain --input preview.json
-echo '{"app":"claude","model":"m","context":{"bodyText":"…"}}' | ./mixctl explain --input -
+echo '{"app":"claude","model":"m","context":{"compactTexts":["…"]}}' | ./mixctl explain --input -
 ```
 
 `--input` 与位置参数、`--kind`、`--session` 互斥;两种形态都不接受在 argv 里明文写凭据。
 它吃的是**预览输入对象**(`{app, model, kind?, context?}`),不是原始请求体:
-`context.bodyText` 给普通 `when.body` 规则用,`context.compactTexts`(字符串数组,
-末条 user 消息的直接文本块)给压缩判据用。
+`context.compactTexts`(字符串数组,末条 user 消息的直接文本块)给压缩判据用。
+请求是否被识别为压缩请求,就看这一项能否通过第 6 节的判据。
 
 三条边界:
 
 - **只解释当前快照,不是承诺**。首选渠道是"此刻这条请求会落到哪",不保证上游成功,
-  也不代表重试之后的落点。`random` 策略只给候选、不预测;`round_robin`/`weighted` 给的是
-  当前游标下的下一位,预览不消耗它们。
+  也不代表重试之后的落点。槽位后备池只给候选顺序,预览不消耗游标。
 - **零副作用**。不写日志、不建会话、不发上游请求、不改槽位与游标;
-  已有会话粘性与 `least_used` 计数都在副本上重算。
+  已有会话粘性都在副本上重算。
 - **不回显敏感内容**。渠道字段走白名单(`id/name/model/models/wire_api/ua/enabled/slots`),
-  `base_url`、`api_key`、`keys`、`active_key`、请求头原文一律不出现;`when.token`
-  只回显 `{present, len}`。展示数组触顶时在 `warnings` 与 `limits.arrays` 里注明省略条数。
+  `base_url`、`api_key`、`keys`、`active_key`、请求头原文一律不出现。展示数组触顶时在
+  `warnings` 与 `limits.arrays` 里注明省略条数。
 
 错误码与实跑对齐:`provider_disabled` / `wire_api_mismatch` / `no_route` 分别对应实跑的
 `*_error` 形态;`bad_app` / `bad_model` / `kind_app_mismatch` 是预览专有码。
@@ -622,7 +635,7 @@ MIXR_DATA_DIR=/absolute/path node scripts/diagnose-upstream.js --mode provider -
 | `bytes_in` | 客户端请求体字节数(不是 token)。大上下文/带截图时可达十几 MB,而首字延迟主要由它决定 —— 上游面板只从收完请求体开始计时 |
 | `ttfb_ms` | 请求开始 → 上游首个响应头到达的毫秒数(多次尝试取最终给出响应的那一发;全部失败记到收尾)。`0` 表示没测到(如本地估算的 count_tokens) |
 | `slot` | 命中的槽位;空槽记 `none`,缺字段的旧日志记 `unknown` |
-| `sticky` / `strategy` / `rule` | 是否走了会话粘性 / 策略 / 命中的规则 id |
+| `sticky` / `strategy` / `rule` | 是否走了会话粘性 / 策略 / 命中的标识。`rule` 现在的取值只有三类内置来源:`slot:<组>/<槽名>`(槽位)、`model:<渠道ID>`(精确登记模型)与压缩规则自己的标识;不再有用户可编辑的通用规则,`strategy` 对固定顺序的单渠道请求通常为空。旧日志里的历史值照读 |
 | `key_id` / `key_source` | 用哪把 Key(**非明文**的来源标记) |
 | `effort` | 真的发上去的思考强度档位 |
 | `model_in` / `model_out` | 客户端说的模型 / 实际发给上游的模型 |
@@ -636,7 +649,8 @@ MIXR_DATA_DIR=/absolute/path node scripts/diagnose-upstream.js --mode provider -
 日志**不含 Key 明文**,也不含会话标签;内容包括渠道名、模型名、会话键(哈希/ID 形态)
 与错误文本。
 
-路由准备阶段的拒绝(无路由、渠道停用、协议不匹配、固定 Key 不可用等)在 HTTP 返回错误前
+路由准备阶段的拒绝(模型没有精确登记、多个渠道登记同一模型、渠道停用、协议不匹配、
+固定 Key 不可用等)在 HTTP 返回错误前
 同步追加日志,记录短会话身份、请求模型、状态码与错误码;`attempts` 为 0,`provider`、
 `model_out`、`rule` 与 `slot` 为空,tokens 为 0,不臆测尚未取得的路由计划。这些拒绝不发上游;
 记录日志不额外创建/结算会话、不计为 active、不创建尝试过程。无路由失败不新建会话,
@@ -736,9 +750,7 @@ Codex `no_route_error` 的日志 `err` 以固定布尔诊断
 哪几份,但**删除照做**,没有"停下等我另存"这一步。
 
 三处备份池:`providers.json`、Claude `settings.json`、Codex `config.toml`。
-**ZCode 与 Harness 的备份暂未纳入清点表。** Harness 接入返回其 profile/凭据备份路径,
-不在 `mixctl restore` 自动还原范围内。路径可分别用 `MIXR_DATA_DIR`、`MIXR_CLAUDE_SETTINGS`、
-`MIXR_CODEX_CONFIG` 覆盖。
+路径可分别用 `MIXR_DATA_DIR`、`MIXR_CLAUDE_SETTINGS`、`MIXR_CODEX_CONFIG` 覆盖。
 
 `mixctl restore` 的边界:
 
@@ -751,8 +763,6 @@ Codex `no_route_error` 的日志 `err` 以固定布尔诊断
 - 写入前另存安全备份,保留全部旧备份,不执行轮换;原子替换后**不会自动重启任何进程**。
 
 覆盖范围就是上面三处受管文件(`providers.json`、Claude `settings.json`、Codex `config.toml`)。
-**ZCode 的 `~/.zcode/v2/config.json` 不在 `mixctl backups` / `mixctl restore` 的范围内**,
-恢复 ZCode 配置请用它的备份文件手工替换。
 
 恢复前请停止对应客户端与路由器,成功后再重启。`providers.json` 恢复后要重启 mixrouter
 ——运行中的路由器内存不会自动刷新。
@@ -775,14 +785,12 @@ require 之后再改不生效。
 | --- | --- | --- |
 | `MIXROUTER_PORT` / `MIXUI_PORT` | 8787 / 8788 | 代理口 / 控制台口 |
 | `MIXROUTER_ALT_PORTS` | 空 | 逗号分隔,在这些端口上也服务同一个代理 |
-| `MIXR_DATA_DIR` | 仓库根 | providers / routes / slots / harness / sessions / logs 的总目录 |
+| `MIXR_DATA_DIR` | 仓库根 | providers / routes(压缩设置)/ slots / sessions / logs 的总目录 |
 | `MIXR_LOG_RETENTION_DAYS` | 30 | 新请求日志归档保留天数(0–36500);`0` 永久保留 |
 | `MIXR_LOG_COMPRESS` | 关 | 仅 `on` 启用新请求日志归档 gzip |
 | `MIXR_LOG_RETAIN_DAYS` / `MIXR_LOG_SWEEP_MS` | 2 / 21600000 | responses 归档与 launchd.log 的保留天数与清理周期 |
 | `MIXR_CLAUDE_SETTINGS` | `~/.claude/settings.json` | Claude Code 客户端配置 |
 | `MIXR_CODEX_CONFIG` | `~/.codex/config.toml` | Codex 客户端配置 |
-| `MIXR_ZCODE_CONFIG` | `~/.zcode/v2/config.json` | ZCode 客户端配置 |
-| `MIXR_HARNESS_PROFILE` | `<DSH_HOME 或 ~/.dsh>/profiles/desktop/cordis.patch.yml` | Harness 预览/确认接入的字面量 patch 配置路径 |
 | `MIXR_RESPONSE_ARCHIVE` | 关 | 仅 `on` 开启上游响应正文归档 |
 | `MIXR_RESPONSE_ARCHIVE_DIR` | `<MIXR_DATA_DIR>/logs/responses` | 返回归档私有目录 |
 | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | 未设 | 压缩窗口的环境覆盖,优先于磁盘设置 |
