@@ -102,6 +102,17 @@ Codex 的 `main`、`reviewer` 和自拟槽位都分别选择**渠道**与**落�
 ./mixctl route claude --slots   # 切路由模式并同时写入槽位 env
 ```
 
+### 独立 Bots 模型(`/api/bots`)
+
+Claude Code 渠道页的「Bots 模型」按 **Bot 名字精确匹配**，每位成员分别选择渠道、已登记模型和
+可选 Key。留空 Key 跟随该渠道的当前账号；指定 Key 不会改变渠道的全局生效账号。
+保存只写 `<MIXR_DATA_DIR>/bots.json`，不修改 `slots.json`、压缩规则、客户端模型或推理强度，
+也不发送任何模型请求。配套 Bot 运行器从下一次发言开始读取新绑定，在途请求不切换。
+
+`GET /api/bots` 返回保存的绑定、可选目录和修订号；`PUT /api/bots` 携带 `expected_revision`
+保存整张表，陈旧修订返回 409，非法或失效目标明确失败，不自动换成其它模型。此配置不是
+Claude Code 原生新增槽位，也不会自动创建带工具的长驻 Agent；讨论仍由配套 `/bots` mod 执行。
+
 ### 主链 + 子代理双路(`/api/claude/split`)
 
 「主链固定走便宜渠道,子代理换来源」这类配置,原先要在控制台逐槽绑定,容易漏改某一槽。

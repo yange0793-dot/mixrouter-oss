@@ -790,7 +790,8 @@ test('图例:外壳已有 .heatmap-legend 时复用它,只补说明,不渲染第
   const swatch = new Element();
   swatch.dataset.level = '0';
   legend.appendChild(swatch);
-  const h = harness({ legendEl: legend });
+  const now = new Date(2026, 9, 21, 12);
+  const h = harness({ now, response: usageFixture({ now }), legendEl: legend });
   await h.run('loadUsage()');
   assert.doesNotMatch(h.get('usage-heatmap').innerHTML, /class="heatmap-legend"/, '不能重复渲染图例');
   const extra = legend.children.find(child => child.id === 'usage-heatmap-legend-extra');
@@ -798,6 +799,18 @@ test('图例:外壳已有 .heatmap-legend 时复用它,只补说明,不渲染第
   assert.match(extra.innerHTML, /0 = 区间内无请求/);
   assert.match(extra.innerHTML, /区间外的日期不参与统计/);
   assert.equal(swatch.getAttribute('title'), '0:区间内确实没有请求');
+});
+
+test('图例:周日窗口没有区间外格子时不补不存在的说明', async () => {
+  const now = new Date(2026, 10, 1, 12);
+  const legend = new Element('legend');
+  legend.className = 'heatmap-legend';
+  const h = harness({ now, response: usageFixture({ now }), legendEl: legend });
+  await h.run('loadUsage()');
+  const extra = legend.children.find(child => child.id === 'usage-heatmap-legend-extra');
+  assert.ok(extra);
+  assert.match(extra.innerHTML, /0 = 区间内无请求/);
+  assert.doesNotMatch(extra.innerHTML, /区间外的日期不参与统计/);
 });
 
 test('日志内容进入表格前转义:供应商/错误文本不能当 HTML 插进来', async () => {

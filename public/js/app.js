@@ -147,6 +147,8 @@ function setConnection(connected, error = '') {
   // 会话覆盖弹窗:离线、没读到服务端版本、或正在保存时,三扇门都封掉
   if (typeof updateRoutingButtons === 'function') updateRoutingButtons();
   renderCodexCompact();
+  if (typeof renderBotsModels === 'function') renderBotsModels();
+  if (connected && view === 'providers' && typeof loadBotsModels === 'function') loadBotsModels(false);
   if (changed && state) renderSlots(true);
 }
 function renderOverview() {
@@ -248,7 +250,10 @@ function showView(name) {
   // 用量页自己管轮询与在途请求:离开时停表,回来时立刻拉一次(切页不重复初始化筛选)。
   if (typeof usageSetVisible === 'function') usageSetVisible(view === 'usage');
   if (view === 'usage' && typeof renderUsage === 'function') renderUsage();
-  if (view === 'providers') { renderProviders(); ensureHealth(); }
+  if (view === 'providers') {
+    renderProviders(); ensureHealth();
+    if (typeof loadBotsModels === 'function') loadBotsModels(false);
+  }
   if (view === 'sessions') renderSessions();
   // 压缩页进入时才去读磁盘窗口(默认「用户全局」层);已读过且有草稿时不重读,免得覆盖草稿。
   if (view === 'compact' && !windowSnapshot && !windowLoadTask) loadCompactWindow();
@@ -292,6 +297,7 @@ function setApp(app) {
   for (const key of Object.keys(APPS)) { const tab = $('tab-' + key); tab.classList.toggle('active', key === app); tab.setAttribute('aria-selected', String(key === app)); tab.tabIndex = key === app ? 0 : -1; }
   $('agent-panel').setAttribute('aria-labelledby', 'tab-' + app);
   renderProviders(); renderSlots();
+  if (typeof loadBotsModels === 'function') loadBotsModels(false);
   if (typeof workspaceAppChanged === 'function') {
     try { workspaceAppChanged(app); } catch (e) { console.error(e); }
   }
@@ -485,6 +491,7 @@ function setProviderLayout(layout) {
 applyProviderLayout();   // 首帧就把记住的布局落到 #prov-grid,别等第一次进渠道页
 function renderProviders() {
   document.body.dataset.client = curApp;
+  if (typeof renderBotsModels === 'function') renderBotsModels();
   // 标题对所有客户端同一口径;大小写眉标与副标题由外壳按设计处理,这里不再按客户端藏。
   const title = $('providers-title'); if (title) title.textContent = '渠道与 Key';
   applyProviderLayout();
