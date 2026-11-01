@@ -25,8 +25,8 @@ jobs:
       matrix:
         node: [18, 22, 24]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
       # 版本一致性:package.json 与 mixrouter.js 的 VERSION 必须相同。(tag 只在 Release
@@ -89,8 +89,8 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       # 默认模式:从 HEAD + 同一份制品清单打包、解包、校验内容,再在解包目录跑 doctor 与 smoke。
