@@ -10,10 +10,214 @@ import WebKit
 private let consoleBase = ProcessInfo.processInfo.environment["MIXROUTER_CONSOLE_URL"] ?? "http://127.0.0.1:8788"
 private let consoleURL = URL(string: consoleBase)!
 private let healthURL = URL(string: consoleBase + "/healthz")!
+private let profilesURL = URL(string: consoleBase + "/api/profiles")!
 private let frameAutosaveName: NSWindow.FrameAutosaveName = "MixrouterMainWindow"
 private let ID = (reload: NSToolbarItem.Identifier("reload"),
                   restart: NSToolbarItem.Identifier("restart"),
                   logs: NSToolbarItem.Identifier("logs"))
+
+/// /api/profiles 的列表行。只取界面要用的字段;槽位快照与 revision 留在服务端。
+struct ProfileRow {
+    let id: String
+    let name: String
+    let apps: [String]
+    let active: Bool
+}
+struct ProfileList {
+    let revision: String
+    let slotsRevision: String
+    let profiles: [ProfileRow]
+}
+struct ProfilePreview {
+    let id: String
+    let name: String
+    let expectedRevision: String
+    let slotsRevision: String
+    let changes: [String]          // 已经拼好的 "claude / main  provider@model → …" 文本
+    let warnings: [String]
+    let canApply: Bool
+}
+
+/// 托盘里的方案切换:只读 /api/profiles,应用前必须预览 + NSAlert 确认。
+/// 应用只改服务端槽位(POST …/apply),**不重启服务、不重写客户端配置**;
+/// 正在跑的请求不受影响,下一次按槽位别名选路的请求才用新绑定。
+extension AppDelegate {
+    func loadProfiles(completion: @escaping (ProfileList?, String?) -> Void) {
+        var req = URLRequest(url: profilesURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 3)
+        req.httpMethod = "GET"
+        URLSession.shared.dataTask(with: req) { data, resp, error in
+            DispatchQueue.main.async {
+                guard let data = data, (resp as? HTTPURLResponse)?.statusCode == 200 else {
+                    completion(nil, error?.localizedDescription ?? "读取方案列表失败")
+                    return
+                }
+                guard let list = Self.parseProfileList(data) else {
+                    completion(nil, "方案列表格式不受支持")
+                    return
+                }
+                completion(list, nil)
+            }
+        }.resume()
+    }
+
+    static func parseProfileList(_ data: Data) -> ProfileList? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let revision = root["revision"] as? String,
+              let slotsRevision = root["slots_revision"] as? String,
+              let rows = root["profiles"] as? [[String: Any]] else { return nil }
+        let profiles: [ProfileRow] = rows.compactMap { row in
+            guard let id = row["id"] as? String, let name = row["name"] as? String else { return nil }
+            return ProfileRow(id: id, name: name,
+                              apps: (row["apps"] as? [String]) ?? [],
+                              active: (row["active"] as? Bool) ?? false)
+        }
+        return ProfileList(revision: revision, slotsRevision: slotsRevision, profiles: profiles)
+    }
+
+    static func parsePreview(_ data: Data) -> ProfilePreview? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let id = root["id"] as? String, let name = root["name"] as? String,
+              let expected = root["expected_revision"] as? String,
+              let slotsRevision = root["slots_revision"] as? String else { return nil }
+        let changes = (root["changes"] as? [[String: Any]] ?? []).compactMap { change -> String? in
+            guard let app = change["app"] as? String, let slot = change["slot"] as? String else { return nil }
+            return "\(app) / \(slot): \(Self.describeSlot(change["before"])) → \(Self.describeSlot(change["after"]))"
+        }
+        return ProfilePreview(id: id, name: name, expectedRevision: expected, slotsRevision: slotsRevision,
+                              changes: changes, warnings: root["warnings"] as? [String] ?? [],
+                              canApply: (root["can_apply"] as? Bool) ?? false)
+    }
+
+    /// 槽位在预览里是对象或 null;只显示落点,不显示任何 Key 材料。
+    static func describeSlot(_ value: Any?) -> String {
+        guard let slot = value as? [String: Any], let provider = slot["provider"] as? String else { return "—" }
+        let model = slot["model"] as? String ?? ""
+        let pool = (slot["pool"] as? [[String: Any]] ?? []).compactMap { $0["provider"] as? String }
+        let fallback = pool.isEmpty ? "" : " (后备: \(pool.joined(separator: ", ")))"
+        return model.isEmpty ? "\(provider)\(fallback)" : "\(provider)@\(model)\(fallback)"
+    }
+
+    /// GET /api/profiles 的数据换成菜单行:每个方案一项,标题带"当前"标记与客户端范围。
+    func applyProfileMenu(_ menu: NSMenu, _ list: ProfileList, error: String?) {
+        menu.removeAllItems()
+        if let error = error {
+            let item = NSMenuItem(title: "无法读取方案: \(error)", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+            return
+        }
+        if list.profiles.isEmpty {
+            let item = NSMenuItem(title: "还没有保存的方案", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+            menu.addItem(.separator())
+            let manage = menu.addItem(withTitle: "在控制台保存当前槽位…", action: #selector(openProfilesView(_:)), keyEquivalent: "")
+            manage.target = self
+            return
+        }
+        for profile in list.profiles {
+            let title = (profile.active ? "✓ " : "") + profile.name + "  [" + profile.apps.joined(separator: "+") + "]"
+            let item = NSMenuItem(title: title, action: #selector(switchProfile(_:)), keyEquivalent: "")
+            item.representedObject = [profile.id, profile.name]
+            item.target = self
+            item.state = profile.active ? .on : .off
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "管理方案…", action: #selector(openProfilesView(_:)), keyEquivalent: "")
+            .target = self
+    }
+
+    @objc func refreshProfilesMenu(_ sender: Any?) {
+        guard let submenu = profilesMenuItem?.submenu else { return }
+        loadProfiles { list, error in self.applyProfileMenu(submenu, list ?? ProfileList(revision: "", slotsRevision: "", profiles: []), error: error) }
+    }
+
+    /// 切换 = 预览 → 确认对话框 → apply。任何一步失败都只提示,不改槽位。
+    @objc func switchProfile(_ sender: Any?) {
+        guard let row = sender as? NSMenuItem, let meta = row.representedObject as? [String],
+              let id = meta.first else { return }
+        var previewRequest = URLRequest(url: profilesURL.appendingPathComponent(id).appendingPathComponent("preview"),
+                                       cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 5)
+        previewRequest.httpMethod = "POST"
+        previewRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        previewRequest.httpBody = Data("{}".utf8)
+        URLSession.shared.dataTask(with: previewRequest) { data, resp, error in
+            DispatchQueue.main.async {
+                guard let data = data, (resp as? HTTPURLResponse)?.statusCode == 200,
+                      let preview = Self.parsePreview(data) else {
+                    self.alert("无法预览方案", error?.localizedDescription ?? "服务端没有返回可用的预览")
+                    return
+                }
+                self.confirmAndApply(preview)
+            }
+        }.resume()
+    }
+
+    private func confirmAndApply(_ preview: ProfilePreview) {
+        let alert = NSAlert()
+        alert.messageText = "切换到方案「\(preview.name)」?"
+        var detail = preview.changes.isEmpty
+            ? "当前槽位已与该方案一致。"
+            : "以下槽位会被改写:\n" + preview.changes.prefix(12).joined(separator: "\n")
+            + (preview.changes.count > 12 ? "\n…共 \(preview.changes.count) 处" : "")
+        if !preview.warnings.isEmpty {
+            alert.alertStyle = .critical
+            detail += "\n\n以下问题让方案暂时无法应用:\n" + preview.warnings.joined(separator: "\n")
+        }
+        detail += "\n\n只改服务端槽位:正在跑的请求不受影响,不重写客户端配置,也不重启服务。"
+        alert.informativeText = detail
+        guard preview.canApply else {
+            // 不能应用时也必须把原因弹出来。以前是先 guard 再 runModal,canApply=false 会短路,
+            // 点击失效方案完全没反应;这里只给一个"好",弹完就结束,绝不发 apply。
+            alert.messageText = "方案「\(preview.name)」暂时无法应用"
+            alert.addButton(withTitle: "好")
+            alert.runModal()
+            return
+        }
+        alert.addButton(withTitle: "切换")
+        alert.addButton(withTitle: "取消")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        var request = URLRequest(url: profilesURL.appendingPathComponent(preview.id).appendingPathComponent("apply"),
+                                 cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 8)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = ["confirm": true, "expected_revision": preview.expectedRevision,
+                                   "slots_revision": preview.slotsRevision]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        URLSession.shared.dataTask(with: request) { data, resp, error in
+            DispatchQueue.main.async {
+                let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                if status != 200 {
+                    let text = data.flatMap { String(data: $0, encoding: .utf8) } ?? error?.localizedDescription ?? ""
+                    self.alert("切换失败", "服务端拒绝了这次切换(HTTP \(status))。\n\(text)")
+                    return
+                }
+                self.refreshProfilesMenu(nil)
+                self.loadConsole()
+            }
+        }.resume()
+    }
+
+    /// 快捷入口:把控制台带到对应视图(#是纯前端 hash,不新增服务端路由)。
+    func openConsoleView(_ view: String) {
+        showWindow()
+        webView.load(URLRequest(url: URL(string: consoleBase + "/#" + view)!,
+                                cachePolicy: .reloadRevalidatingCacheData, timeoutInterval: 15))
+    }
+    @objc func openInsightsView(_ sender: Any?) { openConsoleView("insights") }
+    @objc func openProfilesView(_ sender: Any?) { openConsoleView("profiles") }
+    @objc func openDiagnosticsView(_ sender: Any?) { openConsoleView("diagnostics") }
+
+    private func alert(_ title: String, _ detail: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = detail
+        alert.addButton(withTitle: "好")
+        alert.runModal()
+    }
+}
+
 
 /// 仓库根:运行时 MIXROUTER_REPO > 构建时烘进 Info.plist > 安装根的 current 链接。
 /// **兜底不写死某个人的目录**:正常情况走第二条(构建脚本已把仓库根写进 Info.plist),
@@ -46,11 +250,12 @@ func escapeHTML(_ s: String) -> String {
 }
 
 @main
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, NSToolbarDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, NSToolbarDelegate, NSMenuDelegate {
     static var current: AppDelegate?          // NSApp.delegate 是 weak,这里留个强引用
     private var window: NSWindow!
     private var webView: WKWebView!
     private var statusItem: NSStatusItem?      // 菜单栏常驻图标(见 buildStatusItem)
+    private var profilesMenuItem: NSMenuItem?  // 菜单栏里的「切换方案」:打开时现读 /api/profiles
     private var pollTimer: Timer?
     private var healthy = false
     private var booting = false
@@ -100,7 +305,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
             button.toolTip = "Mixrouter · 检查中…"
         }
         let menu = NSMenu()
+        menu.delegate = self                                        // menuWillOpen 里现读方案列表
         menu.addItem(withTitle: "显示主窗口", action: #selector(showMainWindow(_:)), keyEquivalent: "")
+        menu.addItem(.separator())
+        // 方案切换:子菜单每次打开时重读,不在后台轮询。
+        let profilesItem = NSMenuItem(title: "切换方案", action: nil, keyEquivalent: "")
+        let profilesMenu = NSMenu(title: "切换方案")
+        profilesMenu.addItem(withTitle: "读取中…", action: nil, keyEquivalent: "")
+        profilesMenu.items.last?.isEnabled = false
+        profilesItem.submenu = profilesMenu
+        menu.addItem(profilesItem)
+        menu.addItem(withTitle: "模型与上下文", action: #selector(openInsightsView(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: "诊断", action: #selector(openDiagnosticsView(_:)), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "重载控制台", action: #selector(reloadConsole(_:)), keyEquivalent: "")
         menu.addItem(withTitle: "重启本地服务…", action: #selector(restartService(_:)), keyEquivalent: "")
@@ -108,8 +324,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         menu.addItem(.separator())
         menu.addItem(withTitle: "退出 Mixrouter", action: #selector(quitApp(_:)), keyEquivalent: "")
         for mi in menu.items where mi.action != nil { mi.target = self }
+        profilesMenuItem = profilesItem
         item.menu = menu
         statusItem = item
+    }
+
+    /// 菜单打开时刷新方案列表:只在用户真的拉开菜单时发请求,没有常驻轮询。
+    func menuWillOpen(_ menu: NSMenu) {
+        guard menu === statusItem?.menu else { return }
+        guard let submenu = profilesMenuItem?.submenu else { return }
+        if !healthy {
+            submenu.removeAllItems()
+            let item = NSMenuItem(title: "服务未运行", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            submenu.addItem(item)
+            return
+        }
+        refreshProfilesMenu(nil)
     }
 
     @objc func showMainWindow(_ sender: Any?) { showWindow() }
@@ -316,6 +547,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         mainMenu.addItem(makeMenu("控制台", [
             ("重载控制台", "reloadConsole:", "r"),
             ("重启本地服务…", "restartService:", "R"),
+            ("-", "", ""),
+            ("模型与上下文", "openInsightsView:", ""),
+            ("模型方案", "openProfilesView:", ""),
+            ("诊断", "openDiagnosticsView:", ""),
             ("-", "", ""),
             ("打开日志文件夹", "openLogs:", "l"),
         ]))

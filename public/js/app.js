@@ -149,6 +149,12 @@ function setConnection(connected, error = '') {
   renderCodexCompact();
   if (typeof renderBotsModels === 'function') renderBotsModels();
   if (connected && view === 'providers' && typeof loadBotsModels === 'function') loadBotsModels(false);
+  // 诊断与方案页在首次进入时可能还没连上 /api/state:连接恢复后补一次初始读取。
+  // 两个模块各自用 loaded/loading 去重,不会因此变成轮询。
+  if (changed && typeof insightsUpdateControls === 'function') insightsUpdateControls();
+  if (changed && typeof profilesRender === 'function') profilesRender();
+  if (connected && view === 'insights' && typeof insightsSetVisible === 'function') insightsSetVisible(true);
+  if (connected && view === 'profiles' && typeof profilesSetVisible === 'function') profilesSetVisible(true);
   if (changed && state) renderSlots(true);
 }
 function renderOverview() {
@@ -227,8 +233,8 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) refr
 window.addEventListener('offline', () => { setConnection(false, '网络连接已断开'); renderProviders(); renderSlots(); });
 window.addEventListener('online', refresh);
 
-const VIEWS = ['overview', 'usage', 'providers', 'compact', 'sessions', 'diagnostics', 'settings'];
-const VIEW_LABELS = { overview: '概览', usage: '用量统计', providers: '渠道与 Key', compact: '压缩设置', sessions: '会话', diagnostics: '诊断', settings: '设置与备份' };
+const VIEWS = ['overview', 'usage', 'providers', 'compact', 'sessions', 'diagnostics', 'settings', 'insights', 'profiles'];
+const VIEW_LABELS = { overview: '概览', usage: '用量统计', providers: '渠道与 Key', compact: '压缩设置', sessions: '会话', diagnostics: '诊断', settings: '设置与备份', insights: '模型与上下文', profiles: '模型方案' };
 // 切视图只有这一条路径。原先 nav 的 onclick 里写着全部逻辑,gotoLogs() 只能去"点"那个 <a>
 // ——视图一改名,选择器返回 null,.click() 就当场抛 TypeError(会话页的「日志」按钮变成死按钮,
 // 而且没有任何提示)。抽成函数后,程序化切换不再依赖导航项是否存在。
@@ -250,6 +256,10 @@ function showView(name) {
   // 用量页自己管轮询与在途请求:离开时停表,回来时立刻拉一次(切页不重复初始化筛选)。
   if (typeof usageSetVisible === 'function') usageSetVisible(view === 'usage');
   if (view === 'usage' && typeof renderUsage === 'function') renderUsage();
+  // 模型诊断与模型方案只在进入本页时补一次初始读取,之后靠各自页内的手动刷新;
+  // 没有轮询,也不会在别的页面后台拉取。模块不存在时(例如只加载 app.js 的测试)直接跳过。
+  if (typeof insightsSetVisible === 'function') insightsSetVisible(view === 'insights');
+  if (typeof profilesSetVisible === 'function') profilesSetVisible(view === 'profiles');
   if (view === 'providers') {
     renderProviders(); ensureHealth();
     if (typeof loadBotsModels === 'function') loadBotsModels(false);

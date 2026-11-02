@@ -59,9 +59,9 @@ const ask = (model, extra = {}) => raw(proxyPort, 'POST', '/v1/messages',
 // 下面"白名单外字段会被静默丢弃"那条源码级断言才是它们的主场。
 // request_id 也是运行时字段:它由入口写进字面量(没接 trace store 时是空串),
 // 所以无论 /api/attempts 有没有接线,日志键集都是同一套。
-const RUNTIME_FIELDS = ['app', 'attempts', 'bytes_in', 'cache_read', 'effort', 'err', 'err_class', 'failover', 'in', 'key_id', 'key_source', 'kind', 'model_in',
+const RUNTIME_FIELDS = ['app', 'attempts', 'bytes_in', 'cache_read', 'context', 'effort', 'err', 'err_class', 'failover', 'in', 'key_id', 'key_source', 'kind', 'model_in',
   'model_out', 'ms', 'out', 'pool', 'provider', 'request_id', 'rule', 'session', 'session_kind', 'slot', 'status', 'sticky',
-  'strategy', 'stream', 'ts', 'ttfb_ms', 'wire'].sort();
+  'strategy', 'stream', 'ts', 'ttfb_ms', 'upstream_model', 'wire'].sort();
 const keysOf = o => Object.keys(o).sort();
 // 槽位分组合计。瘦身后普通路由规则已删除,唯一能给请求打上 slot 标签的路径是槽位别名,
 // 但本文件前面那几条脱敏用例会故意打一条 `mixr-haiku`(要验"不在用渠道的密钥也脱敏"),

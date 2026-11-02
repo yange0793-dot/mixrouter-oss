@@ -70,7 +70,7 @@ test('inBase:基底判定对文件精确匹配、对目录前缀匹配', () => {
 test('include:运行数据一律不进包', () => {
   // 这六条是硬底线:它们含明文 Key、会话记录和请求日志。
   for (const rel of [
-    'providers.json', 'routes.json', 'sessions.json', 'slots.json', 'bots.json',
+    'providers.json', 'routes.json', 'sessions.json', 'slots.json', 'bots.json', 'profiles.json', 'model-specs.json',
     'logs/x.jsonl', 'backups/x',
   ]) assert.equal(include(rel), false, `${rel} 绝不能进制品`);
 });
@@ -119,7 +119,7 @@ test('isRuntimeData:.tmp / .bak / 运行目录的各种变体都算运行数据'
   // 落盘是原子的:providers.json.tmp 是先写后 rename 的中间态;备份名是
   // `<file>.bak-mixui-<时间戳>`,手工排查还可能留 `<file>.bak`。这些都不是发布物。
   for (const rel of ['providers.json.tmp', 'routes.json.bak-20260101-000000-abcd',
-    'sessions.json.tmp', 'slots.json.bak', 'bots.json.bak', 'settings.json.bak', '.run/x.pid']) {
+    'sessions.json.tmp', 'slots.json.bak', 'bots.json.bak', 'profiles.json.bak', 'model-specs.json.tmp', 'settings.json.bak', '.run/x.pid']) {
     assert.equal(isRuntimeData(rel), true, `${rel} 应判为运行数据`);
     assert.equal(include(rel), false, `${rel} 绝不能进制品`);
   }
@@ -311,7 +311,7 @@ test('维护条目在清单内:验证入口与三份维护文档缺一不可', (
 
 // ---------------------------------------------------------------- 运行数据基线
 test('运行数据基线本身不含模板文件,且全部都在排除清单里', () => {
-  assert.deepEqual(RUNTIME_DATA_FILES, ['providers.json', 'routes.json', 'sessions.json', 'slots.json', 'bots.json', 'harness.json', 'dsh.json', 'client-managed.json']);
+  assert.deepEqual(RUNTIME_DATA_FILES, ['providers.json', 'routes.json', 'sessions.json', 'slots.json', 'bots.json', 'profiles.json', 'model-specs.json', 'harness.json', 'dsh.json', 'client-managed.json']);
   assert.deepEqual(RUNTIME_DATA_DIRS, ['logs', 'backups', '.run']);
   // 基线里的每一项都被 include() 拒绝(注意:它们不在基底里,靠的是 isRuntimeData 兜底)
   for (const rel of [...RUNTIME_DATA_FILES, ...RUNTIME_DATA_DIRS.map(d => `${d}/x`)])

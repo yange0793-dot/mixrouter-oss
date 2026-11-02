@@ -10,7 +10,7 @@
  *   workspaceAppChanged(app)。没有这个文件时那两个 typeof 检查直接跳过,页面照常工作。
  */
 (function () {
-  const VIEWS = ['overview', 'usage', 'providers', 'compact', 'sessions', 'diagnostics', 'settings'];
+  const VIEWS = ['overview', 'usage', 'providers', 'compact', 'sessions', 'diagnostics', 'settings', 'insights', 'profiles'];
   const APPS = ['claude', 'codex'];
   const LABELS = {
     overview: '概览',
@@ -20,6 +20,8 @@
     sessions: '会话',
     diagnostics: '诊断',
     settings: '设置与备份',
+    insights: '模型与上下文',
+    profiles: '模型方案',
   };
   // 渠道页的标题按客户端写:侧栏的两个客户端入口都落在同一个视图上,标题必须能说明现在看的是谁。
   const CLIENTS = { claude: 'Claude Code', codex: 'Codex' };
@@ -286,6 +288,8 @@
     usage: '<path d="M2.5 14.5h13"/><path d="M5 14V9M9 14V5M13 14v-3"/>',
     diagnostics: '<path d="M2 9h3l2-4 3 8 2-4h4"/>',
     settings: '<path d="M3 5.5h12M3 12.5h12"/><circle cx="7" cy="5.5" r="1.6"/><circle cx="11.5" cy="12.5" r="1.6"/>',
+    insights: '<path d="M9 2.6 15.2 6 9 9.4 2.8 6z"/><path d="m2.8 9 6.2 3.4L15.2 9"/><path d="m2.8 12 6.2 3.4 6.2-3.4"/>',
+    profiles: '<path d="M5 2.8h8v12.4L9 12.3l-4 2.9z"/><path d="M7.2 6h3.6"/>',
     claude: '<rect x="2.5" y="3" width="13" height="5" rx="1.5"/><rect x="2.5" y="10" width="13" height="5" rx="1.5"/><path d="M5.5 5.5h.01M5.5 12.5h.01"/>',
     codex: '<path d="M3 5.5 9 3l6 2.5v7L9 15l-6-2.5z"/><path d="M3 5.5 9 8l6-2.5M9 8v7"/>',
   };
@@ -307,10 +311,11 @@
     try { body.setAttribute('data-view', viewName); } catch {}
     try { body.setAttribute('data-app', APPS.includes(appName) ? appName : DEFAULT_APP); } catch {}
   }
-  // 用量页有自己的「立即同步」,顶栏的全局刷新在那里只会让人以为数据没刷新;其余页保留。
+  // 用量页有自己的「立即同步」,模型与方案页各有页内刷新;顶栏的全局刷新在那里只会
+  // 让人以为数据没刷新,所以这些页隐藏它。其余页保留。
   function syncRefresh(viewName) {
     const button = el('refresh-btn');
-    if (button) button.hidden = viewName === 'usage';
+    if (button) button.hidden = viewName === 'usage' || viewName === 'insights' || viewName === 'profiles';
   }
   function eachH1(node, fn) {
     for (const child of childNodes(node)) {
@@ -527,6 +532,8 @@
     { view: 'sessions', label: '会话绑定', hint: '按会话配置渠道与 Key', keywords: 'session' },
     { view: 'usage', label: '用量统计', hint: '请求、tokens 与缓存命中', keywords: 'usage token' },
     { view: 'diagnostics', label: '诊断', hint: '请求日志与分槽用量', keywords: 'log logs' },
+    { view: 'insights', label: '模型与上下文', hint: '模型能力、上游自报与上下文字节', keywords: 'insights model context upstream tokens 模型 上下文 能力' },
+    { view: 'profiles', label: '模型方案', hint: '保存、预览并切换槽位方案', keywords: 'profiles profile slots 方案 槽位 切换' },
     { view: 'settings', label: '设置与备份', hint: '备份清点、健康与导出', keywords: 'settings backup' },
     { view: 'providers', app: 'claude', label: 'Claude Code 渠道', hint: '渠道与 Key', keywords: 'claude anthropic' },
     { view: 'providers', app: 'codex', label: 'Codex 渠道', hint: '渠道与 Key', keywords: 'codex openai' },
