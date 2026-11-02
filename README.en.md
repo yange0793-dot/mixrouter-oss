@@ -101,6 +101,13 @@ Not a good fit:
   401/402 (account-level) and 403/404/429 (model-level) are the only failures that may switch
   keys. Pinned session keys and compact-only keys never switch, and `active_key` is never
   rewritten.
+- **Model and context diagnostics.** Client-requested, upstream-requested, and upstream-reported
+  model names are distinct; a reported name is not identity verification. Context categories contain
+  numeric byte counts only, never prompt text. Byte-based token estimates stay separate from actual
+  usage. Optional manual capability notes do not change routing, request parameters, or client settings.
+- **Routing profiles.** Save selected Claude/Codex slot groups with their backup pools, strategies,
+  and tool filters; preview changes and confirm before applying. Client models, effort, compaction,
+  Bots, session overrides, and in-flight requests are unchanged. See [Model diagnostics and profiles](docs/model-insights.md).
 - **Local console.** `127.0.0.1:8788` manages providers, sessions, slots, compaction settings,
   logs, and backups. Open Claude Code or Codex providers directly from the sidebar, choose list or
   card views for providers, and expand model slots when needed. Fetch upstream models using a Base URL

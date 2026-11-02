@@ -16,6 +16,7 @@
 // 当前覆盖面:
 //   · mixrouter.js / lib/http/proxy.js —— `const entry = {` 字面量构造点(字面量键那半边靠它)
 //   · lib/proxy/{prepare,context,attempts,attempt,response}.js —— 代理编排里的字段写入点
+//   · lib/observability/upstream-model.js —— 原始上游模型证据的赋值与跨尝试清零
 //   · lib/wire-anthropic-translator.js —— **转换线的错误收尾也直接写 entry.err/err_class/status**。
 //     它从 ctx 解构 entry 再 finishEntry(),是**真的日志对象**;这个文件原先不在任何清单里,
 //     是本次核对时补上的(见下方判据)。
@@ -41,6 +42,7 @@ const PROXY_SOURCES = [
   'lib/proxy/attempts.js',
   'lib/proxy/attempt.js',
   'lib/proxy/response.js',
+  'lib/observability/upstream-model.js',
   'lib/wire-anthropic-translator.js',
 ];
 

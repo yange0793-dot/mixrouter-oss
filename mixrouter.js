@@ -96,7 +96,7 @@ const { createKeyFallback } = require('./lib/routing/key-fallback');
 const codexConfig = require('./lib/codex-config');
 const { planCodexSlots } = require('./lib/codex-router-plan');
 
-const VERSION = '3.9.0';
+const VERSION = '3.10.0';
 const ROOT = __dirname;
 const CODE_REVISION = codeRevision(ROOT);
 // 运行时数据(providers/routes/logs)目录可整体重定向(MIXR_DATA_DIR),测试用,避免碰真实配置
@@ -1278,6 +1278,14 @@ const readinessApi = createReadinessApi({
   },
   version: VERSION, healthStatus, liveState, requestLog,
 });
+const insightsApi = require('./lib/http/insights-api').createInsightsApi({
+  file: path.join(DATA_DIR, 'model-specs.json'), getStore: () => store, requestLog,
+});
+const profilesApi = require('./lib/http/profiles-api').createProfilesApi({
+  file: path.join(DATA_DIR, 'profiles.json'), getSlots: () => slotMap, storeOf, validateSlotPut,
+  // 方案只改服务端槽位，不写客户端目录、模型、effort 或压缩设置。
+  applySlots: next => commitSlotUpdate(next, false),
+});
 const apiHandler = createConsoleHandler({
   // 常量
   VERSION, PROXY_PORT, UI_PORT, CODE_REVISION, ROUTER_ID, ROUTER_URL, ROUTER_TOKEN,
@@ -1295,7 +1303,7 @@ const apiHandler = createConsoleHandler({
   sessionList, sessionRecord, storeOf, findProvider, providerApp, ghostRefs,
   mutateSessions, saveRoutes, saveSlots, saveStore, syncCodexStore: () => withCodexSync(saveStore), requestLog, compactWindow,
   slotsPublic, validateSlotPut, commitSlotUpdate,
-  usageSummary, readinessApi, activeRequests: () => activeRequestCount,
+  usageSummary, readinessApi, insightsApi, profilesApi, activeRequests: () => activeRequestCount,
   switchClaude, switchCodex, switchRouter,
 });
 

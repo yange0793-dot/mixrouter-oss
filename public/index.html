@@ -11,10 +11,13 @@
 <link rel="stylesheet" href="/styles/readiness.css">
 <link rel="stylesheet" href="/styles/attempt-flow.css">
 <link rel="stylesheet" href="/styles/key-fallback.css">
+<link rel="stylesheet" href="/styles/bots.css">
 <link rel="stylesheet" href="/styles/providers.css">
 <link rel="stylesheet" href="/styles/usage.css">
 <link rel="stylesheet" href="/styles/config.css">
 <link rel="stylesheet" href="/styles/observe.css">
+<link rel="stylesheet" href="/styles/insights.css">
+<link rel="stylesheet" href="/styles/profiles.css">
 </head>
 <body data-connection="connecting">
   <a class="skip-link" href="#main">跳至主要内容</a>
@@ -46,11 +49,13 @@
     <nav class="nav-group" aria-label="工作区">
       <a href="#overview" data-view="overview" class="active" aria-current="page"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.5" y="2.5" width="5.2" height="5.2" rx="1.2"/><rect x="10.3" y="2.5" width="5.2" height="5.2" rx="1.2"/><rect x="2.5" y="10.3" width="5.2" height="5.2" rx="1.2"/><rect x="10.3" y="10.3" width="5.2" height="5.2" rx="1.2"/></svg><span>概览</span></a>
       <a href="#compact" data-view="compact"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 5.5h12M3 12.5h12"/><path d="M6.5 5.5 9 3l2.5 2.5M6.5 12.5 9 15l2.5-2.5"/></svg><span>压缩设置</span></a>
+      <a href="#profiles" data-view="profiles"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 2.8h8v12.4L9 12.3l-4 2.9z"/><path d="M7.2 6h3.6"/></svg><span>模型方案</span></a>
     </nav>
     <div class="nav-label">观测</div>
     <nav class="nav-group" aria-label="观测">
       <a href="#sessions" data-view="sessions"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4h12v7.5H8L4.5 14v-2.5H3z"/><path d="M6 7h6"/></svg><span>会话</span></a>
       <a href="#usage" data-view="usage"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.5 14.5h13"/><path d="M5 14V9M9 14V5M13 14v-3"/></svg><span>用量统计</span></a>
+      <a href="#insights" data-view="insights"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 2.6 15.2 6 9 9.4 2.8 6z"/><path d="m2.8 9 6.2 3.4L15.2 9"/><path d="m2.8 12 6.2 3.4 6.2-3.4"/></svg><span>模型与上下文</span></a>
     </nav>
     <nav class="nav-group nav-footer" aria-label="系统">
       <a href="#diagnostics" data-view="diagnostics"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 9h3l2-4 3 8 2-4h4"/></svg><span>诊断</span></a>
@@ -293,6 +298,12 @@
             <div class="model-actions"><span id="codex-model-status" role="status"></span></div>
             <div id="codex-config-details"></div>
           </div>
+          <section class="panel bots-panel" id="bots-panel" aria-labelledby="bots-title" hidden>
+            <div class="bots-head"><div><h2 id="bots-title">Bots 模型</h2><p class="hint">按 Bot 名字精确匹配，为每个 Bot 单独选择渠道、模型与可选 Key。</p></div><button class="small" type="button" id="bots-reload" onclick="loadBotsModels()" disabled>重新读取</button></div>
+            <p class="hint bots-scope">保存后从下一次 Bot 发言生效，不改主会话、子代理槽位或渠道当前 Key。讨论仍通过 <code>/bots</code> 使用。</p>
+            <div id="bots-rows"></div>
+            <div class="bots-actions"><button class="small" type="button" id="bots-add" onclick="addBotModel()" disabled>＋ 新增 Bot</button><button class="primary" type="button" id="bots-save" onclick="saveBotsModels()" disabled>保存 Bots 模型</button><span class="hint" id="bots-status" role="status" aria-live="polite">尚未读取 Bots 配置。</span></div>
+          </section>
           <div class="banner" id="drift-banner" role="status"><span id="drift-text"></span></div>
           <p class="hint" id="prov-health" hidden></p>
           <div class="channel-toolbar">
@@ -432,6 +443,97 @@
           <div class="savebar"><button class="small" id="metrics-export" onclick="exportMetrics()">下载指标文本</button><span class="msg" id="metrics-msg" role="status"></span></div>
         </div>
       </section>
+
+      <!-- 模型与上下文:只读诊断。能力声明与上游自报只用于显示,不改路由、窗口、推理强度或客户端配置。
+           请求区默认读取当前进程内存窗口的最近 100 条,不做后台轮询。 -->
+      <section id="view-insights" style="display:none" aria-labelledby="insights-title">
+        <div class="head">
+          <div><h1 id="insights-title">模型与上下文</h1><div class="sub">上游响应自报的模型名、手工登记的模型能力，以及最近请求的上下文体积。只作显示与诊断：不改路由、窗口、推理强度或客户端配置，也不做模型身份认证。</div></div>
+          <div class="actions">
+            <button class="small" type="button" id="insights-refresh-models" onclick="insightsLoadModels(true)">刷新模型</button>
+            <button class="small quiet" type="button" id="insights-refresh-requests" onclick="insightsLoadRequests(true)">刷新请求</button>
+          </div>
+        </div>
+        <div class="panel" aria-labelledby="insights-models-title">
+          <div class="cfg-panel-head">
+            <h2 id="insights-models-title">模型能力与上游自报</h2>
+            <span class="cfg-panel-hint" id="insights-models-status" role="status" aria-live="polite">尚未读取模型清单。</span>
+          </div>
+          <p class="hint insights-intro">上下文窗口、最大输出、视觉与推理档位没有登记时显示「未知」，不按模型名称推断。上游自报只取原始响应 JSON/SSE 的 model 字段；缺失即未知，不会用请求模型或翻译后的模型补位。它不是身份认证，名称不同也不代表渠道有问题。</p>
+          <div class="table-wrap insights-table" id="insights-models-table" hidden>
+            <table><caption class="sr-only">模型能力与最近上游自报</caption>
+              <thead><tr><th scope="col">协议组</th><th scope="col">渠道</th><th scope="col">模型</th><th scope="col">上下文窗口</th><th scope="col">最大输出</th><th scope="col">视觉</th><th scope="col">推理档位</th><th scope="col">最近上游自报</th><th scope="col">操作</th></tr></thead>
+              <tbody id="insights-models-rows"></tbody></table>
+          </div>
+          <div class="empty" id="insights-models-empty" hidden><b>还没有登记模型</b><span>先在「渠道与 Key」页添加渠道和模型；这里只读取本机渠道库，不主动探测上游。</span></div>
+          <div class="insights-detail" id="insights-model-detail" hidden></div>
+        </div>
+        <div class="panel" aria-labelledby="insights-requests-title">
+          <div class="cfg-panel-head">
+            <h2 id="insights-requests-title">最近请求与上下文</h2>
+            <span class="cfg-panel-hint" id="insights-requests-status" role="status" aria-live="polite">尚未读取请求。</span>
+          </div>
+          <p class="hint insights-intro" id="insights-requests-scope">请求来自当前进程的内存窗口，默认读取最近 100 条，不是完整历史，也不读取上游账单。三列模型名分别表示：客户端请求的模型、本次发给上游的模型、上游响应自报的模型；缺失一律显示未知。</p>
+          <div id="insights-context-summary" class="insights-summary" hidden></div>
+          <div class="table-wrap insights-req-table" id="insights-requests-table" hidden>
+            <table><caption class="sr-only">最近请求的模型、真实用量与上下文字节</caption>
+              <thead><tr><th scope="col">时间 <span class="th-note">会话</span></th><th scope="col">协议组</th><th scope="col">渠道</th><th scope="col">请求模型</th><th scope="col">发给上游</th><th scope="col">上游自报</th><th scope="col" class="num">状态</th><th scope="col" class="num">实际 tokens <span class="th-note">入 / 出 · 缓存读</span></th><th scope="col" class="num">上下文 <span class="th-note">请求体 / 分类合计</span></th></tr></thead>
+              <tbody id="insights-requests-rows"></tbody></table>
+          </div>
+          <div class="empty" id="insights-requests-empty" hidden><b>暂无内存请求</b><span>通过本机路由发起调用后，最近请求会出现在这里；服务重启后内存窗口重新开始。</span></div>
+          <div class="insights-detail" id="insights-request-detail" hidden></div>
+        </div>
+      </section>
+
+      <!-- 模型方案:保存/预览/切换选中协议组的全局槽位。只写槽位表,不写客户端配置,
+           不迁移在途请求,也不能替代会话级覆盖。 -->
+      <section id="view-profiles" style="display:none" aria-labelledby="profiles-title">
+        <div class="head">
+          <div><h1 id="profiles-title">模型方案</h1><div class="sub">把所选协议组的当前槽位保存成命名方案，切换前先预览逐槽差异。只改本机全局槽位：不写客户端配置、不改推理强度、不迁移在途请求。</div></div>
+          <div class="actions"><button class="small" type="button" id="profiles-reload" onclick="profilesLoad(true)">重新读取方案</button></div>
+        </div>
+        <div class="panel" aria-labelledby="profiles-save-title">
+          <div class="cfg-panel-head">
+            <h2 id="profiles-save-title">保存当前槽位为方案</h2>
+            <span class="cfg-panel-hint" id="profiles-revision-hint">尚未读取方案列表。</span>
+          </div>
+          <p class="hint">保存的是所选协议组当前整张槽位表的快照：槽位目标、后备池、池策略与工具过滤。不含渠道 Key、生效账号、Bots、会话覆盖、压缩或客户端配置；保存本身不改变正在使用的槽位。</p>
+          <div class="profiles-save-row">
+            <label class="field" for="profiles-name">方案名称<input id="profiles-name" type="text" maxlength="80" placeholder="如 Claude 夜间方案" autocomplete="off" spellcheck="false"></label>
+            <fieldset class="profiles-apps">
+              <legend>包含协议组</legend>
+              <label><input type="checkbox" id="profiles-app-claude" checked> Claude</label>
+              <label><input type="checkbox" id="profiles-app-codex"> Codex</label>
+            </fieldset>
+            <button class="primary" type="button" id="profiles-save" onclick="profilesSave()" disabled>保存为方案</button>
+          </div>
+          <p class="hint" id="profiles-save-status" role="status" aria-live="polite">尚未读取方案列表。</p>
+        </div>
+        <div class="panel" aria-labelledby="profiles-list-title">
+          <div class="cfg-panel-head">
+            <h2 id="profiles-list-title">已保存方案</h2>
+            <span class="cfg-panel-hint" id="profiles-list-status" role="status" aria-live="polite">尚未读取方案列表。</span>
+          </div>
+          <div class="table-wrap profiles-table" id="profiles-table" hidden>
+            <table><caption class="sr-only">已保存的模型方案</caption>
+              <thead><tr><th scope="col">名称</th><th scope="col">协议组</th><th scope="col">保存时间</th><th scope="col">状态</th><th scope="col">操作</th></tr></thead>
+              <tbody id="profiles-rows"></tbody></table>
+          </div>
+          <div class="empty" id="profiles-empty" hidden><b>还没有保存的方案</b><span>先在「渠道与 Key」页配好槽位，再回到这里保存当前选择；保存不会切换当前路由。</span></div>
+        </div>
+        <div class="panel" id="profiles-preview-panel" aria-labelledby="profiles-preview-title" hidden>
+          <div class="cfg-panel-head">
+            <h2 id="profiles-preview-title">预览切换</h2>
+            <span class="cfg-panel-hint" id="profiles-preview-status" role="status" aria-live="polite">尚未预览。</span>
+          </div>
+          <div id="profiles-preview-body"></div>
+          <div class="savebar">
+            <button class="primary" type="button" id="profiles-apply" onclick="profilesApply()" disabled>确认切换</button>
+            <button class="small" type="button" id="profiles-preview-close" onclick="profilesClosePreview()">取消预览</button>
+            <span class="hint" id="profiles-apply-note">切换只对后续新请求生效；在途请求不会迁移，已有会话级槽位覆盖仍然优先。</span>
+          </div>
+        </div>
+      </section>
     </main>
   </div>
 
@@ -525,9 +627,12 @@
   <div id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 
 <script src="/js/app.js"></script>
+<script src="/js/bots.js"></script>
 <script src="/js/usage.js"></script>
 <script src="/js/readiness.js"></script>
 <script src="/js/attempt-flow.js"></script>
 <script src="/js/key-fallback.js"></script>
+<script src="/js/insights.js"></script>
+<script src="/js/profiles.js"></script>
 </body>
 </html>

@@ -569,6 +569,21 @@ async function main() {
       must(!body.includes(KEY_CLAUDE_A), 'requests.jsonl 里落进了原始 Key');
       must(body.trim().split('\n').length >= 5, 'requests.jsonl 行数偏少');
     });
+    await step('模型诊断与方案接口可读,分类统计不替代真实用量', async () => {
+      const requests = await req(uiPort, 'GET', '/api/insights/requests?limit=50');
+      eq(requests.status, 200, 'insights requests status');
+      const rows = JSON.parse(requests.text).requests;
+      must(rows.some(row => row.context && row.context.serialized_bytes > 0), '缺少真实代理的上下文统计');
+      must(rows.some(row => row.upstream_model), '缺少原始上游模型观察');
+      for (const row of rows.filter(row => row.context))
+        must(Object.values(row.context).every(value => typeof value === 'number'), '上下文只能保存数字');
+      for (const endpoint of ['/api/insights/models', '/api/profiles'])
+        eq((await req(uiPort, 'GET', endpoint)).status, 200, endpoint);
+      for (const asset of ['/js/insights.js', '/styles/insights.css', '/js/profiles.js', '/styles/profiles.css'])
+        eq((await req(uiPort, 'GET', asset)).status, 200, asset);
+      for (const name of ['profiles.json', 'model-specs.json'])
+        must(!fs.existsSync(path.join(dirs.data, name)), '只读访问不应创建 ' + name);
+    });
     await step('历史 routes.json(含旧通用规则)逐字节未动:启动与请求都不改写磁盘数据', () => {
       eq(fs.readFileSync(path.join(dirs.data, 'routes.json'), 'utf8'), legacyRoutes,
         '旧 routes.json 在启动/转发之后被改写了');

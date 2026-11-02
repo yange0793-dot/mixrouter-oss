@@ -17,6 +17,16 @@ slots.json
 slots.json.tmp
 slots.json.bak*
 
+# 独立 Bot 的模型绑定(本机配置)
+bots.json
+bots.json.*
+
+# 模型诊断声明与路由方案(本机配置)
+model-specs.json
+model-specs.json.*
+profiles.json
+profiles.json.*
+
 # Harness 主模型与白名单池(本机路由状态)
 harness.json
 harness.json.*

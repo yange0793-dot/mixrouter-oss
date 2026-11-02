@@ -140,7 +140,7 @@ jobs:
             完整开发测试套件只在 GitHub 源码仓库里跑(\`npm test\`);**运行包里没有
             \`test/\`**,在那里跑 \`npm test\` 会明确报错而不是伪装成全绿。
           - **不含**:\`providers.json\`、\`routes.json\`、\`sessions.json\`、\`slots.json\`、
-            \`logs/\`、\`backups/\`(它们含**明文渠道 Key、会话记录与请求日志**)、
+            \`bots.json\`、\`profiles.json\`、\`model-specs.json\`、\`logs/\`、\`backups/\`(它们含**明文渠道 Key、会话记录与请求日志**)、
             \`test/\`、\`docs/changes/\`、\`evidence/\`、\`.github/\`,以及上线/回退用的运维脚本
             \`scripts/deploy-live.sh\` / \`scripts/preflight-live-data.js\`(会切换代码并重启服务,
             必须先给 \`MIXR_LIVE_DIR\`,不是安装路径)。

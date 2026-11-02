@@ -85,6 +85,26 @@ test('白名单逐字段证明:prompt/messages/headers/api_key/token/body/system
   assert.equal(raw.trim().split('\n').length, 1);
 });
 
+test('上下文只保留固定数值，不能借嵌套统计字段保存正文', t => {
+  const root = tmpDir();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, 'requests.jsonl');
+  const log = createRequestLog({ file });
+  const { summarizeContext } = require('../lib/observability/context-breakdown');
+  const context = summarizeContext({ messages: [{ role: 'user', content: 'PRIVATE-PROMPT' }] });
+  log.append(entry({ context: { ...context, messages: ['PRIVATE-PROMPT'], path: '/private/file' }, upstream_model: 'vendor-name' }));
+  assert.deepEqual(log.list().logs[0].context, context);
+  assert.equal(log.list().logs[0].upstream_model, 'vendor-name');
+  for (const bad of [{ ...context, system_bytes: 'PRIVATE-PROMPT' }, 'PRIVATE-PROMPT', { version: 1 },
+    { ...context, media_bytes: Infinity }, { ...context, tools_bytes: -1 }]) {
+    log.append(entry({ context: bad, upstream_model: { messages: ['PRIVATE-PROMPT'] } }));
+    assert.equal(Object.hasOwn(log.list({ limit: 1 }).logs[0], 'context'), false);
+    assert.equal(Object.hasOwn(log.list({ limit: 1 }).logs[0], 'upstream_model'), false);
+  }
+  assert.ok(!fs.readFileSync(file, 'utf8').includes('PRIVATE-PROMPT'));
+  assert.ok(!fs.readFileSync(file, 'utf8').includes('/private/file'));
+});
+
 // 白名单必须与源码里 entry 字段的实际使用面**双向相等**。
 // 扫法(两处都不能省,也不能多扫):
 //   A. **赋值形式**:`entry.<name>` 后跟 = / ||= / += —— 只看赋值,不看读取、不看注释。
@@ -124,7 +144,7 @@ test('白名单与代理源码的 entry 字段实际集合双向相等', () => {
   assert.deepEqual(extra, [], `白名单里有源码根本没用的字段: ${extra.join(', ')}`);
   // resource_recovery_skipped 只记录历史投影拒绝的固定分类,不含请求内容;
   // retry_reason 同理,只记固定枚举(例如 unprojected_resource_retry)。
-  assert.equal(LOG_FIELDS.length, 35);
+  assert.equal(LOG_FIELDS.length, 37);
   // 先建后挂的三个字段只能靠赋值扫出来(不在字面量里),这里单独钉住扫描有效性
   for (const f of ['think', 'reasoning', 'tools_dropped', 'effort']) {
     assert.ok(assigned.has(f), `${f} 应由赋值扫描命中(它是先建后挂的)`);

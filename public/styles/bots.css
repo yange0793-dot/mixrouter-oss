@@ -1,0 +1,23 @@
+/* Bots 模型使用现有控制台 tokens；每行就是一个独立落点，不复用槽位表。 */
+.bots-panel { margin: 16px 0 20px; }
+.bots-panel[hidden] { display: none; }
+.bots-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.bots-head h2 { margin: 0 0 6px; }
+.bots-head .hint { margin: 0; }
+.bots-scope { margin: 10px 0 16px; max-width: 78ch; }
+.bots-row { display: grid; grid-template-columns: minmax(100px, .8fr) minmax(140px, 1fr) minmax(160px, 1.2fr) minmax(150px, 1fr) auto; gap: 12px; align-items: end; padding: 12px 0; border-top: 1px solid var(--border-soft); }
+.bots-row .field { min-width: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--dim); }
+.bots-row input, .bots-row select { width: 100%; min-width: 0; color: var(--text); }
+.bots-remove { margin-bottom: 1px; }
+.bots-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.bots-actions .hint { flex: 1 1 260px; min-width: 0; overflow-wrap: anywhere; }
+.bots-actions .bots-error { color: var(--err-text); }
+@media (max-width: 1100px) {
+  .bots-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bots-remove { justify-self: start; }
+}
+@media (max-width: 540px) {
+  .bots-row { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .bots-head { flex-wrap: wrap; }
+  .bots-actions .hint { flex-basis: 100%; }
+}

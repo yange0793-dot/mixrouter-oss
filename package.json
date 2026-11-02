@@ -1,6 +1,6 @@
 {
   "name": "mixrouter",
-  "version": "3.9.0",
+  "version": "3.10.0",
   "private": true,
   "description": "零依赖的本地 AI 路由器:Claude Code 与 Codex 的渠道切换、精确模型匹配、模型槽位与压缩设置",
   "main": "mixrouter.js",

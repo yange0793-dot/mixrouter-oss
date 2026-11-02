@@ -30,7 +30,7 @@ for (const d of [home, data, path.join(root, 'img'), path.join(root, 'tmp')]) fs
 
 // 复制线上数据(只读来源),让新代码去写副本
 let copied = [];
-for (const f of ['providers.json', 'routes.json', 'slots.json', 'sessions.json']) {
+for (const f of ['providers.json', 'routes.json', 'slots.json', 'bots.json', 'profiles.json', 'model-specs.json', 'sessions.json']) {
   const s = path.join(LIVE, f);
   if (fs.existsSync(s)) { fs.copyFileSync(s, path.join(data, f)); copied.push(f); }
 }
@@ -107,6 +107,18 @@ const get = (port, p) => new Promise(resolve => {
     const trav = await get(ui, '/..%2f..%2fproviders.json');
     check('编码穿越被挡', trav.status !== 200, 'status=' + trav.status);
 
+    const bots = await get(ui, '/api/bots');
+    let botData = null;
+    try { botData = JSON.parse(bots.body); } catch {}
+    check('GET /api/bots 200 且绑定表可读', bots.status === 200 && Array.isArray(botData?.bots));
+    check('Bots 页面资源齐全', (await get(ui, '/js/bots.js')).status === 200 &&
+      (await get(ui, '/styles/bots.css')).status === 200);
+    for (const endpoint of ['/api/insights/models', '/api/insights/requests', '/api/profiles']) {
+      const result = await get(ui, endpoint);
+      check(`GET ${endpoint} 200`, result.status === 200, 'status=' + result.status);
+    }
+    for (const asset of ['/js/insights.js', '/styles/insights.css', '/js/profiles.js', '/styles/profiles.css'])
+      check(`GET ${asset} 200`, (await get(ui, asset)).status === 200);
     check('GET /healthz 200', (await get(ui, '/healthz')).status === 200);
   } finally {
     try { srv.close(); } catch {}
