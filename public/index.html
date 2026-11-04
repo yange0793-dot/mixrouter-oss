@@ -336,14 +336,14 @@
         </div>
       </section>
 
-      <!-- 压缩设置是独立视图:Claude 压缩模型、压缩 Key 与三层窗口都只在服务端路由/客户端磁盘上生效,
+      <!-- 压缩设置是独立视图:共享压缩模型、压缩 Key 与 Claude 三层窗口只在服务端路由/客户端磁盘上生效,
            与渠道、槽位分开管。控件默认全展开,不再藏在折叠组里。
            compact-* / window-* 的 DOM id 与保存动作保持不变。 -->
       <section id="view-compact" style="display:none" aria-labelledby="compact-title">
-        <div class="head"><div><h1 id="compact-title">压缩设置</h1><div class="sub">Claude 的压缩模型、压缩 Key 与三层压缩窗口。改动只落在压缩规则或所选配置层，不动主模型、槽位与渠道当前 Key。</div></div>
+        <div class="head"><div><h1 id="compact-title">压缩设置</h1><div class="sub">Claude / Codex 共用压缩模型与 Key；Claude 压缩窗口按配置层管理。</div></div>
           <div class="actions"><button id="reload-compact" onclick="reloadCompact()">重新载入压缩选择</button><button class="primary" id="save-compact" onclick="saveCompact()" disabled>保存压缩模型</button></div></div>
         <div class="panel" id="compact-panel">
-          <div class="cfg-panel-head"><h2>压缩模型</h2><span class="cfg-panel-hint">只改两条压缩规则，不动主模型、子代理槽位与渠道当前 Key。</span></div>
+          <div class="cfg-panel-head"><h2>Claude / Codex 压缩模型</h2><span class="cfg-panel-hint">只改两条压缩规则，不动主模型、子代理槽位与渠道当前 Key。</span></div>
           <div id="compact-current" class="hint" role="status">等待压缩路由配置</div>
           <div class="rc-line"><label class="field">压缩渠道<select id="compact-provider" onchange="pickCompactProvider(this.value)"></select></label>
             <label class="field">压缩模型<select id="compact-model" onchange="pickCompactModel(this.value)"></select><input id="compact-model-custom" type="text" placeholder="自定义模型名" hidden oninput="setCompactCustom(this.value)"></label>
@@ -356,7 +356,7 @@
           </details>
         </div>
         <div class="panel" id="compact-window-panel">
-          <div class="cfg-panel-head"><h2>压缩上下文窗口</h2><span class="cfg-panel-hint">只改所选磁盘层的 <code>autoCompactWindow</code>；全局只改全局，不同步项目。</span></div>
+          <div class="cfg-panel-head"><h2>Claude 压缩上下文窗口</h2><span class="cfg-panel-hint">只改所选磁盘层的 <code>autoCompactWindow</code>；全局只改全局，不同步项目。</span></div>
           <div class="rc-line"><label class="field" for="window-scope">配置层<select id="window-scope" onchange="selectWindowScope()"><option value="global">用户全局</option><option value="project">项目</option><option value="local">项目本地</option></select></label>
             <label class="field" for="window-project">项目绝对目录<input id="window-project" type="text" placeholder="/绝对路径/项目目录" oninput="windowProjectChanged()" spellcheck="false"></label>
             <label class="field" for="window-value">窗口 token（auto 或 100k–1M）<input id="window-value" type="text" inputmode="text" placeholder="auto、300k、1m" oninput="setWindowValue(this.value)"></label></div>
