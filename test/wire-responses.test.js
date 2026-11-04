@@ -94,6 +94,31 @@ test('anthropicToResponses:tool_result 里的图片也转 input_image,不带图�
   assert.strictEqual(noImg.input.find(i => i.type === 'function_call_output').output, 'file.txt');
 });
 
+test('anthropicToResponses:无效图片不生成空 input_image,降级为说明文字', () => {
+  // 空 data 以前会拼成 `data:image/png;base64,` 发给上游:上游收到的是坏图,链路却不报错。
+  const empty = wire.anthropicToResponses({
+    model: 'm', max_tokens: 64,
+    messages: [{ role: 'user', content: [
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: '' } },
+      { type: 'text', text: '后文' },
+    ] }],
+  });
+  assert.deepStrictEqual(empty.input[0].content, [
+    { type: 'input_text', text: '[图片:该图片格式转不成上游可收的 image_url,此处只保留文字]' },
+    { type: 'input_text', text: '后文' },
+  ]);
+  // tool_result 里只有一张无效图时,不能变成一个空 output(模型会以为工具什么也没返回)
+  const tool = wire.anthropicToResponses({
+    model: 'm', max_tokens: 64,
+    messages: [{ role: 'user', content: [{
+      type: 'tool_result', tool_use_id: 'tu_bad',
+      content: [{ type: 'image', source: { type: 'url', url: '/relative.png' } }],
+    }] }],
+  });
+  const out = tool.input.find(i => i.type === 'function_call_output');
+  assert.strictEqual(out.output, '[图片:该图片格式转不成上游可收的 image_url,此处只保留文字]');
+});
+
 test('anthropicToResponses:只含 tool_reference 的 tool_result 不能变成空结果', () => {
   // Claude Code 的 ToolSearch 结果就是这种形状:tool_result 里全是 tool_reference,没有 text/image。
   // 丢掉它们等于告诉模型"搜到 0 个工具",它会以为结果无效而反复重搜。

@@ -151,6 +151,46 @@ test('请求:顶层图片走 image_url data URI', () => {
   assert.strictEqual(c[1].image_url.url, 'data:image/png;base64,AAAA');
 });
 
+test('请求:tool_result 里的图片提成独立 user 消息,文字留在 tool 消息', () => {
+  const out = wire.anthropicToChat({
+    model: 'm', messages: [{ role: 'user', content: [{
+      type: 'tool_result', tool_use_id: 'tu_img',
+      content: [
+        { type: 'text', text: '截图:' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+        { type: 'image', source: { type: 'url', url: 'https://img.example/a.png' } },
+      ],
+    }] }],
+  });
+  assert.strictEqual(out.messages[0].role, 'tool');
+  assert.strictEqual(out.messages[0].content, '截图:', '文字必须留在对应的 tool 消息里');
+  assert.deepStrictEqual(out.messages[1], { role: 'user', content: [
+    { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } },
+    { type: 'image_url', image_url: { url: 'https://img.example/a.png' } },
+  ] }, 'tool_result 里的图不能被静默丢掉,按原序跟在 tool 消息后');
+});
+
+test('请求:无法表达的图片不生成空 data URI,降级为说明文字', () => {
+  const out = wire.anthropicToChat({
+    model: 'm', messages: [{ role: 'user', content: [
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: '' } },
+      { type: 'text', text: '后文' },
+    ] }],
+  });
+  assert.strictEqual(out.messages[0].content[0].text, '[图片:该图片格式转不成上游可收的 image_url,此处只保留文字]');
+  assert.strictEqual(out.messages[0].content[1].text, '后文');
+  assert.ok(!JSON.stringify(out).includes('base64,'), '空 data URI 发上去就是坏图');
+  // tool_result 里的无效 URL 同样降级,不能把相对路径当 image_url 发出去
+  const tool = wire.anthropicToChat({
+    model: 'm', messages: [{ role: 'user', content: [{
+      type: 'tool_result', tool_use_id: 'tu_bad',
+      content: [{ type: 'image', source: { type: 'url', url: '/relative.png' } }],
+    }] }],
+  });
+  assert.strictEqual(tool.messages[0].content, '[图片:该图片格式转不成上游可收的 image_url,此处只保留文字]');
+  assert.ok(!tool.messages.some(m => m.role === 'user' && Array.isArray(m.content) && m.content.some(c => c.type === 'image_url')));
+});
+
 // ---------------------------------------------------------------- 非流响应
 test('非流:文本 + usage 减掉缓存命中(Anthropic 口径)', () => {
   const msg = wire.chatToAnthropic({
@@ -163,6 +203,19 @@ test('非流:文本 + usage 减掉缓存命中(Anthropic 口径)', () => {
   assert.strictEqual(msg.usage.input_tokens, 20, 'prompt_tokens 含缓存命中,不减掉就会按全价计');
   assert.strictEqual(msg.usage.output_tokens, 13);
   assert.strictEqual(msg.usage.cache_read_input_tokens, 5);
+});
+
+test('非流:上游把 content 回成多模态数组时正文不丢', () => {
+  const msg = wire.chatToAnthropic({
+    choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: [
+      { type: 'text', text: '前半' },
+      { type: 'text', text: '后半' },
+    ] } }],
+  }, 'm');
+  assert.strictEqual(msg.content.length, 1);
+  assert.strictEqual(msg.content[0].type, 'text');
+  assert.strictEqual(msg.content[0].text, '前半后半', '数组形状的 content 只认字符串就会整段丢掉');
+  assert.strictEqual(msg.stop_reason, 'end_turn');
 });
 
 test('非流:tool_calls 变 tool_use 块,stop_reason=tool_use', () => {

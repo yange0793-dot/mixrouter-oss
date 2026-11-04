@@ -5,6 +5,13 @@
 
 ## [Unreleased]
 
+#### 修复
+
+- Responses/Anthropic 转 Chat 时，工具结果里的图片不再被序列化成 Base64 文本塞进 `role:"tool"`
+  的字符串内容（Responses ⇄ Chat 曾直接 `JSON.stringify` 数组，对象形状 `{content:[...]}`
+  还会静默丢图）。文字保留在该工具消息里，图片按 `image_url` 另发一条用户消息，并保持
+  并行工具调用先全部配对再发图；渠道标 `drop_images` 时仍只留一句说明。
+
 ## [3.10.0] - 2026-11-02
 
 #### 改进
