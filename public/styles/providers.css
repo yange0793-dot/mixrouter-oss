@@ -256,6 +256,35 @@ body[data-connection=offline] #prov-grid .card.sel { border-color: var(--border)
 #provider-form .muted { font-size: 12.5px; line-height: 1.6; }
 #m-keys-wrap { padding-top: 2px; }
 #m-keys-wrap > label { display: block; margin: 16px 0 6px; }
+/* Codex 接入方式:紧贴 Base URL,原生 radio + label,保留键盘焦点与读屏语义。 */
+#provider-form .codex-mode { margin: 12px 0 4px; padding: 0; border: 0; }
+#provider-form .codex-mode legend { padding: 0; margin-bottom: 6px; font-size: 13px; color: var(--dim); }
+#provider-form .codex-mode[hidden] { display: none; }
+.codex-mode-options { display: flex; flex-wrap: wrap; gap: 8px; }
+.codex-mode-options label {
+  display: inline-flex; align-items: center; gap: 6px;
+  min-height: 34px; padding: 5px 11px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--panel); color: var(--text); cursor: pointer;
+}
+.codex-mode-options label:hover { background: var(--surface); }
+.codex-mode-options label:has(input:checked) {
+  border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent-text);
+}
+.codex-mode-options label:has(input:disabled) { cursor: not-allowed; color: var(--dim); opacity: .65; }
+#provider-form .codex-mode-options input { margin: 0; width: auto; min-height: auto; flex: 0 0 auto; }
+.codex-mode-options input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#m-codex-mode-hint { margin: 6px 0 0; }
+#codex-model-fields[hidden] { display: none; }
+#codex-direct-fields[hidden] { display: none; }
+.codex-direct-line { display: grid; grid-template-columns: minmax(140px, .6fr) minmax(0, 2fr); gap: 12px; }
+.codex-direct-line > .field { min-width: 0; margin: 0; }
+.codex-direct-line input, .codex-direct-line select { width: 100%; min-width: 0; }
+@media (max-width: 640px) {
+  .codex-direct-line { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+}
+/* 直连请求不经过 Mixrouter,自动备用只服务本机路由请求,直连时收起。 */
+body[data-client="codex"][data-codex-mode="direct"] #kf-health { display: none; }
 #m-keys .rc-line,
 #m-models-list .rc-line,
 #m-codex-models-list .rc-line { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; }

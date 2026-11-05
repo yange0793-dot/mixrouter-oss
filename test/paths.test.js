@@ -211,13 +211,12 @@ test('白名单里的每一项在仓库里都存在(写错名字会让发布物�
 
 // ---------------------------------------------------------------- 防漂移:端口字面量
 
-test('默认端口与 mixrouter.js / mixctl 里的字面量一致', () => {
-  const mixrouter = fs.readFileSync(path.join(ROOT, 'mixrouter.js'), 'utf8');
+test('runtime configuration and mixctl use the shared default ports', () => {
+  const { runtimeConfig } = require('../lib/runtime/config');
+  const config = runtimeConfig({ root: ROOT, env: {}, home: ROOT });
   const mixctl = fs.readFileSync(path.join(ROOT, 'mixctl'), 'utf8');
-  assert.ok(mixrouter.includes(`process.env.MIXROUTER_PORT || ${paths.DEFAULT_PORTS.proxy}`),
-    `mixrouter.js 的代理端口默认值不是 ${paths.DEFAULT_PORTS.proxy}`);
-  assert.ok(mixrouter.includes(`process.env.MIXUI_PORT || ${paths.DEFAULT_PORTS.ui}`),
-    `mixrouter.js 的控制台端口默认值不是 ${paths.DEFAULT_PORTS.ui}`);
+  assert.equal(config.PROXY_PORT, paths.DEFAULT_PORTS.proxy);
+  assert.equal(config.UI_PORT, paths.DEFAULT_PORTS.ui);
   assert.ok(mixctl.includes(`process.env.MIXUI_PORT || ${paths.DEFAULT_PORTS.ui}`),
     `mixctl 的控制台端口默认值不是 ${paths.DEFAULT_PORTS.ui}`);
 });

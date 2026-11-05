@@ -94,6 +94,31 @@ test('anthropicToResponses:tool_result 里的图片也转 input_image,不带图�
   assert.strictEqual(noImg.input.find(i => i.type === 'function_call_output').output, 'file.txt');
 });
 
+test('anthropicToResponses:无效图片不生成空 input_image,降级为说明文字', () => {
+  // 空 data 以前会拼成 `data:image/png;base64,` 发给上游:上游收到的是坏图,链路却不报错。
+  const empty = wire.anthropicToResponses({
+    model: 'm', max_tokens: 64,
+    messages: [{ role: 'user', content: [
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: '' } },
+      { type: 'text', text: '后文' },
+    ] }],
+  });
+  assert.deepStrictEqual(empty.input[0].content, [
+    { type: 'input_text', text: '[图片:该图片格式转不成上游可收的 image_url,此处只保留文字]' },
+    { type: 'input_text', text: '后文' },
+  ]);
+  // tool_result 里只有一张无效图时,不能变成一个空 output(模型会以为工具什么也没返回)
+  const tool = wire.anthropicToResponses({
+    model: 'm', max_tokens: 64,
+    messages: [{ role: 'user', content: [{
+      type: 'tool_result', tool_use_id: 'tu_bad',
+      content: [{ type: 'image', source: { type: 'url', url: '/relative.png' } }],
+    }] }],
+  });
+  const out = tool.input.find(i => i.type === 'function_call_output');
+  assert.strictEqual(out.output, '[图片:该图片格式转不成上游可收的 image_url,此处只保留文字]');
+});
+
 test('anthropicToResponses:只含 tool_reference 的 tool_result 不能变成空结果', () => {
   // Claude Code 的 ToolSearch 结果就是这种形状:tool_result 里全是 tool_reference,没有 text/image。
   // 丢掉它们等于告诉模型"搜到 0 个工具",它会以为结果无效而反复重搜。
@@ -202,7 +227,7 @@ test('anthropicToResponses:Astra/Sol 回放 thinking 只用 summary,按出站模
     { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_1', content: 'ok' }] },
   ];
   const summary = { type: 'reasoning', summary: [{ type: 'summary_text', text: '先检查。' }] };
-  for (const model of ['gpt-6-astra', 'gpt-6-astra[1M]', 'gpt-5.6-sol']) {
+  for (const model of ['gpt-6-astra', 'gpt-6-astra[1M]', 'gpt-5.6-sol', 'gpt-6.1-sol']) {
     for (const [requestModel, options] of [[model, {}], ['mixr-main', { model }]]) {
       const r = wire.anthropicToResponses({ model: requestModel, messages }, options);
       assert.deepStrictEqual(r.input.map(i => i.type), ['message', 'reasoning', 'function_call', 'function_call_output']);
@@ -213,6 +238,11 @@ test('anthropicToResponses:Astra/Sol 回放 thinking 只用 summary,按出站模
   // 同一段历史切回 DeepSeek 时仍须 reasoning_text,不能全局改成 summary。
   const deepseek = wire.anthropicToResponses({ model: 'gpt-6-astra', messages }, { model: 'deepseek-v4-flash' });
   assert.deepStrictEqual(deepseek.input[1], { type: 'reasoning', content: [{ type: 'reasoning_text', text: '先检查。' }] });
+  // 家族匹配只认 gpt-<版本>-astra / -sol;其它 GPT 名字照旧走 content 形状。
+  for (const model of ['gpt-5.4', 'gpt-5.3-codex']) {
+    const r = wire.anthropicToResponses({ model, messages });
+    assert.deepStrictEqual(r.input[1], { type: 'reasoning', content: [{ type: 'reasoning_text', text: '先检查。' }] }, model);
+  }
 });
 
 test('thinking 经 JSON/SSE 往返后仍能同模型续聊与跨模型切换', () => {
@@ -402,7 +432,7 @@ function createResponsesUpstream() {
       for (const [i, item] of (Array.isArray(body.input) ? body.input : []).entries()) {
         if (item.type !== 'reasoning') continue;
         let message = '';
-        if (['gpt-6-astra', 'gpt-5.6-sol'].includes(body.model)) {
+        if (['gpt-6-astra', 'gpt-5.6-sol', 'gpt-6.1-sol'].includes(body.model)) {
           if (!Array.isArray(item.summary)) message = `Missing required parameter: 'input[${i}].summary'.`;
           else if (item.content && item.content.length) message = `Invalid 'input[${i}].content': array too long. Expected an array with maximum length 0`;
         } else if (body.model === 'deepseek-v4-flash') {
@@ -562,7 +592,7 @@ test('长会话续聊:main/subagent 槽位切换模型后,第 38 项按实际出
   assert.match(revision, /^[a-f0-9]{64}$/);
   for (const slot of ['main', 'subagent']) {
     for (const stream of [false, true]) {
-      for (const model of ['deepseek-v4-flash', 'gpt-6-astra[1M]', 'gpt-5.6-sol', 'deepseek-v4-flash']) {
+      for (const model of ['deepseek-v4-flash', 'gpt-6-astra[1M]', 'gpt-5.6-sol', 'gpt-6.1-sol', 'deepseek-v4-flash']) {
         mod._state.slotMap = { claude: { [slot]: { provider: 'p1', model } }, codex: {} };
         const before = up.requests.length;
         const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {

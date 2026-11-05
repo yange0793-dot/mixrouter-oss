@@ -160,7 +160,135 @@ test('itemToChatMessages 的畸形形态经 responsesToChat 兜住,不抛不产�
   }
 });
 
-// ---------------------------------------------------------------- 工具选择
+// ---------------------------------------------------------------- 工具结果里的图片
+// 真实故障:Read/截图工具返回的图片被 JSON.stringify 成 Base64 文字塞进 role:'tool',
+// 模型只看到一坨字符,上游照样 200。图片必须走 user.content 的 image_url 块。
+const IMG = 'data:image/png;base64,AA';
+const toolOut = (output, extra = {}) => ({ type: 'function_call_output', call_id: 'c1', output, ...extra });
+const media = cc => cc.messages.filter(m => m.role === 'user' && Array.isArray(m.content))
+  .flatMap(m => m.content.filter(p => p.type === 'image_url'));
+
+test('工具输出:文本+图片,文本留在 tool,tool_call_id 保留,图片走 user', () => {
+  const cc = wire.responsesToChat({ model: 'm', input: [
+    { type: 'message', role: 'user', content: '看图' },
+    { type: 'function_call', call_id: 'c1', name: 'read', arguments: '{}' },
+    toolOut([{ type: 'input_text', text: '图1' }, { type: 'input_image', image_url: IMG }]),
+  ] }, {});
+  assert.deepStrictEqual(cc.messages.map(m => m.role), ['user', 'assistant', 'tool', 'user']);
+  const tool = cc.messages[2];
+  assert.strictEqual(tool.tool_call_id, 'c1');
+  assert.strictEqual(tool.content, '图1');
+  assert.ok(!tool.content.includes('base64'), 'Base64 不许进工具文本');
+  assert.deepStrictEqual(cc.messages[3].content, [{ type: 'image_url', image_url: { url: IMG } }]);
+});
+
+test('工具输出:只有图片时 tool 正文为空,图片照发', () => {
+  const cc = wire.responsesToChat({ model: 'm', input: [
+    { type: 'message', role: 'user', content: 'q' },
+    { type: 'function_call', call_id: 'c1', name: 'read', arguments: '{}' },
+    toolOut([{ type: 'input_image', image_url: IMG }]),
+  ] }, {});
+  assert.deepStrictEqual(cc.messages.map(m => m.role), ['user', 'assistant', 'tool', 'user']);
+  assert.strictEqual(cc.messages[2].content, '');
+  assert.strictEqual(media(cc).length, 1);
+});
+
+test('工具输出:wrapped {content:[...]} 里的图片也识别,纯文本 wrapped 仍按旧行为拼接', () => {
+  const cc = wire.responsesToChat({ model: 'm', input: [
+    { type: 'message', role: 'user', content: 'q' },
+    toolOut({ content: [{ type: 'output_text', text: '截图' }, { type: 'input_image', image_url: IMG }] }),
+  ] }, {});
+  assert.strictEqual(cc.messages[1].content, '截图');
+  assert.strictEqual(media(cc).length, 1);
+  // 无图片的 wrapped 对象保持原有序列化
+  const plain = wire.responsesToChat({ model: 'm', input: [
+    { type: 'message', role: 'user', content: 'q' },
+    toolOut({ content: [{ type: 'output_text', text: 'r' }] }),
+  ] }, {});
+  assert.deepStrictEqual(plain.messages.map(m => m.role), ['user', 'tool']);
+  assert.strictEqual(plain.messages[1].content, 'r');
+});
+
+test('custom_tool_call_output 的图片走同一条路', () => {
+  const cc = wire.responsesToChat({ model: 'm', input: [
+    { type: 'message', role: 'user', content: 'q' },
+    { type: 'custom_tool_call', call_id: 'k1', name: 'shot', input: '{}' },
+    { type: 'custom_tool_call_output', call_id: 'k1', output: [
+      { type: 'input_text', text: 'done' }, { type: 'input_image', image_url: IMG },
+    ] },
+  ] }, {});
+  assert.strictEqual(cc.messages[2].role, 'tool');
+  assert.strictEqual(cc.messages[2].content, 'done');
+  assert.strictEqual(media(cc).length, 1);
+});
+
+test('工具输出:URL 图片与 detail 原样带出', () => {
+  const cc = wire.responsesToChat({ model: 'm', input: [
+    { type: 'message', role: 'user', content: 'q' },
+    toolOut([{ type: 'image_url', image_url: { url: 'https://x/y.png', detail: 'high' } }]),
+  ] }, {});
+  assert.deepStrictEqual(media(cc), [{ type: 'image_url', image_url: { url: 'https://x/y.png', detail: 'high' } }]);
+});
+
+test('工具输出:provider.drop_images 时丢图但留说明,不发 user 图片消息', () => {
+  const cc = wire.responsesToChat({ model: 'm', input: [
+    { type: 'message', role: 'user', content: 'q' },
+    { type: 'function_call', call_id: 'c1', name: 'read', arguments: '{}' },
+    toolOut([{ type: 'input_text', text: '图1' }, { type: 'input_image', image_url: IMG }]),
+  ] }, { drop_images: true });
+  assert.deepStrictEqual(cc.messages.map(m => m.role), ['user', 'assistant', 'tool']);
+  assert.ok(cc.messages[2].content.includes('丢弃图片'));
+  assert.deepStrictEqual(media(cc), []);
+});
+
+test('工具输出:拿不到 url 的图片留说明,不产生空 image_url', () => {
+  const cc = wire.responsesToChat({ model: 'm', input: [
+    { type: 'message', role: 'user', content: 'q' },
+    toolOut([{ type: 'input_text', text: 't' }, { type: 'input_image' }]),
+  ] }, {});
+  assert.deepStrictEqual(cc.messages.map(m => m.role), ['user', 'tool']);
+  assert.ok(cc.messages[1].content.includes('丢弃图片'));
+  assert.ok(cc.messages[1].content.includes('t'));
+  assert.deepStrictEqual(media(cc), []);
+});
+
+test('并行工具输出:两条 tool 消息先全部落地,图片 user 消息排在其后', () => {
+  const cc = wire.responsesToChat({ model: 'm', input: [
+    { type: 'message', role: 'user', content: '看这两张' },
+    { type: 'function_call', call_id: 'a', name: 'read', arguments: '{}' },
+    { type: 'function_call', call_id: 'b', name: 'read', arguments: '{}' },
+    { type: 'function_call_output', call_id: 'a', output: [{ type: 'input_image', image_url: IMG }] },
+    { type: 'function_call_output', call_id: 'b', output: [
+      { type: 'input_text', text: 'b' }, { type: 'input_image', image_url: 'data:image/png;base64,BB' },
+    ] },
+  ] }, {});
+  assert.deepStrictEqual(cc.messages.map(m => m.role), ['user', 'assistant', 'tool', 'tool', 'user']);
+  assert.deepStrictEqual(cc.messages.slice(2, 4).map(m => m.tool_call_id), ['a', 'b']);
+  assert.strictEqual(cc.messages[3].content, 'b');
+  assert.deepStrictEqual(cc.messages[4].content.map(p => p.image_url.url), [IMG, 'data:image/png;base64,BB']);
+});
+
+test('工具输出图片:不改动调用方传入的 input(不复制/不修改)', () => {
+  const body = { model: 'm', input: [
+    { type: 'function_call', call_id: 'c1', name: 'read', arguments: '{}' },
+    toolOut([{ type: 'input_text', text: 't' }, { type: 'input_image', image_url: IMG }]),
+  ] };
+  const snapshot = JSON.parse(JSON.stringify(body));
+  wire.responsesToChat(body, {});
+  assert.deepStrictEqual(body, snapshot);
+});
+
+test('普通 JSON 工具输出原样序列化,不因图片支持被改写', () => {
+  const cc = wire.responsesToChat({ model: 'm', input: [
+    { type: 'message', role: 'user', content: 'q' },
+    toolOut([1, 2]), toolOut({ a: 1 }), toolOut('plain'), toolOut(undefined),
+  ] }, {});
+  assert.deepStrictEqual(cc.messages.map(m => m.content), ['q', '[1,2]', '{"a":1}', 'plain', '""']);
+  assert.deepStrictEqual(cc.messages.map(m => m.role), ['user', 'tool', 'tool', 'tool', 'tool']);
+});
+
+
+
 test('chatToolChoice:字符串原样、function 两种写法归一、其余一律 auto', () => {
   assert.strictEqual(wire.chatToolChoice('auto'), 'auto');
   assert.strictEqual(wire.chatToolChoice('none'), 'none');

@@ -54,7 +54,10 @@
 - **压缩设置(独立入口)**:左侧「压缩设置」一处配置压缩专用渠道、模型与该渠道的 Key,
   以及 Claude Code 的 `autoCompactWindow`(用户全局 / 项目 / 项目本地三层,接受 `100k`–`1M`
   或 `auto`)。它只影响识别为压缩的请求与客户端磁盘设置,不改主模型、槽位或普通转发。
-  识别判据与取值含义与之前一致,详见[路由与会话](docs/routing-and-sessions.md)。
+  Codex 的默认本地压缩提示词与 `/v1/responses/compact` 共用这里的全局压缩模型和 Key,
+  不复制到 Codex 槽位。Codex 本地压缩支持 Responses / Chat 渠道;原生压缩仍要求上游支持
+  `/v1/responses/compact`,不把普通文本摘要伪装成原生压缩结果。
+  识别判据与取值含义详见[路由与会话](docs/routing-and-sessions.md)。
 - **首次接入向导**:控制台「渠道与 Key」页把「检查客户端 → 选/导入渠道 → 选模型与协议 →
   兼容测试 → 预览写入」串成一次流程。写入前只给受管字段差异,确认后才改客户端配置;
   写入后可从同一入口撤销,且只还原**当前值仍等于当初写后值**的字段,被改过就整体拒绝并列冲突。
@@ -202,6 +205,7 @@ CI 结果以 [Actions](https://github.com/yange0793-dot/mixrouter-oss/actions) �
 | [模型诊断与方案](docs/model-insights.md) | 上游自报模型、能力声明、无正文上下文统计、方案预览与切换 |
 | [故障排查](docs/troubleshooting.md) | 按症状查:503 分型、失败重试、Key 失效、粘性异常、日志位置、接入/兼容测试/升级失败、多 Key 备用 |
 | [参考手册](docs/reference.md) | 完整机制与字段、全部环境变量、诊断参数上限 |
+| [模块与运行边界](docs/architecture.md) | 后端装配、控制台模块、Codex 直连热切换与验证入口 |
 | [升级与回退](docs/upgrade-and-rollback.md) | 源码升级/回退、数据目录、客户端配置恢复、安装脚本的边界 |
 | [离线运行与验收](docs/offline-run-and-acceptance.md) | 无 Key、不出网的验收流程与已验证范围 |
 | [贡献指南](CONTRIBUTING.md) | 开发、测试与提交流程 |

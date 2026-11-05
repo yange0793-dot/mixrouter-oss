@@ -111,6 +111,7 @@ test('GET / 与 GET /index.html 仍然返回 public/index.html,字节级相同',
     const r = await request(route);
     assert.equal(r.status, 200, `${route} 应当 200`);
     assert.equal(r.headers['content-type'], 'text/html; charset=utf-8', `${route} 的 MIME 是既有行为,不许变`);
+    assert.equal(r.headers['cache-control'], 'no-cache');
     assert.ok(r.body.equals(want), `${route} 的正文必须与 public/index.html 逐字节相同`);
   }
 });
@@ -119,6 +120,7 @@ test('HEAD / 与 GET 同一条校验路径,但不带正文', async () => {
   const r = await request('/', 'HEAD');
   assert.equal(r.status, 200);
   assert.equal(r.headers['content-type'], 'text/html; charset=utf-8', 'HEAD 也要报出与 GET 相同的类型');
+  assert.equal(r.headers['cache-control'], 'no-cache');
   assert.equal(r.body.length, 0, 'HEAD 不许带正文');
   // 与 GET 的判别力对照:HEAD 如果比 GET 宽松,越界资源就能靠"探一下有没有"被摸到
   const escaped = await rawRequest('/..%2fpackage.json', 'HEAD');
@@ -158,6 +160,7 @@ test('页面引用的脚本和样式均可由真实静态路由读取', async ()
   for (const asset of assets) {
     const r = await request(asset);
     assert.equal(r.status, 200, asset);
+    assert.equal(r.headers['cache-control'], 'no-cache', asset);
     assert.ok(r.body.equals(fs.readFileSync(path.join(PUBLIC_DIR, asset.slice(1)))), asset);
     assert.match(r.headers['content-type'], asset.endsWith('.css') ? /^text\/css\b/ : /^(text|application)\/javascript\b/);
   }

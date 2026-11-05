@@ -221,6 +221,27 @@ test('Codex refuses direct Chat and removes router-only reviewer aliases on dire
   assert.equal(fs.readFileSync(claudeFile, 'utf8'), originalClaude);
 });
 
+test('Codex direct keeps newer real-model metadata even when the original catalog exists', () => {
+  const sourceFile = path.join(temporary, 'catalog.json');
+  const originalSource = fs.readFileSync(sourceFile, 'utf8');
+  const currentModel = { ...model, visibility: 'list', service_tiers: ['priority'], default_reasoning_level: 'ultra' };
+  fs.writeFileSync(path.join(temporary, 'mixrouter-model-catalog.json'), JSON.stringify({
+    models: [currentModel, { ...model, slug: 'mixr-main', visibility: 'list', x_mixrouter: { target: model.slug } }],
+  }));
+  fs.writeFileSync(path.join(temporary, 'mixrouter-model-catalog.source.json'), JSON.stringify({ source: sourceFile }));
+  fs.writeFileSync(codexFile, initial().replace('model_catalog_json = "catalog.json"',
+    'model_catalog_json = "mixrouter-model-catalog.json"\nservice_tier = "fast"'));
+  router.switchCodex(provider);
+  const document = config.read(codexFile).document;
+  const selectedCatalog = path.resolve(temporary, document.get('model_catalog_json'));
+  const entries = JSON.parse(fs.readFileSync(selectedCatalog, 'utf8')).models;
+  assert.deepEqual(entries.find(item => item.slug === model.slug), { ...currentModel, supported_in_api: true });
+  assert.ok(entries.filter(item => item.slug.startsWith('mixr-')).every(item => item.visibility !== 'list'));
+  assert.equal(document.get('service_tier'), 'fast');
+  assert.equal(document.get('model_reasoning_effort'), 'max');
+  assert.equal(fs.readFileSync(sourceFile, 'utf8'), originalSource);
+});
+
 test('Codex preserves providers referenced by profiles and blocks ambiguous profile writes', () => {
   const text = '[model_providers.mixr-old]\nname = "Old"\n[profiles.ci]\nmodel_provider = "mixr-old"\n';
   const patched = config.patch(text, { top: { model_provider: 'mixr-new' }, section: 'mixr-new', provider: { name: 'New' } });

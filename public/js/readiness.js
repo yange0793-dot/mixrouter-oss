@@ -774,12 +774,13 @@
     }
     const el = rEl('readiness-entry-status');
     if (!el) return;
+    const entryApp = readinessState.open ? readinessState.app : rCurApp();
     // 已经接入的客户端不需要再把向导摆在眼前:入口整体降一档,文案也改说它还能干什么。
     // liveFacts 依赖已到的状态快照;首帧还没有快照时不猜,按原样显示。
     let connected = false;
     try {
       const facts = typeof liveFacts === 'function' && typeof state !== 'undefined' && state
-        ? liveFacts(readinessState.app) : null;
+        ? liveFacts(entryApp) : null;
       connected = !!(facts && facts.healthy && facts.lv?.base_url);
     } catch { connected = false; }
     const entry = rEl('readiness-entry');
@@ -789,9 +790,9 @@
         ? '正在读取控制台状态…（尚未拿到第一份状态快照）'
         : '控制台离线：不会读取或写入客户端配置。')
       : connected
-        ? `${R_APPS[readinessState.app].label} 已接入；需要换渠道、换模型或撤销上次写入时再打开。`
-        : `当前选择 ${R_APPS[readinessState.app].label}；确认写入前不会改动任何配置文件。`;
-    el.textContent = readinessState.entryStatus || fallback;
+        ? `${R_APPS[entryApp].label} 已接入；需要换渠道、换模型或撤销上次写入时再打开。`
+        : `当前选择 ${R_APPS[entryApp].label}；确认写入前不会改动任何配置文件。`;
+    el.textContent = (entryApp === readinessState.app && readinessState.entryStatus) || fallback;
   }
 
   function readinessSyncButtons() {

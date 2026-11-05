@@ -5,6 +5,34 @@
 
 ## [Unreleased]
 
+#### 改进
+
+- Codex 渠道可保存「Codex 直连」或「Mixrouter 路由」接入方式；保存渠道只改渠道库，点渠道卡片的
+  「应用直连」「应用路由」才写客户端配置。直连时主模型与 reviewer 审查模型各选真实模型名，
+  直连模型目录不再带 `mixr-*` 路由别名。渠道的「强制直连」改称「绕过出站代理」，与接入方式区分。
+- Codex 直连保存主模型后，同一渠道、仍用原默认模型的活动主会话下一轮改用新模型，保留上下文、
+  推理档位与速度档位；需要 Node.js 22+ 与提供 `thread/settings/update` 的 Codex 本机后台。
+  控制台分开显示配置保存与会话同步结果，后台不可达时不报热切换成功。
+- 后端拆为应用装配、运行参数、配置仓库、客户端管理与分接口 HTTP 模块；控制台 `app.js` 拆成
+  渠道、模型、压缩、会话、会话覆盖、设置、日志与启动脚本，仍是经典脚本、无构建步骤，
+  边界见 [`docs/architecture.md`](docs/architecture.md)。持久化配置无法解析时拒绝启动并保留原文件。
+
+#### 修复
+
+- 路由模式下改 Claude 槽位后，同一会话的下一次槽位请求即用新落点，不再被旧的自动绑定挡住；
+  会话级槽位覆盖仍优先。
+- Claude 经 Chat 转发到 DeepSeek 思考模式等严格上游时，真实思考按 `reasoning_content` 回传；
+  没有可读思考的历史轮次不补空值。
+- Claude 经 Responses 转发时，`gpt-*-astra` / `gpt-*-sol` 按家族用 summary 形状回放思考，
+  `gpt-6.1-sol` 不再报 `Missing required parameter: 'input[N].summary'`。
+- 控制台静态资源返回 `Cache-Control: no-cache`，升级后浏览器不再沿用旧脚本。
+- `mixctl restart` 等旧进程实际退出后再启动新进程。
+- 压缩设置缺渠道或模型名时，「保存压缩模型」按钮直接禁用。
+- Responses/Anthropic 转 Chat 时，工具结果里的图片不再被序列化成 Base64 文本塞进 `role:"tool"`
+  的字符串内容（Responses ⇄ Chat 曾直接 `JSON.stringify` 数组，对象形状 `{content:[...]}`
+  还会静默丢图）。文字保留在该工具消息里，图片按 `image_url` 另发一条用户消息，并保持
+  并行工具调用先全部配对再发图；渠道标 `drop_images` 时仍只留一句说明。
+
 ## [3.10.0] - 2026-11-02
 
 #### 改进

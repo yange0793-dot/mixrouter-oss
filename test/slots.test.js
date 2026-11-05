@@ -98,6 +98,36 @@ test('槽位 CRUD:校验、部分更新、null 删除、落盘 slots.json', asyn
   assert.ok(st.claude.haiku && !st.claude.opus);
 });
 
+test('Claude uses updated global slots in the same session while explicit session slots remain authoritative', async () => {
+  const id = '628bc894-89ca-4f20-84d2-1623f1ddc028', key = 'cc:' + id;
+  const send = (model = 'mixr-main') => request(`http://127.0.0.1:${proxyPort()}/v1/messages`, 'POST',
+    { model, max_tokens: 32, messages: [{ role: 'user', content: 'fixture' }] },
+    { 'x-claude-code-session-id': id });
+  mod._state.store.claude[1].enabled = true;
+  const put = slot => api('/api/slots', { claude: { main: slot } }, 'PUT');
+  assert.equal((await send('glm-5.3')).status, 200);
+  assert.equal(mod._state.sessions.get(key).providerId, 'pa', 'the same conversation already has an automatic binding');
+  assert.equal((await put({ provider: 'pa', model: 'old-main' })).status, 200);
+  assert.equal((await send()).headers['x-mixrouter-model'], 'old-main');
+  assert.equal(mod._state.sessions.has(key), true);
+  assert.equal((await put({ provider: 'pb', model: 'new-main' })).status, 200);
+  const switched = await send();
+  assert.equal(switched.status, 200);
+  assert.equal(switched.headers['x-mixrouter-model'], 'new-main');
+  assert.equal(hits.at(-1).headers['x-api-key'], 'key-b');
+  assert.equal((await api('/api/sessions/' + encodeURIComponent(key) + '/pin', { provider: 'pa' })).status, 200);
+  assert.equal((await send()).headers['x-mixrouter-model'], 'new-main', 'explicit slot aliases still take precedence over the ordinary-model pin');
+  assert.equal(mod._state.sessions.get(key).pinned, true, 'slot requests do not rewrite the separate manual pin');
+  assert.equal(mod._state.sessions.get(key).providerId, 'pa');
+  const endpoint = '/api/sessions/' + encodeURIComponent(key) + '/routing';
+  const existing = await api(endpoint, undefined, 'GET');
+  const override = await api(endpoint, { expected_revision: existing.data.revision,
+    routing: { keys: {}, slots: { main: { provider: 'pa', model: 'session-model' } } } }, 'PUT');
+  assert.equal(override.status, 200, override.text);
+  await put({ provider: 'pb', model: 'latest-global' });
+  assert.equal((await send()).headers['x-mixrouter-model'], 'session-model');
+});
+
 test('Codex 独立模型:保存、冷启动重载、同会话双槽转发保留各自落点', async () => {
   const body = { codex: { main: { provider: 'ca', model: ' custom-main ' },
     reviewer: { provider: 'ca', model: 'custom-review' } } };
