@@ -16,7 +16,7 @@ const vm = require('node:vm');
 
 const ROOT = path.resolve(__dirname, '..');
 const source = fs.readFileSync(path.join(ROOT, 'public/js/profiles.js'), 'utf8');
-const appSource = fs.readFileSync(path.join(ROOT, 'public/js/app.js'), 'utf8');
+const appSource = require('./console-source').consoleSource();
 const workspaceSource = fs.readFileSync(path.join(ROOT, 'public/js/workspace.js'), 'utf8');
 const html = fs.readFileSync(path.join(ROOT, 'public/index.html'), 'utf8');
 const plain = value => JSON.parse(JSON.stringify(value));

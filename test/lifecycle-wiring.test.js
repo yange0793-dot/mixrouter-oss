@@ -43,7 +43,8 @@ const RESERVED_PORTS = [8787, 8788];
 
 // ---------------------------------------------------------------- 判据的真值:从源码取
 const entrySrc = () => fs.readFileSync(ENTRY, 'utf8');
-const wiredDrainMs = () => Number(entrySrc().match(/drainTimeoutMs:\s*(\d+)/)[1]);
+const applicationSrc = () => fs.readFileSync(path.join(ROOT, 'lib/application.js'), 'utf8');
+const wiredDrainMs = () => Number(applicationSrc().match(/drainTimeoutMs:\s*(\d+)/)[1]);
 // 接线口径:排空上限 + 落盘下限 必须落在 mixctl 强杀线以内(余量留给进程启动/信号投递/抖动)
 const budgetCeilingMs = () => wiredDrainMs() + MIN_FLUSH_BUDGET_MS;
 
@@ -100,17 +101,17 @@ function get(port, p) {
 const tmpData = () => fs.mkdtempSync(path.join(os.tmpdir(), 'mixr-wiring-'));
 
 // ---------------------------------------------------------------- 1) 静态接线判据
-test('W1 只在 require.main 块里用 lifecycle;排空口径合规;保留合并后的导出契约', async t => {
+test('W1 only the executable entry starts the application; drain and exports remain intact', async t => {
   guard(t);
-  const src = entrySrc();
+  const entry = entrySrc(), src = applicationSrc();
 
   // (a) 落点:createLifecycle 只许出现在 require.main 块里。
   //     被测试 require 时行为必须一字不变(「不自动起服务、不吞异常」),所以这条要钉死。
-  const mainAt = src.indexOf('if (require.main === module) {');
+  const mainAt = entry.indexOf('if (require.main === module) {');
   assert.ok(mainAt > 0, '找不到 require.main 块');
-  assert.equal(src.slice(0, mainAt).includes('createLifecycle'), false,
-    'lib/server/lifecycle 只能在 require.main 块内使用 —— 顶层(被 require 时)引入会改变库行为');
-  assert.ok(src.slice(mainAt).includes('createLifecycle'), 'require.main 块里没接上 lifecycle');
+  assert.equal(entry.slice(0, mainAt).includes('startApplication()'), false);
+  assert.match(entry.slice(mainAt), /application\.startApplication\(\)/);
+  assert.match(src, /function startApplication\(\)[\s\S]*?createLifecycle/);
 
   // (b) 排空上限:必须是接线口径定下的 2000,不是 lifecycle 的默认 15000。
   assert.match(src, /drainTimeoutMs:\s*2000\s*,/,
@@ -133,7 +134,7 @@ test('W1 只在 require.main 块里用 lifecycle;排空口径合规;保留合并
   });
   assert.equal(r.status, 0, r.stderr);
   const keys = JSON.parse(r.stdout.match(/KEYS=(.*)/)[1]);
-  assert.equal(keys.length, 79, `合并后的导出键数目变了(应为 79,现在 ${keys.length})`);
+  assert.equal(keys.length, 81, 'the existing exports plus start/stopApplication are required');
   for (const k of ['proxyHandler', 'apiHandler', 'listen', 'explainRoute', 'resolveRoute', '_state',
     'sweepLogsNow', 'startLogRetention', 'updateCodexConfig'])
     assert.ok(keys.includes(k), `导出面少了 ${k}`);

@@ -205,6 +205,7 @@ CI 结果以 [Actions](https://github.com/yange0793-dot/mixrouter-oss/actions) �
 | [模型诊断与方案](docs/model-insights.md) | 上游自报模型、能力声明、无正文上下文统计、方案预览与切换 |
 | [故障排查](docs/troubleshooting.md) | 按症状查:503 分型、失败重试、Key 失效、粘性异常、日志位置、接入/兼容测试/升级失败、多 Key 备用 |
 | [参考手册](docs/reference.md) | 完整机制与字段、全部环境变量、诊断参数上限 |
+| [模块与运行边界](docs/architecture.md) | 后端装配、控制台模块、Codex 直连热切换与验证入口 |
 | [升级与回退](docs/upgrade-and-rollback.md) | 源码升级/回退、数据目录、客户端配置恢复、安装脚本的边界 |
 | [离线运行与验收](docs/offline-run-and-acceptance.md) | 无 Key、不出网的验收流程与已验证范围 |
 | [贡献指南](CONTRIBUTING.md) | 开发、测试与提交流程 |

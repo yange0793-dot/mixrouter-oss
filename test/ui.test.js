@@ -7,8 +7,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const html = fs.readFileSync(path.join(__dirname, '../public/index.html'), 'utf8');
-const source = fs.readFileSync(path.join(__dirname, '../public/js/app.js'), 'utf8');
-const script = new vm.Script(source, { filename: 'public/js/app.js' });
+const source = require('./console-source').consoleSource();
+const { runConsole } = require('./console-source');
 const { createExplainer } = require('../lib/routing/explain');
 const { createSlotTable } = require('../lib/routing/slots');
 
@@ -240,6 +240,14 @@ async function harness(data = fixture(), opts = {}) {
       if (url === '/api/codex/config') {
         if (options.method === 'POST') {
           if (body.revision !== data.live.codex.revision) return { ok: false, status: 409, json: async () => ({ error: 'Codex config changed; reload first' }) };
+          if (body.action === 'direct_models') {
+            for (const key of ['model', 'review_model']) {
+              if (Object.hasOwn(body, key)) data.live.codex[key] = body[key] || '';
+            }
+            data.live.codex.revision = 'codex-model-saved';
+            return { ok: true, json: async () => ({ ok: true, codex: structuredClone(data.live.codex),
+              ...(opts.codexRuntime ? { runtime: opts.codexRuntime } : {}) }) };
+          }
           const raw = body.model_auto_compact_token_limit;
           const match = String(raw).match(/^(\d+(?:\.\d+)?)(k|m)?$/);
           const configured = raw === 'auto' ? null : Number(match[1]) * (match[2] === 'm' ? 1000000 : match[2] === 'k' ? 1000 : 1);
@@ -326,7 +334,7 @@ async function harness(data = fixture(), opts = {}) {
     // eval 的完成值让测试等待行内异步动作,事件里的 this / event 仍是实际控件。
     return run('(function(event){return eval(__inlineCode)}).call(__inlineElement,__inlineEvent)');
   };
-  script.runInContext(context);
+  runConsole(context);
   await run('refreshTask');
   return {
     data, get, run, requests, document, listeners, windowListeners, tabs, intervals, downloads,
@@ -489,6 +497,21 @@ test('压缩 Key 仅显示标签与 ID，固定选择不改 active_key 或通用
   h.run("pickCompactProvider('a2')");
   assert.equal(h.run('compactDraft.key_id'), '');
   assert.equal(h.get('compact-key').value, '');
+});
+
+test('压缩草稿缺模型名时保存按钮禁用，补上模型名后恢复', async () => {
+  const data = fixture(); data.compact = { key_selection_supported: true, revision: 'rev-one', mode: 'single', selection: { provider: 'a1', model: 'claude-special', key_id: '' }, providers: [data.providers.claude[0]], rules: [] };
+  const h = await harness(data);
+  assert.equal(h.get('save-compact').disabled, false);
+  h.run("pickCompactModel('')");
+  assert.equal(h.get('save-compact').disabled, true, '模型名为空时不能点保存');
+  h.run("pickCompactModel('__custom__'); setCompactCustom('   ')");
+  assert.equal(h.get('save-compact').disabled, true, '只有空白的自定义模型名同样禁用');
+  h.run("setCompactCustom('draft-model')");
+  assert.equal(h.get('save-compact').disabled, false);
+  // 透传规则没有模型名:selection.model 为 undefined,轮询里算按钮状态不能抛错。
+  h.run("compactDraft.model = undefined; setConnection(true)");
+  assert.equal(h.get('save-compact').disabled, true);
 });
 
 test('失效固定 Key 明确保留，不自动改选第一项；刷新后的停用同样显示', async () => {
@@ -726,12 +749,12 @@ test('窗口面板事件不污染压缩草稿，未保存窗口值阻止离页',
   assert.equal(event.returnValue, '');
 });
 
-test('渠道直连开关读取并提交布尔值，不触碰客户端配置', async () => {
+test('绕过出站代理读取并提交布尔值，不触碰客户端配置', async () => {
   const data = fixture(); data.providers.claude[0].direct = true;
   const h = await harness(data);
   // 默认视图已改为「概览」,渠道卡片的渲染只在渠道页进行 —— 本用例要先站在渠道页上
   h.run("view = 'providers'; renderProviders()");
-  assert.match(h.get('prov-grid').innerHTML, /<span class="tag">直连<\/span>/);
+  assert.match(h.get('prov-grid').innerHTML, /<span class="tag">绕过出站代理<\/span>/);
   h.run("openProvider('a1')");
   assert.equal(h.get('m-direct').checked, true);
   h.get('m-direct').checked = false;
@@ -1159,6 +1182,210 @@ function codexSlotsFixture() {
   return data;
 }
 
+function codexDirectFixture() {
+  const data = codexSlotsFixture();
+  data.current.codex = '@router';
+  data.live.codex = {
+    ...data.live.codex, provider: 'external-provider', router: false, match: false,
+    connection_mode: 'direct', direct_provider_id: 'o1', direct_provider_name: 'Beta',
+    base_url: data.providers.codex[0].base_url, model: 'gpt-test', review_model: 'gpt-review',
+    model_reasoning_effort: 'xhigh', service_tier: 'fast',
+  };
+  return data;
+}
+
+test('Codex reads the actual direct provider despite a stale library selection', async () => {
+  const h = await harness(codexDirectFixture());
+  h.run("setApp('codex')");
+  const summary = h.get('liveinfo').innerHTML;
+  for (const expected of ['Beta', 'gpt-test', 'xhigh', 'Fast']) assert.ok(summary.includes(expected), expected);
+  assert.equal(h.get('drift-banner').classList.contains('show'), false);
+  const card = h.get('prov-grid').innerHTML.match(/<article\b[^>]*data-provider="o1"[^>]*>[\s\S]*?<\/article>/)?.[0];
+  assert.ok(card, 'actual direct provider is present');
+  assert.match(card, /class="card[^"]*\bcur\b/);
+  assert.doesNotMatch(card, /配置不一致|库内选中/);
+  assert.equal(h.requests.some(r => r.method !== 'GET'), false, 'recognition must not rewrite client settings');
+});
+
+test('Codex direct main and reviewer selectors show real names and save independently', async () => {
+  const h = await harness(codexDirectFixture());
+  h.run("setApp('codex')");
+  assert.equal(h.get('codex-direct-fields').hidden, false);
+  assert.match(h.get('codex-direct-fields').innerHTML, /reviewer · 审查模型/);
+  assert.doesNotMatch(h.get('codex-direct-fields').innerHTML, /mixr-main|mixr-reviewer/);
+  assert.equal(h.get('codex-direct-model').value, 'gpt-test');
+  assert.equal(h.get('codex-direct-review_model').value, 'gpt-review');
+  await h.run("saveCodexDirectModel('review_model','gpt-test')");
+  assert.deepEqual(h.requests.findLast(r => r.method === 'POST').body,
+    { action: 'direct_models', review_model: 'gpt-test', revision: 'codex-one' });
+  assert.equal(h.run('state.live.codex.model'), 'gpt-test');
+  await h.run("saveCodexDirectModel('model','gpt-review')");
+  assert.equal(h.run('state.live.codex.review_model'), 'gpt-test');
+  assert.equal(h.requests.some(r => r.url === '/api/slots' && r.method !== 'GET'), false);
+});
+
+test('Codex direct custom reviewer survives polling, can follow main, and is disabled offline or under profile', async () => {
+  const h = await harness(codexDirectFixture()); h.run("setApp('codex')");
+  await h.run("saveCodexDirectModel('review_model','__custom__')");
+  h.get('codex-direct-review_model').value = 'handwritten-reviewer';
+  h.run("codexDirectValue='handwritten-reviewer'");
+  const input = h.get('codex-direct-review_model'); input.focus();
+  await h.run('refresh()');
+  assert.equal(h.get('codex-direct-review_model'), input);
+  await h.run("saveCodexDirectModel('review_model','handwritten-reviewer')");
+  assert.equal(h.run('state.live.codex.review_model'), 'handwritten-reviewer');
+  await h.run("saveCodexDirectModel('review_model','')");
+  assert.equal(h.requests.findLast(r => r.method === 'POST').body.review_model, null);
+  const count = h.requests.filter(r => r.method === 'POST').length;
+  h.data.live.codex.profile = 'ci'; await h.run('refresh()');
+  assert.equal(h.get('codex-direct-model').disabled, true);
+  await h.run("saveCodexDirectModel('model','blocked')");
+  h.disconnect(true); await h.run('refresh()');
+  await h.run("saveCodexDirectModel('model','blocked')");
+  assert.equal(h.requests.filter(r => r.method === 'POST').length, count);
+});
+
+test('Codex direct save error restores selection without changing routing or claiming success', async () => {
+  const h = await harness(codexDirectFixture()); h.run("setApp('codex')");
+  h.run("fetch = async () => ({ok:false,status:409,json:async()=>({error:'reload first'})})");
+  await h.run("saveCodexDirectModel('model','another-model')");
+  assert.equal(h.get('codex-direct-model').value, 'gpt-test');
+  assert.match(h.get('codex-model-status').textContent, /保存失败.*reload first/);
+});
+
+test('Codex reports runtime confirmation independently from a successful config save', async () => {
+  for (const [runtime, message] of [
+    [{ status: 'applied', updated: 2 }, /已热切换.*2 个会话.*gpt-review/],
+    [{ status: 'partial', updated: 1, failed: 1 }, /1 个会话已切换.*1 个会话待同步/],
+    [{ status: 'not_running', updated: 0 }, /已保存.*未检测到运行中的 Codex/],
+    [{ status: 'unavailable', updated: 0 }, /已保存.*运行时同步未完成/],
+  ]) {
+    const h = await harness(codexDirectFixture(), { codexRuntime: runtime });
+    h.run("setApp('codex')");
+    await h.run("saveCodexDirectModel('model','gpt-review')");
+    assert.match(h.get('codex-model-status').textContent, message);
+    assert.equal(h.get('codex-direct-model').value, 'gpt-review');
+    assert.equal(h.run('state.live.codex.model_reasoning_effort'), 'xhigh');
+    assert.equal(h.run('state.live.codex.service_tier'), 'fast');
+    if (runtime.status !== 'applied') assert.doesNotMatch(h.get('codex-model-status').textContent, /已热切换/);
+  }
+});
+
+test('Codex direct save result belongs to the config revision that produced it', async () => {
+  const h = await harness(codexDirectFixture(), { codexRuntime: { status: 'applied', updated: 2 } });
+  h.run("setApp('codex')");
+  await h.run("saveCodexDirectModel('model','gpt-review')");
+  await h.run('refresh()'); h.run('renderCodexModelStatus()');
+  assert.match(h.get('codex-model-status').textContent, /已热切换.*gpt-review/, 'same revision keeps the result');
+  h.data.live.codex.revision = 'codex-external'; h.data.live.codex.model = 'gpt-test';
+  await h.run('refresh()');
+  assert.equal(h.get('codex-model-status').textContent, '当前直连 · 模型配置已读取');
+  assert.equal(h.get('codex-direct-model').value, 'gpt-test');
+});
+
+test('Codex direct save locks editing and keeps the pending choice while the request is in flight', async () => {
+  const h = await harness(codexDirectFixture()); h.run("setApp('codex')");
+  h.run("globalThis.__fetch = fetch; fetch = (url, o) => url === '/api/codex/config' && o?.method === 'POST' ? new Promise(r => { globalThis.__release = () => r(__fetch(url, o)); }) : __fetch(url, o)");
+  const saving = h.run("saveCodexDirectModel('model','gpt-review')");
+  assert.equal(h.get('codex-direct-model').disabled, true);
+  assert.equal(h.get('codex-direct-model').value, 'gpt-review');
+  assert.match(h.get('codex-model-status').textContent, /正在保存/);
+  await h.run('refresh()');
+  assert.equal(h.get('codex-direct-model').value, 'gpt-review', 'a poll during the save must not flip the select back');
+  assert.equal(h.get('codex-direct-model').disabled, true);
+  h.run('__release()'); await saving;
+  assert.equal(h.get('codex-direct-model').disabled, false);
+  assert.equal(h.get('codex-direct-model').value, 'gpt-review');
+});
+
+test('Codex applies the saved connection mode to the selected provider', async () => {
+  for (const mode of ['direct', 'router']) {
+    const data = fixture();
+    data.providers.codex[0].codex_mode = mode;
+    const h = await harness(data);
+    h.run("setApp('codex')");
+    await h.confirm("switchProvider('o1')");
+    assert.deepEqual(h.requests.findLast(r => r.url === '/api/switch/o1').body, { mode });
+    assert.equal(h.requests.some(r => r.url === '/api/slots'), false, 'backend applies routing in the same operation');
+  }
+  const h = await harness();
+  await h.confirm("switchProvider('a1')");
+  assert.equal(h.requests.findLast(r => r.url === '/api/switch/a1').body, undefined, 'Claude keeps its existing request');
+});
+
+test('Codex Chat channels can be applied through routing', async () => {
+  const data = fixture();
+  data.providers.codex[1].enabled = true;
+  const h = await harness(data);
+  h.run("setApp('codex')");
+  await h.confirm("switchProvider('o2')");
+  assert.deepEqual(h.requests.findLast(r => r.url === '/api/switch/o2').body, { mode: 'router' });
+});
+
+test('Codex connection preference is saved independently from outbound proxy and client configuration', async () => {
+  const data = codexDirectFixture();
+  data.providers.codex[0].direct = true;
+  const h = await harness(data);
+  h.run("setApp('codex'); openProvider('o1')");
+  assert.equal(h.get('m-codex-mode').hidden, false);
+  assert.equal(h.get('m-codex-mode-direct').checked, true);
+  h.get('m-codex-mode-direct').checked = false;
+  h.get('m-codex-mode-router').checked = true;
+  await h.run('saveProvider()');
+  const saved = h.requests.findLast(r => r.url === '/api/providers/o1' && r.method === 'PUT');
+  assert.equal(saved.body.codex_mode, 'router');
+  assert.equal(saved.body.direct, true);
+  assert.equal(h.requests.some(r => /^\/api\/(switch|router)\//.test(r.url)), false);
+  h.run("setApp('claude'); openProvider('a1')");
+  assert.equal(h.get('m-codex-mode').hidden, true);
+  await h.run('saveProvider()');
+  assert.equal(Object.hasOwn(h.requests.findLast(r => r.url === '/api/providers/a1').body, 'codex_mode'), false);
+});
+
+test('Codex Chat channel editor disables native direct mode', async () => {
+  const h = await harness();
+  h.run("setApp('codex'); openProvider('o2')");
+  assert.equal(h.get('m-codex-mode-direct').disabled, true);
+  assert.equal(h.get('m-codex-mode-router').checked, true);
+  await h.run('saveProvider()');
+  assert.equal(h.requests.findLast(r => r.url === '/api/providers/o2' && r.method === 'PUT').body.codex_mode, 'router');
+});
+
+test('Codex router diagnostics cannot invalidate an active native direct connection', async () => {
+  const h = await harness(codexDirectFixture());
+  h.run(`testResults.o1 = {ok:false,status:403,body:'This account only allows Codex official clients'};
+    liveHealth = {providers:[{provider:'o1',eligible:false}]}; setApp('codex')`);
+  const card = h.get('prov-grid').innerHTML.match(/<article\b[^>]*data-provider="o1"[^>]*>[\s\S]*?<\/article>/)?.[0];
+  assert.ok(card);
+  assert.match(card, /路由器检测/);
+  assert.match(card, /403/);
+  assert.doesNotMatch(card, />暂不可用</);
+  assert.match(card, /class="card[^"]*\bcur\b/);
+});
+
+test('Codex saved routing preference does not change the active direct health or offline snapshot', async () => {
+  const data = codexDirectFixture();
+  data.providers.codex[0].codex_mode = 'router';
+  const h = await harness(data);
+  h.run("view = 'providers'; liveHealth = {providers:[{provider:'o1',eligible:false}]}; setApp('codex')");
+  assert.doesNotMatch(h.get('prov-grid').innerHTML, />暂不可用</);
+  assert.match(h.get('prov-grid').innerHTML, />应用路由</);
+  h.disconnect(); await h.run('refresh()');
+  assert.match(h.get('prov-grid').innerHTML, /最后快照 · 待确认/);
+  assert.doesNotMatch(h.get('prov-grid').innerHTML, /库内选中/);
+});
+
+test('Codex unmatched routed model does not mark the main-slot provider active', async () => {
+  const data = codexSlotsFixture();
+  data.live.codex.model = 'unregistered-model';
+  const h = await harness(data);
+  h.run("view = 'providers'; setApp('codex')");
+  assert.doesNotMatch(h.get('prov-grid').innerHTML, /路由在用/);
+  data.live.codex.model = 'mixr-main';
+  await h.run('refresh()');
+  assert.match(h.get('prov-grid').innerHTML, /路由在用/);
+});
+
 function codexCompactFixture() {
   const data = codexSlotsFixture();
   Object.assign(data.live.codex, { config_file: '/home/test/.codex/config.toml', model_auto_compact_token_limit: 200000,
@@ -1424,9 +1651,12 @@ test('Codex slot badges show effective routing, not a second apply step', async 
   h.data.live.codex.model = 'mixr-main'; await h.run('refresh()');
   assert.equal((h.get('codex-model-fields').innerHTML.match(/即时生效/g) || []).length, 2);
   h.data.live.codex.router = false; await h.run('refresh()');
-  assert.match(h.get('codex-model-fields').innerHTML, /直连 · 不使用槽位/);
-  assert.doesNotMatch(h.get('codex-model-fields').innerHTML, /badge on/);
+  assert.equal(h.get('codex-model-fields').hidden, true);
+  assert.equal(h.get('slots-details').hidden, true);
+  assert.equal(h.get('codex-compact-panel').hidden, false);
+  assert.match(h.get('codex-models-hint').textContent, /Codex 直连/);
   h.data.live.codex.error = 'config unreadable'; await h.run('refresh()');
+  assert.equal(h.get('codex-model-fields').hidden, false);
   assert.match(h.get('codex-model-fields').innerHTML, /配置读取失败/);
   assert.doesNotMatch(h.get('codex-model-fields').innerHTML, /badge on/);
 });

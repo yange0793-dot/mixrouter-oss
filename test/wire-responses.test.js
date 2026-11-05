@@ -227,7 +227,7 @@ test('anthropicToResponses:Astra/Sol 回放 thinking 只用 summary,按出站模
     { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_1', content: 'ok' }] },
   ];
   const summary = { type: 'reasoning', summary: [{ type: 'summary_text', text: '先检查。' }] };
-  for (const model of ['gpt-6-astra', 'gpt-6-astra[1M]', 'gpt-5.6-sol']) {
+  for (const model of ['gpt-6-astra', 'gpt-6-astra[1M]', 'gpt-5.6-sol', 'gpt-6.1-sol']) {
     for (const [requestModel, options] of [[model, {}], ['mixr-main', { model }]]) {
       const r = wire.anthropicToResponses({ model: requestModel, messages }, options);
       assert.deepStrictEqual(r.input.map(i => i.type), ['message', 'reasoning', 'function_call', 'function_call_output']);
@@ -238,6 +238,11 @@ test('anthropicToResponses:Astra/Sol 回放 thinking 只用 summary,按出站模
   // 同一段历史切回 DeepSeek 时仍须 reasoning_text,不能全局改成 summary。
   const deepseek = wire.anthropicToResponses({ model: 'gpt-6-astra', messages }, { model: 'deepseek-v4-flash' });
   assert.deepStrictEqual(deepseek.input[1], { type: 'reasoning', content: [{ type: 'reasoning_text', text: '先检查。' }] });
+  // 家族匹配只认 gpt-<版本>-astra / -sol;其它 GPT 名字照旧走 content 形状。
+  for (const model of ['gpt-5.4', 'gpt-5.3-codex']) {
+    const r = wire.anthropicToResponses({ model, messages });
+    assert.deepStrictEqual(r.input[1], { type: 'reasoning', content: [{ type: 'reasoning_text', text: '先检查。' }] }, model);
+  }
 });
 
 test('thinking 经 JSON/SSE 往返后仍能同模型续聊与跨模型切换', () => {
@@ -427,7 +432,7 @@ function createResponsesUpstream() {
       for (const [i, item] of (Array.isArray(body.input) ? body.input : []).entries()) {
         if (item.type !== 'reasoning') continue;
         let message = '';
-        if (['gpt-6-astra', 'gpt-5.6-sol'].includes(body.model)) {
+        if (['gpt-6-astra', 'gpt-5.6-sol', 'gpt-6.1-sol'].includes(body.model)) {
           if (!Array.isArray(item.summary)) message = `Missing required parameter: 'input[${i}].summary'.`;
           else if (item.content && item.content.length) message = `Invalid 'input[${i}].content': array too long. Expected an array with maximum length 0`;
         } else if (body.model === 'deepseek-v4-flash') {
@@ -587,7 +592,7 @@ test('长会话续聊:main/subagent 槽位切换模型后,第 38 项按实际出
   assert.match(revision, /^[a-f0-9]{64}$/);
   for (const slot of ['main', 'subagent']) {
     for (const stream of [false, true]) {
-      for (const model of ['deepseek-v4-flash', 'gpt-6-astra[1M]', 'gpt-5.6-sol', 'deepseek-v4-flash']) {
+      for (const model of ['deepseek-v4-flash', 'gpt-6-astra[1M]', 'gpt-5.6-sol', 'gpt-6.1-sol', 'deepseek-v4-flash']) {
         mod._state.slotMap = { claude: { [slot]: { provider: 'p1', model } }, codex: {} };
         const before = up.requests.length;
         const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {

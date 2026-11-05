@@ -10,8 +10,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const html = fs.readFileSync(path.join(__dirname, '../public/index.html'), 'utf8');
-const source = fs.readFileSync(path.join(__dirname, '../public/js/app.js'), 'utf8');
-const script = new vm.Script(source, { filename: 'public/js/app.js' });
+const source = require('./console-source').consoleSource();
+const { runConsole } = require('./console-source');
 
 // 两把真 Key 值只用于"绝不出现在界面/请求里"的反向断言。
 const SECRET_ONE = 'sk-secret-account-one-should-never-leak';
@@ -190,7 +190,7 @@ async function harness(data = fixture()) {
     },
   });
   const run = code => vm.runInContext(code, context);
-  script.runInContext(context);
+  runConsole(context);
   await run('refreshTask');
   return {
     data, get, run, requests, document, listeners, windowListeners, tabs, intervals,

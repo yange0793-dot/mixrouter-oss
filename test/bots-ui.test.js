@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../public/js/bots.js'), 'utf8');
-const appSource = fs.readFileSync(path.join(__dirname, '../public/js/app.js'), 'utf8');
+const appSource = require('./console-source').consoleSource();
 const html = fs.readFileSync(path.join(__dirname, '../public/index.html'), 'utf8');
 const plain = value => JSON.parse(JSON.stringify(value));
 const fixture = bots => ({

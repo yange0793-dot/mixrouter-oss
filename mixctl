@@ -277,7 +277,7 @@ async function explainCmd(args) {
   }
 }
 
-function start() {
+async function start() {
   const pid = getPid();
   if (pid && alive(pid)) return console.log(`mixrouter 已在运行 (pid ${pid}),控制台 http://127.0.0.1:${UI_PORT}`);
   fs.mkdirSync(RUN_DIR, { recursive: true });
@@ -290,9 +290,10 @@ function start() {
       const t0 = Date.now();
       const poll = () => api('/healthz')
         .then(() => console.log(`mixrouter 已由 launchd 拉起 (${job.label})\n  Claude 代理 http://127.0.0.1:8787/v1/messages\n  Codex  代理 http://127.0.0.1:8787/v1/responses\n  控制台      http://127.0.0.1:${UI_PORT}`))
-        .catch(() => Date.now() - t0 > 6000
-          ? console.log(`已 kickstart ${job.label},但端口未就绪,查看日志: mixctl logs`)
-          : new Promise(r => setTimeout(r, 300)).then(poll));
+        .catch(() => {
+          if (Date.now() - t0 > 6000) throw new Error(`已 kickstart ${job.label},但端口未就绪,查看日志: mixctl logs`);
+          return new Promise(resolve => setTimeout(resolve, 300)).then(poll);
+        });
       return poll();
     } catch (e) {
       console.log(`launchd 拉起失败(${String((e.stderr || e.message || '')).trim().slice(0, 120)}),改为直接派生`);
@@ -305,17 +306,32 @@ function start() {
   // 等控制台端口就绪(最多 5s)
   const t0 = Date.now();
   const poll = () => api('/healthz').then(() => console.log(`mixrouter 已启动 (pid ${child.pid})\n  Claude 代理 http://127.0.0.1:8787/v1/messages\n  Codex  代理 http://127.0.0.1:8787/v1/responses\n  控制台      http://127.0.0.1:${UI_PORT}`))
-    .catch(() => Date.now() - t0 > 5000 ? console.log(`已派生 pid ${child.pid},但端口未就绪,查看日志: mixctl logs`) : setTimeout(poll, 300));
-  poll();
+    .catch(() => {
+      if (Date.now() - t0 > 5000) throw new Error(`已派生 pid ${child.pid},但端口未就绪,查看日志: mixctl logs`);
+      return new Promise(resolve => setTimeout(resolve, 300)).then(poll);
+    });
+  return poll();
 }
-function stop() {
+async function stop() {
   const pid = getPid();
   if (!pid || !alive(pid)) { try { fs.unlinkSync(PID_FILE); } catch {} return console.log('mixrouter 未在运行'); }
   process.kill(pid, 'SIGTERM');
   const t0 = Date.now();
-  const wait = () => alive(pid) ? (Date.now() - t0 > 4000 ? (process.kill(pid, 'SIGKILL'), console.log(`已强杀 pid ${pid}`))
-    : setTimeout(wait, 200)) : (fs.unlinkSync(PID_FILE), console.log(`已停止 (pid ${pid})`));
-  wait();
+  while (alive(pid)) {
+    if (Date.now() - t0 > 4000) {
+      process.kill(pid, 'SIGKILL');
+      const { waitForExit } = require('./lib/service-manager');
+      if (!(await waitForExit(pid, { timeoutMs: 2000 })).exited) throw new Error(`pid ${pid} 尚未退出`);
+      break;
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  if (getPid() === pid) fs.unlinkSync(PID_FILE);
+  console.log(`已停止 (pid ${pid})`);
+}
+async function restart() {
+  await stop();
+  await start();
 }
 async function status() {
   const pid = getPid();
@@ -794,9 +810,9 @@ async function probeCmd(args) {
 }
 
 const cmd = process.argv[2] || 'status';
-if (cmd === 'start') start();
-else if (cmd === 'stop') stop();
-else if (cmd === 'restart') { const pid = getPid(); if (pid && alive(pid)) stop(); setTimeout(start, 600); }
+if (['start', 'stop', 'restart'].includes(cmd)) {
+  ({ start, stop, restart })[cmd]().catch(error => { console.error(error.message); process.exitCode = 1; });
+}
 else if (cmd === 'status') status();
 else if (cmd === 'ls') ls();
 // sessions 无参数时仍是原来的活跃对话列表(api 走 /api/state);带了子命令才转给会话覆盖那套读写。

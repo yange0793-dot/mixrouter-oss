@@ -7,8 +7,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const html = fs.readFileSync(path.join(__dirname, '../public/index.html'), 'utf8');
-const source = fs.readFileSync(path.join(__dirname, '../public/js/app.js'), 'utf8');
-const script = new vm.Script(source, { filename: 'public/js/app.js' });
+const source = require('./console-source').consoleSource();
+const { runConsole } = require('./console-source');
 
 function fixture() {
   return {
@@ -150,7 +150,7 @@ async function harness(data = fixture()) {
   });
   const run = code => vm.runInContext(code, context);
   inlineRun = code => run(`(function(event){${code}})({ preventDefault(){} })`);
-  script.runInContext(context);
+  runConsole(context);
   await run('refreshTask');
   return {
     data, get, run, requests, document, listeners,

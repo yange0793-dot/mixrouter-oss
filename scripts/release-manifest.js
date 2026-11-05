@@ -100,6 +100,12 @@ const RUNTIME_DATA_DIRS = ['logs', 'backups', '.run'];
 // 控制台的每个脚本都必须随运行包交付,避免页面能打开但主题、导航或用量页失效。
 const REQUIRED_ENTRIES = [
   'mixrouter.js', 'public/index.html', 'public/js/app.js',
+  'lib/application.js', 'lib/runtime/config.js', 'lib/config/repository.js',
+  'lib/clients/manager.js', 'lib/clients/codex-runtime.js', 'lib/providers/public.js',
+  'lib/http/clients-api.js', 'lib/http/providers-api.js', 'lib/http/routing-api.js', 'lib/http/status-api.js',
+  'public/js/providers.js', 'public/js/models.js', 'public/js/compact.js',
+  'public/js/sessions.js', 'public/js/session-routing.js', 'public/js/settings.js',
+  'public/js/logs.js', 'public/js/bootstrap.js',
   'public/js/workspace.js', 'public/js/usage.js', 'public/styles/base.css',
   'public/js/readiness.js', 'public/js/attempt-flow.js', 'public/js/key-fallback.js',
   'public/styles/readiness.css', 'public/styles/attempt-flow.css', 'public/styles/key-fallback.css',

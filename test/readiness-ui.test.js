@@ -15,7 +15,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const html = fs.readFileSync(path.join(__dirname, '../public/index.html'), 'utf8');
-const appScript = new vm.Script(fs.readFileSync(path.join(__dirname, '../public/js/app.js'), 'utf8'), { filename: 'public/js/app.js' });
+const { runConsole } = require('./console-source');
 const readinessScript = new vm.Script(fs.readFileSync(path.join(__dirname, '../public/js/readiness.js'), 'utf8'), { filename: 'public/js/readiness.js' });
 
 function fixture() {
@@ -256,7 +256,7 @@ async function harness(initial = fixture()) {
   });
   const run = code => vm.runInContext(code, context);
   inlineRun = code => run(`(function(event){${code}})({ preventDefault(){} })`);
-  appScript.runInContext(context);
+  runConsole(context);
   readinessScript.runInContext(context);
   await run('refresh()');
 
@@ -759,6 +759,20 @@ test('首帧没拿到状态快照时说「正在读取」，不谎称离线', as
   h.run("lastSync = new Date(); setConnection(false, '连接中断')");
   await h.run('readinessRender()');
   assert.match(h.get('readiness-body').innerHTML, /控制台离线：向导不会读取/);
+});
+
+test('关闭的接入向导入口跟随当前客户端，切换页面不丢弃向导草稿', async () => {
+  const data = fixture();
+  data.live.codex = { router: false, match: false, connection_mode: 'direct',
+    base_url: 'https://openai.example/v1', model: 'gpt-test',
+    direct_provider_id: 'o1', direct_provider_name: 'Beta' };
+  const h = await harness(data);
+  h.run("setApp('codex'); renderSlots(true)");
+  assert.match(h.get('readiness-entry-status').textContent, /^Codex 已接入/);
+  assert.equal(h.get('readiness-entry').dataset.connected, 'true');
+  h.run("setApp('claude'); renderSlots(true)");
+  assert.match(h.get('readiness-entry-status').textContent, /^Claude Code 已接入/);
+  assert.equal(h.requests.some(r => r.method !== 'GET'), false);
 });
 
 test('诊断报告挂载时不读取，预览与下载都只在点击后发生', async () => {

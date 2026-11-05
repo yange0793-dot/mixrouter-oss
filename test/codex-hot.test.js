@@ -479,17 +479,22 @@ test('Codex provider-edit write failure restores catalog, config and provider st
   assert.equal(fs.statSync(path.join(root, 'providers.json')).mode & 0o777, 0o600, '渠道库含明文 Key');
 });
 
-test('Codex direct switch restores original catalog selection, or removes source-less managed selection', async () => {
+test('Codex direct switch keeps a real-model picker with or without an original catalog', async () => {
   assert.equal((await put(activeSlots())).status, 200);
   router.switchCodex(router._state.store.codex[0]);
-  assert.equal(config.read(file).document.get('model_catalog_json'), undefined);
+  assert.equal(config.read(file).document.get('model_catalog_json'), 'mixrouter-model-catalog.json');
+  assert.ok(catalog().models.some(model => model.slug === router._state.store.codex[0].model && model.visibility === 'list'));
+  assert.ok(catalog().models.every(model => !model.slug.startsWith('mixr-')));
   fs.unlinkSync(catalogFile);
   fs.unlinkSync(path.join(root, 'mixrouter-model-catalog.source.json'));
   fs.writeFileSync(file, 'model_catalog_json = "source.json"\n' + initial());
   fs.writeFileSync(path.join(root, 'source.json'), JSON.stringify({ models: [] }));
   assert.equal((await put(activeSlots())).status, 200);
   router.switchCodex(router._state.store.codex[0]);
-  assert.equal(config.read(file).document.get('model_catalog_json'), path.join(root, 'source.json'));
+  assert.equal(config.read(file).document.get('model_catalog_json'), 'mixrouter-model-catalog.json');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'mixrouter-model-catalog.source.json'), 'utf8')).source,
+    path.join(root, 'source.json'));
+  assert.ok(catalog().models.every(model => !model.slug.startsWith('mixr-')));
 });
 
 test('Codex deletion and disabled targets never fall through to ordinary fallback; removed aliases leave picker', async () => {

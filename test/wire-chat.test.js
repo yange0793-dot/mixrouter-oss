@@ -104,6 +104,57 @@ test('请求:tool_use 变 assistant.tool_calls,同一条消息里的文本不丢
   assert.strictEqual(m.tool_calls[0].function.arguments, '{"tz":"CST"}');
 });
 
+// DeepSeek 思考模式:请求带 tools 时,此前每个 assistant 轮次都要回传 reasoning_content。
+test('请求:thinking 明文回传成 assistant.reasoning_content,调工具与不调工具的轮次都带', () => {
+  const stats = {};
+  const out = wire.anthropicToChat({
+    model: 'deepseek-v4.1-flash', tools: [{ name: 'get_time', input_schema: { type: 'object', properties: {} } }],
+    messages: [
+      { role: 'user', content: '几点?' },
+      { role: 'assistant', content: [
+        { type: 'thinking', thinking: '先查时区。', signature: '' },
+        { type: 'tool_use', id: 'tu1', name: 'get_time', input: {} },
+      ] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu1', content: '12:00' }] },
+      { role: 'assistant', content: [
+        { type: 'thinking', thinking: '已拿到。', signature: 'sig-from-anthropic' },
+        { type: 'thinking', thinking: '再整理。', signature: '' },
+        { type: 'text', text: '现在 12 点' },
+      ] },
+      { role: 'user', content: '谢谢' },
+    ],
+  }, { stats });
+  assert.deepStrictEqual(out.messages.map(m => m.role), ['user', 'assistant', 'tool', 'assistant', 'user']);
+  const [, call, , answer] = out.messages;
+  assert.strictEqual(call.reasoning_content, '先查时区。');
+  assert.strictEqual(call.content, '');
+  assert.strictEqual(call.tool_calls[0].id, 'tu1');
+  assert.strictEqual(answer.reasoning_content, '已拿到。\n再整理。');
+  assert.strictEqual(answer.content, '现在 12 点');
+  assert.ok(!JSON.stringify(out).includes('sig-from-anthropic'), '签名不回上游');
+  assert.deepStrictEqual(stats, { think: 3, reasoning: 2 });
+});
+
+test('请求:没有可读思考的 assistant 轮次不补 reasoning_content,tool_calls 照旧', () => {
+  const stats = {};
+  const out = wire.anthropicToChat({
+    model: 'deepseek-v4.1-flash', messages: [
+      { role: 'user', content: '几点?' },
+      { role: 'assistant', content: [
+        { type: 'thinking', thinking: '  ', signature: '' },
+        { type: 'redacted_thinking', data: 'opaque' },
+        { type: 'tool_use', id: 'tu1', name: 'get_time', input: {} },
+      ] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu1', content: '12:00' }] },
+    ],
+  }, { stats });
+  const call = out.messages[1];
+  assert.strictEqual(Object.hasOwn(call, 'reasoning_content'), false, '不编造思考,也不塞空串');
+  assert.strictEqual(call.tool_calls.length, 1);
+  assert.strictEqual(call.tool_calls[0].id, 'tu1');
+  assert.deepStrictEqual(stats, { think: 1 }); // 计数照记:日志能看出「客户端回传了但没内容」
+});
+
 test('请求:tool_result 变独立 role:tool 消息,并排在用户补充文本前面', () => {
   const out = wire.anthropicToChat({
     model: 'm', messages: [

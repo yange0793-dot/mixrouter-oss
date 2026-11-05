@@ -36,6 +36,7 @@ const path = require('node:path');
 
 const PROXY_SOURCES = [
   'mixrouter.js',
+  'lib/application.js',
   'lib/http/proxy.js',
   'lib/proxy/prepare.js',
   'lib/proxy/context.js',
