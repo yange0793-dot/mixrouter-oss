@@ -253,6 +253,7 @@
   function restorePageActions() {
     const record = actionsRecord;
     actionsRecord = null;
+    try { el('topbar-page-actions').parentElement.classList.remove('has-page-actions'); } catch {}
     if (!record || !record.node || !record.parent) return;
     try {
       if (record.next && record.next.parentElement === record.parent) record.parent.insertBefore(record.node, record.next);
@@ -278,6 +279,8 @@
     const index = siblings.indexOf(actions);
     actionsRecord = { node: actions, parent, next: index >= 0 ? siblings[index + 1] || null : null };
     try { tray.appendChild(actions); } catch { actionsRecord = null; }
+    // 分隔线按这个 class 画,不用 :has(#topbar-page-actions:not(:empty)):WebKit 搬动子节点后不一定重算。
+    try { tray.parentElement.classList.toggle('has-page-actions', !!actionsRecord); } catch {}
   }
 
   // 顶栏图标只是当前页的注脚:渠道页按客户端区分,其余按视图。字符串全是本文件里的常量。

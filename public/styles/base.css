@@ -534,8 +534,7 @@ body.shell-ready .breadcrumb-base, body.shell-ready .breadcrumb-sep { display: n
 .topbar-quiet { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 /* Page actions and the global chrome (跳转) are two different jobs. When the page has
    actions, a hairline separates them so the row never reads as one long button strip. */
-.topbar-actions:has(#topbar-page-actions:not(:empty)) .topbar-quiet,
-.topbar-actions:has(.topbar-page-actions:not(:empty)) .topbar-quiet {
+.topbar-actions.has-page-actions .topbar-quiet {
   padding-right: 12px; border-right: 1px solid var(--border);
 }
 /* 全局刷新固定在顶栏最右端。 */
@@ -1625,8 +1624,7 @@ body[data-connection=offline] .sidebar-status .status b { opacity: .72; }
   .topbar-page-actions .usage-last-sync, #topbar-page-actions .usage-last-sync { display: none; }
   /* display:contents 之后 .topbar-actions 不再当盒子:第一行的右端对齐交给 .topbar-quiet 自己,
      竖分隔线只在同一行真的有本页动作时才有意义,窄屏去掉(这里要压过上面的 :has 规则)。 */
-  .topbar-actions:has(#topbar-page-actions:not(:empty)) .topbar-quiet,
-  .topbar-actions:has(.topbar-page-actions:not(:empty)) .topbar-quiet { padding-right: 0; border-right: 0; }
+  .topbar-actions.has-page-actions .topbar-quiet { padding-right: 0; border-right: 0; }
   .breadcrumb { font-size: 13px; gap: 8px; }
   .top-meta { font-size: 12.5px; gap: 8px; flex-wrap: wrap; }
   .local-tag { display: none; }

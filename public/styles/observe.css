@@ -201,8 +201,10 @@
   background: var(--panel); border: 1px solid var(--border-soft); border-radius: var(--radius);
   font: 12.5px/1.65 var(--mono); color: var(--dim); overflow-wrap: anywhere;
 }
-#view-sessions:has(#sess-body:empty) .sess-table-wrap,
-#view-sessions:has(#sess-body:empty) .table-scroll-hint { display: none; }
+/* 表格显隐由 JS 在视图上写 data-empty。不用 :has(#sess-body:empty):WebKit(Mixrouter.app 的 WKWebView)
+   在 innerHTML 填入行之后不重算这条选择器,表格会一直按 0×0 渲染。 */
+#view-sessions[data-empty] .sess-table-wrap,
+#view-sessions[data-empty] .table-scroll-hint { display: none; }
 
 /* ---------------------------------------------------------------- 诊断页 */
 /* 筛选条：一张卡，六个字段等分一行，控件同高。「应用」是普通按钮（不是 primary，不染青色冒充选中态），「清空」安静。 */
@@ -298,8 +300,8 @@
 #view-diagnostics .log-table tr.logs-more:hover { background: transparent; }
 #view-diagnostics .log-table tr.logs-more td { padding: 8px 10px; text-align: center; }
 #view-diagnostics .log-table tr.logs-more .dim { margin-left: 10px; font-size: 12px; font-variant-numeric: tabular-nums; }
-#view-diagnostics:has(#logs-body:empty) .log-table-wrap,
-#view-diagnostics:has(#logs-body:empty) .table-scroll-hint { display: none; }
+#view-diagnostics[data-empty] .log-table-wrap,
+#view-diagnostics[data-empty] .table-scroll-hint { display: none; }
 #view-diagnostics #logs-empty { margin-bottom: 16px; }
 
 /* 分槽用量：明细视图，说明压成两行小字，表格是卡片里的内嵌块。 */

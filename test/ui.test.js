@@ -960,6 +960,8 @@ test('会话搜索按短 id / 完整 id / 对话名 / 渠道名子串过滤,并�
   assert.equal(rows(), 1, '两组条件同时生效');
   h.get('f-sess-app').value = 'codex'; h.run("sessApp='codex'; renderSessions()");
   assert.equal(rows(), 0, '换成 Codex 组后那个词没有命中');
+  // 表格显隐靠视图上的 data-empty,不靠 :has(#sess-body:empty)(WebKit 不重算,表格会按 0×0 渲染)
+  assert.equal(Object.hasOwn(h.get('view-sessions').dataset, 'empty'), true, '没有行时标记空表');
   // 空表要分清"搜索筛没了"和"这个组本来就没有",并给一条清除搜索的路
   assert.match(h.get('sess-empty-title').textContent, /没有匹配当前搜索与筛选的会话/);
   assert.match(h.get('sess-empty-hint').textContent, /共 3 个会话/);
@@ -973,6 +975,7 @@ test('会话搜索按短 id / 完整 id / 对话名 / 渠道名子串过滤,并�
   assert.equal(h.run('sessApp'), '');
   assert.equal(rows(), 3, '清除后回到全部会话');
   assert.equal(h.get('sess-empty').style.display, 'none', '有会话时空表要收起来');
+  assert.equal(Object.hasOwn(h.get('view-sessions').dataset, 'empty'), false, '有行时去掉空表标记，表格才会显示');
 });
 
 test('搜索只重渲染,不动服务端快照与任何草稿', async () => {
@@ -2759,4 +2762,14 @@ test('离线时会话表的改绑、配置与解绑一并禁用;改绑失败后�
   const writes = h.get('sess-body').htmlWrites;
   h.run('renderSessions()');
   assert.ok(h.get('sess-body').htmlWrites > writes, '缓存作废后下一次渲染一定重写,下拉回到服务端绑定');
+});
+
+// Mixrouter.app 用 WKWebView。WebKit 在 innerHTML 改写子节点之后不一定重算 `:has(… :empty)`,
+// 2026-11-06 会话表和诊断表因此在 App 里按 0×0 渲染(Chrome 正常)。依赖运行时内容的显隐改由 JS 写属性。
+test('样式表不用 :has(…:empty) 判断运行时内容', () => {
+  const dir = path.join(__dirname, '..', 'public', 'styles');
+  for (const name of fs.readdirSync(dir).filter(f => f.endsWith('.css'))) {
+    const css = fs.readFileSync(path.join(dir, name), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    assert.deepEqual(css.match(/[^{}]*:has\([^)]*:empty[^{]*/g) || [], [], name);
+  }
 });

@@ -66,9 +66,8 @@
 #view-compact .split-status.is-pending { column-gap: 16px; }
 #view-compact .split-status.is-pending .ss-item { min-height: 0; padding: 0; border: 0; background: none; }
 
-/* 压缩模型的保存按钮在顶栏,这里的 savebar 只剩一行状态字;窗口面板的 savebar 是两颗按钮的页脚。 */
+/* savebar 里是「保存压缩模型」按钮加一行状态字,状态字为空时按钮仍要显示。 */
 #view-compact #compact-panel .savebar { margin-top: 10px; }
-#view-compact #compact-panel .savebar:has(.msg:empty) { display: none; }
 #view-compact .msg { font-size: 13px; color: var(--dim); }
 #view-compact #compact-window-panel .savebar {
   margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border-soft); gap: 10px;
@@ -102,7 +101,6 @@
 #view-compact .panel:last-child { margin-bottom: 0; }
 /* ---- 设置与备份 ---------------------------------------------------------------- */
 #view-settings #health-status, #view-settings #backup-status { margin: 0 0 12px; font-size: 13px; }
-#view-settings #backup-status:has(+ #backup-dirs:empty) { margin-bottom: 0; }
 /* 状态行:读失败但下面还留着上一次的结果是"过期"(警告色、数据区变淡);什么都没有才是错误色。 */
 #view-settings .hint.stale { color: var(--warn-text); }
 #view-settings .hint.is-err { color: var(--err-text); }
