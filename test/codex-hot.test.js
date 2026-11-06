@@ -180,12 +180,34 @@ test('Codex legacy main/reviewer preview follows production resolver and native 
     reviewer: { provider: 'chat', model: 'preview-review-b' } })).status, 200);
   await compare('old-review', 'preview-review-b', 'reviewer');
   assert.equal(hits.at(-1).url, '/v1/chat/completions');
-  for (const ua of ['codex_desktop/0.162.1', 'codex_cli_rs/0.162.1', 'codex_exec/0.162.1', 'codex/0.162.1', 'codex 0.162.1']) {
+  for (const ua of ['codex_desktop/0.162.1', 'codex_cli_rs/0.162.1', 'codex_exec/0.162.1', 'codex-tui/0.167.0', 'codex/0.162.1', 'codex 0.162.1']) {
     await compare('old-native', 'preview-main-b', 'main', ua);
   }
   assert.equal(hits.at(-1).url, '/v1/responses');
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, 'mixrouter-model-catalog.source.json'), 'utf8')).legacy_models,
     { 'old-native': 'mixr-main', 'old-review': 'mixr-reviewer' }, 'hot edits must not register new or fuzzy legacy IDs');
+});
+
+test('Codex TUI resolves duplicate legacy models through main and preserves priority tier', async () => {
+  assert.equal((await put(activeSlots())).status, 200);
+  for (const provider of router._state.store.codex) provider.models = ['old-native'];
+  const ua = 'codex-tui/0.167.0 (Mac OS 13.7.8; x86_64) ghostty/1.4.0 (codex-tui; 0.167.0)';
+  const source = JSON.parse(fs.readFileSync(path.join(root, 'mixrouter-model-catalog.source.json'), 'utf8'));
+  assert.equal(source.legacy_models['old-native'], 'mixr-main');
+  const result = await previewMatchesResolver('old-native', { ...nativeContext(), ua });
+  assert.equal(result.ok, true);
+  assert.equal(result.matched.slot, 'main');
+  assert.equal(result.selection.predicted.providerId, 'native');
+  assert.equal(result.selection.predicted.model, 'target-a');
+  const actual = await request(proxy, '/v1/responses', {
+    model: 'old-native', input: 'fast task', service_tier: 'priority', stream: false }, 'POST', {
+    'session-id': 'preview-same-session', 'user-agent': ua,
+    authorization: 'Bearer ' + router.ROUTER_TOKEN });
+  assert.equal(actual.status, 200);
+  assert.equal(actual.headers['x-mixrouter-model'], 'target-a');
+  assert.equal(actual.headers['x-mixrouter-provider'], result.selection.predicted.providerName);
+  assert.equal(hits.at(-1).body.model, 'target-a');
+  assert.equal(hits.at(-1).body.service_tier, 'priority');
 });
 
 test('Codex legacy preview only maps the exact legacy ID with full native context; nothing else falls back', async () => {
@@ -201,7 +223,7 @@ test('Codex legacy preview only maps the exact legacy ID with full native contex
     ['old-native', { token: '' }, { authorization: '' }],
     ['old-native', { token: 'wrong-local-token' }, { authorization: 'Bearer wrong-local-token' }],
     ['old-native', { session: 'cxf:fingerprint-preview' }, { 'session-id': '' }],
-    ...['codex_desktop_evil/0.162.1', 'codex_other/0.162.1', 'codex_desktop', 'openai-python/1.0']
+    ...['codex_desktop_evil/0.162.1', 'codex_other/0.162.1', 'codex_desktop', 'codex-tui-evil/0.167.0', 'codex-tui', 'openai-python/1.0']
       .map(ua => ['old-native', { ua }, { 'user-agent': ua }]),
   ];
   for (const [model, patch, headers] of cases) {
@@ -362,12 +384,12 @@ test('Codex Desktop retains exact previous main/reviewer IDs and observes hot ed
   assert.equal(hits.at(-1).url, '/v1/chat/completions');
   assert.equal((await send('old-native')).headers['x-mixrouter-model'], 'desktop-main-b', 'reviewer must not capture the next main request');
   assert.equal(hits.at(-1).url, '/v1/responses');
-  for (const ua of ['codex_cli_rs/0.162.1', 'codex_exec/0.162.1', 'codex/0.162.1', 'codex 0.162.1']) {
+  for (const ua of ['codex_cli_rs/0.162.1', 'codex_exec/0.162.1', 'codex-tui/0.167.0', 'codex/0.162.1', 'codex 0.162.1']) {
     assert.equal((await send('old-native', { 'user-agent': ua })).headers['x-mixrouter-model'], 'desktop-main-b', ua);
   }
   for (const [model, extra] of [['old-native-extra', {}], ['OLD-NATIVE', {}], ['unknown-desktop-model', {}],
     ['old-native', { authorization: 'Bearer wrong-local-token' }], ['old-native', { 'session-id': '' }],
-    ...['codex_desktop_evil/0.162.1', 'codex_other/0.162.1', 'codex_desktop', 'openai-python/1.0']
+    ...['codex_desktop_evil/0.162.1', 'codex_other/0.162.1', 'codex_desktop', 'codex-tui-evil/0.167.0', 'codex-tui', 'openai-python/1.0']
       .map(ua => ['old-native', { 'user-agent': ua }])]) {
     expectNoRoute(await send(model, extra), JSON.stringify([model, extra]));
   }
