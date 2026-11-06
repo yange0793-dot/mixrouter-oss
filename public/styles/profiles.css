@@ -1,37 +1,68 @@
-/* 模型方案。表单、清单与预览差异都沿用控制台现有面板与表格样式;
-   这里只补保存行、协议组勾选和差异表的最小布局。 */
-.profiles-save-row {
-  display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 14px;
+/* 模型方案。面板与表格沿用控制台通用样式;这里只补保存行、协议组开关、差异表的着色。
+   卡片里的表是凹陷块(panel 底、无阴影);差异只给变动的那一格上淡色,不整行染色。 */
+
+/* 保存行:名称、协议组、按钮三者底边对齐。协议组的 legend 与名称的标签同高,开关与输入框同高。 */
+.profiles-save-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+.profiles-save-row > .field { flex: 1 1 280px; min-width: 0; gap: 6px; font-size: 12.5px; line-height: 1.5; color: var(--dim); }
+.profiles-save-row > .field input { min-height: var(--control-h); }
+.profiles-apps { display: grid; grid-template-columns: repeat(2, max-content); column-gap: 8px; border: 0; margin: 0; padding: 0; min-width: 0; }
+.profiles-apps legend { float: left; grid-column: 1 / -1; padding: 0; margin: 0 0 6px; font-size: 12.5px; line-height: 1.5; color: var(--dim); }
+.profiles-apps label {
+  display: inline-flex; align-items: center; gap: 7px; height: var(--control-h); padding: 0 12px;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--input);
+  font-size: 13.5px; color: var(--text); cursor: pointer; user-select: none; vertical-align: top;
+  transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
-.profiles-save-row > .field { flex: 1 1 260px; min-width: 0; }
-.profiles-save-row > .primary { flex: 0 0 auto; }
-.profiles-apps {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px;
-  border: 1px solid var(--border-soft); border-radius: var(--radius);
-  padding: 8px 12px 10px; min-width: 0;
-}
-.profiles-apps legend { padding: 0 4px; font-size: 12.5px; color: var(--dim); }
-.profiles-apps label { display: flex; align-items: center; gap: 6px; font-size: 13.5px; color: var(--text); }
-.profiles-table table { min-width: 820px; }
-.profiles-name { font-weight: 600; overflow-wrap: anywhere; }
-.profiles-actions { white-space: nowrap; }
+.profiles-apps label:hover { border-color: var(--border-strong); }
+.profiles-apps label:has(input:checked) { border-color: var(--accent-line); background: var(--accent-soft); }
+.profiles-apps label:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
+.profiles-apps input:focus-visible { outline: none; }
+.profiles-save-row > .primary { flex: 0 0 auto; min-height: var(--control-h); }
+#profiles-save-status { margin: 10px 0 0; font-size: 13px; }
+
+/* 已保存方案与差异表:卡片里的凹陷表。 */
+#view-profiles .table-wrap { margin: 0; background: var(--panel); border: 1px solid var(--border-soft); border-radius: var(--radius); box-shadow: none; }
+.profiles-table table { min-width: 720px; }
+.profiles-table th:last-child { text-align: right; }
+.profiles-name { display: block; max-width: 32ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--text); }
+.profiles-table td.profiles-when { font: 12.5px var(--mono); color: var(--dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.profiles-actions { white-space: nowrap; text-align: right; }
 .profiles-actions button + button { margin-left: 6px; }
-.profiles-warnings {
-  margin: 0 0 12px; padding-left: 18px;
-  color: var(--warn-text); font-size: 13.5px; line-height: 1.65;
-}
-.profiles-diff { margin-top: 12px; }
+
+/* 预览差异:新增 / 变更上色在「方案」那格,移除上色在「当前」那格;标签同色。 */
+#view-profiles .profiles-diff { margin-top: 12px; }
 .profiles-diff table { min-width: 760px; }
+.profiles-diff td { vertical-align: top; }
+.profiles-diff td:nth-child(2) { white-space: nowrap; }
 .profiles-before { color: var(--dim); }
 .profiles-after { color: var(--text); }
-.profiles-ok { color: var(--ok-text); }
-.profiles-error { color: var(--err-text); }
+.profiles-chg-add .profiles-after { background: var(--ok-soft); }
+.profiles-chg-mod .profiles-after { background: var(--warn-soft); }
+.profiles-chg-del .profiles-before { background: var(--err-soft); color: var(--text); }
+.profiles-kind {
+  display: inline-flex; align-items: center; min-height: 20px; margin-left: 8px; padding: 0 8px;
+  border: 1px solid var(--border-soft); border-radius: var(--radius-pill);
+  background: var(--surface-2); color: var(--dim); font: 500 12px/1 var(--sans);
+}
+.profiles-chg-add .profiles-kind { background: var(--ok-soft); border-color: var(--ok-line); color: var(--ok-text); }
+.profiles-chg-mod .profiles-kind { background: var(--warn-soft); border-color: var(--warn-line); color: var(--warn-text); }
+.profiles-chg-del .profiles-kind { background: var(--err-soft); border-color: var(--err-line); color: var(--err-text); }
+#view-profiles #profiles-preview-body > .hint { margin: 0; }
+#view-profiles #profiles-preview-body > * + .hint { margin-top: 12px; }
+.profiles-warnings {
+  margin: 12px 0 0; padding: 8px 12px 8px 28px; font-size: 13px; line-height: 1.65;
+  color: var(--warn-text); background: var(--warn-soft); border: 1px solid var(--warn-line); border-radius: var(--radius);
+}
+#view-profiles #profiles-preview-panel .savebar { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border-soft); gap: 10px; }
+#view-profiles #profiles-preview-panel .savebar button { min-height: var(--control-h); }
+#view-profiles #profiles-apply-note { flex: 1 1 260px; min-width: 0; margin: 0; font-size: 12.5px; line-height: 1.6; }
+#view-profiles .profiles-ok { color: var(--ok-text); }
+#view-profiles .profiles-error { color: var(--err-text); }
 
 @media (max-width: 860px) {
-  .profiles-save-row > .field { flex-basis: 100%; }
-  .profiles-save-row > .primary { width: auto; }
-}
-@media (max-width: 560px) {
-  .profiles-apps { width: 100%; }
-  .profiles-save-row > .primary { width: 100%; }
+  .profiles-save-row > .field, .profiles-apps { flex-basis: 100%; }
+  .profiles-apps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .profiles-apps label { height: 36px; }
+  .profiles-save-row > .primary { width: 100%; min-height: 36px; }
+  #view-profiles button { min-height: 36px; }
 }

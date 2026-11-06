@@ -10,7 +10,7 @@
 // 预览与切换的回包都可能包含服务端生成的槽位对象。这里只渲染白名单字段
 // (provider / model / pool / strategy / dropTools / enabled),绝不回显 Key 或任意原文。
 
-const INITIAL_SAVE_MESSAGE = '尚未读取方案列表。';
+const INITIAL_SAVE_MESSAGE = '读取方案列表后才能保存。';
 
 const profilesState = {
   visible: false,
@@ -59,37 +59,53 @@ function profilesAppsText(apps) {
   return apps.map(profilesAppLabel).join(' / ');
 }
 
-function profilesWhen(value) {
-  if (value === null || value === undefined || value === '') return '—';
+// 时间点:今天只写时分秒,今年写月-日 时:分,更早只写日期;完整时间放 title。
+// 解析不了的值显示 —,原文留在 title 里,不拿内部格式当主文案。
+function profilesWhen(value, now = new Date()) {
+  if (value === null || value === undefined || value === '') return { text: '—', title: '' };
   const numeric = typeof value === 'number' || /^\d{10,}$/.test(String(value)) ? Number(value) : value;
   const date = new Date(numeric);
-  if (Number.isNaN(date.getTime())) return String(value);
+  if (Number.isNaN(date.getTime())) return { text: '—', title: `无法解析的时间：${value}` };
   const pad = n => String(n).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} `
-    + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  const day = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  const clock = `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  const text = date.toDateString() === now.toDateString() ? clock
+    : date.getFullYear() === now.getFullYear() ? `${day.slice(5)} ${clock.slice(0, 5)}` : day;
+  return { text, title: `${day} ${clock}` };
+}
+
+// 池策略的人话标签,与渠道页就绪检查同一套词;原值放在单元格 title 里。
+const PROFILES_STRATEGY_LABEL = { priority: '主备顺序', round_robin: '轮询', weighted: '按权重', least_used: '最少使用', random: '随机' };
+
+// 渠道 id 换成渠道名:控制台已有 /api/state 快照时查得到;查不到(或单独加载本文件)就原样显示 id。
+function profilesProviderName(app, id) {
+  const list = typeof state === 'undefined' ? null : state?.providers?.[app];
+  const hit = Array.isArray(list) ? list.find(provider => provider && provider.id === id) : null;
+  return hit && typeof hit.name === 'string' && hit.name ? hit.name : id;
 }
 
 // 槽位对象的展示白名单。pool 的成员也只取 provider/model,不渲染权重之外的未知字段,
-// 更不会碰 key_id / Key 明文。
-function profilesPoolText(pool) {
+// 更不会碰 key_id / Key 明文。raw=true 时给原始 id 与策略值(放 title,排查用)。
+function profilesPoolText(pool, name) {
   const names = pool.slice(0, 4).map(member => {
-    if (typeof member === 'string') return member;
+    if (typeof member === 'string') return name(member);
     if (!member || typeof member !== 'object') return '?';
-    const provider = typeof member.provider === 'string' ? member.provider : '';
+    const provider = typeof member.provider === 'string' ? name(member.provider) : '';
     const model = typeof member.model === 'string' ? member.model : '';
     return [provider, model].filter(Boolean).join('/') || '?';
   });
   return names.join('、') + (pool.length > 4 ? ` 等 ${pool.length} 个` : '');
 }
 
-function profilesEntryText(entry) {
+function profilesEntryText(entry, app = '', raw = false) {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return '（无此槽位）';
+  const name = raw ? id => id : id => profilesProviderName(app, id);
   const parts = [];
-  if (typeof entry.provider === 'string' && entry.provider) parts.push(`渠道 ${entry.provider}`);
+  if (typeof entry.provider === 'string' && entry.provider) parts.push(`渠道 ${name(entry.provider)}`);
   if (entry.model === '' || entry.model === null || entry.model === undefined) parts.push('模型继承渠道默认');
   else if (typeof entry.model === 'string' || typeof entry.model === 'number') parts.push(`模型 ${entry.model}`);
-  if (Array.isArray(entry.pool) && entry.pool.length) parts.push(`备池 ${profilesPoolText(entry.pool)}`);
-  if (typeof entry.strategy === 'string' && entry.strategy) parts.push(`策略 ${entry.strategy}`);
+  if (Array.isArray(entry.pool) && entry.pool.length) parts.push(`备池 ${profilesPoolText(entry.pool, name)}`);
+  if (typeof entry.strategy === 'string' && entry.strategy) parts.push(`策略 ${raw ? entry.strategy : PROFILES_STRATEGY_LABEL[entry.strategy] || entry.strategy}`);
   const dropTools = entry.dropTools !== undefined ? entry.dropTools : entry.drop_tools;
   if (Array.isArray(dropTools)) parts.push(`丢弃工具 ${dropTools.length} 项`);
   else if (dropTools === true) parts.push('丢弃工具 是');
@@ -100,18 +116,27 @@ function profilesEntryText(entry) {
 
 function profilesDiffRow(change) {
   if (!change || typeof change !== 'object') return '';
-  const before = profilesEntryText(change.before);
-  let after = profilesEntryText(change.after);
-  if (before === after) {
+  const before = profilesEntryText(change.before, change.app);
+  const shownAfter = profilesEntryText(change.after, change.app);
+  const rawBefore = profilesEntryText(change.before, change.app, true);
+  const rawAfter = profilesEntryText(change.after, change.app, true);
+  let after = shownAfter;
+  // 判断"白名单外的字段有变化"要用原始值比:两个渠道同名时,显示文本一样但 id 不同。
+  if (rawBefore === rawAfter) {
     try {
       if (JSON.stringify(change.before) !== JSON.stringify(change.after)) after += ' · 其他字段有变化';
     } catch { /* 服务端 JSON 不会循环;万一不可序列化就只显示白名单摘要 */ }
   }
-  return `<tr>
+  const title = (shown, rawText) => rawText !== shown ? ` title="${profilesEsc(rawText)}"` : '';
+  // 变动类型只看两侧有没有槽位对象:当前没有＝新增,方案没有＝移除,两边都有＝变更。
+  const isEntry = entry => !!entry && typeof entry === 'object' && !Array.isArray(entry);
+  const kind = !isEntry(change.before) ? 'add' : !isEntry(change.after) ? 'del' : 'mod';
+  const kindText = { add: '新增', del: '移除', mod: '变更' }[kind];
+  return `<tr class="profiles-chg profiles-chg-${kind}">
     <td>${profilesEsc(profilesAppLabel(change.app))}</td>
-    <td><span class="mono">${profilesEsc(change.slot || '—')}</span></td>
-    <td class="profiles-before">${profilesEsc(before)}</td>
-    <td class="profiles-after">${profilesEsc(after)}</td>
+    <td><span class="mono">${profilesEsc(change.slot || '—')}</span><span class="profiles-kind">${kindText}</span></td>
+    <td class="profiles-before"${title(before, rawBefore)}>${profilesEsc(before)}</td>
+    <td class="profiles-after"${title(shownAfter, rawAfter)}>${profilesEsc(after)}</td>
   </tr>`;
 }
 
@@ -121,10 +146,11 @@ function profilesRow(profile, index) {
   const active = profile.active === true
     ? '<span class="badge on">上次读取时一致</span>'
     : '<span class="badge off">上次读取时不一致</span>';
+  const when = profilesWhen(profile.created_at);
   return `<tr>
-    <td><span class="profiles-name">${profilesEsc(profile.name || '—')}</span></td>
+    <td><span class="profiles-name" title="${profilesEsc(profile.name || '')}">${profilesEsc(profile.name || '—')}</span></td>
     <td>${profilesEsc(profilesAppsText(profile.apps))}</td>
-    <td>${profilesEsc(profilesWhen(profile.created_at))}</td>
+    <td class="profiles-when"${when.title ? ` title="${profilesEsc(when.title)}"` : ''}>${profilesEsc(when.text)}</td>
     <td>${active}</td>
     <td class="profiles-actions">
       <button class="small" type="button" onclick="profilesPreview(${index})"${disabled}>预览</button>
@@ -200,9 +226,10 @@ function profilesRender() {
     ? '' : String(profilesState.slotsRevision).slice(0, 12);
   const hint = profilesEl('profiles-revision-hint');
   if (hint) {
-    hint.textContent = profilesState.loaded
-      ? `方案修订 ${revision || '—'} · 槽位修订 ${slotsRevision || '—'} · 最多 30 个方案`
-      : '尚未读取方案列表。';
+    // 首屏只给容量;修订号是内部值,放 title,遇到 409 时对得上服务端。
+    hint.textContent = !profilesState.loaded ? ''
+      : list.length >= 30 ? '已达上限 30 个方案；先删除不用的再保存' : `已保存 ${list.length} / 30 个方案`;
+    hint.title = profilesState.loaded ? `方案修订 ${revision || '—'} · 槽位修订 ${slotsRevision || '—'}` : '';
   }
   const rows = profilesEl('profiles-rows');
   if (rows) rows.innerHTML = list.map((profile, index) => profilesRow(profile, index)).join('');
@@ -250,13 +277,14 @@ async function profilesLoad(manual = false) {
   }
   const seq = ++profilesState.seq;
   profilesState.loading = true;
-  profilesSetListStatus('正在读取方案列表…');
+  // 重新读取时旧列表留在原处(按钮先禁用),只改状态行。
+  profilesSetListStatus(profilesState.loaded ? '正在重新读取…' : '正在读取方案列表…');
   profilesRender();
   try {
     const next = await api('/api/profiles');
     if (seq !== profilesState.seq) return;
     profilesAccept(next);
-    profilesSetListStatus(`已读取 ${profilesState.profiles.length} 个方案。`);
+    profilesSetListStatus(`已读取 · ${profilesWhen(new Date()).text}`);
     if (profilesState.saveMessage === INITIAL_SAVE_MESSAGE) {
       profilesSetSaveStatus('填写名称并选择协议组后保存；保存只创建快照。');
     }
@@ -448,6 +476,7 @@ async function profilesDelete(index) {
     : false;
   if (!confirmed) return;
   profilesState.deleting = true;
+  profilesSetListStatus(`正在删除方案「${profile.name}」…`);
   profilesRender();
   try {
     await api(`/api/profiles/${encodeURIComponent(profile.id)}`, { method: 'DELETE', body: JSON.stringify({

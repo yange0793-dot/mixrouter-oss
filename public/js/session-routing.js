@@ -535,7 +535,7 @@ function routingCell(s) {
   const r = s.routing || {}, items = [], stale = routingStaleOf(group, r);
   for (const [pid, kid] of Object.entries(r.keys || {})) items.push(`Key ${keyLabelOf(group, pid, kid)}`);
   for (const [name, v] of Object.entries(r.slots || {})) items.push(`槽位 ${name} → ${routingSlotTextOf(group, v)}`);
-  return `<span class="routes-cell" data-session-routing="${esc(s.short)}">
+  return `<span class="routes-cell${items.length ? '' : ' inherit'}" data-session-routing="${esc(s.short)}">
     <span class="sum">${items.length ? items.length + ' 项覆盖' : '继承全局'}</span>
     ${items.slice(0, 2).map(x => `<span class="sub" title="${esc(x)}">· ${esc(x)}</span>`).join('')}
     ${items.length > 2 ? `<span class="sub">· 其余 ${items.length - 2} 项</span>` : ''}

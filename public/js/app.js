@@ -71,24 +71,118 @@ function toastWithBackupWarnings(okMsg, res) {
   if (w.length) warnToast(`${okMsg}\n${w.join('\n')}`);
   else toast(okMsg, 'ok');
 }
-const fmtTok = n => n == null ? '—' : n >= 1000000 ? (n / 1000000).toFixed(1) + 'm' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
-const fmtBytes = n => !n ? '-' : n >= 1048576 ? (n / 1048576).toFixed(1) + 'MB' : n >= 1024 ? Math.round(n / 1024) + 'KB' : n + 'B';
+// ---- 全站数字格式(概览、侧栏、诊断、会话共用;同一个数在不同页面必须长得一样) ----
+// 没有这个数(null / '' / NaN)一律「—」;真正的 0 才写 0。数字与单位之间不加空格。
+const finiteOrNull = v => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+// Tokens:<1000 写整数;之后 K/M/B 保留 3 位有效数字(1.23K / 12.3K / 123K / 886M / 9.59B)。
+// 进位到 1000 时升一档,不写成「1000K」。
+const fmtTok = v => {
+  const n = finiteOrNull(v);
+  if (n === null) return '—';
+  if (Math.abs(n) < 1000) return String(Math.round(n));
+  let i = 0, x = n;
+  while (Math.abs(x) >= 1000 && i < 3) { x /= 1000; i++; }
+  if (Math.abs(Number(x.toPrecision(3))) >= 1000 && i < 3) { x /= 1000; i++; }
+  // B 是最高一档:再大就写整数,不让 toPrecision 吐出「1.00e+3B」。
+  const t = x.toPrecision(3);
+  return (t.includes('e') ? String(Math.round(x)) : t) + ['', 'K', 'M', 'B'][i];
+};
+const fmtCount = v => { const n = finiteOrNull(v); return n === null ? '—' : Math.round(n).toLocaleString('en-US'); };
+// 百分比(入参 0–100)保留一位;非 0 但不到 0.1 写「<0.1%」,差一点到 100 写「>99.9%」(缓存命中常见),
+// 整 0 / 整百不带小数。
+const fmtPct = v => {
+  const n = finiteOrNull(v);
+  if (n === null) return '—';
+  if (n === 0 || n === 100) return n + '%';
+  if (n > 0 && n < 0.1) return '<0.1%';
+  if (n >= 99.95 && n < 100) return '>99.9%';
+  return n.toFixed(1) + '%';
+};
+// 字节按 1024 进制:512B / 12.3KB / 1.2MB / 3.4GB;KB 起一律一位小数。
+// 和 fmtTok 一样,四舍五入到 1024 就进到下一档:1048064 写 1.0MB,不写 1024KB。
+const fmtBytes = v => {
+  const n = finiteOrNull(v);
+  if (n === null) return '—';
+  if (n < 1023.5) return Math.round(n) + 'B';
+  let i = 0, x = n;
+  while (x >= 1023.5 && i < 3) { x /= 1024; i++; }
+  return x.toFixed(1) + ['B', 'KB', 'MB', 'GB'][i];
+};
+// 时延:840ms / 1.2s / 1m05s / 1h 00m(满 1 小时与 fmtUp 同写法)。0 与负数是「没测到」,不拿 0 冒充极快。
+// 首响应耗时(ttfb_ms)= 上游响应头到达的时间,不是首个 token。
+// 函数体必须自给自足:用量页测试只从本文件抽 fmtRate / fmtTtfb 两段定义来跑,引用别的顶层名会 ReferenceError。
+const fmtTtfb = v => {
+  const ms = v === null || v === undefined || v === '' ? NaN : Number(v);
+  if (!Number.isFinite(ms) || ms <= 0) return '—';
+  if (ms < 999.5) return Math.round(ms) + 'ms';
+  if (ms < 59950) return (ms / 1000).toFixed(1) + 's';
+  const s = Math.round(ms / 1000);
+  if (s < 3600) return Math.floor(s / 60) + 'm' + String(s % 60).padStart(2, '0') + 's';
+  return `${Math.floor(s / 3600)}h ${String(Math.floor(s % 3600 / 60)).padStart(2, '0')}m`;
+};
+const fmtDur = fmtTtfb;
 // 单条请求的派生指标。分母为 0 / 没测到一律显示「—」,不拿 0 冒充「极快」或「没命中」。
 const fmtRate = l => {
   const out = Number(l.out), ms = Number(l.ms);
   if (!Number.isFinite(out) || !Number.isFinite(ms) || ms <= 0 || !out) return '—';
   const tps = out * 1000 / ms;
-  return (tps >= 100 ? Math.round(tps) : tps.toFixed(1)) + ' tok/s';
+  return (tps >= 100 ? Math.round(tps) : tps.toFixed(1)) + 'tok/s';
 };
-// 首字延迟:上游第一个字节到达的耗时(流式与非流式都记)。
-const fmtTtfb = ms => Number(ms) > 0 ? (ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : Math.round(ms) + 'ms') : '—';
+// 缓存读没记录是「—」,记录为 0 才写 0;命中率 = 缓存读 / (缓存读 + 新输入)。
 const cacheHitText = l => {
-  const read = Number(l.cache_read) || 0, input = Number(l.in) || 0;
-  if (!read && !input) return '—';
-  const pct = read * 100 / (read + input);
-  return `${l.cache_read || '-'}${input || read ? ' · ' + pct.toFixed(1) + '%' : ''}`;
+  const read = finiteOrNull(l.cache_read), input = finiteOrNull(l.in) || 0;
+  if (read === null || !(read + input)) return '—';
+  return `${fmtTok(read)} · ${fmtPct(read * 100 / (read + input))}`;
 };
-const fmtUp = s => s == null ? '—' : s >= 3600 ? (s/3600).toFixed(1) + 'h' : s >= 60 ? Math.floor(s/60) + 'm' + Math.floor(s%60) + 's' : s + 's';
+// 运行时长只给两级:45s / 21m 54s / 3h 12m / 2d 4h。小时档分钟补零(1h 00m),与 fmtDur 满 1 小时的写法一致。
+const fmtUp = v => {
+  const n = finiteOrNull(v);
+  if (n === null) return '—';
+  const s = Math.max(0, Math.floor(n));
+  if (s < 60) return s + 's';
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ${String(Math.floor(s % 3600 / 60)).padStart(2, '0')}m`;
+  return `${Math.floor(s / 86400)}d ${Math.floor(s % 86400 / 3600)}h`;
+};
+// 时间点:今天 HH:mm:ss,今年 MM-DD HH:mm,更早 YYYY-MM-DD;完整时间用 fmtFullTime 放 title。
+const fmtFullTime = t => {
+  const d = t instanceof Date ? t : new Date(t);
+  if (t == null || t === '' || Number.isNaN(d.getTime())) return '—';
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+};
+const fmtWhen = t => {
+  const full = fmtFullTime(t);
+  if (full === '—') return full;
+  const d = t instanceof Date ? t : new Date(t), now = new Date();
+  if (d.toDateString() === now.toDateString()) return full.slice(11);
+  return d.getFullYear() === now.getFullYear() ? full.slice(5, 16) : full.slice(0, 10);
+};
+// 「今日请求」只统计内存 ring(容量 = /api/stats 的 scope.capacity,默认 500)。今天的请求数到了容量,
+// 说明窗口已满、更早的请求可能已被挤掉:请求数写「500+」,tokens 前加「≥」。容量读失败或还没读到就照常显示。
+let statsCapacity = null, statsCapacityTask = null;
+// 容量是启动配置,一次页面加载只读一次;返回同一个 promise,测试可以直接 await。
+function loadStatsCapacity() {
+  if (!statsCapacityTask) statsCapacityTask = api('/api/stats').then(s => {
+    const cap = Number(s?.scope?.capacity);
+    if (!(cap > 0)) return;
+    statsCapacity = cap;
+    if (state) { renderOverview(); renderOverviewPage(); }
+  }).catch(() => {});
+  return statsCapacityTask;
+}
+function todayView(stats) {
+  const cap = statsCapacity && stats.reqs >= statsCapacity ? statsCapacity : 0;
+  const tok = v => (cap && v != null ? '≥' : '') + fmtTok(v);
+  return {
+    reqs: cap ? fmtCount(cap) + '+' : fmtCount(stats.reqs),
+    reqsTitle: cap ? `内存窗口只保留最近 ${fmtCount(cap)} 条，今天的实际请求可能更多；准确数字看「用量统计」`
+      : `今天（本地日历日）的请求数，只统计内存里最近 ${fmtCount(statsCapacity || 500)} 条`,
+    inTok: tok(stats.inTok), outTok: tok(stats.outTok),
+    total: stats.inTok == null || stats.outTok == null ? '—' : tok(stats.inTok + stats.outTok),
+    tokNote: cap ? '；内存窗口已满，今天的实际值可能更多' : '',
+  };
+}
 
 // Dialogs share Escape, focus containment and restoration, including destructive confirmations.
 function showDialog(id, focusId) {
@@ -140,9 +234,18 @@ $('m-direct')?.addEventListener('change', () => {
 function setConnection(connected, error = '') {
   const changed = online !== connected;
   online = connected; document.body.dataset.connection = connected ? 'online' : 'offline';
+  // 焦点在表格里时轮询不会重绘;只更新禁用状态,保留当前输入和展开行。
+  $('sess-body').querySelectorAll('.pin-sel, .sess-config, .sess-acts .danger').forEach(control => {
+    control.disabled = !connected;
+  });
   $('connection-label').textContent = connected ? '控制台已连接' : '控制台离线';
   $('connection-banner').classList.toggle('show', !connected);
-  $('connection-message').textContent = connected ? '' : `无法获取实时状态${error ? '：' + error : ''}。${lastSync ? '当前为 ' + lastSync.toLocaleTimeString('zh-CN', { hour12: false }) + ' 的最后快照，运行时长和指标已停止更新。' : '尚无可用快照。'}每 5 秒自动重试；压缩草稿仍保留。`;
+  // 浏览器给的网络错误是英文内部文案(Failed to fetch / Load failed / AbortError):主文案换成人话,原文进 title。
+  // 服务端自己的中文说明(如「状态数据不完整」)原样当主文案;HTTP 码、JSON 解析错误这类只进 title。
+  const reason = !error ? '' : /failed to fetch|networkerror|load failed/i.test(error) ? '连不上本机服务' : /abort/i.test(error) ? '请求超时'
+    : /[一-鿿]/.test(error) ? error : '状态读取失败';
+  $('connection-message').textContent = connected ? '' : `控制台离线${reason ? '：' + reason : ''}。${lastSync ? '数据停在 ' + fmtWhen(lastSync) + ' 的最后快照，运行时长和指标不再更新' : '尚无可用快照'}；每 5 秒自动重试，压缩草稿仍保留。`;
+  $('connection-message').setAttribute('title', !connected && error ? (lastSync ? fmtFullTime(lastSync) + ' · ' : '') + error : '');
   $('new-provider').disabled = !state;
   // 缺渠道或模型名时保存必被拦下,按钮直接禁用,不让人点了才看到报错。
   $('save-compact').disabled = !connected || !state?.compact || savingCompact || !compactDraft?.provider || !compactDraft.model?.trim();
@@ -161,18 +264,22 @@ function setConnection(connected, error = '') {
   if (changed && state) renderSlots(true);
 }
 function renderOverview() {
-  const ps = allProviders(), stats = state.stats || {};
+  const ps = allProviders(), stats = state.stats || {}, today = todayView(stats);
   $('ver').textContent = state.version ?? '—';
+  // 端口与进程号是标识符,不加千分位。计数用千分位,tokens 用缩写并把完整数字放 title。
   $('st-proxy').textContent = state.proxy_port ?? '—'; $('st-ui').textContent = state.ui_port ?? '—';
-  $('st-up').textContent = fmtUp(state.uptime_s); $('st-req').textContent = stats.reqs ?? '—';
-  $('st-tok').textContent = fmtTok(stats.inTok) + ' / ' + fmtTok(stats.outTok);
+  $('st-up').textContent = fmtUp(state.uptime_s);
+  $('st-req').textContent = today.reqs; $('st-req').setAttribute('title', today.reqsTitle);
+  $('st-tok').textContent = today.inTok + ' / ' + today.outTok;
+  $('st-tok').setAttribute('title', `输入 ${fmtCount(stats.inTok)} / 输出 ${fmtCount(stats.outTok)}${today.tokNote}`);
   $('metric-providers').textContent = ps.filter(p => p.enabled).length;
   $('metric-providers-hint').textContent = `共 ${ps.length} 个渠道 · 启用不代表连通`;
-  $('metric-requests').textContent = fmtTok(stats.reqs);
-  $('metric-tokens').textContent = stats.inTok == null || stats.outTok == null ? '—' : fmtTok(stats.inTok + stats.outTok);
-  $('metric-tokens-hint').textContent = `输入 ${fmtTok(stats.inTok)} / 输出 ${fmtTok(stats.outTok)}`;
-  $('metric-sessions').textContent = state.sessions?.length ?? '—';
-  $('metric-sessions-hint').textContent = '按协议归组 · 失败后仍可重试';
+  $('metric-requests').textContent = today.reqs; $('metric-requests').setAttribute('title', today.reqsTitle);
+  $('metric-tokens').textContent = today.total;
+  $('metric-tokens').setAttribute('title', stats.inTok == null || stats.outTok == null ? '' : fmtCount(stats.inTok + stats.outTok) + today.tokNote);
+  $('metric-tokens-hint').textContent = `输入 ${today.inTok} / 输出 ${today.outTok}`;
+  // 说明行保留 index.html 的静态口径(按协议组识别):这里原来写的「失败后仍可重试」是冷却功能删掉后的遗留。
+  $('metric-sessions').textContent = fmtCount(state.sessions?.length);
   for (const app of Object.keys(APPS)) {
     const count = providers(app).length;
     $('count-' + app).textContent = count;
@@ -192,7 +299,9 @@ function syncClientDots() {
 // Polling updates status only: editors keep their draft DOM, never rebuilt by refresh.
 function refresh() {
   if (refreshTask) return refreshTask;
-  $('refresh-btn').disabled = true;
+  // 本机一次读取通常几十毫秒:立刻禁用会让顶栏按钮每 5 秒闪一下。超过 300ms 才进入「刷新中…」。
+  const btn = $('refresh-btn'); let idleLabel = null;
+  const busy = setTimeout(() => { idleLabel = btn.textContent; btn.disabled = true; btn.textContent = '刷新中…'; }, 300);
   const codexRevision = codexSlotRevision;
   refreshTask = (async () => {
     try {
@@ -210,6 +319,8 @@ function refresh() {
       // 概览在 setConnection 之后渲染:客户端状态那三行要读 online(liveFacts 的口径),
       // 早一步渲染就会把一次成功的刷新说成"待确认"。
       renderOverviewPage();
+      // 「今日请求」要和内存窗口容量比一次才知道满没满;容量每次页面加载只读一次。
+      loadStatsCapacity();
       if (view === 'providers') renderProviders();
       reconcileRouting();
       // 5 秒轮询不得打断正在编辑的用户。会话页的可编辑控件有两处:表格里的绑定下拉,以及表格外的搜索框。
@@ -224,9 +335,15 @@ function refresh() {
       // 不重画就会留着上一份快照说"已写入配置",而连接横幅同时在说离线。
       renderOverviewPage(); renderSlots();
       if (view === 'providers') renderProviders();
+      // 会话表的「配置 Key / 槽位」「解绑」和绑定下拉按 online 禁用,离线时同样要重画一次;编辑守卫与上面相同。
+      const editingSession = $('sess-body').contains(document.activeElement) || document.activeElement === $('sess-search');
+      if (view === 'sessions' && !activeDialog && !editingSession) renderSessions();
       return false;
     }
-    finally { $('refresh-btn').disabled = false; refreshTask = null; }
+    finally {
+      clearTimeout(busy); refreshTask = null;
+      btn.disabled = false; if (idleLabel !== null) btn.textContent = idleLabel;
+    }
   })();
   return refreshTask;
 }
@@ -320,13 +437,15 @@ document.querySelector('.apptabs').addEventListener('keydown', e => {
 // ---------------- 概览(只读) ----------------
 // 这一页刻意**不放任何可写控件**:规划要求"每项配置只有一个主要编辑入口",概览只负责
 // 把"现在什么样"和"你要动手做什么"摆出来,每条事项给一个跳到对应页的按钮。
-// 所有数据都来自 /api/state 这一份只读快照,不新增任何 fetch。
+// 所有数据都来自 /api/state 这一份只读快照;另外只读一次 /api/stats 拿内存窗口容量(判断「今日请求」满没满)。
 function overviewJump(view, text) {
   // 跳转按钮只调视图切换,绝不发写请求(它连 api() 都不碰)。
   return `<button class="small" data-jump="${esc(view)}" onclick="showView(${handlerArg(view)})">${esc(text)}</button>`;
 }
 // 「需处理事项」清单。每一条都必须对应一个用户真能动手的状态,且能跳到管它的那一页;
 // 没有事项时明确写出来——留空白会让人以为还没加载出来。
+// 一条 = 一句人话标题 + 一行次级明细(渠道名 / 槽位;内部 id 用 mono 小字跟在后面)。
+// 会让请求失败的排前面并标成 err,主动停用的只是提醒(warn)。
 function overviewTodo() {
   const items = [];
   const ps = allProviders();
@@ -334,77 +453,99 @@ function overviewTodo() {
   const disabledKeys = ps.flatMap(p => (p.keys || []).filter(k => k.enabled === false).map(k => ({ provider: p, key: k })));
   // 槽位里的僵尸引用:槽位指向已删除的渠道。命中即失败,用户得在界面上看得见、能跳去改。
   const ghosts = ghostSlotRefs();
-  // 会话里引用已失效的渠道 / Key:面板里 routingStaleOf() 已能逐条算,这里只给总数。
+  // 会话里引用已失效的渠道 / Key:面板里 routingStaleOf() 已能逐条算,这里只给总数。服务端会拒掉这类覆盖。
   let staleSessions = 0;
   for (const s of state.sessions || []) if (routingStaleOf(groupOfSession(s), s.routing).length) staleSessions++;
+  // 明细的每一段:label 是人话,id 是原始值(可选)。纯文本进 title,HTML 版把 id 画成 mono 小字。
+  const detail = parts => ({
+    text: parts.map(p => p.id && p.id !== p.label ? `${p.label}（${p.id}）` : p.label).join('、'),
+    html: parts.map(p => esc(p.label) + (p.id && p.id !== p.label ? ` <span class="mono">${esc(p.id)}</span>` : '')).join('、'),
+  });
 
-  if (disabledProviders.length) items.push({ text: `${disabledProviders.length} 个渠道已停用：${disabledProviders.map(p => p.name).join('、')}`, view: 'providers', action: '去渠道与 Key' });
-  if (disabledKeys.length) items.push({ text: `${disabledKeys.length} 把 Key 已停用：${disabledKeys.map(({ provider, key }) => `${provider.name} · ${key.label || key.id}（${key.id}）`).join('、')}`, view: 'providers', action: '去渠道与 Key' });
-  if (ghosts.length) items.push({ text: `槽位里有失效引用，请求会失败：${ghosts.join('；')}`, view: 'providers', action: '去渠道与 Key' });
-  if (staleSessions) items.push({ text: `${staleSessions} 个会话的 Key / 槽位覆盖里存在已失效的引用`, view: 'sessions', action: '去会话' });
+  if (ghosts.length) items.push({ level: 'err', title: '槽位里有失效引用，请求会失败', detail: detail(ghosts.map(g => ({ label: `${g.app} · ${g.slot}`, id: g.provider }))), view: 'providers', action: '去渠道与 Key' });
+  if (staleSessions) items.push({ level: 'err', title: `${staleSessions} 个会话的 Key / 槽位覆盖里存在已失效的引用`, view: 'sessions', action: '去会话' });
+  if (disabledProviders.length) items.push({ level: 'warn', title: `${disabledProviders.length} 个渠道已停用`, detail: detail(disabledProviders.map(p => ({ label: p.name }))), view: 'providers', action: '去渠道与 Key' });
+  if (disabledKeys.length) items.push({ level: 'warn', title: `${disabledKeys.length} 把 Key 已停用`, detail: detail(disabledKeys.map(({ provider, key }) => ({ label: `${provider.name} · ${key.label || key.id}`, id: key.id }))), view: 'providers', action: '去渠道与 Key' });
 
   if (!items.length) return '<p class="ov-ok" id="overview-todo-empty">没有需要处理的事项。</p>';
-  return `<ul class="ov-todo" id="overview-todo-list">${items.map(it => `<li><span>${esc(it.text)}</span>${overviewJump(it.view, it.action)}</li>`).join('')}</ul>`;
+  return `<ul class="ov-todo" id="overview-todo-list">${items.map(it => `<li data-level="${it.level}"><div class="ov-todo-text"><b>${esc(it.title)}</b>${it.detail ? `<span class="ov-todo-detail" title="${esc(it.detail.text)}">${it.detail.html}</span>` : ''}</div>${overviewJump(it.view, it.action)}</li>`).join('')}</ul>`;
 }
 // 槽位的僵尸引用:槽位表里指向已删除渠道的条目。只读复算,不改任何状态。
 function ghostSlotRefs() {
   const out = [];
   for (const app of Object.keys(APPS)) {
     for (const s of state?.slots?.[app] || []) {
-      if (s.provider && !providers(app).some(p => p.id === s.provider)) {
-        out.push(`${APPS[app].label} 槽位 ${s.name} 的渠道（${s.provider}）`);
-      }
+      if (s.provider && !providers(app).some(p => p.id === s.provider)) out.push({ app: APPS[app].label, slot: s.name, provider: s.provider });
     }
   }
   return out;
 }
 function renderOverviewPage() {
-  if (!state) return;
+  // 只写变了的块:轮询每 5 秒重画一次,内容没变还整块替换会收起展开的端点清单、丢掉按钮焦点。
+  const paint = (id, html) => { const el = $(id); if (el._html !== html) { el.innerHTML = html; el._html = html; } };
+  if (!state) {
+    // 从没读到过状态(首次连接就失败):说清楚在等什么,不让「读取中」一直挂着。
+    for (const id of ['overview-todo', 'overview-clients', 'overview-endpoints']) paint(id, '<p class="hint">还没有读到服务状态，连接恢复后自动显示。</p>');
+    for (const id of ['ov-revision', 'ov-pid', 'ov-tokens', 'ov-cooldowns']) $(id).textContent = '—';
+    return;
+  }
   const stats = state.stats || {};
   $('ov-version').textContent = state.version ?? '—';
-  // 源码修订给全长作 title:截短是为了不撑破卡片,能核对才是它存在的意义。
+  // 源码修订只显示前 12 位,全长给 title:截短是为了不撑破卡片,能核对才是它存在的意义。
   // 用 setAttribute(而不是 .title=)是为了与假 DOM 一致——两者在真实浏览器里等价。
   const rev = state.code_revision || '';
-  $('ov-revision').textContent = rev ? '源码修订 ' + rev.slice(0, 12) + (rev.length > 12 ? '…' : '') : '源码修订未提供';
+  $('ov-revision').textContent = '修订 ' + (rev ? rev.slice(0, 12) : '—');
   $('ov-revision').setAttribute('title', rev);
   $('ov-uptime').textContent = fmtUp(state.uptime_s);
-  $('ov-pid').textContent = (state.pid ? `进程 ${state.pid}` : '进程未提供')
-    + ` · 代理 ${state.proxy_port ?? '—'} / 控制台 ${state.ui_port ?? '—'}`;
-  $('ov-reqs').textContent = fmtTok(stats.reqs);
-  $('ov-tokens').textContent = `输入 ${fmtTok(stats.inTok)} / 输出 ${fmtTok(stats.outTok)}`;
-  $('ov-sessions').textContent = state.sessions?.length ?? '—';
-  $('ov-cooldowns').textContent = '按协议归组 · 失败后仍可重试';
+  $('ov-uptime').setAttribute('title', lastSync && state.uptime_s != null ? '启动于 ' + fmtFullTime(lastSync.getTime() - state.uptime_s * 1000) : '');
+  // 端口、进程号是标识符,不加千分位;全称放 title。
+  const port = p => (p == null ? '—' : ':' + p);
+  $('ov-pid').textContent = `PID ${state.pid || '—'} · ${port(state.proxy_port)} / ${port(state.ui_port)}`;
+  $('ov-pid').setAttribute('title', `进程 ${state.pid || '未提供'} · 代理端口 ${state.proxy_port ?? '—'} · 控制台端口 ${state.ui_port ?? '—'}`);
+  const today = todayView(stats);
+  $('ov-reqs').textContent = today.reqs; $('ov-reqs').setAttribute('title', today.reqsTitle);
+  $('ov-tokens').textContent = `输入 ${today.inTok} / 输出 ${today.outTok}`;
+  $('ov-tokens').setAttribute('title', `输入 ${fmtCount(stats.inTok)} / 输出 ${fmtCount(stats.outTok)} tokens${today.tokNote}`);
+  // 会话按协议组归组(不是按客户端):直接给两组各几个,原来这里是冷却功能删掉后留下的固定句子。
+  const sessions = state.sessions;
+  $('ov-sessions').textContent = fmtCount(sessions?.length);
+  const codexSessions = (sessions || []).filter(s => groupOfSession(s) === 'codex').length;
+  $('ov-cooldowns').textContent = sessions ? `Anthropic ${sessions.length - codexSessions} · OpenAI ${codexSessions}` : '—';
+  $('ov-cooldowns').setAttribute('title', `按协议组归组，不按客户端：${GROUPS.claude} / ${GROUPS.codex}`);
 
-  $('overview-todo').innerHTML = overviewTodo();
+  const todo = overviewTodo();
+  paint('overview-todo', todo);
   // 没有事项时把整块收成一条状态行(样式按 data-state),有事项才展开成卡片。
   const todoPanel = $('overview-todo-panel');
-  if (todoPanel) todoPanel.dataset.state = $('overview-todo').innerHTML.includes('overview-todo-list') ? 'active' : 'clear';
+  if (todoPanel) todoPanel.dataset.state = todo.includes('overview-todo-list') ? 'active' : 'clear';
 
-  // 三行客户端状态:复用 liveFacts 的口径,不另造一套判断。
-  // 一行一件事:徽标说模式,有接入地址才写地址,配置文件路径跟在后面;
-  // 未接入的行给一个「去接入」——只切视图并发请求,已接入的行不给,免得整页都是按钮。
-  $('overview-clients').innerHTML = Object.keys(APPS).map(app => {
+  // 两行客户端状态:复用 liveFacts 的口径,不另造一套判断。
+  // 第一行是结论(模式徽标 + 状态 + 协议人话名),地址单行截断、全长进 title,配置文件路径排最后。
+  // 未接入的行给一个「去接入」——只切视图不发请求;已接入或离线(判断不了)的行不给。
+  const WIRE_NAMES = { responses: 'Responses API', chat: 'Chat Completions', anthropic: 'Anthropic Messages' };
+  paint('overview-clients', Object.keys(APPS).map(app => {
     const f = liveFacts(app);
-    const wire = f.lv?.wire_api ? `协议 ${esc(f.lv.wire_api)}` : '';
+    const raw = f.lv?.wire_api || '';
+    const wire = raw ? `<span class="ov-state" title="wire_api = ${esc(raw)}">${esc(WIRE_NAMES[raw] || raw)}</span>` : '';
     const configured = !!(f.healthy && f.lv?.base_url);
-    // 状态文案与徽标同义时不重复:未接入的三行曾经都写成「尚未配置 尚未配置」。
-    const state = f.stateLabel && f.stateLabel !== f.mode ? `<span class="ov-state">${esc(f.stateLabel)}</span>` : '';
-    const addr = f.lv?.base_url ? `<span class="mono ov-addr">${esc(f.lv.base_url)}</span>` : '';
-    const goto = configured ? '' : `<button class="ov-goto" type="button" data-app="${app}" onclick="overviewGoConnect(${handlerArg(app)})">去接入</button>`;
+    // 状态文案与徽标同义时不重复:未接入的三行曾经都写成「尚未配置 尚未配置」。配置读取失败时原始错误进 title。
+    const stateText = f.stateLabel && f.stateLabel !== f.mode ? `<span class="ov-state"${f.lv?.error ? ` title="${esc(f.lv.error)}"` : ''}>${esc(f.stateLabel)}</span>` : '';
+    const addr = f.lv?.base_url ? `<span class="mono ov-addr" title="${esc(f.lv.base_url)}">${esc(f.lv.base_url)}</span>` : '';
+    const goto = configured || !online ? '' : `<button class="ov-goto" type="button" data-app="${app}" onclick="overviewGoConnect(${handlerArg(app)})">去接入</button>`;
     return `<div class="ov-row" data-app="${app}"><div class="ov-row-name">${esc(APPS[app].label)}</div>
-      <div class="ov-row-main"><span class="badge ${configured ? 'on' : 'off'}">${esc(f.mode)}</span>${state}${wire ? `<span class="ov-state">${wire}</span>` : ''}${addr}${goto}</div>
+      <div class="ov-row-main"><span class="badge badge-dot ${configured ? 'on' : 'off'}">${esc(f.mode)}</span>${stateText}${wire}${goto}${addr}</div>
       <div class="mono ov-cfg">${esc(APPS[app].cfg)}</div></div>`;
-  }).join('');
+  }).join(''));
 
   // 接入地址 = "我在哪里填什么"。缺 base 时退回 url(与 routerBase 同口径)。
   // 完整端点清单默认收起:两行基址已经回答了「填什么」,这里只是备查。
   const r = state.router || {};
   const endpoints = [...new Set(Array.isArray(r.endpoints) ? r.endpoints : [])];
-  $('overview-endpoints').innerHTML = [
+  paint('overview-endpoints', [
     ['Claude Code / Anthropic', r.claude_base || r.url || ''],
     ['Codex / OpenAI', r.codex_base || r.url || ''],
-  ].map(([label, value]) => `<div class="ov-row"><div class="ov-row-name">${esc(label)}</div><div class="mono">${esc(value || '未提供')}</div></div>`).join('')
-    + (endpoints.length ? `<details class="ov-endpoints-more"><summary>全部端点（${endpoints.length}）</summary><div class="ov-endpoint-list">${endpoints.map(esc).join('<br>')}</div></details>` : '');
+  ].map(([label, value]) => `<div class="ov-row"><div class="ov-row-name">${esc(label)}</div>${value ? `<div class="mono">${esc(value)}</div>` : '<div class="ov-state" title="服务端没有返回这个地址">—</div>'}</div>`).join('')
+    + (endpoints.length ? `<details class="ov-endpoints-more"><summary>全部端点（${endpoints.length}）</summary><div class="ov-endpoint-list">${endpoints.map(esc).join('<br>')}</div></details>` : ''));
 
   // 接入向导入口只在还有客户端没写入配置时露面;两个都接好了就没必要占首屏。
   const ready = $('readiness-overview');

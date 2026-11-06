@@ -1,101 +1,79 @@
-/* 多 Key 自动备用面板。独立样式文件:不覆盖 app.js 的渠道卡片与弹窗,
-   只用 base.css 的既有 token,浅色 / 深色随系统与 <html data-theme> 走。 */
+/* 多 Key 自动备用面板(2026-11 视觉重做)。独立样式文件:不覆盖渠道卡片与弹窗,
+   只用 base.css 的 token,浅色 / 深色随系统与 <html data-theme> 走。
+   卡片外观和通用卡片一致;Codex 直连时隐藏面板的规则归 providers.css,这里不重复。 */
 
 .kf-panel {
-  margin-top: 14px;
-  padding: 12px 16px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  margin-top: 16px; padding: 20px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  box-shadow: var(--highlight), var(--shadow-sm);
+  display: flex; flex-direction: column; gap: 10px; min-width: 0;
 }
 .kf-panel[hidden] { display: none; }
 
-/* Compact header: title + one-line explanation on the left, controls on the right. */
-.kf-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 8px 18px;
+/* 卡片头:标题 + 一行说明在左,控件靠右、与标题同一行、同高。 */
+.kf-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 10px 20px; }
+.kf-intro { flex: 1 1 320px; min-width: 0; }
+.kf-intro h2 { margin: 0 0 3px; font-size: 15px; font-weight: 600; letter-spacing: 0; line-height: 1.35; }
+.kf-intro .hint { margin: 0; font-size: 13px; line-height: 1.6; color: var(--dim); }
+.kf-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; flex: 0 1 auto; min-width: 0; }
+.kf-field { display: flex; flex-direction: row; align-items: center; gap: 8px; min-width: 0; font-size: 12.5px; color: var(--dim); white-space: nowrap; }
+#kf-health .kf-field select { width: auto; min-width: 200px; max-width: 300px; min-height: var(--control-h); font-size: 13px; }
+#kf-health button.kf-toggle {
+  display: inline-flex; align-items: center; gap: 7px;
+  min-height: var(--control-h); padding: 4px 12px; white-space: nowrap;
 }
-.kf-intro { flex: 1 1 300px; min-width: 0; }
-.kf-intro h2 { margin: 0 0 2px; font-size: 14.5px; letter-spacing: -.1px; }
-.kf-intro .hint { margin: 0; font-size: 12.5px; line-height: 1.55; }
-
-.kf-controls {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 8px;
+.kf-toggle::before {
+  content: ""; width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+  background: var(--faint); transition: background-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
-.kf-field {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-  font-size: 12.5px;
-  color: var(--dim);
-}
-.kf-field select { min-width: 200px; max-width: 300px; min-height: 32px; font-size: 13px; }
-.kf-toggle { white-space: nowrap; min-height: 32px; }
-.kf-toggle.on {
-  color: var(--accent-text);
-  border-color: var(--accent-line);
-  background: var(--accent-soft);
-}
-.kf-status { font-size: 12.5px; color: var(--dim); overflow-wrap: anywhere; }
+/* 开启态一眼可认:强调色淡底 + 强调色字 + 发光圆点。 */
+#kf-health button.kf-toggle.on { color: var(--accent-text); background: var(--accent-soft); border-color: var(--accent-line); font-weight: 600; }
+#kf-health button.kf-toggle.on:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent); }
+#kf-health .kf-toggle.on::before { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+.kf-status { flex-basis: 100%; text-align: right; font-size: 12.5px; color: var(--dim); overflow-wrap: anywhere; }
 .kf-status:empty { display: none; }
+#kf-health .kf-detail { margin: 0; font-size: 13px; line-height: 1.6; color: var(--dim); }
 
-.kf-detail { margin: 0; font-size: 12.5px; line-height: 1.6; }
-
-.kf-health-body {
-  padding-top: 8px;
-  border-top: 1px solid var(--border-soft);
-}
-.kf-health-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-.kf-health-head h3 { margin: 0; font-size: 13px; }
-.kf-health-head .small { min-height: 30px; }
-#kf-health-status { font-size: 12.5px; }
-
+/* 「Key 状态」子区:细线隔开,行按 谁 / 状态 / 范围 / 时间 对齐。 */
+.kf-health-body { margin-top: 2px; padding-top: 12px; border-top: 1px solid var(--border-soft); }
+.kf-health-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.kf-health-head h3 { margin: 0; font-size: 13.5px; font-weight: 600; letter-spacing: 0; }
+#kf-health .kf-health-head button.small { min-height: var(--control-h-sm); }
+#kf-health #kf-health-status { margin: 4px 0 0; font-size: 13px; line-height: 1.6; color: var(--dim); }
 .kf-rows {
-  list-style: none;
-  margin: 6px 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
+  list-style: none; margin: 8px 0 0; padding: 0;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; column-gap: 16px;
 }
+.kf-rows:empty { display: none; }
 .kf-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 12px;
-  padding: 6px 0;
-  border-top: 1px solid var(--border-soft);
-  font-size: 13px;
-  line-height: 1.5;
+  grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: center;
+  padding: 8px 0; border-top: 1px solid var(--border-soft); font-size: 13px; line-height: 1.5;
 }
 .kf-row:first-child { border-top: 0; }
-.kf-who { min-width: 0; overflow-wrap: anywhere; }
-.kf-scope, .kf-when { color: var(--dim); }
-.kf-more > summary {
-  font-size: 12.5px; padding: 4px 0; min-height: 32px;
-  display: inline-flex; align-items: center;
-}
-.kf-more > .hint { font-size: 12.5px; line-height: 1.65; margin: 6px 0 0; max-width: 900px; }
+.kf-who { min-width: 0; display: flex; align-items: baseline; gap: 4px 10px; flex-wrap: wrap; overflow-wrap: anywhere; }
+.kf-who-name { color: var(--text); font-weight: 500; }
+.kf-who-key { font-size: 12.5px; }
+.kf-row > .badge { justify-self: start; }
+.kf-scope { color: var(--dim); font-size: 12.5px; }
+.kf-when { color: var(--dim); font-size: 12.5px; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* 小折叠沿用通用 summary 样式(不另造箭头),这里只管留白。 */
+.kf-more { margin-top: 6px; }
+.kf-more > .hint { margin: 2px 0 4px; font-size: 13px; line-height: 1.6; max-width: 900px; }
 
 @media (max-width: 720px) {
-  .kf-panel { padding: 12px; }
-  .kf-controls { width: 100%; align-items: stretch; }
+  .kf-panel { padding: 16px; }
+  .kf-controls { width: 100%; }
   .kf-field { flex: 1 1 100%; }
-  .kf-field select { min-width: 0; width: 100%; max-width: none; }
-  .kf-row { align-items: flex-start; }
+  #kf-health .kf-field select { flex: 1 1 auto; min-width: 0; max-width: none; }
+  #kf-health button.kf-toggle { flex: 1 1 auto; justify-content: center; min-height: 36px; }
+  #kf-health .kf-health-head button.small { min-height: 36px; }
+  .kf-status { text-align: left; }
+  .kf-rows { display: block; }
+  .kf-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+  .kf-who { flex-basis: 100%; }
+  .kf-when { margin-left: auto; text-align: left; white-space: normal; }
+}
+@media (forced-colors: active) {
+  .kf-panel { border: 1px solid CanvasText; }
+  .kf-toggle::before { forced-color-adjust: none; background: CanvasText; }
 }

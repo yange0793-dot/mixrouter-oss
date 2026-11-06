@@ -292,16 +292,21 @@
     profiles: '<path d="M5 2.8h8v12.4L9 12.3l-4 2.9z"/><path d="M7.2 6h3.6"/>',
     claude: '<rect x="2.5" y="3" width="13" height="5" rx="1.5"/><rect x="2.5" y="10" width="13" height="5" rx="1.5"/><path d="M5.5 5.5h.01M5.5 12.5h.01"/>',
     codex: '<path d="M3 5.5 9 3l6 2.5v7L9 15l-6-2.5z"/><path d="M3 5.5 9 8l6-2.5M9 8v7"/>',
+    // 只给快速跳转里那条不分客户端的「渠道与 Key」用;顶栏的渠道页按客户端取 claude/codex。
+    providers: '<circle cx="6.5" cy="11.5" r="3"/><path d="m8.6 9.4 5.9-5.9M12.5 5.5l1.8 1.8M10.8 7.2l1.3 1.3"/>',
   };
+  function iconSvg(key) {
+    const parts = ICONS[key] || ICONS.overview;
+    return '<svg viewBox="0 0 18 18" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' + parts + '</svg>';
+  }
   function setViewIcon(viewName, appName) {
     const icon = el('topbar-view-icon');
     if (!icon) return;
     const key = viewName === 'providers'
       ? (APPS.includes(appName) ? appName : DEFAULT_APP)
       : viewName;
-    const parts = ICONS[key] || ICONS.overview;
     try {
-      icon.innerHTML = '<svg viewBox="0 0 18 18" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' + parts + '</svg>';
+      icon.innerHTML = iconSvg(key);
     } catch { /* 没有 innerHTML 的环境(测试替身)只跳过图标 */ }
   }
 
@@ -578,12 +583,18 @@
         node.setAttribute('role', 'option');
         node.setAttribute('tabindex', '-1');
         node.dataset.index = String(index);
+        // 图标方块只是装饰(aria-hidden):选项的可读名称仍是标签 + 说明两段文字。
+        const icon = document.createElement('span');
+        icon.className = 'quick-nav-icon';
+        icon.setAttribute('aria-hidden', 'true');
+        try { icon.innerHTML = iconSvg(item.app || item.view); } catch { /* 测试替身没有 innerHTML 时只跳过图标 */ }
         const label = document.createElement('span');
         label.className = 'quick-nav-item-label';
         label.textContent = item.label;
         const hint = document.createElement('span');
         hint.className = 'mono';
         hint.textContent = item.hint;
+        node.appendChild(icon);
         node.appendChild(label);
         node.appendChild(hint);
         node.addEventListener('click', () => chooseQuickItem(index));

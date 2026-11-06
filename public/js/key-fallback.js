@@ -230,7 +230,7 @@
     els.detail.textContent = !online
       ? '控制台离线：连接恢复后才能保存开关。'
       : count <= 1
-      ? `该渠道当前 ${count} 把 Key；至少 2 把才会触发自动备用。默认关闭，固定 Key 的会话不换。`
+      ? `该渠道当前只有 ${count} 把 Key；至少 2 把才会触发自动备用。固定 Key 的会话不换。`
       : `${count} 把 Key。开启后失败时按健康状态换号；会话固定 Key、压缩专用 Key 不换，也不改当前生效 Key。`;
   }
 
@@ -260,17 +260,20 @@
   }
 
   // ---------------------------------------------------------------- Key 健康视图
+  // 全站统一的时间点格式:今天 HH:mm:ss,今年 MM-DD HH:mm,更早 YYYY-MM-DD;完整时间给 title。
   function fmtTime(ms) {
     const n = Number(ms);
-    if (!Number.isFinite(n) || n <= 0) return '';
+    if (!Number.isFinite(n) || n <= 0) return null;
     const d = new Date(n);
-    if (Number.isNaN(d.getTime())) return '';
-    return d.toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
-  }
-
-  function providerLabel(id) {
-    const p = cache.get(id);
-    return p ? `${p.name}（${p.id}）` : textOf(id);
+    if (Number.isNaN(d.getTime())) return null;
+    const p = v => String(v).padStart(2, '0');
+    const date = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    const time = `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+    const now = new Date();
+    const today = `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}`;
+    const text = date === today ? time
+      : d.getFullYear() === now.getFullYear() ? `${p(d.getMonth() + 1)}-${p(d.getDate())} ${time.slice(0, 5)}` : date;
+    return { text, title: `${date} ${time}` };
   }
 
   function renderHealth(rows) {
@@ -285,12 +288,22 @@
       const li = document.createElement('li');
       li.className = 'kf-row';
 
+      // 渠道名是主文案,Key ID 是次级 mono 小字;两个原始 ID 都在 title 里。不显示 Key 正文或掩码。
+      const p = cache.get(row.provider);
+      const keyId = textOf(row.key_id);
       const who = document.createElement('span');
       who.className = 'kf-who';
-      who.textContent = `${providerLabel(row.provider)} · ${textOf(row.key_id) || '（无 Key ID）'}`;
+      who.title = `渠道 ${textOf(row.provider) || '—'} · Key ${keyId || '—'}`;
+      const name = document.createElement('span');
+      name.className = 'kf-who-name';
+      name.textContent = p ? p.name : (textOf(row.provider) || '未知渠道');
+      const key = document.createElement('span');
+      key.className = 'kf-who-key mono';
+      key.textContent = keyId || '（无 Key ID）';
+      who.append(name, key);
 
       const state = document.createElement('span');
-      state.className = 'badge ' + (row.state === 'failed' ? 'off' : 'on');
+      state.className = 'badge ' + (row.state === 'failed' ? 'err' : row.state === 'healthy' ? 'on' : 'off');
       state.textContent = row.state === 'failed' ? '最近失败' : (row.state === 'healthy' ? '正常' : textOf(row.state) || '未知');
 
       const scope = document.createElement('span');
@@ -302,8 +315,9 @@
       const when = document.createElement('span');
       when.className = 'kf-when mono';
       const statusText = Number.isFinite(Number(row.status)) && Number(row.status) > 0 ? `HTTP ${Number(row.status)}` : '';
-      const timeText = `更新 ${fmtTime(row.updated_at)}`;
-      when.textContent = [statusText, timeText].filter(Boolean).join(' · ');
+      const at = fmtTime(row.updated_at);
+      when.textContent = [statusText, at && at.text].filter(Boolean).join(' · ') || '—';
+      if (at) when.title = '更新于 ' + at.title;
 
       li.append(who, state, scope, when);
       els.rows.appendChild(li);

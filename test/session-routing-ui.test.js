@@ -250,6 +250,47 @@ test('三层分开读得到:当前绑定带来源标记,最近实际请求独立
   assert.match(h.get('sess-chips').innerHTML, /实际 ≠ 绑定<b>0<\/b>/, '两边一致的会话不计入不一致');
 });
 
+test('会话列表的数字与时间走全站格式:计数千分位、tokens 缩写带完整 title、时间点按本地时区', async () => {
+  const data = fixture();
+  Object.assign(data.sessions[0], { reqs: 12345, inTok: 1234567, outTok: 980, lastUsed: Date.now() });
+  data.sessions[1].lastUsed = Date.UTC(2020, 0, 2, 3, 4, 5);
+  const h = await harness(data);
+  h.run("view = 'sessions'; renderSessions()");
+  const auto = rowOf(h, 'alpha001');
+  // 计数千分位;tokens 缩写只认 app.js 的 fmtTok(期望值从它取,不在这里写死一种格式),完整数字进 title
+  assert.match(auto, /<td class="c-usage"><b>12,345<\/b><span title="输入 1,234,567 \/ 输出 980 tokens">/);
+  assert.ok(auto.includes(`>${h.run('fmtTok(1234567)')} / 980</span>`));
+  // 当天只给 HH:mm:ss,完整时间放 title
+  assert.match(auto, /<td class="c-active" title="\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}">\d{2}:\d{2}:\d{2}<\/td>/);
+  // 往年只给日期;年份用同一沙箱的 Date 算,不随运行机器的时区漂
+  const old = rowOf(h, 'beta002'), year = h.run('new Date(Date.UTC(2020, 0, 2, 3, 4, 5)).getFullYear()');
+  assert.match(old, new RegExp(`<td class="c-active" title="${year}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}">${year}-\\d{2}-\\d{2}</td>`));
+  // 没有对话名是未知,显示「—」而不是连字符
+  assert.match(old, /<span class="lbl" title="">—<\/span>/);
+});
+
+test('诊断表失败分类显示人话标签、原始枚举进 title,没收录的原样显示;转移/翻译是纯文字标签', async () => {
+  const h = await harness();
+  const logs = [
+    { ts: '2026-10-27T10:30:00Z', status: 200, app: 'claude', provider: 'Alpha', model_in: 'm', in: 1, out: 1,
+      err: 'upstream stream ended early', err_class: 'stream_aborted', failover: true },
+    { ts: '2026-10-27T10:31:00Z', status: 429, app: 'codex', provider: 'Beta', model_in: 'm', in: 0, out: 0,
+      err_class: 'rate_limit', wire: 'chat', kind: 'responses' },
+    { ts: '2026-10-27T10:32:00Z', status: 502, app: 'claude', provider: 'Alpha', model_in: 'm', in: 0, out: 0, err_class: 'brand_new_class' },
+  ];
+  h.run(`fetch = async () => ({ ok: true, json: async () => ({ logs: ${JSON.stringify(logs)} }) })`);
+  await h.run('loadLogs()');
+  const body = h.get('logs-body').innerHTML;
+  // 主文案是短标签,原始错误文本退到第二行,两者全文都还在 title 里
+  assert.match(body, /<span class="err-label" title="失败分类 stream_aborted">断流<\/span><span class="err-text" title="upstream stream ended early">/);
+  assert.match(body, /<span class="err-label" title="失败分类 rate_limit">限流<\/span><\/td>/);
+  assert.match(body, /<span class="err-label" title="失败分类 brand_new_class">brand_new_class<\/span>/, '没收录的分类原样显示,不能吞掉');
+  assert.doesNotMatch(body, />(stream_aborted|rate_limit)</, '原始枚举不当主文案');
+  assert.match(body, /class="cool" title="首选渠道失败,已转移到当前渠道">已转移</);
+  assert.match(body, /class="cool" title="responses→chat 协议翻译">协议翻译</);
+  assert.doesNotMatch(body, /[↷⇄]/, '兜底字体下会变形的符号不再出现');
+});
+
 test('最近实际与当前绑定不同要显式标出:钉的渠道挂了、请求回退到别处是这一页的核心信息', async () => {
   const data = fixture();
   // 钉定 Alpha,最近一次真打的却是 Beta(failover 落到了池里的另一家)

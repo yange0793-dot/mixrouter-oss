@@ -7,7 +7,8 @@
 //   · 预览只展示白名单字段,绝不回显 Key;不可应用时禁用确认;
 //   · 切换必须二次确认,且文案说明只影响后续请求、会话覆盖仍优先;
 //   · 删除只删快照;409 不覆盖、不假装成功;
-//   · 只在进入本页或手动刷新时读取,没有轮询。
+//   · 只在进入本页或手动刷新时读取,没有轮询;
+//   · 时间按今天/今年/更早三档显示;修订号、渠道 id、策略枚举不当主文案,原值留在 title。
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -141,9 +142,13 @@ test('进入本页才读取一次;方案清单显示 active、协议组与时间
   assert.match(rows, /Claude \/ Codex/);
   assert.match(rows, /上次读取时一致/);
   assert.match(rows, /上次读取时不一致/);
-  assert.doesNotMatch(rows, /—<td>/, 'created_at 有效时不能显示 —');
-  assert.match(h.get('profiles-revision-hint').textContent, /方案修订 pr-1/);
-  assert.match(h.get('profiles-revision-hint').textContent, /槽位修订 sr-1/);
+  // 原来这里是 doesNotMatch(/—<td>/),那个模式永远匹配不上(— 后面跟的是 </td>),等于没防。
+  // 现在直接看时间格:有效的 created_at 必须带完整时间的 title,显示文本不能是 —。
+  assert.match(rows, /<td class="profiles-when" title="2026-1[01]-\d\d \d\d:\d\d:\d\d">[^<—]+<\/td>/, 'created_at 有效时不能显示 —');
+  // 修订号是内部值:首屏只给容量,修订号放 title(409 时仍对得上服务端)。
+  assert.match(h.get('profiles-revision-hint').textContent, /已保存 2 \/ 30 个方案/);
+  assert.match(h.get('profiles-revision-hint').title, /方案修订 pr-1/);
+  assert.match(h.get('profiles-revision-hint').title, /槽位修订 sr-1/);
   assert.equal(h.get('profiles-table').hidden, false);
   assert.equal(h.get('profiles-empty').hidden, true);
   h.run('profilesSetVisible(true)');
@@ -227,7 +232,9 @@ test('预览:只展示白名单槽位字段与警告,绝不回显 Key;不可应�
   assert.match(body, /渠道 pA · 模型 m1/);
   assert.match(body, /渠道 pB · 模型 m2/);
   assert.match(body, /备池 pC\/m3/);
-  assert.match(body, /策略 round_robin/);
+  // 策略给人话,原始枚举值留在 title。
+  assert.match(body, /策略 轮询/);
+  assert.match(body, /title="[^"]*策略 round_robin"/);
   assert.match(body, /subagent/);
   assert.match(body, /（无此槽位）/);
   assert.match(body, /渠道 pX 已停用/);
@@ -240,6 +247,30 @@ test('预览:只展示白名单槽位字段与警告,绝不回显 Key;不可应�
   await blocked.run('profilesPreview(0)');
   assert.equal(blocked.get('profiles-apply').disabled, true);
   assert.match(blocked.get('profiles-preview-status').textContent, /不可应用/);
+});
+
+test('时间点按今天 / 今年 / 更早三档显示,完整时间放 title;缺失或解析不了显示 —', () => {
+  const h = harness();
+  const now = 'new Date(2026, 10, 6, 15, 0, 0)';
+  assert.deepEqual(plain(h.run(`profilesWhen(new Date(2026, 10, 6, 9, 5, 7).toISOString(), ${now})`)), { text: '09:05:07', title: '2026-11-06 09:05:07' });
+  assert.deepEqual(plain(h.run(`profilesWhen(new Date(2026, 1, 3, 8, 9, 10).getTime(), ${now})`)), { text: '02-03 08:09', title: '2026-02-03 08:09:10' });
+  assert.deepEqual(plain(h.run(`profilesWhen(String(new Date(2024, 6, 3, 1, 2, 3).getTime()), ${now})`)), { text: '2024-07-03', title: '2024-07-03 01:02:03' });
+  assert.deepEqual(plain(h.run(`profilesWhen(null, ${now})`)), { text: '—', title: '' });
+  assert.deepEqual(plain(h.run(`profilesWhen('not-a-date', ${now})`)), { text: '—', title: '无法解析的时间：not-a-date' });
+});
+
+test('预览:控制台有渠道快照时显示渠道名,原始 id 留在 title', async () => {
+  const h = await loaded();
+  h.context.state = { providers: { claude: [{ id: 'pA', name: 'Alpha' }, { id: 'pB', name: 'Beta' }, { id: 'pC', name: 'Gamma' }] } };
+  await h.run('profilesPreview(0)');
+  const body = h.get('profiles-preview-body').innerHTML;
+  assert.match(body, /渠道 Alpha · 模型 m1/);
+  assert.match(body, /渠道 Beta · 模型 m2 · 备池 Gamma\/m3 · 策略 轮询/);
+  assert.match(body, /title="渠道 pA · 模型 m1"/);
+  assert.match(body, /title="渠道 pB · 模型 m2 · 备池 pC\/m3 · 策略 round_robin"/);
+  for (const secret of ['secret-key-id', 'another-secret', 'key_id']) {
+    assert.equal(body.includes(secret), false, `预览不能出现 ${secret}`);
+  }
 });
 
 function previewWithoutKey() {

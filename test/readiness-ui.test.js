@@ -436,11 +436,14 @@ test('后备池保存保留 dropTools 与非 priority 策略，清空时显式�
     if (url === '/api/state') return reply(200, structuredClone(h.getServer()));
     return reply(200, { ok: true });
   });
-  assert.match(h.get('readiness-slot-pools').innerHTML, /后备池 1 个 · round_robin/, '显示已有后备池与保留的策略');
+  // 策略显示人话标签,原始枚举仍在 title / mono 小字里:防的是"非 priority 策略被藏起来或被改掉"。
+  const pools = h.get('readiness-slot-pools').innerHTML;
+  assert.match(pools, /后备池 1 个 · 轮询/, '显示已有后备池与保留的策略（人话标签）');
+  assert.match(pools, /title="调度策略 strategy=round_robin"/, '原始策略值仍可查');
   h.run("readinessPoolToggle('main')");
   let editor = h.get('readiness-slot-pools').innerHTML;
   assert.match(editor, /主渠道 · 固定第一/);
-  assert.match(editor, /现有策略是 <b>round_robin<\/b>/, '非 priority 策略要说出来并被保留');
+  assert.match(editor, /现有策略是 <b>轮询<\/b> <span class="mono">round_robin<\/span>/, '非 priority 策略要说出来并被保留');
   assert.match(editor, /Backup/, '已有后备成员出现在草稿里');
   h.get('readiness-pool-add-main').value = 'a3';
   h.run("readinessPoolAdd('main')");

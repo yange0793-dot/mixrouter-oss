@@ -1,6 +1,7 @@
 'use strict';
 // 用量统计页。与 app.js 共用同一个 realm(classic script,不是 ESM):只声明本页自己的
-// 变量与函数,不重复声明 `$` / `esc` / `toast` / `view`(重复声明会当场报错,这是安全网)。
+// 变量与函数,不重复声明 `$` / `esc` / `toast` / `view` 和 app.js 的 fmt* 格式函数
+// (重复声明会当场报错,这是安全网)。
 //
 // 数据来自 GET /api/usage?dashboard=1:磁盘 logs/requests.jsonl + 内存环,按本地时区分桶。
 // dashboard 扩展给出 daily / records / facets / coverage;四张卡片、热力图、三张明细表
@@ -51,30 +52,18 @@ const usageState = {
 // 会让「没有数据」显示成 0,看起来像真的发生过请求。
 const usageNum = value => (value === null || value === undefined || value === ''
   ? null : (Number.isFinite(Number(value)) ? Number(value) : null));
-const usageTok = value => {
+// 显示格式全部用 app.js 的全站格式函数(fmtTok / fmtCount / fmtPct / fmtWhen / fmtFullTime /
+// fmtRate / fmtTtfb):同一个数在概览、诊断、会话和本页长得一样。本页只补 title 与百分比换算。
+// 缩写过的 token 数在 title 里给完整千分位;小于 1000 本来就是完整数字,不加 title。
+const usageTokTitle = value => {
   const n = usageNum(value);
-  if (n === null) return '—';
-  const abs = Math.abs(n);
-  if (abs >= 1e9) return (n / 1e9).toFixed(2) + 'B';
-  if (abs >= 1e6) return (n / 1e6).toFixed(2) + 'M';
-  if (abs >= 1e3) return (n / 1e3).toFixed(1) + 'k';
-  return String(Math.round(n));
+  return n !== null && Math.abs(n) >= 1000 ? ` title="${fmtCount(n)}"` : '';
 };
-const usagePct = value => {
+// cache_hit_rate 是 0–1 的比例,fmtPct 要 0–100;缺失仍然是「—」,不乘成 0。
+const usageRatio = value => {
   const n = usageNum(value);
-  return n === null ? '—' : (n * 100).toFixed(1) + '%';
+  return fmtPct(n === null ? null : n * 100);
 };
-const usageMs = value => {
-  const n = usageNum(value);
-  if (!n || n <= 0) return '—';
-  return n >= 1000 ? (n / 1000).toFixed(1) + 's' : Math.round(n) + 'ms';
-};
-const usageInt = value => {
-  const n = usageNum(value);
-  return n === null ? '—' : Math.round(n).toLocaleString('en-US');
-};
-// 本地时间 HH:mm:ss。日志里的 ts 是 UTC,展示按浏览器本地时间。
-const usageClock = ms => new Date(ms).toLocaleTimeString('zh-CN', { hour12: false });
 const usagePad = value => String(value).padStart(2, '0');
 
 // ---- 本地日期(不走 UTC) ---------------------------------------------------
@@ -146,17 +135,22 @@ function usageQuery() {
 }
 
 // ---- 数据读取 -------------------------------------------------------------
+// 状态行只在「需要人注意」时出现:读取中、按新筛选重读、失败/超时、仅内存窗口。正常情况下
+// 请求数已在卡片、同步时间已在顶栏,不再重复一遍(空文本即隐藏)。
 function usageWriteStatus(text, tone = '') {
   const el = $('usage-status');
   if (!el) return;
   el.textContent = text;
+  el.hidden = !text;
   if (el.dataset) el.dataset.tone = tone;
   // 样式表用 #usage-status.stale 标失败态;颜色只走 CSS,不在 JS 里写死。
   el.classList.toggle('stale', tone === 'err');
 }
-function usageSetLastSync(text) {
+function usageSetLastSync(text, ms) {
   const el = $('usage-last-sync');
-  if (el) el.textContent = text;
+  if (!el) return;
+  el.textContent = text;
+  if (el.setAttribute) el.setAttribute('title', ms ? fmtFullTime(ms) : '');
 }
 function usageSetBusy(busy) {
   usageState.busy = !!busy;
@@ -208,12 +202,19 @@ async function loadUsage() {
   if (!usageState.data) usageChartState('loading');
   const stale = usageMarkStale();
   if (!usageState.data) usageWriteStatus('正在读取用量…');
-  else if (stale) usageWriteStatus('正在按当前筛选读取…下方仍是上一次查询的结果,不是当前筛选的答案。');
+  else if (stale) usageWriteStatus('正在按新筛选读取…下方仍是上一次的结果。', 'warn');
 
   try {
-    const response = await fetch('/api/usage?' + query, {
-      signal: controller.signal, cache: 'no-store', headers: { Accept: 'application/json' },
-    });
+    let response;
+    try {
+      response = await fetch('/api/usage?' + query, {
+        signal: controller.signal, cache: 'no-store', headers: { Accept: 'application/json' },
+      });
+    } catch (e) {
+      // fetch 自己抛错 = 连不上本机服务(浏览器给的是 Failed to fetch 这类原文);取消/超时照旧往外抛。
+      if (e && e.name === 'AbortError') throw e;
+      throw new Error('连不上本机服务');
+    }
     let body = null;
     try { body = await response.json(); } catch { /* 非 JSON 由下面统一报错 */ }
     if (!response.ok) throw new Error((body && body.error) || `HTTP ${response.status}`);
@@ -228,15 +229,18 @@ async function loadUsage() {
     usageRender(body);
     usageChartState('ready');
     usageMarkStale();
-    usageWriteStatus(`区间内 ${usageInt(body.totals && body.totals.reqs)} 次请求 · ${usageSourceLabel(body)} · 最近同步 ${usageClock(usageState.lastSync)}`, 'ok');
-    usageSetLastSync(`最近同步 ${usageClock(usageState.lastSync)}`);
+    // 只剩内存窗口时要说出来:这时的数字只是还没落盘的那一段,不是完整历史。
+    usageWriteStatus(body.scope && body.scope.source === 'memory'
+      ? '只读到内存窗口(还没有落盘日志),数字不是完整历史。' : '', 'ok');
+    usageSetLastSync(`最近同步 ${fmtWhen(usageState.lastSync)}`, usageState.lastSync);
   } catch (e) {
     if (seq !== usageState.seq) return;
     if (e && e.name === 'AbortError' && !timedOut) return; // 被新请求取代,不是错误
     const reason = timedOut ? '读取超时(20 秒未返回)' : (e && e.message ? e.message : '未知错误');
     usageMarkStale(true);
-    usageWriteStatus(`用量读取失败:${reason}${usageState.data ? '。下方保留的是上一次成功读取的数据,与当前筛选/时刻不一致,不要当成当前结果。' : '。尚未取得任何数据。'}`, 'err');
-    usageSetLastSync(`同步失败 ${usageClock(Date.now())}`);
+    usageWriteStatus(`用量读取失败:${reason}。${usageState.data
+      ? '下方是上一次成功读取的数据,不是当前筛选的结果;' : '还没有任何数据;'}点「立即同步」重试。`, 'err');
+    usageSetLastSync(`同步失败 ${fmtWhen(Date.now())}`, Date.now());
     if (!usageState.data) usageChartState('error');
   } finally {
     clearTimeout(timer);
@@ -470,19 +474,33 @@ function usageRender(data) {
 function usageRenderCards(data) {
   const totals = (data && data.totals) || {};
   const scope = (data && data.scope) || {};
-  const set = (id, text) => { const el = $(id); if (el) el.textContent = text; };
+  const set = (id, text, title) => {
+    const el = $(id);
+    if (!el) return;
+    el.textContent = text;
+    if (title !== undefined && el.setAttribute) el.setAttribute('title', title);
+  };
   const reqs = usageNum(totals.reqs);
-  set('usage-reqs', reqs === null ? '—' : usageInt(reqs));
+  set('usage-reqs', reqs === null ? '—' : fmtCount(reqs));
   const from = usageLocalDayKey(scope.from);
   const to = usageLocalDayKey(scope.to);
   set('usage-request-hint', from && to ? `${from} – ${to}` : '可用日志');
-  set('usage-tokens', usageTok(totals.tokens_total));
-  set('usage-token-split', `新增 ${usageTok(totals.tokens_in)} / 输出 ${usageTok(totals.tokens_out)} / 缓存 ${usageTok(totals.cache_read)}`);
-  set('usage-cache', usagePct(totals.cache_hit_rate));
+  const tokensTotal = usageNum(totals.tokens_total);
+  set('usage-tokens', fmtTok(tokensTotal), tokensTotal === null ? ''
+    : `${fmtCount(tokensTotal)} tokens = 新增输入 ${fmtCount(totals.tokens_in)} + 输出 ${fmtCount(totals.tokens_out)} + 缓存读取 ${fmtCount(totals.cache_read)}`);
+  // 三段拆分各自是一个不折行的小块:窄卡片里整块换行,不会把「缓存 8.65B」从中间拆开。
+  const split = $('usage-token-split');
+  if (split) {
+    split.innerHTML = [['新增', totals.tokens_in], ['输出', totals.tokens_out], ['缓存', totals.cache_read]]
+      .map(([label, value]) => `<span class="usage-split"${usageTokTitle(value)}><span>${label}</span> ${fmtTok(value)}</span>`)
+      .join('');
+  }
+  set('usage-cache', usageRatio(totals.cache_hit_rate));
   set('usage-cache-hint', '缓存读取 / (新增输入 + 缓存读取)');
   const rate = usageNum(totals.ok_rate);
-  set('usage-success', rate === null ? '—' : rate.toFixed(1) + '%');
-  set('usage-ok-rate', rate === null ? '暂无成功率样本' : `按日志状态判定 · ${usageInt(totals.reqs)} 次请求`);
+  set('usage-success', fmtPct(rate));
+  // 次数已在「总请求数」卡里,这里只说成功按什么判定。
+  set('usage-ok-rate', rate === null ? '暂无成功率样本' : '按最终状态判定,断流与取消计为失败');
   // 成功率低于 95% 时把数字本身染成告警色:失败是这页唯一需要人动手看的数字。
   const success = $('usage-success');
   if (success && success.classList) {
@@ -494,16 +512,17 @@ function usageRenderCards(data) {
   if (failEl) {
     const failed = (reqs !== null && rate !== null) ? Math.max(0, Math.round(reqs * (100 - rate) / 100)) : null;
     failEl.hidden = !failed;
-    failEl.textContent = failed ? `失败 ${usageInt(failed)} 次` : '';
+    failEl.textContent = failed ? `失败 ${fmtCount(failed)} 次` : '';
     if (failed && failEl.setAttribute) {
-      failEl.setAttribute('title', `区间内失败的请求 ${usageInt(failed)} 次;可以按「仅失败」筛选明细`);
+      failEl.setAttribute('title', `区间内失败的请求 ${fmtCount(failed)} 次;可以按「仅失败」筛选明细`);
     }
   }
-  // 速度/首响应是补充指标,放在「更多指标」里;没有样本时也是「—」而不是 0。
-  set('usage-speed', totals.speed_tps ? `${Math.round(Number(totals.speed_tps))} tok/s` : '—');
+  // 速度/首响应是补充指标,放在「更多指标」里;格式与诊断页同一套(app.js 的 fmtRate / fmtTtfb),
+  // 没有样本时也是「—」而不是 0。卡片只有聚合后的 tok/s,按「1 秒输出 tps 个」交给 fmtRate。
+  set('usage-speed', fmtRate({ out: usageNum(totals.speed_tps), ms: 1000 }));
   const ttfb = $('usage-ttfb');
   if (ttfb) {
-    ttfb.textContent = usageMs(totals.ttfb_p50_ms);
+    ttfb.textContent = fmtTtfb(usageNum(totals.ttfb_p50_ms));
     // 日志里的 ttfb_ms 量的是「上游响应头到达」,不是模型首个输出 token:标签不能用「首字」冒充。
     if (ttfb.setAttribute) {
       ttfb.setAttribute('title', '上游响应头到达时间(P50),不是模型首个输出 token 的时间');
@@ -726,7 +745,8 @@ function usageHeatModel(data) {
   const activeDays = activeCells.filter(cell => cell.covered).length;
   const daysWithReqs = activeCells.filter(cell => cell.covered && (cell.reqs > 0 || cell.tokens > 0)).length;
   const anyOutside = cells.some(cell => !cell.covered && !cell.future);
-  const anyInactive = cells.some(cell => !cell.active && !cell.future);
+  // 「不在区间」只算有日志覆盖的日子:没有日志的日子格子与浮层都读作「未覆盖」,不另起一种状态。
+  const anyInactive = cells.some(cell => !cell.active && !cell.future && cell.covered);
   const anyFuture = cells.some(cell => cell.future);
   const latestActive = [...cells].reverse().find(cell => cell.active && cell.covered)
     || [...cells].reverse().find(cell => cell.active)
@@ -737,7 +757,7 @@ function usageHeatModel(data) {
   return {
     weeks, gridStart, gridEnd, gridStartKey, gridEndKey, rangeStartKey, rangeEndKey,
     todayKey, cells, byKey, months, thresholds, activeDays, daysWithReqs, hasRequests,
-    hasCoverage: !!covFirstKey,
+    hasCoverage: !!covFirstKey, coverageStartKey: covFirstKey,
     anyOutside, anyInactive, anyFuture,
     // 往前翻的入口:统计区间本身伸到当前块之前(例如「全部」而数据比画出来的更早)。
     hasEarlier: rangeStartKey < gridStartKey,
@@ -758,14 +778,14 @@ function usageHeatCellText(cell) {
   if (cell.future) return `${base} · 未来日期,尚无数据`;
   if (!cell.covered) return `${base} · 未覆盖:数据源没有这一天的日志`;
   if (!cell.active) return `${base} · 不在当前统计区间`;
-  return `${base} · ${usageInt(cell.reqs)} 次请求 · ${usageTok(cell.tokens)} tokens`;
+  return `${base} · ${fmtCount(cell.reqs)} 次请求 · ${fmtTok(cell.tokens)} tokens`;
 }
 function usageHeatCellLabel(cell) {
   const base = usageDayLabel(cell.key);
   if (cell.future) return `${base},未来日期`;
   if (!cell.covered) return `${base},未覆盖`;
   if (!cell.active) return `${base},不在当前统计区间`;
-  return `${base},${usageInt(cell.reqs)} 次请求,${usageTok(cell.tokens)} tokens`;
+  return `${base},${fmtCount(cell.reqs)} 次请求,${fmtTok(cell.tokens)} tokens`;
 }
 
 function usageHeatSignature(model) {
@@ -776,13 +796,15 @@ function usageHeatSignature(model) {
 }
 
 // 图例有两种宿主:外壳(index.html)已经在 .usage-chart-foot 里放了色阶图例,此时只在
-// 它后面补一句「0 / 区间外 / 未来」的说明,绝不重复渲染第二份;旧版页面没有图例时才自建。
+// 它后面补「不在区间 / 未来」两个色块(只在当前窗口真有这类格子时出现),绝不重复渲染第二份;
+// 旧版页面没有图例时才自建。每种状态的含义写在色块的 title 里,不在图例行里铺句子。
 function usageLegendHost() {
   if (usageState.legendResolved) return usageState.legendHost;
   usageState.legendResolved = true;
   usageState.legendHost = document.querySelector ? document.querySelector('.heatmap-legend') : null;
-  if (usageState.legendHost && usageState.legendHost.querySelectorAll) {
-    Array.from(usageState.legendHost.querySelectorAll('[data-level]')).forEach(swatch => {
+  const host = usageState.legendHost;
+  if (host && host.querySelectorAll) {
+    Array.from(host.querySelectorAll('[data-level]')).forEach(swatch => {
       const level = swatch.getAttribute('data-level');
       if (level === '0') {
         swatch.setAttribute('title', '0:区间内确实没有请求');
@@ -792,8 +814,10 @@ function usageLegendHost() {
         swatch.setAttribute('aria-label', `用量第 ${level} 级`);
       }
     });
+    const outside = host.querySelector ? host.querySelector('.heatmap-legend-outside') : null;
+    if (outside && outside.setAttribute) outside.setAttribute('title', '未覆盖:数据源没有这一天的日志,不是 0');
   }
-  return usageState.legendHost;
+  return host;
 }
 function usageLegendExtra(host) {
   if (usageState.legendExtra) return usageState.legendExtra;
@@ -801,40 +825,36 @@ function usageLegendExtra(host) {
   const extra = document.createElement('span');
   extra.className = 'heatmap-legend-extra';
   extra.id = 'usage-heatmap-legend-extra';
-  extra.style.cssText = 'display:inline-flex;flex-wrap:wrap;gap:4px 10px;align-items:center';
   host.appendChild(extra);
   usageState.legendExtra = extra;
   return extra;
 }
+// 0 与未覆盖已在外壳的色阶里各有色块;这里只补当前窗口里真实出现的另外两种状态。
 function usageLegendNotes(model) {
-  const notes = ['0 = 区间内无请求'];
-  if (model.anyInactive) notes.push('区间外的日期不参与统计');
-  if (model.anyFuture) notes.push('未来日期尚无数据');
+  const notes = [];
+  if (model.anyInactive) notes.push({ attr: 'data-active="false"', label: '不在区间', title: '不在当前统计区间:不参与统计,也不是 0' });
+  if (model.anyFuture) notes.push({ attr: 'data-future="true"', label: '未来', title: '未来日期,尚无数据' });
   return notes;
 }
-// 自建图例(旧版页面无 .heatmap-legend 时):色阶 + 三种非零状态都写明。
-function usageHeatLegend(model, metricLabel) {
+const usageLegendSwatch = note => `<span class="heatmap-legend-swatch" ${note.attr} title="${esc(note.title)}" aria-hidden="true"></span>`
+  + `<span class="heatmap-legend-label" title="${esc(note.title)}">${esc(note.label)}</span>`;
+// 自建图例(旧版页面无 .heatmap-legend 时):色阶 + 三种非零状态都有色块。
+function usageHeatLegend(model) {
   const parts = [
-    '<span class="heatmap-legend-swatch" data-level="0" aria-hidden="true"></span><span class="heatmap-legend-label">0 请求</span>',
+    '<span class="heatmap-legend-swatch" data-level="0" title="0:区间内确实没有请求" aria-hidden="true"></span><span class="heatmap-legend-label">0 请求</span>',
     '<span class="heatmap-legend-label">少</span>'
     + [1, 2, 3, 4].map(level => `<span class="heatmap-legend-swatch" data-level="${level}" aria-hidden="true"></span>`).join('')
     + '<span class="heatmap-legend-label">多</span>',
   ];
-  if (model.anyOutside) parts.push('<span class="heatmap-legend-swatch" data-coverage="outside" aria-hidden="true"></span><span class="heatmap-legend-label">未覆盖</span>');
-  if (model.anyInactive) parts.push('<span class="heatmap-legend-swatch" data-active="false" aria-hidden="true"></span><span class="heatmap-legend-label">不在区间</span>');
-  if (model.anyFuture) parts.push('<span class="heatmap-legend-swatch" data-future="true" aria-hidden="true"></span><span class="heatmap-legend-label">未来</span>');
-  parts.push(`<span class="heatmap-legend-label">按 ${esc(metricLabel)} 着色</span>`);
+  if (model.anyOutside) parts.push(usageLegendSwatch({ attr: 'data-coverage="outside"', label: '未覆盖', title: '未覆盖:数据源没有这一天的日志,不是 0' }));
+  parts.push(...usageLegendNotes(model).map(usageLegendSwatch));
   return `<div class="heatmap-legend">${parts.join('')}</div>`;
 }
 
 function usageRenderHeat(data) {
   const model = usageHeatModel(data);
   usageState.heatModel = model;
-  usageRenderHeatSummary(model, data);
-
-  const metricLabel = USAGE_METRIC_LABELS[usageState.metric] || usageState.metric;
-  const label = $('usage-range-label');
-  if (label) label.textContent = `按 ${metricLabel} 着色 · ${USAGE_RANGE_LABELS[usageState.range] || usageState.range}`;
+  usageRenderHeatSummary(model);
 
   const empty = $('usage-chart-empty');
   if (empty) {
@@ -901,14 +921,18 @@ function usageRenderHeat(data) {
     + `<div class="heatmap-grid">${cells}</div>`
     + '</div>';
 
-  // 图例:外壳已有就用它的色阶,只补文字说明;否则在热力图里自建一份。
+  // 图例:外壳已有就用它的色阶,只补当前窗口出现的状态色块;否则在热力图里自建一份。
   const host = usageLegendHost();
   let legend = '';
   if (host) {
     const extra = usageLegendExtra(host);
-    if (extra) extra.innerHTML = usageLegendNotes(model).map(note => `<span class="heatmap-legend-label">${esc(note)}</span>`).join('');
+    if (extra) {
+      const notes = usageLegendNotes(model);
+      extra.innerHTML = notes.map(usageLegendSwatch).join('');
+      extra.hidden = !notes.length;
+    }
   } else {
-    legend = usageHeatLegend(model, metricLabel);
+    legend = usageHeatLegend(model);
   }
   root.innerHTML = layout + legend;
 
@@ -925,19 +949,22 @@ function usageRenderHeat(data) {
   if (usageState.heatDate) usageShowHeatDate(usageState.heatDate);
 }
 
-function usageRenderHeatSummary(model, data) {
-  const summary = $('usage-calendar-summary');
-  const metric = USAGE_METRIC_LABELS[usageState.metric] || usageState.metric;
-  if (summary) {
+// 标题下一行只说「这块日历画的是哪段时间」:指标与区间已由旁边的切换钮和上方筛选栏表达,
+// 总量已在指标卡里,不再在这里复述。摘要行只在窗口里出现「未覆盖」时补一句最早日志的日期。
+function usageRenderHeatSummary(model) {
+  const label = $('usage-range-label');
+  if (label) {
     // 窗口是「最近 N 周」,不是固定 53 周:默认按数据覆盖裁剪,展开后才变长。
-    const windowLabel = usageState.heatExpanded > 0
-      ? `已展开 ${model.weeks} 周`
-      : `最近 ${model.weeks} 周`;
-    const totals = (data && data.totals) || {};
-    const totalText = usageNum(totals.reqs) === null
-      ? ''
-      : ` · 共 ${usageInt(totals.reqs)} 次请求 · ${usageTok(totals.tokens_total)} tokens`;
-    summary.textContent = `${windowLabel} · ${model.gridStartKey} – ${model.gridEndKey} · 窗口内 ${model.activeDays} 天,其中 ${model.daysWithReqs} 天有请求${totalText} · 按 ${metric} 着色`;
+    const windowLabel = usageState.heatExpanded > 0 ? `已展开 ${model.weeks} 周` : `最近 ${model.weeks} 周`;
+    label.textContent = `${windowLabel} · ${model.gridStartKey} 起`;
+    if (label.setAttribute) label.setAttribute('title', `${model.gridStartKey} – ${model.gridEndKey},每列一周,周一在上`);
+  }
+  const summary = $('usage-calendar-summary');
+  if (summary) {
+    const note = model.anyOutside && model.coverageStartKey
+      ? `最早一条日志 ${model.coverageStartKey},之前的日期未覆盖。` : '';
+    summary.textContent = note;
+    summary.hidden = !note;
   }
   usageRenderHeatSide(model);
   const expand = $('usage-calendar-expand');
@@ -957,17 +984,20 @@ function usageRenderHeatSide(model) {
   const withReqs = active.filter(cell => cell.reqs > 0);
   const metric = usageState.metric === 'reqs' ? 'reqs' : 'tokens';
   const value = cell => (metric === 'reqs' ? cell.reqs : cell.tokens);
-  const format = n => (metric === 'reqs' ? usageInt(n) + ' 次' : usageTok(n));
+  const format = n => (metric === 'reqs' ? fmtCount(n) + ' 次' : fmtTok(n));
   const total = withReqs.reduce((sum, cell) => sum + value(cell), 0);
   const peak = withReqs.reduce((best, cell) => (!best || value(cell) > value(best) ? cell : best), null);
   set('usage-side-active', active.length ? `${withReqs.length} / ${active.length} 天` : '—');
   set('usage-side-daily-label', metric === 'reqs' ? '日均请求' : '日均 Tokens');
   set('usage-side-daily', withReqs.length ? format(Math.round(total / withReqs.length)) : '—');
+  const dailyEl = $('usage-side-daily');
+  // 「日均」只除以有请求的天:没请求的日子不拉低均值。完整数字一并放进 title。
+  if (dailyEl) dailyEl.title = withReqs.length ? `有请求的 ${withReqs.length} 天平均;合计 ${fmtCount(total)}${metric === 'reqs' ? ' 次' : ' tokens'}` : '';
   const peakEl = $('usage-side-peak');
   if (peakEl) {
     peakEl.textContent = peak ? format(Math.round(value(peak))) : '—';
     // 峰值是哪一天要能一眼看到,但不要把日期塞进大数字里。
-    peakEl.title = peak ? `${peak.key} 单日最高` : '';
+    peakEl.title = peak ? `${peak.key} 单日最高:${fmtCount(value(peak))}${metric === 'reqs' ? ' 次' : ' tokens'}` : '';
   }
 }
 
@@ -1024,9 +1054,9 @@ function usageRenderDailyTable(model) {
   const days = model.cells.filter(cell => cell.active && cell.covered);
   if (refs.details) refs.details.hidden = days.length === 0;
   if (refs.summary) refs.summary.textContent = `按日查看数据(共 ${days.length} 天)`;
-  refs.body.innerHTML = days.map(cell => `<tr><td>${cell.key}</td><td>${usageInt(cell.reqs)}</td>`
-    + `<td>${usageTok(cell.tokens_in)}</td><td>${usageTok(cell.tokens_out)}</td>`
-    + `<td>${usageTok(cell.cache_read)}</td><td>${usageTok(cell.tokens)}</td></tr>`).join('');
+  const tok = value => `<td${usageTokTitle(value)}>${fmtTok(value)}</td>`;
+  refs.body.innerHTML = days.map(cell => `<tr><td>${cell.key}</td><td>${fmtCount(cell.reqs)}</td>`
+    + tok(cell.tokens_in) + tok(cell.tokens_out) + tok(cell.cache_read) + tok(cell.tokens) + '</tr>').join('');
 }
 
 // ---- 浮层与键盘读数 -------------------------------------------------------
@@ -1071,11 +1101,18 @@ function usagePositionTip(tip, element) {
   if (typeof holder.getBoundingClientRect !== 'function') return;
   const holderBox = holder.getBoundingClientRect();
   const cellBox = element.getBoundingClientRect();
+  // 浮层按滚动区的内容坐标定位:窄屏日历横向滚动后要补上 scrollLeft,否则浮层会偏出可视区。
+  const scrollX = Number(holder.scrollLeft) || 0;
+  const scrollY = Number(holder.scrollTop) || 0;
   const width = Math.min(tip.offsetWidth || 200, Math.max(0, holderBox.width - 16));
+  const height = tip.offsetHeight || 48;
   const center = cellBox.left - holderBox.left + cellBox.width / 2;
   const left = Math.min(Math.max(8, center - width / 2), Math.max(8, holderBox.width - width - 8));
-  tip.style.left = Math.round(left) + 'px';
-  tip.style.top = Math.round(Math.max(8, cellBox.top - holderBox.top - 34)) + 'px';
+  // 默认在格子上方;上方放不下(前两行)就翻到格子下方,不盖住正在看的那一格。
+  const above = cellBox.top - holderBox.top - height - 6;
+  const below = cellBox.top - holderBox.top + (cellBox.height || 0) + 6;
+  tip.style.left = Math.round(left + scrollX) + 'px';
+  tip.style.top = Math.round((above >= 4 ? above : below) + scrollY) + 'px';
 }
 function usageShowHeatDate(key, options = {}) {
   const model = usageState.heatModel;
@@ -1085,7 +1122,8 @@ function usageShowHeatDate(key, options = {}) {
   const tip = usageTipElement();
   if (tip) {
     tip.hidden = false;
-    tip.textContent = usageHeatCellText(cell); // 日志内容只当文字,不进 innerHTML
+    // 浮层分两行:日期 / 读数(样式表用 pre-line 换行)。日志内容只当文字,不进 innerHTML。
+    tip.textContent = usageHeatCellText(cell).replace(' · ', '\n');
     const root = $('usage-heatmap');
     const element = options.element || (root && root.querySelector ? root.querySelector(`[data-date="${key}"]`) : null);
     if (element) usagePositionTip(tip, element);
@@ -1178,29 +1216,27 @@ function usageHeatKey(event) {
 }
 
 // ---- 明细表:请求 / 供应商 / 模型 ------------------------------------------
+// err_class 是受控枚举,标签与诊断页「失败分类」筛选同一套叫法;不认识的值退回「失败」。
+const USAGE_ERR_LABELS = {
+  stream_aborted: '断流', cancelled: '客户端取消', econnreset: '连接被重置', upstream_server: '上游故障',
+  upstream_request: '上游拒绝', budget_exhausted: '额度耗尽', rate_limit: '限流', authentication: '认证失败',
+  network_error: '网络错误',
+};
+// 状态列给人话:成功 / 失败分类;HTTP 状态码作为次级等宽小字跟在后面,原始错误与分类码放 title。
+// err / err_class 优先于数字上的 200(断流时 status 仍记 200)。
 function usageRecordStatus(row) {
   const status = usageNum(row.status);
-  const errorText = row.err || row.err_class || '';
-  if (!errorText && status !== null && status >= 200 && status < 400) return '<span class="badge on">成功</span>';
-  if (errorText || (status !== null && (status === 0 || status >= 400))) {
-    const code = status !== null && status > 0 ? ` ${status}` : '';
-    const why = errorText ? ` · ${esc(String(errorText).slice(0, 60))}` : '';
-    return `<span class="badge off" style="color:var(--err-text)">失败${code}${why}</span>`;
+  const errClass = typeof row.err_class === 'string' ? row.err_class : '';
+  const err = row.err ? String(row.err) : '';
+  if (!err && !errClass && status !== null && status >= 200 && status < 400) return '<span class="badge ok badge-dot">成功</span>';
+  if (err || errClass || (status !== null && (status === 0 || status >= 400))) {
+    const label = USAGE_ERR_LABELS[errClass] || '失败';
+    const raw = [errClass, err.slice(0, 300)].filter(Boolean).join(' · ');
+    const title = `${status ? `HTTP ${status}` : '没有拿到上游响应'}${raw ? ' · ' + raw : ''}`;
+    const code = status ? `<span class="usage-st-code">${status}</span>` : '';
+    return `<span class="usage-st" title="${esc(title)}"><span class="badge err badge-dot">${esc(label)}</span>${code}</span>`;
   }
   return '—';
-}
-// 时间按浏览器本地时间显示(日志 ts 是 UTC)。
-function usageStamp(value) {
-  const ms = Date.parse(String(value == null ? '' : value));
-  if (!Number.isFinite(ms)) return value ? esc(String(value)) : '—';
-  const date = new Date(ms);
-  return `${usagePad(date.getMonth() + 1)}-${usagePad(date.getDate())} ${usagePad(date.getHours())}:${usagePad(date.getMinutes())}:${usagePad(date.getSeconds())}`;
-}
-function usageRecordSpeed(row) {
-  const ms = usageNum(row.ms);
-  const out = usageNum(row.out);
-  if (ms === null || ms <= 0 || out === null) return '—';
-  return Math.round(out / (ms / 1000)).toLocaleString('en-US') + ' tok/s';
 }
 function usageRecordRow(row) {
   const modelOut = typeof row.model_out === 'string' ? row.model_out : '';
@@ -1211,20 +1247,25 @@ function usageRecordRow(row) {
     ? esc(primary) + (modelOut && modelIn && modelOut !== modelIn
       ? ` <span class="muted model-alias" title="日志里的原始模型名 ${esc(modelIn)}">别名 ${esc(modelIn)}</span>` : '')
     : '—';
-  return `<tr><td>${usageStamp(row.ts)}</td><td>${esc(USAGE_APP_LABELS[row.app] || row.app || '—')}</td>`
+  // 每项单独显示:缺失是「—」,记录为 0 就是 0,不从其它字段推断是否回报。
+  const usage = [row.in, row.out, row.cache_read].map(usageNum);
+  const tok = n => `<td${usageTokTitle(n)}>${fmtTok(n)}</td>`;
+  const when = fmtFullTime(row.ts);
+  return `<tr><td${when === '—' ? '' : ` title="${when}"`}>${fmtWhen(row.ts)}</td>`
+    + `<td>${esc(USAGE_APP_LABELS[row.app] || row.app || '—')}</td>`
     + `<td>${esc(row.provider || '—')}</td><td>${modelCell}</td>`
-    + `<td>${usageTok(row.in)}</td><td>${usageTok(row.out)}</td><td>${usageTok(row.cache_read)}</td>`
-    + `<td>${usageRecordStatus(row)}</td><td>${usageRecordSpeed(row)}</td>`
-    + `<td title="上游响应头到达时间;不是模型首个输出 token 的时间">${usageMs(row.ttfb_ms)}</td></tr>`;
+    + usage.map(tok).join('')
+    + `<td>${usageRecordStatus(row)}</td><td>${fmtRate(row)}</td>`
+    + `<td title="上游响应头到达时间;不是模型首个输出 token 的时间">${fmtTtfb(usageNum(row.ttfb_ms))}</td></tr>`;
 }
 function usageAggregateRow(kind, row) {
   const cacheRead = usageNum(row.cache_read) || 0;
   const denom = (usageNum(row.tokens_in) || 0) + cacheRead;
-  const hit = denom ? (cacheRead / denom * 100).toFixed(1) + '%' : '—';
+  const hit = denom ? fmtPct(cacheRead * 100 / denom) : '—';
   const name = kind === 'providers' ? (row.name || row.provider || '—') : (row.model || '—');
-  return `<tr><td>${esc(name)}</td><td>${usageInt(row.reqs)}</td>`
-    + `<td>${usageTok(row.tokens_in)}</td><td>${usageTok(row.tokens_out)}</td>`
-    + `<td>${usageTok(row.cache_read)}</td><td>${hit}</td></tr>`;
+  const tok = value => `<td${usageTokTitle(value)}>${fmtTok(value)}</td>`;
+  return `<tr><td>${esc(name)}</td><td>${fmtCount(row.reqs)}</td>`
+    + tok(row.tokens_in) + tok(row.tokens_out) + tok(row.cache_read) + `<td>${hit}</td></tr>`;
 }
 function usageDetailSlice(data) {
   const tab = usageState.tab;
@@ -1250,7 +1291,7 @@ function usageRenderDetail(data) {
   const unit = slice.tab === 'requests' ? '条请求' : slice.tab === 'providers' ? '个供应商' : '个模型';
   if (count) {
     count.textContent = slice.available
-      ? `共 ${usageInt(slice.total)} ${unit},${slice.tab === 'requests' ? '按时间倒序。' : '按请求数降序。'}`
+      ? `共 ${fmtCount(slice.total)} ${unit} · ${slice.tab === 'requests' ? '按时间倒序' : '按请求数降序'}`
       : '服务端没有返回明细数据。';
   }
   if (!body) return;
@@ -1279,8 +1320,8 @@ function usageRenderPagination(data) {
     page = usageState.pageAgg + 1;
   }
   page = Math.min(Math.max(1, page), pages);
-  const unit = slice.tab === 'requests' ? '条请求' : slice.tab === 'providers' ? '个供应商' : '个模型';
-  if (label) label.textContent = `第 ${page} / ${pages} 页 · 共 ${usageInt(total)} ${unit}`;
+  // 总数已在表格上方的计数行里,分页只说第几页。
+  if (label) label.textContent = `第 ${page} / ${pages} 页`;
   if (prev) prev.disabled = page <= 1;
   if (next) next.disabled = page >= pages;
 }

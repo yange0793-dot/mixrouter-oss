@@ -1,5 +1,12 @@
 'use strict';
 // ---------------- 压缩模型 ----------------
+// 5 秒轮询会反复重绘这几块只读状态:内容没变就不写 DOM,免得冲掉用户正在选中的文字,
+// 也免得 role=status 的区域被读屏软件每 5 秒重读一遍。
+const compactPainted = new WeakMap();
+function compactPaint(el, html) {
+  if (!el || compactPainted.get(el) === html) return;
+  compactPainted.set(el, html); el.innerHTML = html;
+}
 function loadCompactDraft() {
   if (!state?.compact) return;
   compactDraft = { provider: '', model: '', key_id: '', ...state.compact.selection };
@@ -8,11 +15,21 @@ function loadCompactDraft() {
 }
 // 还没保存过任何东西时,两块状态也要先摆出来(全是"尚未保存过"),否则用户看不出这里在分账。
 renderSplitStatus();
+// 每条压缩规则一行:规则名(用户可改)+ 状态胶囊,下一行是按顺序的目标链。
+// 规则 kind 才是身份,名字只是标签;失效与停用画成警告胶囊,不混在句子里。
 function renderCompactCurrent() {
   const c = state?.compact;
-  if (!c) { $('compact-current').textContent = '当前服务端不支持压缩选择'; return; }
-  $('compact-current').innerHTML = (c.mode === 'mixed' ? '<b>当前为混合落点或未完整配置，不代表单一模型。</b><br>' : '')
-    + (c.rules.map(r => `${esc(r.id)}${r.enabled ? '' : '（规则停用）'}：${r.targets.map(t => `${esc(t.name)} / ${esc(t.model || '透传请求模型')} / ${t.key_id ? '固定 Key ' + esc(t.key_label || t.key_id) + '（' + esc(t.key_id) + '）' : '跟随渠道当前 Key'}${t.key_available === false ? '（Key 不可用）' : ''}${t.enabled ? '' : '（渠道停用）'}`).join(' → ') || '无可用目标'}${r.has_pool ? '（渠道池）' : ''}`).join('<br>') || '尚无压缩规则；保存时创建两条规则。');
+  if (!c) return compactPaint($('compact-current'), '当前服务端不支持压缩选择');
+  const kind = { global: '通用压缩', talentsai: 'TalentsAI 压缩' };
+  const flag = (text, tone = 'warn') => `<span class="badge ${tone}">${text}</span>`;
+  const target = t => `${esc(t.name)} / ${esc(t.model || '透传请求模型')} / ${t.key_id ? '固定 Key ' + esc(t.key_label || t.key_id) + '（' + esc(t.key_id) + '）' : '跟随渠道当前 Key'}`
+    + (t.key_available === false ? flag('Key 不可用') : '') + (t.enabled ? '' : flag('渠道停用'));
+  const rows = (c.rules || []).map(r => `<div class="cc-rule"><div class="cc-rule-head"><b>${esc(kind[r.kind] || r.id)}</b>`
+    + (kind[r.kind] ? `<span class="mono">${esc(r.id)}</span>` : '') + (r.enabled ? '' : flag('规则停用'))
+    + (r.has_pool ? flag('渠道池', 'off') : '') + '</div>'
+    + `<div class="cc-rule-chain">${r.targets.map(target).join('<span class="cc-arrow"> → </span>') || '无可用目标'}</div></div>`).join('');
+  compactPaint($('compact-current'), (c.mode === 'mixed' ? '<b>当前为混合落点或未完整配置，不代表单一模型。</b>' : '')
+    + (rows || '尚无压缩规则；保存时创建两条规则。'));
 }
 function renderCompactEditor() {
   if (!compactDraft) return;
@@ -57,8 +74,10 @@ function renderCompactKeys() {
 }
 function updateCompactStatus() {
   if (!compactDraft) return;
-  $('compact-msg').textContent = state?.compact?.revision !== compactBase ? '服务端压缩规则已变化；草稿保留，请重新载入后保存。'
-    : compactDirty ? '有未保存的压缩选择；自动刷新不会覆盖。' : '压缩选择与上次载入一致。';
+  const text = savingCompact ? '正在保存压缩模型…'
+    : state?.compact?.revision !== compactBase ? '服务端压缩规则已变化；草稿保留，请重新载入后保存。'
+      : compactDirty ? '有未保存的压缩选择；自动刷新不会覆盖。' : '压缩选择与上次载入一致。';
+  if ($('compact-msg').textContent !== text) $('compact-msg').textContent = text;
   renderSplitStatus();
 }
 // 四段分开读:保存成功 / 已写盘 / 服务已加载 / 客户端需重开。没有状态时(还没保存过)
@@ -80,12 +99,12 @@ function renderSplitStatus() {
   if (!box) return;
   const o = compactOutcome;
   splitStatusBox(box, o);
-  box.innerHTML = '<span class="ss-title">保存结果</span><div class="ss-row">'
+  compactPaint(box, '<span class="ss-title">保存结果</span><div class="ss-row">'
     + splitStatusLine('请求', o ? o.saved : null, o ? (o.saved ? '已成功返回' : o.error || '未成功') : '尚未保存过')
     + splitStatusLine('已写盘', o ? o.written : null, o ? (o.written ? '配置已写入服务端磁盘' : '未确认写盘') : '尚未保存过')
     + splitStatusLine('服务已加载', o ? o.loaded : null, o ? (o.loaded ? '运行中的服务按新压缩规则分发' : '未确认服务已加载') : '尚未保存过')
-    + splitStatusLine('客户端需重开', o ? o.restart : null, o ? '不需要：压缩落点在服务端，客户端下次请求即用新规则' : '尚未保存过', true)
-    + '</div>';
+    + splitStatusLine('客户端需重开', o ? o.restart : null, o ? '不需要（压缩落点在服务端，下次请求即用新规则）' : '尚未保存过', true)
+    + '</div>');
   renderWindowStatus();
 }
 // 窗口保存的四段与压缩模型不同:窗口是**磁盘配置**,服务端从不热读它——"已写盘"成立,
@@ -96,12 +115,12 @@ function renderWindowStatus() {
   if (!box) return;
   const o = windowOutcome;
   splitStatusBox(box, o);
-  box.innerHTML = '<span class="ss-title">保存结果</span><div class="ss-row">'
+  compactPaint(box, '<span class="ss-title">保存结果</span><div class="ss-row">'
     + splitStatusLine('请求', o ? o.saved : null, o ? (o.saved ? '已成功返回' : o.error || '未成功') : '尚未保存过')
     + splitStatusLine('已写盘', o ? o.written : null, o ? (o.written ? '已写入所选配置层文件' : '未确认写盘') : '尚未保存过')
-    + splitStatusLine('服务已加载', null, '不适用：外面改磁盘不会热改运行中的会话')
-    + splitStatusLine('客户端需重开', o ? o.restart : null, o ? '需要：新开会话(或在该项目目录 claude --continue)才生效' : '尚未保存过', true)
-    + '</div>';
+    + splitStatusLine('服务已加载', null, '不适用（服务端不读这份磁盘配置，运行中的会话不会热改）')
+    + splitStatusLine('客户端需重开', o ? o.restart : null, o ? '需要（新开会话，或在该项目目录 claude --continue 后生效）' : '尚未保存过', true)
+    + '</div>');
 }
 function markCompactDirty() { compactDirty = true; compactRevision++; updateCompactStatus(); setConnection(online); }
 function pickCompactProvider(provider) {
@@ -136,7 +155,7 @@ async function saveCompact() {
   if (!await askConfirm('保存压缩模型', `只将两条压缩规则同步改为 ${provider} / ${model} / ${keyText}，并替换现有压缩备池为单一渠道。普通模型、子代理槽位和渠道当前 Key（active_key）均不变。`, '保存压缩模型')) return;
   if (savingCompact) return toast('压缩选择正在保存，请稍候', 'err');
   if (keySupported && !compactKeySupported()) return toast('服务端 Key 支持状态已变化，请重新确认；选择未提交', 'err');
-  savingCompact = true; setConnection(online);
+  savingCompact = true; setConnection(online); updateCompactStatus();
   // 服务端是否成功回包与"要不要继续抛"是两件事:Key 未确认那条分支是在**回包之后**抛的,
   // 那时请求其实已经成功、配置多半也已落盘。分开记,免得失败提示把"可能已写入"说成"没写"。
   let responseOk = false;
@@ -170,11 +189,14 @@ async function saveCompact() {
     }
     toast('压缩选择保存失败：' + e.message, 'err');
   }
-  finally { savingCompact = false; setConnection(online); }
+  finally { savingCompact = false; setConnection(online); updateCompactStatus(); }
 }
 
 // ---------------- 压缩上下文窗口 ----------------
 const windowLabel = { global: '用户全局', project: '项目', local: '项目本地', auto: '下层继承' };
+// 窗口值按 K/M 显示(1.00M、256K),title 里是写进配置文件的原值;auto 说成"未设置"。
+const windowTok = value => value === 'auto' ? '未设置（auto）' : typeof value === 'number' ? fmtTok(value) : String(value ?? '—');
+const windowRaw = value => `autoCompactWindow = ${value}`;
 // 覆盖提示分两档:真正的覆盖(项目/环境)才是警告色;"项目未检查"只是说明,
 // 常驻的红条会把整页语气拉成故障,实际什么都没坏。
 function coverageTone(box, { note, warn }) {
@@ -214,19 +236,30 @@ function windowCoverage(w) {
 function windowCoverageText(w, saved = false) {
   const coverage = windowCoverage(w), notes = [];
   if (!coverage.project_checked) notes.push('项目未检查：未指定项目，尚未核对项目与本地层覆盖，不能判断某个项目的有效窗口。');
-  if (coverage.overridden_by) notes.push(`${saved ? '仍被' : '所选层被'}${windowLabel[coverage.overridden_by]}层覆盖：${w.configured.value} token；保存本层不会改变该项目的有效磁盘值。`);
+  if (coverage.overridden_by) notes.push(`${saved ? '仍被' : '所选层被'}${windowLabel[coverage.overridden_by]}层覆盖：${windowTok(w.configured.value)}；保存本层不会改变该项目的有效磁盘值。`);
   else if (coverage.project_checked) notes.push('已检查指定项目：所选层未被更高磁盘层覆盖；这不是运行中会话的实测值。');
   if (coverage.environment_override) notes.push('存在环境覆盖：本控件不能清除，改值或设 auto 均不会删除它，不能据此确认会话窗口。');
   return notes.join(' ');
 }
+// 读取/保存进行中,「读取所选配置层」与「编辑覆盖层」也禁用(保存按钮由 setConnection 管)。
+function windowBusy() {
+  const busy = !!windowLoadTask || savingWindow;
+  $('reload-window').disabled = busy; $('window-edit-override').disabled = busy;
+}
+// 首屏一行:所选层的值和文件,再给磁盘上真正起作用的那一层。原值在 title。
 function renderCompactWindow(w, preserveValue = false) {
   if (!preserveValue) $('window-value').value = String(w.value);
-  $('window-current').textContent = `所选 ${windowLabel[w.scope]}：${w.value} token · ${w.target}；磁盘配置优先层 ${windowLabel[w.configured.source] || w.configured.source}：${w.configured.value} token（非运行中会话实测）。`;
+  const top = w.configured.source === 'auto' ? '磁盘上各层都未设置，用 Claude Code 默认值'
+    : `磁盘上生效的是${windowLabel[w.configured.source] || w.configured.source}层的 ${windowTok(w.configured.value)}`;
+  $('window-current').textContent = `所选${windowLabel[w.scope]}层：${windowTok(w.value)} · ${w.target}。${top}（不是运行中会话的实测值）。`;
+  $('window-current').title = `所选层 ${windowRaw(w.value)}；生效层 ${windowRaw(w.configured.value)}`;
   $('window-coverage-text').textContent = windowCoverageText(w);
   const coverage = windowCoverage(w);
   coverageTone($('window-coverage'), { note: !coverage.project_checked, warn: !!coverage.overridden_by || coverage.environment_override });
   $('window-edit-override').hidden = !coverage.overridden_by;
-  $('window-layers').innerHTML = w.layers.map(layer => `${esc(windowLabel[layer.scope] || layer.scope)}：${esc(layer.value)} · ${esc(layer.file)}${layer.exists ? '' : '（文件不存在）'}${layer.env_override ? '（存在环境覆盖）' : ''}`).join('<br>');
+  $('window-layers').innerHTML = w.layers.map(layer => `<div class="wl-row"><span class="wl-scope">${esc(windowLabel[layer.scope] || layer.scope)}</span>`
+    + `<span class="wl-value" title="${esc(windowRaw(layer.value))}">${esc(windowTok(layer.value))}</span><span class="mono">${esc(layer.file)}</span>`
+    + `${layer.exists ? '' : '<span class="badge off">文件不存在</span>'}${layer.env_override ? '<span class="badge warn">存在环境覆盖</span>' : ''}</div>`).join('');
   $('window-warnings').textContent = (w.warnings || []).join('\n') || '当前没有额外警告；这里只显示磁盘配置。';
   $('window-restart').textContent = '外部保存不会热改运行中会话。项目层设置需新开会话，或退出后在该项目目录用 claude --continue 继续。当前会话可用 /autocompact <值> 调整，但它写用户层，仍可能被项目或环境覆盖；请核对窗口与 capped 提示。';
 }
@@ -250,17 +283,19 @@ async function loadCompactWindow() {
   const loadRevision = windowRevision, selectionRevision = windowSelectionRevision;
   if (windowDirty && !await askConfirm('重新读取压缩窗口', '丢弃尚未保存的窗口值，读取磁盘上的所选配置层？', '重新读取')) return;
   if (windowRevision !== loadRevision || windowSelectionRevision !== selectionRevision || savingWindow || windowLoadTask) return;
-  windowLoadTask = api(windowQuery(selected)); setConnection(online);
+  windowLoadTask = api(windowQuery(selected)); setConnection(online); windowBusy();
+  $('window-msg').textContent = '正在读取所选配置层…';
   try {
     const { window: w } = await windowLoadTask;
     if (!w || typeof w.revision !== 'string') throw new Error('服务端未返回窗口版本');
+    // 读取期间换了层或目录:invalidateWindowSelection 已经改写了提示,这条旧回包直接丢掉。
     if (windowSelectionRevision !== selectionRevision || !windowSelectionMatches(selected)) return;
     if (w.project !== selected.project) $('window-project').value = w.project;
     windowSnapshot = w;
     if (windowRevision === loadRevision) { windowDirty = false; renderCompactWindow(w); $('window-msg').textContent = '已从磁盘读取；尚未更改配置。'; }
     else { renderCompactWindow(w, true); $('window-msg').textContent = '读取期间改动的窗口草稿仍保留；保存将使用读取时的版本号。'; }
-  } catch (e) { $('window-msg').textContent = '读取失败：' + e.message; }
-  finally { windowLoadTask = null; setConnection(online); }
+  } catch (e) { $('window-msg').textContent = `读取失败：${e.message}。${windowSnapshot ? '下面仍是上一次读取的结果；' : ''}可再点「读取所选配置层」。`; }
+  finally { windowLoadTask = null; setConnection(online); windowBusy(); }
 }
 async function saveCompactWindow() {
   if (!online || !windowSnapshot || !windowDirty || savingWindow || windowLoadTask) return;
@@ -271,15 +306,16 @@ async function saveCompactWindow() {
   const match = raw.match(/^(\d+(?:\.\d+)?)(k|m)?$/);
   const numeric = match ? Number(match[1]) * (match[2] === 'm' ? 1000000 : match[2] === 'k' ? 1000 : 1) : NaN;
   if (raw !== 'auto' && (!Number.isSafeInteger(numeric) || numeric < windowSnapshot.min || numeric > windowSnapshot.max)) {
-    $('window-msg').textContent = '请输入 auto 或 100k–1M token 的整数值'; return;
+    $('window-msg').textContent = '请输入 auto，或 100K–1M 之间的整数 token 值'; return;
   }
   const value = raw === 'auto' ? 'auto' : numeric;
   const revision = windowRevision, selectionRevision = windowSelectionRevision, expected_revision = windowSnapshot.revision;
-  const meaning = raw === 'auto' ? '只删除这一层的 autoCompactWindow 并继承下层，不删除其他层或环境设置' : `只将这一层设为 ${value} token`;
+  const meaning = raw === 'auto' ? '只删除这一层的 autoCompactWindow 并继承下层，不删除其他层或环境设置' : `只将这一层设为 ${windowTok(value)}（${value.toLocaleString('en-US')} token）`;
   if (!await askConfirm('保存压缩窗口', `${meaning}，目标文件：${windowSnapshot.target}。全局只改全局，不同步项目。${windowCoverageText(windowSnapshot)} 外部保存不会热改运行中会话；项目设置需新开会话，或退出后在该项目目录用 claude --continue 继续并核对。`, '保存窗口')) return;
   if (savingWindow || windowLoadTask || windowSelectionRevision !== selectionRevision || !windowSelectionMatches(selected)) return;
   if (windowRevision !== revision) { $('window-msg').textContent = '确认期间窗口值已变化；请重新确认当前值。'; return; }
-  savingWindow = true; setConnection(online);
+  savingWindow = true; setConnection(online); windowBusy();
+  $('window-msg').textContent = '正在保存压缩窗口…';
   try {
     const result = await api('/api/compact/window', { method: 'POST', body: JSON.stringify({ ...selected, value, expected_revision }) });
     if (!result.window) throw new Error('服务端未返回窗口配置');
@@ -301,7 +337,7 @@ async function saveCompactWindow() {
     renderSplitStatus();
     $('window-msg').textContent = '保存失败：' + e.message;
   }
-  finally { savingWindow = false; setConnection(online); }
+  finally { savingWindow = false; setConnection(online); windowBusy(); }
 }
 
 // ---------------- 保存草稿的离开提醒 ----------------

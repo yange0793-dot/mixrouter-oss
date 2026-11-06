@@ -406,7 +406,8 @@ test('压缩设置成为独立视图:侧栏入口、深链与快速跳转都指�
     input.value = query;
     input.emit('input');
     assert.equal(h.get('quick-nav-list').children.length, 1, `${query} 命中压缩设置入口`);
-    assert.equal(h.get('quick-nav-list').children[0].children[0].textContent, '压缩设置');
+    const label = h.get('quick-nav-list').children[0].children.find(child => child.className === 'quick-nav-item-label');
+    assert.equal(label && label.textContent, '压缩设置');
   }
   input.emit('keydown', { key: 'Enter' });
   assert.equal(h.showCalls.at(-1), 'compact');

@@ -1,266 +1,550 @@
-/* Usage page (view-usage): toolbar, metric cards, heatmap, detail tables.
-   Owned by the usage page. Shared tokens come from base.css; do not redefine them here.
-   Everything below is an override on top of base.css — same specificity, later file wins. */
+/* Usage page (#view-usage): sync cluster, filter bar, metric cards, heatmap, detail tables.
+   Owned by the usage page; overrides the frozen "Usage page: …" sections of base.css.
+   Every selector is scoped to #view-usage, or to #topbar-page-actions for the sync cluster the
+   shell moves into the top bar, so these rules win over base.css at every breakpoint. This page's
+   media queries live at the bottom of this file. Colors come only from base.css tokens. */
 
-/* ---- Topbar actions: one compact sync cluster ------------------------------ */
-/* 1440 宽度下顶栏原来有五个独立控件(立即同步 / 同步间隔 / 最近同步 / 数据来源),
-   换行后把按钮和下拉拆成两行。合成一组:按钮 + 间隔下拉 + 最近同步,一条读下来。 */
+/* Line icons (18×18, stroke 1.5) used as CSS masks: only the alpha channel counts, so the stroke
+   color inside the SVG is irrelevant and the icon always paints in the element's own token. */
+#view-usage, #topbar-page-actions .usage-head-actions {
+  --usage-icon-sync: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.6 8.2A5.5 5.5 0 0 1 13.9 6.4M14.3 3.4v3.3H11M14.4 9.8A5.5 5.5 0 0 1 4.1 11.6M3.7 14.6v-3.3H7'/%3E%3C/svg%3E");
+  --usage-icon-next: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 4.5 4.5 4.5L7 13.5'/%3E%3C/svg%3E");
+  --usage-icon-prev: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M11 4.5 6.5 9l4.5 4.5'/%3E%3C/svg%3E");
+  --usage-icon-reqs: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 6.5h11.5M11.5 3.5l3 3-3 3M15 11.5H3.5M6.5 8.5l-3 3 3 3'/%3E%3C/svg%3E");
+  --usage-icon-tokens: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4.75' y='4.75' width='8.5' height='8.5' rx='1.6'/%3E%3Cpath d='M7.2 2.2v2.5M10.8 2.2v2.5M7.2 13.3v2.5M10.8 13.3v2.5M2.2 7.2h2.5M2.2 10.8h2.5M13.3 7.2h2.5M13.3 10.8h2.5'/%3E%3C/svg%3E");
+  --usage-icon-cache: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cellipse cx='9' cy='4.6' rx='5.5' ry='2.1'/%3E%3Cpath d='M3.5 4.6v8.8c0 1.16 2.46 2.1 5.5 2.1s5.5-.94 5.5-2.1V4.6M3.5 9c0 1.16 2.46 2.1 5.5 2.1s5.5-.94 5.5-2.1'/%3E%3C/svg%3E");
+  --usage-icon-ok: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='9' cy='9' r='6.6'/%3E%3Cpath d='m6.1 9.2 2 2 3.8-4'/%3E%3C/svg%3E");
+}
+
+/* ---- Top bar: one sync cluster ---------------------------------------------- */
+/* 立即同步 + 间隔下拉 + 最近同步拼成一个分段按钮组:一条外框,内部只用细竖线分隔;
+   「数据来源」是安静的文字按钮,不和同步抢注意力。 */
 #view-usage .usage-head-actions,
-#topbar-page-actions .usage-head-actions { flex-wrap: nowrap; gap: 6px; }
-.usage-sync-group {
-  display: inline-flex; align-items: center; gap: 6px; flex-wrap: nowrap;
-  padding: 2px 4px 2px 2px; border: 1px solid var(--border); border-radius: 10px;
-  background: var(--surface-2);
+#topbar-page-actions .usage-head-actions { flex-wrap: nowrap; gap: 6px; align-items: center; }
+#view-usage .usage-sync-group,
+#topbar-page-actions .usage-sync-group {
+  display: inline-flex; align-items: stretch; flex-wrap: nowrap; flex-shrink: 0; gap: 0;
+  height: 32px; padding: 0; overflow: hidden;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--highlight), var(--shadow-xs);
 }
-.usage-sync-group > button.small { min-height: 30px; background: var(--surface); }
-.usage-sync-group .rc-mini { gap: 0; }
-.usage-sync-group .rc-mini select {
-  width: auto; min-width: 0; max-width: none; min-height: 30px;
-  padding: 3px 6px; font-size: 12.5px; border-color: transparent; background: transparent;
+/* 组外框裁掉了外扩的焦点环,组内控件的焦点环收进内侧。 */
+#view-usage .usage-sync-group :focus-visible,
+#topbar-page-actions .usage-sync-group :focus-visible { outline-offset: -2px; }
+#view-usage .usage-sync-group > #usage-sync,
+#topbar-page-actions .usage-sync-group > #usage-sync {
+  display: inline-flex; align-items: center; gap: 6px; height: auto; min-height: 0;
+  margin: 0; padding: 0 12px; border: 0; border-radius: 0; background: transparent;
+  color: var(--text); font-size: 13px; font-weight: 500; white-space: nowrap;
 }
-.usage-sync-group .rc-mini select:hover { border-color: var(--border-strong); background: var(--surface); }
-.usage-sync-group .usage-last-sync {
-  font-size: 12.5px; color: var(--dim); white-space: nowrap;
-  padding: 0 6px 0 8px; border-left: 1px solid var(--border-soft); font-variant-numeric: tabular-nums;
+#view-usage .usage-sync-group > #usage-sync::before,
+#topbar-page-actions .usage-sync-group > #usage-sync::before {
+  content: ""; width: 14px; height: 14px; flex-shrink: 0; background: currentColor;
+  -webkit-mask: var(--usage-icon-sync) center / contain no-repeat;
+  mask: var(--usage-icon-sync) center / contain no-repeat;
+}
+#view-usage .usage-sync-group > #usage-sync:hover:not(:disabled),
+#topbar-page-actions .usage-sync-group > #usage-sync:hover:not(:disabled) { background: var(--surface-3); }
+/* 同步中:按钮禁用但不该看起来像「坏了」,只让图标转起来。 */
+#view-usage .usage-sync-group > #usage-sync:disabled,
+#topbar-page-actions .usage-sync-group > #usage-sync:disabled { opacity: 1; color: var(--dim); cursor: progress; }
+#view-usage .usage-sync-group > #usage-sync:disabled::before,
+#topbar-page-actions .usage-sync-group > #usage-sync:disabled::before { animation: usage-spin .9s linear infinite; }
+@keyframes usage-spin { to { transform: rotate(360deg); } }
+#view-usage .usage-sync-group .rc-mini,
+#topbar-page-actions .usage-sync-group .rc-mini {
+  display: flex; align-items: stretch; gap: 0; margin: 0; border-left: 1px solid var(--border);
+}
+#view-usage .usage-sync-group .rc-mini select,
+#topbar-page-actions .usage-sync-group .rc-mini select {
+  -webkit-appearance: none; appearance: none;
+  width: auto; min-width: 0; max-width: none; height: auto; min-height: 0; margin: 0;
+  padding: 0 28px 0 11px; border: 0; border-radius: 0; box-shadow: none;
+  background-color: transparent; /* 箭头由 base 的 :root select 画,这里只改底色 */
+  color: var(--text); font-size: 13px; font-variant-numeric: tabular-nums;
+}
+#view-usage .usage-sync-group .rc-mini select:hover,
+#topbar-page-actions .usage-sync-group .rc-mini select:hover { background-color: var(--surface-3); }
+#view-usage .usage-sync-group .usage-last-sync,
+#topbar-page-actions .usage-sync-group .usage-last-sync {
+  display: inline-flex; align-items: center; padding: 0 12px;
+  border-left: 1px solid var(--border); background: var(--panel);
+  color: var(--dim); font-size: 12.5px; white-space: nowrap; font-variant-numeric: tabular-nums;
 }
 #view-usage .usage-head-actions > #usage-source-toggle,
-#topbar-page-actions .usage-head-actions > #usage-source-toggle { min-height: 34px; }
+#topbar-page-actions .usage-head-actions > #usage-source-toggle {
+  min-height: 32px; padding: 0 10px; margin: 0;
+  background: transparent; border-color: transparent; color: var(--dim); font-size: 13px;
+}
+#view-usage .usage-head-actions > #usage-source-toggle:hover:not(:disabled),
+#topbar-page-actions .usage-head-actions > #usage-source-toggle:hover:not(:disabled) {
+  background: var(--nav-active); color: var(--text);
+}
+#view-usage .usage-head-actions > #usage-source-toggle[aria-expanded="true"],
+#topbar-page-actions .usage-head-actions > #usage-source-toggle[aria-expanded="true"] {
+  background: var(--nav-active); border-color: transparent; color: var(--text);
+}
 
-/* ---- Intro + filter bar ---------------------------------------------------- */
-.usage-intro { margin: -4px 0 16px; font-size: 13.5px; line-height: 1.65; max-width: 900px; }
-.usage-bar { align-items: flex-end; gap: 10px 14px; margin-bottom: 16px; }
-/* 协议组与四个下拉同一条底边对齐;标签不缩进,和相邻下拉的左边缘对齐。 */
-.usage-apps { align-self: flex-end; }
-.usage-apps button, .usage-apps .seg { min-height: 34px; padding: 5px 14px; font-size: 13.5px; }
-.usage-filters { gap: 10px 12px; }
-.usage-filter { gap: 4px; font-size: 12.5px; min-width: 0; }
-.usage-filter > span { padding-left: 0; }
-/* 下拉宽度定死:模型名很长,放任自然宽度会把整行挤到第二行。 */
-.usage-filter select {
-  width: 150px; min-width: 0; max-width: 100%; min-height: 34px; font-size: 13.5px;
-  text-overflow: ellipsis;
-}
-.usage-filter[for="usage-model"] select { width: 184px; }
-.usage-filters button { min-height: 34px; align-self: flex-end; }
-/* 「清除筛选」平时是安静的次要动作:没有筛选时降成链接式,有筛选才给边框与强调色。 */
-#usage-clear-filters {
-  min-height: 34px; background: transparent; border-color: transparent; color: var(--dim);
-  padding-inline: 8px;
-}
-#usage-clear-filters:hover:not(:disabled) { color: var(--text); border-color: var(--border); background: var(--surface-2); }
-#usage-clear-filters.is-active,
-#usage-clear-filters[data-empty="false"] {
-  color: var(--accent-text); border-color: var(--accent-line); background: var(--accent-soft);
-}
-#usage-clear-filters[data-empty="true"] { color: var(--dim); }
+/* ---- Intro + data-source panel ------------------------------------------------ */
+#view-usage .usage-intro { margin: 0 0 16px; max-width: 92ch; font-size: var(--fs-sm); line-height: 1.6; color: var(--dim); }
+#view-usage .usage-source { margin-bottom: 16px; }
+#view-usage .usage-source h2 { font-size: 15px; font-weight: 600; letter-spacing: 0; margin-bottom: 8px; }
+#view-usage #usage-source-detail { margin: 0; font-size: var(--fs-sm); line-height: 1.6; color: var(--dim); }
+#view-usage #usage-source-detail p + p { margin-top: 6px; }
 
-/* ---- Metric cards ---------------------------------------------------------- */
-.usage-grid { gap: 14px; margin-bottom: 4px; }
-.usage-grid .metric { padding: 18px 20px; display: flex; flex-direction: column; }
-.usage-grid .metric-label {
-  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 8px;
-  font-size: 13.5px; line-height: 1.4; min-height: 20px;
+/* ---- Filter bar ------------------------------------------------------------- */
+/* 协议组是分段控件;区间/供应商/模型/状态是「标签 + 值」一体的紧凑下拉,与分段控件同高。
+   1440 下整条一行:左边协议组,右边四个下拉 + 清除筛选。 */
+#view-usage .usage-bar {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 10px 16px; margin: 0 0 16px;
 }
-/* 大数字:四张卡同一字号层级,数字本身是这一屏的主角。 */
-.usage-grid .metric > b {
-  font: 650 clamp(26px, 2.4vw, 34px)/1.15 var(--sans);
-  letter-spacing: -.8px; margin-top: 8px; font-variant-numeric: tabular-nums;
+/* 分段控件(协议组、明细页签共用):轨道 + 激活滑块。 */
+#view-usage .usage-apps,
+#view-usage .usage-detail-tabs {
+  display: inline-flex; flex-wrap: nowrap; align-items: stretch; gap: 2px;
+  height: var(--control-h); padding: 3px; margin: 0;
+  background: var(--track); border: 1px solid var(--border); border-radius: var(--radius);
 }
-.usage-grid .metric small { margin-top: auto; padding-top: 8px; font-size: 13px; line-height: 1.5; }
-/* 区间「2026-10-23 – 2026-10-27」在窄卡片里要整段折在破折号上,不能从日期中间的连字符断开
-   (base.css 的 overflow-wrap:anywhere 会断成「2026-10-」+「27」这种半截日期)。 */
+#view-usage .usage-apps button,
+#view-usage .usage-apps .seg,
+#view-usage .usage-detail-tabs button {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-height: 0; height: auto; margin: 0; padding: 0 12px;
+  background: transparent; border: 0; border-radius: var(--radius-sm); box-shadow: none;
+  color: var(--dim); font-size: 13px; font-weight: 500; white-space: nowrap;
+}
+#view-usage .usage-apps button:hover:not(:disabled),
+#view-usage .usage-detail-tabs button:hover:not(:disabled) { background: transparent; color: var(--text); }
+#view-usage .usage-apps button.active,
+#view-usage .usage-apps button[aria-pressed="true"],
+#view-usage .usage-detail-tabs button.active,
+#view-usage .usage-detail-tabs button[aria-selected="true"] {
+  background: var(--thumb); color: var(--text); font-weight: 600; border: 0;
+}
+/* 协议组用轻阴影区分选中态,明细页签只用底色。 */
+#view-usage .usage-apps button.active,
+#view-usage .usage-apps button[aria-pressed="true"] { box-shadow: var(--shadow-xs), var(--highlight); }
+#view-usage .usage-apps button:focus-visible,
+#view-usage .usage-detail-tabs button:focus-visible { outline-offset: -2px; }
+
+#view-usage .usage-filters {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end;
+  gap: 8px; margin: 0 0 0 auto; min-width: 0;
+}
+#view-usage .usage-filter {
+  display: inline-flex; flex-direction: row; align-items: center; gap: 0; flex: 0 0 auto; min-width: 0;
+  height: var(--control-h); padding: 0 0 0 10px; overflow: hidden;
+  background: var(--input); border: 1px solid var(--border); border-radius: var(--radius);
+  color: var(--dim); font-size: 12.5px; cursor: pointer;
+  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+#view-usage .usage-filter:hover { border-color: var(--border-strong); }
+#view-usage .usage-filter:focus-within { border-color: var(--accent); box-shadow: var(--focus-ring); }
+#view-usage .usage-filter > span:not(.sr-only) { padding: 0 2px 0 0; white-space: nowrap; color: var(--dim); }
+#view-usage .usage-filter select {
+  -webkit-appearance: none; appearance: none;
+  height: 100%; min-height: 0; margin: 0; padding: 0 28px 0 6px; border: 0; border-radius: 0;
+  background-color: transparent; box-shadow: none;
+  color: var(--text); font-size: 13px; font-weight: 500; text-overflow: ellipsis;
+}
+#view-usage .usage-filter select:focus-visible { outline: 0; }
+/* 宽度按最长常见选项定死:模型名很长,放任自然宽度会把整行挤到第二行。 */
+#view-usage #usage-range-select { width: 108px; }
+#view-usage #usage-provider { width: 136px; }
+#view-usage #usage-model { width: 172px; }
+#view-usage #usage-status-filter { width: 104px; min-width: 0; }
+/* 选了具体值的筛选带一圈淡强调色:一眼看出哪些筛选正在生效。区间总有值,不参与。 */
+#view-usage .usage-filter:has(#usage-provider option[value=""]:not(:checked)),
+#view-usage .usage-filter:has(#usage-model option[value=""]:not(:checked)),
+#view-usage .usage-filter:has(#usage-status-filter option[value=""]:not(:checked)) {
+  border-color: var(--accent-line);
+  background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--input);
+}
+/* 「清除筛选」:没有筛选时是安静的文字按钮,有筛选才给强调色。 */
+#view-usage #usage-clear-filters {
+  min-height: var(--control-h); padding: 0 10px; margin: 0;
+  background: transparent; border: 1px solid transparent; color: var(--dim); font-size: 13px;
+}
+#view-usage #usage-clear-filters:hover:not(:disabled) { background: var(--nav-active); color: var(--text); }
+#view-usage #usage-clear-filters.is-active,
+#view-usage #usage-clear-filters[data-empty="false"] { color: var(--accent-text); }
+#view-usage #usage-clear-filters.is-active:hover:not(:disabled),
+#view-usage #usage-clear-filters[data-empty="false"]:hover:not(:disabled) { background: var(--accent-soft); }
+
+/* ---- Metric cards ----------------------------------------------------------- */
+/* 四张同款卡,与概览页指标卡同一套语言:右上角图标方块(30px,--accent-soft 底 + 线性图标),
+   标签行里失败徽标紧跟在「成功率」后面。卡片底色/边框/阴影/数字字号沿用通用 .metric;
+   图标用伪元素画(卡片标记在 index.html,本页不改)。 */
+#view-usage .usage-grid {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin: 0 0 8px;
+}
+#view-usage .usage-grid .metric::before {
+  content: ""; position: absolute; top: 16px; right: 16px; width: 30px; height: 30px;
+  border-radius: var(--radius); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent-soft);
+}
+#view-usage .usage-grid .metric::after {
+  content: ""; position: absolute; top: 23px; right: 23px; width: 16px; height: 16px;
+  background: var(--accent-text); -webkit-mask: var(--usage-icon-reqs) center / contain no-repeat;
+  mask: var(--usage-icon-reqs) center / contain no-repeat;
+}
+#view-usage .usage-grid .metric:nth-child(2)::after { -webkit-mask-image: var(--usage-icon-tokens); mask-image: var(--usage-icon-tokens); }
+#view-usage .usage-grid .metric:nth-child(3)::after { -webkit-mask-image: var(--usage-icon-cache); mask-image: var(--usage-icon-cache); }
+#view-usage .usage-grid .metric:nth-child(4)::after { -webkit-mask-image: var(--usage-icon-ok); mask-image: var(--usage-icon-ok); }
+#view-usage .usage-grid .metric-label {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; min-height: 30px; padding-right: 40px;
+}
+#view-usage .usage-grid .metric > b { white-space: nowrap; }
+/* 副标题只在空格和标点处换行:窄卡片里不把「缓存读取」「取消」从词中间拆开。 */
+#view-usage .usage-grid .metric small { word-break: keep-all; }
+/* 成功率保留语义色:<95% 告警色,<85% 错误色(由 usage.js 切 is-low / is-bad)。 */
+#view-usage .usage-grid .metric > b.is-low { color: var(--warn-text); }
+#view-usage .usage-grid .metric > b.is-bad { color: var(--err-text); }
+/* 区间「2026-10-23 – 2026-10-27」整段折在破折号上,不从日期中间的连字符断开。 */
 #view-usage #usage-request-hint { overflow-wrap: normal; text-wrap: balance; }
-/* 失败次数直接写在成功率旁边,不用心算;0 次时不出现。
-   `.metric b` 会命中卡里所有 b,所以这里要连着父级一起压回徽标尺寸。 */
-.usage-grid .metric-label { min-width: 0; }
-.usage-grid .metric-label > b.metric-fail,
-.metric .metric-fail {
-  margin-left: auto;
-  display: inline-flex; align-items: center; flex-shrink: 0;
-  font: 600 12px/1.4 var(--sans); letter-spacing: 0;
-  margin: 0; padding: 2px 8px; border-radius: 999px;
+/* 新增 / 输出 / 缓存三段各自不折行,窄卡片里整段换到下一行,不会从数字中间拆开。 */
+#view-usage #usage-token-split { display: flex; flex-wrap: wrap; gap: 0 10px; font-size: 12.5px; }
+#view-usage #usage-token-split .usage-split { white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* 失败次数胶囊:`.metric b` 会命中卡里所有 b,这里连父级一起压回徽标尺寸。 */
+#view-usage .usage-grid .metric-label > b.metric-fail {
+  display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; margin: 0;
+  height: 20px; padding: 0 8px; border-radius: var(--radius-pill);
   background: var(--err-soft); color: var(--err-text); border: 1px solid var(--err-line);
+  font: 500 12px/1 var(--sans); letter-spacing: 0; font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+#view-usage .usage-grid .metric-label > b.metric-fail::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex-shrink: 0;
+}
+#view-usage .usage-grid .metric-label > b.metric-fail[hidden] { display: none; }
+
+/* ---- More metrics ----------------------------------------------------------- */
+#view-usage .usage-more-metrics { margin: 0 0 16px; font-size: var(--fs-sm); color: var(--dim); }
+#view-usage .usage-more-metrics > summary,
+#view-usage .usage-trend-table > summary { list-style: none; display: flex; align-items: center; gap: 6px; }
+#view-usage .usage-more-metrics > summary::-webkit-details-marker,
+#view-usage .usage-trend-table > summary::-webkit-details-marker { display: none; }
+#view-usage .usage-more-metrics > summary::before,
+#view-usage .usage-trend-table > summary::before {
+  content: ""; width: 14px; height: 14px; flex-shrink: 0; background: currentColor;
+  -webkit-mask: var(--usage-icon-next) center / contain no-repeat; mask: var(--usage-icon-next) center / contain no-repeat;
+  transition: transform var(--dur) var(--ease);
+}
+#view-usage .usage-more-metrics[open] > summary::before,
+#view-usage .usage-trend-table[open] > summary::before { transform: rotate(90deg); }
+#view-usage .usage-more-metrics > summary {
+  width: max-content; padding: 6px 8px 6px 4px; margin-left: -4px; border-radius: var(--radius-sm);
+  font-size: 12.5px; color: var(--dim);
+}
+#view-usage .usage-more-metrics > summary:hover { color: var(--text); background: var(--nav-hover); }
+#view-usage .usage-more-metrics .usage-more-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 220px)); gap: 10px; margin-top: 8px;
+}
+#view-usage .usage-more-grid > div {
+  display: flex; flex-direction: column; gap: 4px; padding: 12px 14px;
+  background: var(--panel); border: 1px solid var(--border-soft); border-radius: var(--radius); box-shadow: none;
+}
+#view-usage .usage-more-grid > div > span { font-size: 12.5px; color: var(--dim); }
+#view-usage .usage-more-grid > div > b { font: 600 18px/1.25 var(--sans); color: var(--text); font-variant-numeric: tabular-nums; }
+
+/* ---- Heatmap card ------------------------------------------------------------ */
+/* 格子封顶 24px(满 53 周时 22px),不再随卡片宽度拉成大方块。
+   周数少(compact)且 ≥1181px 时:日历在左,窗口概览三块小指标 + 摘要/图例在右,摘要贴着日历底边;
+   周数多(dense)或更窄时单列:标题 → 三块小指标 → 日历 → 摘要/图例。 */
+#view-usage .usage-chart {
+  display: grid; grid-template-columns: minmax(0, 1fr); grid-template-areas: "head" "side" "body" "foot";
+  align-items: start; gap: 0 32px; padding: 18px 20px 16px; margin: 0 0 16px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  box-shadow: var(--highlight), var(--shadow-sm);
+}
+#view-usage .usage-chart-head {
+  grid-area: head; display: flex; align-items: flex-start; justify-content: space-between;
+  flex-wrap: wrap; gap: 10px 16px; margin: 0 0 14px;
+}
+#view-usage .usage-chart-head h2 { font-size: 15px; font-weight: 600; letter-spacing: 0; }
+#view-usage #usage-range-label { margin: 2px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--dim); }
+
+/* 窗口概览:三块小指标(数字都来自同一批格子)。 */
+#view-usage .usage-chart-side {
+  grid-area: side; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px;
+  max-width: 720px; margin: 0 0 14px; padding: 0; border: 0;
+}
+#view-usage .usage-side-row {
+  display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 3px;
+  min-width: 0; padding: 10px 12px; max-width: none;
+  background: var(--panel); border: 1px solid var(--border-soft); border-radius: var(--radius);
+}
+#view-usage .usage-side-row > span {
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12px; line-height: 1.4; color: var(--dim);
+}
+#view-usage .usage-side-row > b {
+  font: 600 18px/1.25 var(--sans); letter-spacing: 0; color: var(--text);
   font-variant-numeric: tabular-nums; white-space: nowrap;
 }
-.metric .metric-fail[hidden] { display: none; }
-.usage-grid .metric > b.is-low { color: var(--warn-text); }
-.usage-grid .metric > b.is-bad { color: var(--err-text); }
 
-/* ---- More metrics ---------------------------------------------------------- */
-.usage-more-metrics { margin: 10px 0 18px; }
-.usage-more-metrics > summary { padding: 6px 2px; font-size: 12.5px; }
-.usage-more-metrics .usage-more-grid { margin-top: 8px; gap: 10px; }
-.usage-more-grid > div { padding: 12px 14px; border-radius: var(--radius); }
-.usage-more-grid > div > b { font-size: 19px; }
+/* 日历。滚动区留 3px 内边距,边缘格子的焦点环不被裁掉;窄屏横向滚动锚在最近一周
+   (LTR + usage.js 渲染后滚到最右,星期标签靠 sticky 留在原位)。 */
+#view-usage #usage-chart-holder {
+  grid-area: body; min-width: 0; direction: ltr; padding: 3px; margin: -3px;
+  overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain;
+}
+#view-usage #usage-chart-holder > * { direction: ltr; }
+#view-usage #usage-heatmap { --usage-cell-max: 24px; --usage-gap: 4px; width: auto; min-width: 0; }
+#view-usage #usage-heatmap[data-density="dense"] { --usage-cell-max: 22px; --usage-gap: 3px; }
+#view-usage .heatmap-layout { justify-content: start; align-items: stretch; }
+#view-usage .heatmap-months {
+  display: grid; grid-auto-flow: column; grid-auto-columns: minmax(9px, var(--usage-cell-max));
+  gap: var(--usage-gap); justify-content: start; align-self: end; margin: 0;
+  font: 11.5px/1.4 var(--sans); color: var(--dim); white-space: nowrap;
+}
+#view-usage .heatmap-weekdays {
+  display: grid; grid-template-rows: repeat(7, minmax(0, 1fr)); gap: var(--usage-gap);
+  align-items: center; align-self: stretch; width: 18px;
+  font: 11px/1 var(--sans); color: var(--dim);
+}
+#view-usage .heatmap-grid {
+  display: grid; grid-auto-flow: column; grid-auto-columns: minmax(9px, var(--usage-cell-max));
+  grid-template-rows: repeat(7, auto); gap: var(--usage-gap); justify-content: start; min-width: 0;
+}
+#view-usage .heatmap-cell {
+  min-width: 0; min-height: 0; aspect-ratio: 1 / 1; border-radius: 4px;
+  transition: outline-color var(--dur) var(--ease);
+}
+#view-usage #usage-heatmap[data-density="dense"] .heatmap-cell { border-radius: 3px; }
+#view-usage .heatmap-cell:hover { outline: 1.5px solid var(--dim); outline-offset: 1px; }
+#view-usage .heatmap-cell:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; position: relative; z-index: 2; }
+/* 未覆盖:斜线比 base 稀一点,大片未覆盖时不至于糊成一整块深色纹理。 */
+#view-usage .heatmap-cell[data-coverage="outside"],
+#view-usage .heatmap-legend [data-coverage="outside"] {
+  background-image: repeating-linear-gradient(135deg, var(--heat-outside-line) 0 1px, transparent 1px 5px);
+}
+#view-usage .heatmap-cell[data-future="true"] { background: transparent; box-shadow: inset 0 0 0 1px var(--border-soft); }
+#view-usage #usage-chart-empty { margin: 10px 0 0; padding: 0; font-size: 12.5px; line-height: 1.5; color: var(--dim); }
 
-/* ---- Heatmap card: calendar + window stats --------------------------------- */
-/* 单一版式:标题 → 窗口概览横条 → 日历 → 脚注。周数少时只是格子变小,整张卡不会
-   因为数据只有几周就在右边空出一大块。 */
-.usage-chart {
-  display: grid; align-items: start;
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-areas: "head" "side" "body" "foot";
-  padding: 18px 20px 16px;
+/* 浮层:上下两行(日期 / 读数),--raised 底、大圆角、重阴影,数字等宽。 */
+#view-usage #usage-chart-tooltip {
+  position: absolute; z-index: 5; pointer-events: none;
+  width: max-content; min-width: 128px; max-width: min(240px, calc(100% - 16px)); padding: 8px 11px;
+  background: var(--raised); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg); white-space: pre;
+  font: 600 13px/1.5 var(--sans); color: var(--text); font-variant-numeric: tabular-nums;
 }
-.usage-chart-head { grid-area: head; margin-bottom: 12px; }
-#usage-chart-holder { grid-area: body; min-width: 0; }
-.usage-chart-side { grid-area: side; }
-.usage-chart-foot { grid-area: foot; }
-/* 窄屏横向滚动时锚在最近一周:不用 RTL 翻面(base.css 那套会把星期标签甩到滚动区外),
-   改成 LTR + usage.js 渲染后把滚动位置推到最右,星期标签靠 sticky 留在原位。 */
-#usage-chart-holder { direction: ltr; }
-.usage-chart-head h2 { font-size: 15px; }
-#usage-range-label { font-size: 12.5px; margin-top: 3px; }
-.usage-tabs { padding: 2px; }
-.usage-tabs button { min-height: 32px; padding: 4px 12px; font-size: 12.5px; }
+#view-usage #usage-chart-tooltip::first-line { font-size: 12px; font-weight: 500; color: var(--dim); }
 
-/* 周数少(数据只覆盖几周)时:日历在左、窗口概览在右成栏,概览行距拉开,不开出一条空带。
-   1023px 以下卡片内宽放不下「日历 + 概览栏」两列(概览数字会挤成两行),回到单列横条。 */
-.usage-chart:has(#usage-heatmap[data-density="compact"]) {
-  grid-template-columns: max-content minmax(0, 1fr);
-  grid-template-areas: "head head" "body side" "foot foot";
-  column-gap: clamp(18px, 3vw, 34px);
+/* 摘要 / 图例 / 展开。 */
+#view-usage .usage-chart-foot {
+  grid-area: foot; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin: 14px 0 0; min-width: 0;
 }
-.usage-chart:has(#usage-heatmap[data-density="compact"]) .usage-chart-side {
-  display: flex; flex-direction: column; justify-content: center; gap: 0;
-  align-items: stretch;
-  margin: 0; padding: 2px 0 2px 26px; align-self: stretch;
-  border-top: 0; border-bottom: 0; border-left: 1px solid var(--border-soft);
+#view-usage #usage-calendar-summary { flex: 1 1 100%; margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--dim); }
+#view-usage .heatmap-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); }
+#view-usage .heatmap-legend-label { white-space: nowrap; }
+#view-usage .heatmap-legend-swatch { width: 12px; height: 12px; border-radius: 3px; box-shadow: none; }
+#view-usage .heatmap-legend-swatch[data-level="0"] { box-shadow: inset 0 0 0 1px var(--border-soft); }
+#view-usage .heatmap-legend-swatch + .heatmap-legend-swatch { margin-left: -3px; }
+#view-usage .heatmap-legend-swatch[data-level="0"] + .heatmap-legend-label { margin-right: 8px; }
+#view-usage .heatmap-legend-outside { margin-left: 8px; box-shadow: inset 0 0 0 1px var(--heat-outside-line); }
+/* 只在当前窗口真有这类格子时补的两个色块:区间外(淡化的 0 级)与未来(只有描边)。 */
+#view-usage #usage-heatmap-legend-extra { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-left: 8px; color: var(--dim); }
+#view-usage #usage-heatmap-legend-extra .heatmap-legend-label + .heatmap-legend-swatch { margin-left: 8px; }
+#view-usage #usage-heatmap-legend-extra [data-active="false"] { opacity: .35; box-shadow: inset 0 0 0 1px var(--border-strong); }
+#view-usage #usage-heatmap-legend-extra [data-future="true"] { background: transparent; box-shadow: inset 0 0 0 1px var(--border); }
+#view-usage #usage-calendar-expand {
+  display: inline-flex; align-items: center; gap: 4px; margin-left: auto;
+  min-height: var(--control-h-sm); padding: 0 10px 0 6px;
+  background: transparent; border-color: transparent; color: var(--dim); font-size: 12.5px;
 }
-.usage-chart:has(#usage-heatmap[data-density="compact"]) .usage-side-row {
-  justify-content: space-between; align-items: baseline; gap: 18px; padding: 13px 0;
-  border-top: 1px solid var(--border-soft); max-width: min(440px, 100%);
+#view-usage #usage-calendar-expand::before {
+  content: ""; width: 14px; height: 14px; background: currentColor;
+  -webkit-mask: var(--usage-icon-prev) center / contain no-repeat; mask: var(--usage-icon-prev) center / contain no-repeat;
 }
-.usage-chart:has(#usage-heatmap[data-density="compact"]) .usage-side-row:first-child { border-top: 0; padding-top: 0; }
-.usage-chart:has(#usage-heatmap[data-density="compact"]) .usage-side-row > b { font-size: 18px; letter-spacing: -.3px; }
-.usage-chart:has(#usage-heatmap[data-density="compact"]) .usage-chart-foot { grid-column: 1 / -1; }
+#view-usage #usage-calendar-expand:hover:not(:disabled) { background: var(--nav-active); color: var(--text); }
 
-/* 窗口概览:只用热力图已有的格子算,数字都来自同一批格子,不新增查询。 */
-.usage-chart-side {
-  display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 28px;
-  margin: 0 0 12px; padding: 9px 0 10px;
-  border-top: 1px solid var(--border-soft); border-bottom: 1px solid var(--border-soft);
-}
-.usage-side-row { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-.usage-side-row > span { font-size: 12.5px; color: var(--dim); white-space: nowrap; }
-.usage-side-row > b {
-  font: 600 15px/1.25 var(--sans); color: var(--text); font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.heatmap-weekdays { width: 26px; }
-.heatmap-months { font-size: 11.5px; }
-/* 紧凑窗口(周数少):格子边长随视口在 24–34px 之间伸缩,行高与列宽共用同一个值,
-   所以格子始终是正方形;超出时轨道对齐到起点,不会把最后一列拉宽。 */
-#usage-heatmap[data-density="compact"] { --usage-cell: clamp(24px, 2.4vw, 36px); }
-#usage-heatmap[data-density="compact"] .heatmap-grid { --heat-gap: 4px; }
-#usage-heatmap[data-density="compact"] .heatmap-grid {
-  grid-auto-columns: var(--usage-cell);
-  grid-template-rows: repeat(7, var(--usage-cell));
-  justify-content: start;
-}
-#usage-heatmap[data-density="compact"] .heatmap-weekdays {
-  grid-template-rows: repeat(7, var(--usage-cell));
-}
-#usage-heatmap[data-density="compact"] .heatmap-layout { justify-content: start; }
-#usage-heatmap[data-density="compact"] .heatmap-months {
-  grid-auto-columns: var(--usage-cell);
-  justify-content: start;
-}
-
-/* 满 53 周:列宽随容器均分,月份刻度也跟着同一套列宽走。 */
-#usage-heatmap[data-density="dense"] .heatmap-grid,
-#usage-heatmap[data-density="dense"] .heatmap-months { grid-auto-columns: minmax(9px, 1fr); }
-.heatmap-cell { border-radius: 2.5px; }
-
-.usage-chart-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-top: 12px; }
-#usage-calendar-summary { font-size: 12.5px; line-height: 1.6; margin: 0; }
-.heatmap-legend { font-size: 12px; gap: 5px 7px; }
-.heatmap-legend-swatch, .heatmap-legend [data-level] { width: 11px; height: 11px; }
-#usage-calendar-expand { min-height: 32px; margin-left: auto; }
-
-/* ---- Daily table, detail tabs, pagination ---------------------------------- */
-.usage-trend-table { margin-bottom: 18px; }
-.usage-trend-table > summary { padding: 10px 16px; font-size: 13px; }
-.usage-note { font-size: 13px; line-height: 1.6; margin-bottom: 12px; }
-.usage-detail-head { margin: 6px 0 10px; }
-.usage-detail-tabs button { min-height: 38px; padding: 7px 14px; font-size: 14px; }
-.usage-table th { font-size: 12.5px; font-weight: 600; color: var(--dim); }
-.usage-table td { font-size: 13.5px; padding: 10px 14px; }
-.usage-pagination { margin: 6px 0 18px; }
-#usage-page-label { font-size: 12.5px; color: var(--dim); }
-.usage-pagination button { min-height: 32px; }
-
-/* ---- Narrow widths --------------------------------------------------------- */
-@media (max-width: 1280px) and (min-width: 641px) {
-  /* 1024 一带四张卡挤成一排时数字和徽标会互相顶:提前两列排,卡片回到能读的宽度。 */
-  .usage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  /* 下拉收窄一点,「清除筛选」才不会被挤到下一行单独立着。 */
-  .usage-filter select { width: 128px; }
-  .usage-filter[for="usage-model"] select { width: 152px; }
-}
-@media (max-width: 1080px) {
-  .usage-chart-side { gap: 6px 20px; }
-}
-@media (max-width: 1023px) {
-  /* 窄屏:概览与图例回到日历上方的横条,日历自己横向滚动。 */
-  .usage-chart,
-  .usage-chart:has(#usage-heatmap[data-density="compact"]) {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-areas: "head" "side" "body" "foot";
+@media (min-width: 1181px) {
+  #view-usage .usage-chart:has(#usage-heatmap[data-density="compact"]) {
+    grid-template-columns: minmax(0, max-content) minmax(300px, 1fr);
+    grid-template-rows: auto auto 1fr;
+    grid-template-areas: "head head" "body side" "body foot";
   }
-  .usage-chart-side,
-  .usage-chart:has(#usage-heatmap[data-density="compact"]) .usage-chart-side {
-    display: flex; flex-flow: row wrap; align-items: baseline; gap: 6px 22px;
-    padding: 9px 0 10px; margin: 0 0 12px; min-height: 0;
-    border-left: 0; border-top: 1px solid var(--border-soft); border-bottom: 1px solid var(--border-soft);
+  /* 紧凑日历右侧:三块概览竖排成「标签 … 数值」三行,与日历同高,图例贴底。 */
+  #view-usage .usage-chart:has(#usage-heatmap[data-density="compact"]) .usage-chart-side {
+    grid-template-columns: minmax(0, 1fr); gap: 8px; width: 100%; max-width: 420px; margin: 0;
   }
-  .usage-chart:has(#usage-heatmap[data-density="compact"]) .usage-side-row {
-    align-items: baseline; justify-content: flex-start; gap: 8px; padding: 0; border-top: 0;
+  #view-usage .usage-chart:has(#usage-heatmap[data-density="compact"]) .usage-side-row {
+    flex-direction: row; align-items: baseline; justify-content: space-between; gap: 12px; padding: 9px 14px;
   }
-  .usage-chart:has(#usage-heatmap[data-density="compact"]) .usage-side-row > b { font-size: 14px; }
-  .usage-side-row,
-  .usage-chart:not(:has(#usage-heatmap[data-density="compact"])) .usage-side-row {
-    flex-direction: row; gap: 8px;
-  }
-  .usage-side-row > b,
-  .usage-chart:not(:has(#usage-heatmap[data-density="compact"])) .usage-side-row > b { font-size: 14px; }
-  #view-usage .usage-head-actions,
-  #topbar-page-actions .usage-head-actions { flex-wrap: wrap; gap: 6px; }
-  .usage-grid { gap: 12px; }
-  .usage-grid .metric { padding: 16px; }
-  .usage-grid .metric > b { font-size: 28px; }
+  #view-usage .usage-chart:has(#usage-heatmap[data-density="compact"]) .usage-side-row > span { min-width: 0; }
+  #view-usage .usage-chart:has(#usage-heatmap[data-density="compact"]) .usage-chart-foot { align-self: end; }
+  #view-usage .usage-chart:has(#usage-heatmap[data-density="compact"]) #usage-calendar-expand { margin-left: -6px; }
 }
-@media (max-width: 640px) {
-  /* 手机上格子保持可点的大小,整块日历在自己的滚动区里横向滚动(默认锚在最近一周);
-     铺满整行会把格子压到 20px 以下,手指点不准。星期标签黏在滚动区左边,不跟着滚走。 */
-  #usage-heatmap[data-density="compact"] { --usage-cell: 26px; }
-  .heatmap-weekdays {
-    position: sticky; left: 0; z-index: 1;
-    background: var(--surface); padding-right: 6px;
-  }
-  /* 四个筛选下拉两列并排:一到手机上就四行全宽,会把卡片推到两屏之外。 */
-  .usage-bar { gap: 10px; }
-  .usage-filters { gap: 8px 10px; }
-  .usage-filter { flex: 1 1 calc(50% - 5px); min-width: 0; }
-  .usage-filter select, .usage-filters select { width: 100%; min-width: 0; }
-  /* 手机上筛选排成两列后「清除筛选」落到下一行:靠右收,别把次要动作顶在左边像主按钮。 */
-  #usage-clear-filters { flex: 0 0 auto; margin-left: auto; }
-  .usage-chart { padding: 14px 14px 12px; }
-  .usage-chart-side { gap: 6px 18px; }
-  .usage-grid .metric > b { font-size: 26px; }
-  .usage-intro { font-size: 13px; }
-  /* 手机上四张卡两列:一列会把热力图推到第三屏,四张卡加起来比热力图还高。 */
-  .usage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-  .usage-grid .metric { padding: 14px 14px 12px; }
-  .usage-grid .metric-label { font-size: 12.5px; }
-  .usage-grid .metric > b { font-size: 24px; letter-spacing: -.5px; }
-  .usage-grid .metric small { font-size: 12px; }
-  /* 徽标在 24px 数字旁边要更小,否则会把「成功率」标签挤到第二行。 */
-  .usage-grid .metric-label > b.metric-fail { font-size: 11px; padding: 1px 7px; }
+
+/* ---- Status line, daily table ------------------------------------------------ */
+#view-usage .usage-note {
+  display: flex; align-items: baseline; gap: 8px; margin: 0 0 12px;
+  font-size: 12.5px; line-height: 1.6; color: var(--dim); font-variant-numeric: tabular-nums;
+}
+#view-usage .usage-note::before {
+  content: ""; width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%;
+  background: var(--faint); transform: translateY(-1px);
+}
+#view-usage .usage-note[data-tone="ok"]::before { background: var(--ok); }
+#view-usage .usage-note[data-tone="err"]::before { background: var(--err); }
+#view-usage .usage-note[data-tone="warn"]::before { background: var(--warn); }
+#view-usage #usage-status.stale { color: var(--warn-text); }
+#view-usage #usage-data-frame { transition: opacity var(--dur) var(--ease); }
+#view-usage #usage-data-frame[data-stale="true"], #view-usage #usage-data-frame.is-stale { opacity: .72; }
+
+#view-usage .usage-trend-table {
+  margin: 0 0 20px; overflow: hidden;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  box-shadow: var(--highlight), var(--shadow-sm);
+}
+#view-usage .usage-trend-table > summary {
+  padding: 11px 16px; font-size: var(--fs-sm); font-weight: 600; color: var(--text);
+}
+#view-usage .usage-trend-table > summary::before { color: var(--dim); }
+#view-usage .usage-trend-table > summary:hover { background: var(--nav-hover); }
+#view-usage .usage-trend-table[open] > summary { border-bottom: 1px solid var(--border); }
+#view-usage .usage-trend-table .table-wrap {
+  margin: 0; border: 0; border-radius: 0; box-shadow: none; background: transparent;
+}
+#view-usage .usage-trend-table table { min-width: 560px; }
+
+/* ---- Detail tabs, tables, pagination ---------------------------------------- */
+#view-usage .usage-detail-head {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; margin: 0 0 10px;
+}
+#view-usage #usage-count { margin: 0; font-size: 12.5px; color: var(--dim); font-variant-numeric: tabular-nums; }
+#view-usage .usage-table {
+  margin: 0 0 10px; overflow-x: auto; overscroll-behavior-x: contain;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  box-shadow: var(--highlight), var(--shadow-sm);
+}
+#view-usage .usage-table:focus-visible { outline-offset: 2px; }
+#view-usage .usage-table table { min-width: 860px; }
+#view-usage .usage-table th,
+#view-usage .usage-trend-table th {
+  padding: 9px 12px; background: var(--panel); border-bottom: 1px solid var(--border);
+  font-size: 12px; font-weight: 600; line-height: 1.4; letter-spacing: 0; color: var(--dim); white-space: nowrap;
+}
+#view-usage .usage-table td,
+#view-usage .usage-trend-table td {
+  padding: 10px 12px; border-top: 1px solid var(--border-soft);
+  font-size: var(--fs-sm); line-height: 1.45; white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+#view-usage .usage-table th:first-child, #view-usage .usage-table td:first-child,
+#view-usage .usage-trend-table th:first-child, #view-usage .usage-trend-table td:first-child { padding-left: 16px; }
+#view-usage .usage-table th:last-child, #view-usage .usage-table td:last-child,
+#view-usage .usage-trend-table th:last-child, #view-usage .usage-trend-table td:last-child { padding-right: 16px; }
+#view-usage .usage-table tbody tr:first-child > td,
+#view-usage .usage-trend-table tbody tr:first-child > td { border-top: 0; }
+#view-usage .usage-table tbody tr:hover,
+#view-usage .usage-trend-table tbody tr:hover { background: var(--nav-hover); }
+#view-usage .usage-table td:first-child { color: var(--text); }
+/* 数字列右对齐、等宽;文字列(协议组/供应商/模型/状态)左对齐。按当前页签分开写。 */
+#view-usage .usage-table th, #view-usage .usage-table td { text-align: left; }
+#view-usage .usage-table[aria-labelledby="usage-tab-requests"] :is(th, td):nth-child(n+5),
+#view-usage .usage-table:not([aria-labelledby="usage-tab-requests"]) :is(th, td):nth-child(n+2),
+#view-usage .usage-trend-table :is(th, td):nth-child(n+2) { text-align: right; }
+#view-usage .usage-table[aria-labelledby="usage-tab-requests"] :is(th, td):nth-child(8) { text-align: left; }
+#view-usage .usage-table[aria-labelledby="usage-tab-requests"] td:first-child,
+#view-usage .usage-trend-table td:first-child { color: var(--dim); }
+#view-usage .usage-table[aria-labelledby="usage-tab-requests"] td:nth-child(4) {
+  min-width: 180px; max-width: 260px; white-space: normal; color: var(--tag-text); font: 12.5px/1.45 var(--mono);
+}
+#view-usage .usage-table td .model-alias { display: inline-block; margin-left: 6px; font: 12px var(--sans); color: var(--dim); white-space: nowrap; }
+#view-usage .usage-table td[colspan] { padding: 22px 14px; text-align: left; color: var(--dim); white-space: normal; }
+/* 状态:人话标签用通用 .badge(成功 = ok,失败分类 = err),HTTP 状态码作次级等宽小字跟在后面;
+   原始错误与 err_class 在 title 里。 */
+#view-usage .usage-table td .usage-st { display: inline-flex; align-items: center; gap: 6px; vertical-align: middle; }
+#view-usage .usage-table td .usage-st-code { font: 12px/1 var(--mono); color: var(--dim); }
+
+#view-usage .usage-pagination {
+  display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin: 0 0 20px;
+  font-size: 12.5px; color: var(--dim);
+}
+#view-usage #usage-page-label { padding: 0 6px; color: var(--dim); font-variant-numeric: tabular-nums; }
+#view-usage .usage-pagination button {
+  display: inline-flex; align-items: center; gap: 4px; min-height: var(--control-h-sm); padding: 0 10px; font-size: 12.5px;
+}
+#view-usage #usage-prev::before, #view-usage #usage-next::after {
+  content: ""; width: 14px; height: 14px; background: currentColor;
+  -webkit-mask: var(--usage-icon-prev) center / contain no-repeat; mask: var(--usage-icon-prev) center / contain no-repeat;
+}
+#view-usage #usage-prev { padding-left: 6px; }
+#view-usage #usage-next { padding-right: 6px; }
+#view-usage #usage-next::after { -webkit-mask-image: var(--usage-icon-next); mask-image: var(--usage-icon-next); }
+
+/* ---- Narrow widths ----------------------------------------------------------- */
+@media (max-width: 1320px) {
+  /* 放不下一行时,下拉整组换到第二行并靠左,读起来是一条筛选行,而不是右边悬着一截。 */
+  #view-usage .usage-bar { justify-content: flex-start; }
+  #view-usage .usage-filters { margin-left: 0; justify-content: flex-start; }
+}
+@media (max-width: 1180px) {
+  /* 四张卡挤一排时「成功率 + 失败徽标」会互相顶:改两列。 */
+  #view-usage .usage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+}
+@media (max-width: 860px) {
+  #view-usage .usage-sync-group, #topbar-page-actions .usage-sync-group { height: 34px; }
+  #view-usage .usage-head-actions > #usage-source-toggle,
+  #topbar-page-actions .usage-head-actions > #usage-source-toggle { min-height: 34px; }
+  #view-usage .usage-sync-group .usage-last-sync,
+  #topbar-page-actions .usage-sync-group .usage-last-sync { display: none; }
+  /* 手机:协议组整行三等分;四个下拉两列并排;「清除筛选」只在有筛选时出现,靠右。 */
+  #view-usage .usage-bar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  #view-usage .usage-apps { grid-column: 1 / -1; width: 100%; height: 40px; }
+  #view-usage .usage-apps button, #view-usage .usage-apps .seg { flex: 1 1 0; padding: 0 8px; }
+  #view-usage .usage-filters { display: contents; }
+  #view-usage .usage-filter { width: 100%; }
+  #view-usage .usage-filter select,
+  #view-usage #usage-range-select, #view-usage #usage-provider,
+  #view-usage #usage-model, #view-usage #usage-status-filter { flex: 1 1 auto; width: 100%; min-width: 0; }
+  #view-usage #usage-clear-filters { grid-column: 1 / -1; justify-self: end; }
+  #view-usage #usage-clear-filters[data-empty="true"] { display: none; }
+  #view-usage .usage-grid { gap: 10px; }
+  #view-usage .usage-grid .metric { padding: 14px 14px 12px; }
+  #view-usage .usage-grid .metric::before { top: 14px; right: 14px; width: 26px; height: 26px; }
+  #view-usage .usage-grid .metric::after { top: 20px; right: 20px; width: 14px; height: 14px; }
+  #view-usage .usage-grid .metric-label { min-height: 26px; padding-right: 32px; font-size: 12.5px; }
+  #view-usage .usage-grid .metric > b { margin-top: 8px; font-size: 24px; letter-spacing: 0; }
+  #view-usage .usage-grid .metric > small { font-size: 12px; }
+  #view-usage .usage-grid .metric-label > b.metric-fail { height: 18px; padding: 0 6px; font-size: 11px; }
+  #view-usage .usage-grid .metric-label > b.metric-fail::before { display: none; }
+  #view-usage .usage-chart { padding: 14px 14px 12px; }
+  #view-usage .usage-chart-side { gap: 8px; }
+  #view-usage .usage-side-row { padding: 8px 10px; }
+  #view-usage .usage-side-row > span { font-size: 11.5px; }
+  #view-usage .usage-side-row > b { font-size: 15px; }
+  /* 日历放不下时在自己的滚动区里横向滚动(锚在最近一周),星期标签黏在左边不跟着滚走。 */
+  #view-usage .heatmap-weekdays { position: sticky; left: 0; z-index: 1; background: var(--surface); }
+  #view-usage #usage-calendar-expand { margin-left: 0; }
+  #view-usage .usage-detail-head { flex-direction: column; align-items: stretch; }
+  #view-usage .usage-detail-tabs { width: 100%; height: 40px; }
+  #view-usage .usage-detail-tabs button { flex: 1 1 0; padding: 0 8px; }
+  #view-usage .usage-table td, #view-usage .usage-table th { padding-left: 12px; padding-right: 12px; }
+  #view-usage .usage-pagination { justify-content: space-between; }
+  #view-usage .usage-pagination button { min-height: 34px; }
 }
 @media (max-width: 560px) {
-  .usage-sync-group .usage-last-sync { display: none; }
-  .usage-sync-group { padding-right: 2px; }
-  .usage-detail-tabs button { padding: 8px 10px; min-height: 36px; font-size: 13.5px; }
+  #view-usage .usage-grid .metric > b { margin-top: 6px; font-size: 22px; }
+}
+
+/* ---- Motion / forced colors -------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  #view-usage .usage-sync-group > #usage-sync:disabled::before,
+  #topbar-page-actions .usage-sync-group > #usage-sync:disabled::before { animation: none; }
+}
+@media (forced-colors: active) {
+  #view-usage .usage-grid .metric::before { display: none; }
+  #view-usage .usage-grid .metric::after,
+  #view-usage .usage-sync-group > #usage-sync::before,
+  #topbar-page-actions .usage-sync-group > #usage-sync::before,
+  #view-usage .usage-more-metrics > summary::before, #view-usage .usage-trend-table > summary::before,
+  #view-usage #usage-calendar-expand::before, #view-usage #usage-prev::before, #view-usage #usage-next::after {
+    forced-color-adjust: none; background: CanvasText;
+  }
+  #view-usage .heatmap-cell[data-coverage="outside"],
+  #view-usage .heatmap-legend [data-coverage="outside"] { background-image: none; }
+  #view-usage .usage-apps button[aria-pressed="true"],
+  #view-usage .usage-detail-tabs button[aria-selected="true"] { outline: 2px solid Highlight; outline-offset: -2px; }
 }
