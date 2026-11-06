@@ -23,6 +23,9 @@ let windowSnapshot = null, windowDirty = false, windowRevision = 0, windowSelect
 // 而"客户端需重开(新开会话)"是**必须**的一步。
 let windowOutcome = null;
 let online = false, lastSync = null, refreshTask = null, activeDialog = null, returnFocus = null, confirmResolve = null, savingProvider = false;
+let loadedUiRevision = null;
+// 概览的日志聚合独立于 5 秒状态轮询；读失败保留上次的趋势与数字。
+let overviewUsage = null, overviewUsageTask = null, overviewUsageAttempt = 0, overviewUsageSync = null, overviewUsageError = '', overviewUsageDay = '';
 let codexSlotRevision = 0;
 let codexModeDraft = 'direct';
 let codexDirectEdit = '', codexDirectValue = '', savingCodexDirect = false, codexDirectMessage = '';
@@ -298,6 +301,10 @@ function refresh() {
         if (state.slots) next.slots = { ...next.slots, codex: state.slots.codex };
         next.live.codex = state.live.codex;
       }
+      // 首次非空修订是本页已加载的基线;后续变化只提示,不自动刷新或打断草稿。
+      const uiRevision = typeof next.ui_revision === 'string' ? next.ui_revision.trim() : '';
+      if (uiRevision && loadedUiRevision === null) loadedUiRevision = uiRevision;
+      $('ui-update-banner').classList.toggle('show', !!uiRevision && uiRevision !== loadedUiRevision);
       state = next; lastSync = new Date();
       if (state.compact && !compactDraft) loadCompactDraft();
       renderCompactCurrent(); renderCompactKeys();
@@ -305,6 +312,7 @@ function refresh() {
       // 概览在 setConnection 之后渲染:客户端状态那三行要读 online(liveFacts 的口径),
       // 早一步渲染就会把一次成功的刷新说成"待确认"。
       renderOverviewPage();
+      loadOverviewUsage();
       if (view === 'providers') renderProviders();
       reconcileRouting();
       // 5 秒轮询不得打断正在编辑的用户。会话页的可编辑控件有两处:表格里的绑定下拉,以及表格外的搜索框。
@@ -421,7 +429,7 @@ document.querySelector('.apptabs').addEventListener('keydown', e => {
 // ---------------- 概览(只读) ----------------
 // 这一页刻意**不放任何可写控件**:规划要求"每项配置只有一个主要编辑入口",概览只负责
 // 把"现在什么样"和"你要动手做什么"摆出来,每条事项给一个跳到对应页的按钮。
-// 所有数据都来自 /api/state 这一份只读快照;另外只读一次 /api/stats 拿内存窗口容量(判断「今日请求」满没满)。
+// 客户端与会话来自 /api/state；今日用量与两条小时趋势来自 /api/usage，概览可见时最多每分钟读取。
 function overviewJump(view, text) {
   // 跳转按钮只调视图切换,绝不发写请求(它连 api() 都不碰)。
   return `<button class="small" data-jump="${esc(view)}" onclick="showView(${handlerArg(view)})">${esc(text)}</button>`;
@@ -471,6 +479,7 @@ function renderOverviewPage() {
     // 从没读到过状态(首次连接就失败):说清楚在等什么,不让「读取中」一直挂着。
     for (const id of ['overview-todo', 'overview-clients', 'overview-endpoints']) paint(id, '<p class="hint">还没有读到服务状态，连接恢复后自动显示。</p>');
     for (const id of ['ov-revision', 'ov-pid', 'ov-tokens', 'ov-cooldowns']) $(id).textContent = '—';
+    renderOverviewUsage();
     return;
   }
   const stats = state.stats || {};
@@ -489,11 +498,15 @@ function renderOverviewPage() {
   const today = todayView(stats);
   $('ov-reqs').textContent = today.reqs; $('ov-reqs').setAttribute('title', today.reqsTitle);
   $('ov-reqs-scope').textContent = today.scope;
-  $('ov-tokens').textContent = `输入 ${today.inTok} / 输出 ${today.outTok}`;
-  $('ov-tokens').setAttribute('title', `输入 ${fmtCount(stats.inTok)} / 输出 ${fmtCount(stats.outTok)} tokens${today.tokNote}`);
+  $('ov-tokens').textContent = `新增输入 ${today.inTok} / 输出 ${today.outTok}`;
+  $('ov-tokens').setAttribute('title', `新增输入 ${fmtCount(stats.inTok)} / 输出 ${fmtCount(stats.outTok)} tokens${today.tokNote}`);
+  const stateTokens = finiteOrNull(stats.inTok) === null || finiteOrNull(stats.outTok) === null ? null : Number(stats.inTok) + Number(stats.outTok);
+  $('ov-token-total').textContent = fmtTok(stateTokens);
+  $('ov-token-total').setAttribute('title', `新增输入与输出 ${fmtCount(stateTokens)}；缓存读取等待日志聚合${today.tokNote}`);
   // 会话按协议组归组(不是按客户端):直接给两组各几个,原来这里是冷却功能删掉后留下的固定句子。
   const sessions = state.sessions;
   $('ov-sessions').textContent = fmtCount(sessions?.length);
+  $('ov-sessions').setAttribute('title', `当前进程内存里保留的会话，含已保存绑定；不是进行中的请求数。${state.session_ttl_min ? '自动绑定的空闲保留时间 ' + fmtCount(state.session_ttl_min) + ' 分钟。' : ''}`);
   const codexSessions = (sessions || []).filter(s => groupOfSession(s) === 'codex').length;
   $('ov-cooldowns').textContent = sessions ? `Anthropic ${sessions.length - codexSessions} · OpenAI ${codexSessions}` : '—';
   $('ov-cooldowns').setAttribute('title', `按协议组归组，不按客户端：${GROUPS.claude} / ${GROUPS.codex}`);
@@ -504,22 +517,23 @@ function renderOverviewPage() {
   const todoPanel = $('overview-todo-panel');
   if (todoPanel) todoPanel.dataset.state = todo.includes('overview-todo-list') ? 'active' : 'clear';
 
-  // 两行客户端状态:复用 liveFacts 的口径,不另造一套判断。
-  // 第一行是结论(模式徽标 + 状态 + 协议人话名),地址单行截断、全长进 title,配置文件路径排最后。
-  // 未接入的行给一个「去接入」——只切视图不发请求;已接入或离线(判断不了)的行不给。
+  // 两张客户端卡仍共用 liveFacts。展示的是磁盘配置与槽位目标，绝不把它说成请求实际落点。
   const WIRE_NAMES = { responses: 'Responses API', chat: 'Chat Completions', anthropic: 'Anthropic Messages' };
   paint('overview-clients', Object.keys(APPS).map(app => {
-    const f = liveFacts(app);
+    const f = liveFacts(app), configured = !!(f.healthy && f.lv?.base_url);
     const raw = f.lv?.wire_api || '';
     const wire = raw ? `<span class="ov-state" title="wire_api = ${esc(raw)}">${esc(WIRE_NAMES[raw] || raw)}</span>` : '';
-    const configured = !!(f.healthy && f.lv?.base_url);
-    // 状态文案与徽标同义时不重复:未接入的三行曾经都写成「尚未配置 尚未配置」。配置读取失败时原始错误进 title。
-    const stateText = f.stateLabel && f.stateLabel !== f.mode ? `<span class="ov-state"${f.lv?.error ? ` title="${esc(f.lv.error)}"` : ''}>${esc(f.stateLabel)}</span>` : '';
-    const addr = f.lv?.base_url ? `<span class="mono ov-addr" title="${esc(f.lv.base_url)}">${esc(f.lv.base_url)}</span>` : '';
-    const goto = configured || !online ? '' : `<button class="ov-goto" type="button" data-app="${app}" onclick="overviewGoConnect(${handlerArg(app)})">去接入</button>`;
-    return `<div class="ov-row" data-app="${app}"><div class="ov-row-name">${esc(APPS[app].label)}</div>
-      <div class="ov-row-main"><span class="badge badge-dot ${configured ? 'on' : 'off'}">${esc(f.mode)}</span>${stateText}${wire}${goto}${addr}</div>
-      <div class="mono ov-cfg">${esc(APPS[app].cfg)}</div></div>`;
+    const model = f.slot?.model || f.lv?.model || '未配置';
+    const modelTitle = f.slot ? `客户端配置 ${f.lv.model}；槽位目标 ${model}，不是请求实际落点` : '客户端磁盘配置的模型：' + model;
+    const addr = f.direct && f.lv?.base_url ? `<span class="mono ov-addr" title="${esc(f.lv.base_url)}">${esc(f.lv.base_url)}</span>` : '';
+    const stateText = f.stateLabel !== f.mode ? `<span class="ov-state" title="${esc(f.lv?.error || APPS[app].cfg)}">${esc(f.stateLabel)}</span>` : '';
+    const connect = online && !configured;
+    const glyph = app === 'claude' ? '<rect x="2.5" y="3" width="13" height="5" rx="1.5"/><rect x="2.5" y="10" width="13" height="5" rx="1.5"/><path d="M5.5 5.5h.01M5.5 12.5h.01"/>' : '<path d="M3 5.5 9 3l6 2.5v7L9 15l-6-2.5z"/><path d="M3 5.5 9 8l6-2.5M9 8v7"/>';
+    return `<div class="ov-row ov-client-card" data-app="${app}"><div class="ov-client-head ov-row-main">
+      <span class="ov-client-emblem" aria-hidden="true"><svg viewBox="0 0 18 18" focusable="false">${glyph}</svg></span><div class="ov-row-name">${esc(APPS[app].label)}</div>
+      <span class="badge badge-dot ${configured ? 'on' : 'off'}">${esc(f.mode)}</span><button class="ov-goto" type="button" data-app="${app}" onclick="${connect ? 'overviewGoConnect' : 'overviewOpenClient'}(${handlerArg(app)})" aria-label="${esc(APPS[app].label)} ${connect ? '去接入' : '查看渠道'}">${connect ? '去接入' : '查看渠道'}</button></div>
+      <dl class="ov-client-facts"><div><dt>当前渠道</dt><dd title="${esc(f.configuredName)}">${esc(f.configuredName)}</dd></div><div><dt>${f.slot ? '槽位目标模型' : '配置模型'}</dt><dd class="ov-client-model" title="${esc(modelTitle)}">${esc(model)}</dd></div></dl>
+      <div class="ov-client-foot">${stateText}${wire}${addr}<span class="mono ov-cfg sr-only" title="${esc(APPS[app].cfg)}">${esc(APPS[app].cfg)}</span></div></div>`;
   }).join(''));
 
   // 接入地址 = "我在哪里填什么"。缺 base 时退回 url(与 routerBase 同口径)。
@@ -538,9 +552,10 @@ function renderOverviewPage() {
   // 侧栏状态点与这里同源(都读 liveFacts),必须排在 setConnection 之后,
   // 否则一次成功的刷新会先把点画成「未接入」。
   syncClientDots();
+  renderOverviewUsage();
 }
-// 「去接入」:切到渠道页并选中这个客户端,再聚焦向导入口;不写任何配置。
-function overviewGoConnect(app) {
+// 客户端卡的入口只切页面；配置控件仍只在渠道页出现。
+function overviewOpenClient(app) {
   const target = APPS[app] ? app : 'claude';
   if (typeof window.workspaceNavigate === 'function') {
     try { window.workspaceNavigate('providers', target); } catch (e) { console.error(e); }
@@ -548,6 +563,120 @@ function overviewGoConnect(app) {
     if (typeof setApp === 'function') setApp(target);
     if (typeof showView === 'function') showView('providers');
   }
+}
+// 「去接入」再把焦点交给向导入口；已配置客户端的「查看渠道」不展开或聚焦向导。
+function overviewGoConnect(app) {
+  overviewOpenClient(app);
   const entry = document.getElementById('readiness-open');
   if (entry && typeof entry.focus === 'function') entry.focus();
+}
+
+function loadOverviewUsage() {
+  if (view !== 'overview' || document.hidden || !online) return overviewUsageTask;
+  if (overviewUsageTask || (overviewUsageAttempt && Date.now() - overviewUsageAttempt < 60000)) return overviewUsageTask;
+  overviewUsageAttempt = Date.now();
+  overviewUsageTask = (async () => {
+    try {
+      // dashboard=1 选择最终状态口径；limit 只缩小明细，不改变 totals 或小时 series。
+      const data = await api('/api/usage?range=today&bucket=hour&dashboard=1&limit=1');
+      const fields = ['reqs', 'tokens_in', 'tokens_out', 'cache_read'];
+      if (!data.totals || !Array.isArray(data.series) || fields.some(k => finiteOrNull(data.totals[k]) === null)
+        || data.series.some(row => !/^\d{4}-\d{2}-\d{2}T\d{2}:00/.test(row.t) || fields.some(k => finiteOrNull(row[k]) === null))) {
+        throw new Error('小时用量数据不完整');
+      }
+      overviewUsage = { ...data, series: data.series.slice().sort((a, b) => a.t.localeCompare(b.t)) };
+      overviewUsageSync = new Date(); overviewUsageDay = fmtFullTime(overviewUsageSync).slice(0, 10); overviewUsageError = '';
+      renderOverviewUsage();
+      return true;
+    } catch (e) {
+      overviewUsageError = e.message;
+      renderOverviewUsage();
+      return false;
+    } finally { overviewUsageTask = null; renderOverviewUsage(); }
+  })();
+  renderOverviewUsage();
+  return overviewUsageTask;
+}
+
+function renderOverviewUsage() {
+  const status = $('ov-usage-status');
+  const stale = !!overviewUsage && (!online || !!overviewUsageError || Date.now() - overviewUsageSync.getTime() > 75000
+    || overviewUsageDay !== fmtFullTime(new Date()).slice(0, 10));
+  for (const id of ['ov-metric-reqs', 'ov-metric-tokens', 'ov-metric-success']) $(id).dataset.stale = String(stale);
+  status.classList.toggle('stale', stale || !!overviewUsageError);
+  status.setAttribute('title', [overviewUsageSync && '用量同步于 ' + fmtFullTime(overviewUsageSync), overviewUsageError].filter(Boolean).join('；'));
+  if (!overviewUsage) {
+    $('ov-success').textContent = '—';
+    $('ov-success-note').textContent = overviewUsageError ? '日志用量未读取' : '等待读取请求结果';
+    const scope = state ? todayView(state.stats || {}).scope : '';
+    status.textContent = (overviewUsageError ? '今日用量读取失败；每分钟自动重试' : '正在读取今日用量…') + (scope ? `；请求${scope}，不是全天` : '');
+    return;
+  }
+  const t = overviewUsage.totals, source = overviewUsage.scope?.source === 'memory' ? '内存窗口' : '本机日志';
+  const tokenTotal = Number(t.tokens_in) + Number(t.tokens_out) + Number(t.cache_read);
+  $('ov-reqs').textContent = fmtCount(t.reqs);
+  $('ov-reqs').setAttribute('title', `今天（本地日历日）当前可用${source}的请求数；用量快照 ${fmtFullTime(overviewUsageSync)}`);
+  $('ov-reqs-scope').textContent = source === '内存窗口' ? source : '';
+  $('ov-token-total').textContent = fmtTok(tokenTotal);
+  $('ov-token-total').setAttribute('title', `新增输入 ${fmtCount(t.tokens_in)} / 输出 ${fmtCount(t.tokens_out)} / 缓存读取 ${fmtCount(t.cache_read)}；合计 ${fmtCount(tokenTotal)} Tokens`);
+  $('ov-tokens').textContent = `新增输入 ${fmtTok(t.tokens_in)} / 输出 ${fmtTok(t.tokens_out)} / 缓存读取 ${fmtTok(t.cache_read)}`;
+  $('ov-tokens').setAttribute('title', $('ov-token-total').getAttribute('title'));
+  $('ov-success').textContent = fmtPct(t.ok_rate);
+  $('ov-success').setAttribute('title', '按今日请求最终状态计算；HTTP 200 的断流与客户端取消仍计为失败，不代表上游连通性。');
+  $('ov-success-note').textContent = Number(t.reqs) ? `今日 ${fmtCount(t.reqs)} 次请求` : '今日暂无请求';
+  status.textContent = stale ? `用量数据过期，保留 ${fmtWhen(overviewUsageSync)} 快照；每分钟自动重试`
+    : overviewUsageTask ? '今日用量更新中…' : `${source} · 用量同步 ${fmtWhen(overviewUsageSync)}`;
+  renderOverviewTrend('ov-req-trend', overviewUsage.series, 'reqs');
+  renderOverviewTrend('ov-token-trend', overviewUsage.series, 'tokens');
+  const rows = overviewUsage.series.map(row => `<tr><th scope="row">${esc(row.t.slice(11, 16))}</th><td class="num">${fmtCount(row.reqs)}</td><td class="num">${fmtCount(row.tokens_in)}</td><td class="num">${fmtCount(row.tokens_out)}</td><td class="num">${fmtCount(row.cache_read)}</td><td class="num">${fmtCount(Number(row.tokens_in) + Number(row.tokens_out) + Number(row.cache_read))}</td></tr>`).join('')
+    || '<tr><td colspan="6">今日暂无小时数据</td></tr>';
+  const table = $('ov-hourly-rows');
+  if (table._html !== rows) { table.innerHTML = rows; table._html = rows; }
+}
+
+// 两个小图各画自己的量级，零基线不变；成功率和会话没有小时历史，不生成曲线。
+function renderOverviewTrend(id, series, metric) {
+  const el = $(id);
+  const points = series.map(row => ({ t: row.t, value: metric === 'reqs' ? Number(row.reqs)
+    : Number(row.tokens_in) + Number(row.tokens_out) + Number(row.cache_read) }));
+  const key = JSON.stringify(points);
+  if (el._plotKey === key) return;
+  el._plotKey = key; el._points = points; el._metric = metric; el.dataset.hover = 'false';
+  if (!points.length) { el.innerHTML = '<span class="ov-data-status">今日暂无小时数据</span>'; return; }
+  const max = Math.max(1, ...points.map(p => p.value));
+  points.forEach((p, i) => { p.x = points.length === 1 ? 110 : 5 + i * 210 / (points.length - 1); p.y = 29 - p.value * 23 / max; });
+  const path = points.map((p, i) => `${i ? 'L' : 'M'}${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(' '), last = points[points.length - 1];
+  const unit = metric === 'reqs' ? '请求' : 'Tokens';
+  el.innerHTML = `<svg viewBox="0 0 220 34" preserveAspectRatio="none" role="img" aria-label="今日每小时${unit}，从零开始"><line class="ov-trend-baseline" x1="0" y1="29" x2="220" y2="29"/><path class="ov-trend-area" d="${path} L${last.x.toFixed(2)},29 L${points[0].x.toFixed(2)},29 Z"/><path class="ov-trend-line" d="${path}"/><line class="ov-trend-crosshair" x1="${last.x}" y1="2" x2="${last.x}" y2="31"/><circle class="ov-trend-dot" cx="${last.x}" cy="${last.y}" r="4"/></svg>
+    <div class="ov-trend-axis"><span>${esc(points[0].t.slice(11, 16))}</span><span>${esc(last.t.slice(11, 16))}</span></div><span class="ov-trend-tip" role="tooltip"></span>`;
+  el._pointIndex = points.length - 1;
+  el.setAttribute('aria-label', `今日每小时${unit}，零基线；最近 ${last.t.slice(11, 16)}：${fmtCount(last.value)} ${unit}。左右方向键查看；下方有小时数据表。`);
+}
+function overviewInspectTrend(id, index) {
+  const el = $(id), points = el._points || [];
+  if (!points.length) return;
+  const i = Math.max(0, Math.min(points.length - 1, index)), p = points[i];
+  el._pointIndex = i; el.dataset.hover = 'true';
+  const cross = el.querySelector('.ov-trend-crosshair'), dot = el.querySelector('.ov-trend-dot'), tip = el.querySelector('.ov-trend-tip');
+  cross.setAttribute('x1', p.x); cross.setAttribute('x2', p.x);
+  dot.setAttribute('cx', p.x); dot.setAttribute('cy', p.y);
+  const text = `${p.t.slice(11, 16)} · ${fmtCount(p.value)}${el._metric === 'reqs' ? ' 次请求' : ' Tokens'}`;
+  tip.textContent = text;
+  el.setAttribute('aria-label', text + '；左右方向键查看，下方有小时数据表。');
+}
+for (const id of ['ov-req-trend', 'ov-token-trend']) {
+  const el = $(id);
+  el.addEventListener('pointermove', e => {
+    if (!el._points?.length) return;
+    const box = el.getBoundingClientRect(), x = (e.clientX - box.left) / box.width;
+    overviewInspectTrend(id, Math.round(x * (el._points.length - 1)));
+  });
+  el.addEventListener('focus', () => overviewInspectTrend(id, el._pointIndex));
+  el.addEventListener('keydown', e => {
+    if (!el._points?.length || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+    e.preventDefault();
+    overviewInspectTrend(id, e.key === 'Home' ? 0 : e.key === 'End' ? el._points.length - 1 : el._pointIndex + (e.key === 'ArrowRight' ? 1 : -1));
+  });
+  const clear = () => { if (el._points?.length) overviewInspectTrend(id, el._points.length - 1); el.dataset.hover = 'false'; };
+  el.addEventListener('pointerleave', clear); el.addEventListener('blur', clear);
 }

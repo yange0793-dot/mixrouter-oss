@@ -6,7 +6,7 @@
  */
 
 /* ---- 渠道页入口条 ---------------------------------------------------------- */
-/* 安静的一条:图标方块、标题与状态同一行,按钮靠右;不加阴影,不抢渠道库的首屏。 */
+/* 状态卡的工具头:向导入口在事实分栏上方,按钮为次级,不另铺横幅。 */
 .readiness-entry-row {
   display: flex; align-items: center; justify-content: space-between;
   gap: 8px 16px; flex-wrap: wrap;
@@ -16,9 +16,10 @@
 #readiness-entry-status { margin: 0; overflow-wrap: anywhere; }
 
 .panel.readiness-entry {
-  margin-bottom: 12px; padding: 10px 14px;
-  background: var(--surface); border-color: var(--border-soft);
-  border-radius: var(--radius-lg); box-shadow: none;
+  margin: 0; padding: 12px 18px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-bottom: 0; border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  box-shadow: none;
 }
 #readiness-entry .readiness-entry-row { gap: 8px 12px; }
 .readiness-entry-icon {

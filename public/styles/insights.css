@@ -7,7 +7,7 @@
 /* 表格在面板里是第二层:保留细边框,去掉阴影,圆角收一档。 */
 #view-insights .insights-table,
 #view-insights .insights-req-table { margin: 0 0 12px; border-radius: var(--radius); box-shadow: none; }
-#view-insights .insights-req-table table { min-width: 1120px; }
+#view-insights .insights-req-table table { min-width: 1040px; }
 #view-insights .insights-table td, #view-insights .insights-req-table td { vertical-align: top; padding: 10px 12px; }
 #view-insights .insights-table th, #view-insights .insights-req-table th { padding-left: 12px; padding-right: 12px; }
 #view-insights .insights-table :is(th, td).num, #view-insights .insights-req-table :is(th, td).num {
@@ -19,7 +19,8 @@
    折成一列「能力」)。compact 不需要最小宽度,手机上不用横向拖。 */
 #view-insights .insights-table table { width: 100%; min-width: 0; }
 #view-insights .insights-table[data-layout="full"] table { min-width: 900px; }
-#view-insights .insights-table[data-layout="compact"] .ins-model { width: 42%; }
+#view-insights .insights-table[data-layout="compact"] .ins-model { width: 46%; min-width: 132px; }
+#view-insights .insights-table .ins-model { min-width: 132px; }
 #view-insights .insights-table .ins-act { width: 1%; text-align: right; white-space: nowrap; }
 #view-insights .insights-table td.ins-model .insights-model-name { white-space: nowrap; }
 #view-insights .insights-unreg { font-size: var(--fs-sm); }
@@ -33,6 +34,21 @@
 #view-insights .insights-table tr.insights-group + tr > td { border-top: 0; }
 #view-insights .insights-group-label { display: inline-flex; align-items: baseline; gap: 8px; }
 #view-insights .insights-group-meta { font-size: 12px; font-weight: 400; color: var(--dim); }
+
+/* 全部能力未登记时按渠道排成紧凑网格,不铺满四列未知值。 */
+#view-insights .insights-model-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-bottom: 12px; }
+#view-insights .insights-model-grid[hidden] { display: none; }
+#view-insights .insights-model-card { min-width: 0; padding: 14px 16px 6px; background: var(--panel); border: 1px solid var(--border-soft); border-radius: var(--radius); }
+#view-insights .insights-model-card-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+#view-insights .insights-model-card .insights-group-name { font-size: 13px; font-weight: 600; color: var(--text); }
+#view-insights .insights-unregistered { margin: 4px 0 10px; font-size: 12px; color: var(--dim); }
+#view-insights .insights-model-card ul { list-style: none; padding: 0; margin: 0; }
+#view-insights .insights-model-card li { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 40px; padding: 8px 0; border-top: 1px solid var(--border-soft); }
+#view-insights .insights-model-card .ins-model { flex: 1 1 auto; min-width: 132px; }
+#view-insights .insights-model-card .insights-model-name { display: block; overflow-wrap: break-word; word-break: normal; }
+#view-insights .insights-model-card .insights-sub { max-width: 100%; overflow-wrap: break-word; }
+#view-insights .insights-model-card button { flex-shrink: 0; min-height: 32px; margin: 0 -4px 0 0; padding: 0 8px; color: var(--dim); font-size: 12px; }
+@media (max-width: 560px) { #view-insights .insights-model-grid { grid-template-columns: minmax(0, 1fr); } }
 
 /* 请求表:模型名、协议组与时间不折行:换行会把一行拆成三四行,读表时反而找不到行。 */
 #view-insights .insights-req-table td:nth-child(1), #view-insights .insights-req-table td:nth-child(2),
@@ -162,8 +178,8 @@
   #view-insights .insights-detail-head { flex-wrap: wrap; }
   #view-insights .insights-ctx-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   /* 模型表:模型名在第一屏。compact 本来就不横滚,模型名允许折行;full 横滚时模型列与组头黏在左边。 */
-  #view-insights .insights-table[data-layout="compact"] .ins-model { width: auto; }
-  #view-insights .insights-table[data-layout="compact"] td.ins-model .insights-model-name { white-space: normal; overflow-wrap: anywhere; word-break: normal; }
+  #view-insights .insights-table[data-layout="compact"] .ins-model { width: 46%; min-width: 132px; }
+  #view-insights .insights-table[data-layout="compact"] td.ins-model .insights-model-name { white-space: normal; overflow-wrap: break-word; word-break: normal; }
   #view-insights .insights-table[data-layout="compact"] td:not(.ins-model) { white-space: nowrap; }
   #view-insights .insights-table[data-layout="full"] :is(th, td).ins-model {
     position: sticky; left: 0; z-index: 1; background: var(--surface); box-shadow: 1px 0 0 var(--border-soft);

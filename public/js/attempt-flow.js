@@ -20,7 +20,7 @@
 (() => {
   const PANEL_ID = 'attempt-flow';
   const POLL_MS = 2000;
-  const ACTIVE_MAX = 50;
+  const ACTIVE_MAX = 5;
   const TERMINAL_MAX = 20;
 
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({
@@ -59,15 +59,25 @@
     el.id = PANEL_ID;
     el.className = 'panel attempt-flow';
     el.setAttribute('aria-labelledby', 'attempt-flow-title');
+    el.title = `只在这一页可见时每${POLL_MS / 1000}秒读取一次；内存窗口最多100条，15分钟未更新自动过期，重启后清空。不含 prompt、会话标签、Key 或上游错误正文。`;
     el.innerHTML = `
-      <h2 id="attempt-flow-title">实时尝试过程</h2>
-      <p class="hint" id="attempt-flow-hint">只在这一页可见时每 ${POLL_MS / 1000} 秒读取一次；内容仅在本进程内存里，
-        不含 prompt、会话标签、Key 或上游错误正文。已结束的记录保留 15 分钟后自动过期，重启后清空。</p>
-      <div class="attempt-flow-status" id="attempt-flow-status" role="status">尚未读取</div>
+      <div class="attempt-flow-head">
+        <h2 id="attempt-flow-title">实时尝试过程</h2>
+        <div class="attempt-flow-status" id="attempt-flow-status" role="status">尚未读取</div>
+        <button type="button" class="small quiet attempt-history-toggle" id="attempt-flow-history-toggle" data-attempt-history-toggle="1" aria-controls="attempt-flow-done-wrap" aria-expanded="false" hidden>展开历史</button>
+      </div>
       <div class="attempt-flow-list" id="attempt-flow-active"></div>
+      <details class="attempt-flow-overflow" id="attempt-flow-more-wrap" hidden>
+        <summary id="attempt-flow-more-summary">更多进行中的请求</summary>
+        <div class="attempt-flow-list" id="attempt-flow-more"></div>
+      </details>
       <details class="attempt-flow-done" id="attempt-flow-done-wrap" hidden>
         <summary id="attempt-flow-done-summary">已结束的尝试过程</summary>
         <div class="attempt-flow-list" id="attempt-flow-done"></div>
+      </details>
+      <details class="attempt-flow-info">
+        <summary>范围与隐私说明</summary>
+        <p class="hint" id="attempt-flow-hint">只在这一页可见时每${POLL_MS / 1000}秒读取一次；内容仅在本进程内存里，不含 prompt、会话标签、Key 或上游错误正文。已结束的记录15分钟未更新自动过期，重启后清空。</p>
       </details>`;
     // 插在分槽用量之后、日志筛选之前:先看"现在在等谁",再看历史日志。
     const anchor = host.querySelector('.logbar');
@@ -89,6 +99,7 @@
   const ms = value => {
     const n = Number(value);
     if (!Number.isFinite(n) || n < 0) return '';
+    if (n >= 3600000) { const m = Math.round(n / 60000); return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`; }
     if (n >= 60000) { const s = Math.round(n / 1000); return `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`; }
     return n >= 1000 ? `${(n / 1000).toFixed(1)}s` : `${Math.round(n)}ms`;
   };
@@ -170,15 +181,14 @@
   }
 
   function activeCard(trace) {
-    const ev = lastEvent(trace);
+    const meta = metaLine(trace).join(' · ');
     return `<article class="attempt-card${trace.terminal ? ' done' : ' live'}" data-id="${esc(trace.id)}">
       <header>
         <span class="attempt-dot" aria-hidden="true"></span>
         <b>${esc(phaseLabel(trace))}</b>
-        <span class="mono">${esc(metaLine(trace).join(' · '))}</span>
+        <span class="mono" title="${esc(meta)}">${esc(meta)}</span>
         <span class="attempt-time">${esc(ms(trace.duration_ms))}</span>
       </header>
-      ${ev && !trace.terminal ? `<p class="hint attempt-now">最近一步：${esc(PHASE_TEXT[ev.phase] || ev.phase)}</p>` : ''}
     </article>`;
   }
 
@@ -218,41 +228,47 @@
     </article>`;
   }
 
-  let lastLive = null, lastDone = null;
+  let lastLive = null, lastMore = null, lastDone = null;
   function render() {
     const el = panel();
     if (!el) return;
+    const live = state.traces.filter(t => !t.terminal).sort((a, b) => b.duration_ms - a.duration_ms);
+    const done = state.traces.filter(t => t.terminal).slice(0, TERMINAL_MAX);
     const statusEl = el.querySelector('#attempt-flow-status');
     if (state.lastError) {
       statusEl.textContent = `读取失败：${state.lastError}。显示的是上次读取的快照。`;
       statusEl.classList.add('err');
     } else {
-      statusEl.textContent = state.traces.length
-        ? `共 ${state.traces.length} 条记录（内存窗口最多 100 条，15 分钟未更新自动过期）`
-        : '暂无记录；通过本地路由发起一次调用后会出现。';
+      statusEl.textContent = live.length ? `${live.length} 个进行中${live.length > ACTIVE_MAX ? ' · 默认显示耗时最长的5个' : ''}`
+        : done.length ? `无进行中 · 最近${done.length}条已结束` : '暂无记录；通过本地路由发起一次调用后会出现。';
       statusEl.classList.remove('err');
     }
-
-    const live = state.traces.filter(t => !t.terminal).slice(0, ACTIVE_MAX);
-    const done = state.traces.filter(t => t.terminal).slice(0, TERMINAL_MAX);
-    // 面板在"什么都没有"时收成三行,不拿一整块空白把下面的日志表推下去;
-    // 有进行中或有历史时才铺开提示文案。
+    // 没有进行中时,标题、状态与历史入口只占一行。details 节点不重建,轮询保留展开状态。
     el.dataset.state = live.length ? 'live' : done.length ? 'history' : 'empty';
     const activeEl = el.querySelector('#attempt-flow-active');
-    const liveHtml = live.length
-      ? live.map(activeCard).join('')
-      : '<p class="hint attempt-flow-empty">当前没有进行中的请求。</p>';
-    // 内容没变就不重写(每 2 秒一轮):整块重写会清掉用户正在选中复制的 request_id 与失败解释。
+    const liveHtml = live.slice(0, ACTIVE_MAX).map(activeCard).join('');
+    // 内容没变就不重写(每2秒一轮),保留正在选择复制的文字。
     if (liveHtml !== lastLive) { activeEl.innerHTML = liveHtml; lastLive = liveHtml; }
+    const moreWrap = el.querySelector('#attempt-flow-more-wrap');
+    const more = live.slice(ACTIVE_MAX);
+    moreWrap.hidden = more.length === 0;
+    el.querySelector('#attempt-flow-more-summary').textContent = `还有${more.length}个进行中的请求`;
+    const moreHtml = more.map(activeCard).join('');
+    if (moreHtml !== lastMore) { el.querySelector('#attempt-flow-more').innerHTML = moreHtml; lastMore = moreHtml; }
 
     const wrap = el.querySelector('#attempt-flow-done-wrap');
     wrap.hidden = done.length === 0;
-    el.querySelector('#attempt-flow-done-summary').textContent = `已结束的尝试过程（最近 ${done.length} 条）`;
+    const historyToggle = el.querySelector('#attempt-flow-history-toggle');
+    if (historyToggle) {
+      historyToggle.hidden = live.length > 0 || done.length === 0;
+      historyToggle.textContent = wrap.open ? '收起历史' : '展开历史';
+      historyToggle.setAttribute('aria-expanded', wrap.open ? 'true' : 'false');
+    }
+    el.querySelector('#attempt-flow-done-summary').textContent = `已结束的尝试过程（最近${done.length}条）`;
     const doneEl = el.querySelector('#attempt-flow-done');
     const doneHtml = done.map(terminalCard).join('');
     if (doneHtml === lastDone) return;
-    // 展开/收起和轮询都会重写这块;焦点在某个展开按钮上时,写完把焦点放回同一条的新按钮,
-    // 键盘用户不会每次都被甩回页首。
+    // 焦点在某个展开按钮上时,重写后还给同一条的新按钮。
     const focused = document.activeElement;
     const focusId = focused && doneEl.contains?.(focused) ? focused.getAttribute?.('data-attempt-toggle') : null;
     doneEl.innerHTML = doneHtml; lastDone = doneHtml;
@@ -264,6 +280,13 @@
     const el = document.getElementById(PANEL_ID);
     if (!el || el.dataset.bound === '1') return;
     el.dataset.bound = '1';
+    const history = el.querySelector('#attempt-flow-done-wrap');
+    const toggle = el.querySelector('#attempt-flow-history-toggle');
+    toggle.addEventListener('click', () => { history.open = !history.open; render(); });
+    history.addEventListener('toggle', () => {
+      toggle.textContent = history.open ? '收起历史' : '展开历史';
+      toggle.setAttribute('aria-expanded', history.open ? 'true' : 'false');
+    });
     el.addEventListener('click', e => {
       const btn = e.target.closest('[data-attempt-toggle]');
       if (!btn) return;

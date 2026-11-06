@@ -271,6 +271,7 @@ test('模型表:手工值、来源、视觉与推理档位;未登记字段显式
   assert.doesNotMatch(rows, /<td>Anthropic<\/td>/, '协议组不再单占一列');
   assert.match(rows, /colspan="7"/, '有登记值时是完整布局:模型 + 四个能力列 + 自报 + 操作');
   assert.equal(h.get('insights-models-table').getAttribute('data-layout'), 'full');
+  assert.equal(h.get('insights-models-grid').hidden, true, '有任一登记能力就保留完整表格');
   assert.match(h.get('insights-models-table').thead.innerHTML, /上下文窗口.*最大输出.*视觉.*推理档位.*最近上游自报/);
   assert.doesNotMatch(h.get('insights-models-table').thead.innerHTML, /协议组|渠道/);
   assert.doesNotMatch(rows, /0 tokens/, '未知不能渲染成 0');
@@ -440,9 +441,8 @@ test('恶意模型/渠道/自报/会话名一律转义', async () => {
   assert.doesNotMatch(h.get('insights-context-summary').innerHTML, /<img/);
 });
 
-// #11:一个能力都没登记时,四个能力列全是「—」:折成一列「能力:未登记」,操作直接是「登记」。
-// 同一渠道的模型归到一个分组行下,渠道名只出现一次。
-test('模型表:全部未登记时折成一列「能力」,按渠道分组', async () => {
+// #11:一个能力都没登记时按渠道网格显示,不铺四列未知;登记索引与上游自报仍保留。
+test('模型表:全部未登记时按渠道网格,保留登记与真实上游自报', async () => {
   const blank = { value: null, source: 'unknown' };
   const caps = { context_window: blank, max_output_tokens: blank, vision: blank, reasoning_levels: blank };
   const models = { revision: 'rev-u', models: [
@@ -452,22 +452,43 @@ test('模型表:全部未登记时折成一列「能力」,按渠道分组', asy
     { app: 'codex', provider: 'p1', provider_name: 'Alpha', model: 'm-3', capabilities: caps, observation: null },
   ] };
   const h = await loaded({ models });
-  const rows = h.get('insights-models-rows').innerHTML;
+  const rows = h.get('insights-models-grid').innerHTML;
   const table = h.get('insights-models-table');
   assert.equal(table.getAttribute('data-layout'), 'compact');
-  assert.match(table.thead.innerHTML, />能力</);
-  assert.doesNotMatch(table.thead.innerHTML, /上下文窗口<|最大输出<|推理档位</, '空列不再单独占表头');
-  assert.equal((rows.match(/>未登记</g) || []).length, 3);
-  assert.doesNotMatch(rows, />—</, '整表不再铺满「—」');
+  assert.equal(table.hidden, true, '全部未登记时不同时显示完整表格');
+  assert.equal(h.get('insights-models-grid').hidden, false);
+  assert.equal(h.get('insights-models-rows').innerHTML, '', '隐藏表格不重复绘制数据');
+  assert.equal((rows.match(/>能力未登记</g) || []).length, 2, '每个渠道明确标注能力未知');
+  assert.doesNotMatch(rows, />—</, '网格不铺无意义的未知占位符');
   assert.match(rows, /自报 m-2-real/, '有上游自报的行仍然显示自报');
-  // 同名渠道但协议组不同,是两个分组(Alpha · Anthropic 两个模型,Alpha · OpenAI 一个)。
-  assert.equal((rows.match(/class="insights-group"/g) || []).length, 2);
+  assert.match(rows, /不是身份认证/);
+  // 同名渠道但协议组不同,仍是两个组。
+  assert.equal((rows.match(/class="insights-model-card"/g) || []).length, 2);
   assert.match(rows, /Anthropic · 2 个模型/);
   assert.match(rows, /OpenAI · 1 个模型/);
-  assert.match(rows, /colspan="3"/);
   // 「登记」直接打开编辑表单;索引仍指向原始顺序。
   assert.match(rows, /onclick="insightsSelectModel\(2\);insightsEditModel\(\)">登记</);
   h.run('insightsSelectModel(2);insightsEditModel()');
   assert.equal(h.run('insightsState.editingModel'), true);
   assert.match(h.get('insights-model-detail').innerHTML, /编辑能力：m-3/);
+  // 不因网格切换丢掉模型键,一项登记成功后必须重新回到完整表格。
+  h.run('insightsState.models[2].capabilities = {vision:{value:false,source:"manual"}}; insightsRenderModels()');
+  assert.equal(table.getAttribute('data-layout'), 'full');
+  assert.equal(table.hidden, false);
+  assert.equal(h.get('insights-models-grid').hidden, true);
+  assert.match(h.get('insights-models-rows').innerHTML, /不支持/);
+});
+
+test('模型网格长名字转义与手机列下限,最近请求表不强制1120宽', async () => {
+  const models = {revision:'r',models:[{app:'claude',provider:'p',provider_name:'<img src=x>',model:'<script>very-long-model-name</script>',capabilities:{},observation:{upstream_model:'<img src=x>'}}]};
+  const h = await loaded({models});
+  const grid = h.get('insights-models-grid').innerHTML;
+  assert.doesNotMatch(grid, /<img|<script/);
+  assert.match(grid, /&lt;script&gt;very-long-model-name/);
+  assert.match(grid, /上游响应自报,不是身份认证/);
+  const css = fs.readFileSync(path.join(ROOT,'public/styles/insights.css'),'utf8');
+  assert.match(css, /\.insights-req-table table \{ min-width: 1040px/);
+  assert.match(css, /\.insights-model-card \.ins-model \{[^}]*min-width: 132px/);
+  assert.match(css, /\.insights-table\[data-layout="compact"\] \.ins-model \{[^}]*min-width: 132px/);
+  assert.match(css, /\.insights-model-card \.insights-model-name \{[^}]*overflow-wrap: break-word/);
 });

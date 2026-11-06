@@ -69,10 +69,10 @@ function liveLine() {
   // 两个客户端共用同一块「当前配置」摘要,口径一致(liveFacts 一处判定),
   // 接入细节默认收起、按客户端记住展开状态。
   // 详情里仍是那两张模式卡与配置行,离线时 liveFacts 会把它们降级成「待确认」,不冒充已写入。
-  return `<dl class="current-config">
-    <div><dt>配置供应商</dt><dd>${esc(configuredName)}</dd><small>${esc(stateLabel)}</small></div>
-    <div><dt>默认模型</dt><dd class="mono">${esc(model)}</dd>${slot ? `<small>槽位 ${esc(lv.model)}</small>` : ''}</div>
-    <div><dt>接入方式</dt><dd><span class="mode-pill ${modeTone}">${modeLabel}</span></dd><small>${esc(lv?.wire_api || '')}</small></div>
+  return `<dl class="current-config${isCodex ? ' codex-config' : ''}">
+    <div class="config-mode"><dt>接入方式</dt><dd><span class="mode-pill ${modeTone}">${modeLabel}</span></dd><small>${esc(lv?.wire_api || '')}</small></div>
+    <div><dt>当前渠道</dt><dd title="${esc(configuredName)}">${esc(configuredName)}</dd><small>${esc(stateLabel)}</small></div>
+    <div><dt>默认模型</dt><dd class="mono" title="${esc(model)}">${esc(model)}</dd>${slot ? `<small>槽位 ${esc(lv.model)}</small>` : ''}</div>
     ${isCodex ? `<div><dt>推理强度</dt><dd>${esc(reasoning || '客户端默认')}</dd>${fast ? `<small><span class="badge on">${esc(fast)}</span></small>` : ''}</div>` : ''}
     </dl><details class="connection-details"${connectionExpanded[curApp] ? ' open' : ''} ontoggle="connectionExpanded['${curApp}']=this.open"><summary>连接配置</summary><div class="mode-grid">
     <article class="mode-card ${direct ? 'selected' : ''}"><div class="top"><h2>${isCodex ? 'Codex 直连' : '直连渠道'}</h2>${modeBadge(direct)}</div><p>${direct ? esc(directName) : '客户端直接请求上游，不经过本地路由'}</p><p class="mono">${esc(direct && lv?.base_url ? lv.base_url : '从下方渠道卡片选择接入')}</p></article>
@@ -136,7 +136,15 @@ function renderProviders() {
     return;
   }
   const ps = providers(group), query = $('provider-search').value.trim().toLowerCase(), filter = $('provider-filter').value;
-  const shown = ps.filter(p => (!query || [p.name, p.base_url, p.model, ...(p.models || []), ...Object.values(p.slots || {})].join(' ').toLowerCase().includes(query)) && (filter === 'all' || (filter === 'enabled' ? p.enabled : !p.enabled)));
+  const facts = liveFacts(curApp), slots = state.slots?.[curApp] || [];
+  const mainProvider = facts.direct && facts.healthy
+    ? (isCodexGroup ? codexDirectProviderId() : facts.lv?.match === true ? facts.cur : '')
+    : facts.inRouter ? slots.find(s => s.name === 'main')?.provider : '';
+  const referenced = new Set(facts.inRouter ? slots.map(s => s.provider).filter(Boolean) : []);
+  const rank = p => p.id === mainProvider ? 0 : referenced.has(p.id) ? 1 : p.enabled ? 2 : 3;
+  // 只排显示副本,不改渠道库顺序;被槽位引用优先不等于客户端已经使用该槽。
+  const shown = ps.filter(p => (!query || [p.name, p.base_url, p.model, ...(p.models || []), ...Object.values(p.slots || {})].join(' ').toLowerCase().includes(query)) && (filter === 'all' || (filter === 'enabled' ? p.enabled : !p.enabled)))
+    .sort((a, b) => rank(a) - rank(b));
   $('channel-heading').textContent = `${APPS[curApp].label} 渠道库`;
   $('channel-count').textContent = `显示 ${shown.length} / ${ps.length} 个渠道 · ${ps.filter(p => p.enabled).length} 个已启用`;
   $('prov-empty').hidden = shown.length > 0;
@@ -261,20 +269,26 @@ function renderProviders() {
     // 只能走路由的 Claude 渠道没有可点的写入动作:不摆一个禁用的主按钮,换成一枚说明标签。
     const switchControl = convOnly
       ? `<span class="tag route-only-tag" title="${switchTitle}">仅路由可用</span>`
-      : `<button class="small ${verified || activeRouter ? 'cur' : 'primary'}" data-action="switch" data-provider="${esc(p.id)}" onclick="switchProvider(${arg})" ${locked ? 'disabled' : ''} title="${switchTitle}">${switchLabel}</button>`;
+      : `<button class="small ${verified || activeRouter ? 'cur' : claudeInRouter || actualCodexMode === 'router' ? '' : 'primary'}" data-action="switch" data-provider="${esc(p.id)}" onclick="switchProvider(${arg})" ${locked ? 'disabled' : ''} title="${switchTitle}">${switchLabel}</button>`;
     return `<article class="card ${p.enabled ? '' : 'off'} ${verified || activeRouter || routedMain ? 'cur' : ''} ${isCur && !verified && !activeRouter ? 'sel' : ''}" data-provider="${esc(p.id)}" style="--avatar-h:${providerHue(p.id)}">
       <header class="top provider-identity">
         <span class="provider-avatar" aria-hidden="true">${esc(avatar)}</span>
-        <div class="provider-info"><h3 class="name">${esc(p.name)}</h3><div class="provider-status">${statusBadges}</div></div>
+        <div class="provider-info"><h3 class="name" title="${esc(p.name)}">${esc(p.name)}</h3><div class="provider-status">${statusBadges}</div></div>
       </header>
       <div class="provider-content">
+        <div class="provider-models tags">${isCodexGroup ? `<span class="tag codex-mode-tag">${codexMode === 'router' ? 'Mixrouter 路由' : 'Codex 直连'}</span>` : ''}<span class="tag wire-tag">${esc(wire)}</span>${models.map(m => `<span class="tag model-tag" title="${esc(m)}">${esc(m)}</span>`).join('')}${p.drop_images ? '<span class="tag">纯文本</span>' : ''}${p.direct ? '<span class="tag">绕过出站代理</span>' : ''}${p.proxy_url ? '<span class="tag">经代理</span>' : ''}</div>
         <div class="mono endpoint" title="${esc(p.base_url)}">${esc(p.base_url)}</div>
-        <div class="provider-models tags">${isCodexGroup ? `<span class="tag codex-mode-tag">${codexMode === 'router' ? 'Mixrouter 路由' : 'Codex 直连'}</span>` : ''}<span class="tag wire-tag">${esc(wire)}</span>${models.map(m => `<span class="tag">${esc(m)}</span>`).join('')}${p.drop_images ? '<span class="tag">纯文本</span>' : ''}${p.direct ? '<span class="tag">绕过出站代理</span>' : ''}${p.proxy_url ? '<span class="tag">经代理</span>' : ''}</div>
         ${deadKeys.length ? `<p class="note dead-keys">已停用的 Key：${deadKeys.map(k => `${esc(k.label || k.id)}（${esc(k.id)}）`).join('、')}。停用只影响固定选它的会话与压缩规则，不会自动改选其他 Key。</p>` : ''}${p.note ? `<p class="note dev-note" title="${esc(p.note)}">${esc(p.note)}</p>` : ''}
 
       </div>
       <div class="provider-meta mono keyrow"><span class="key-label">Key</span>${account}${tline}${pline}</div>
-      <div class="foot provider-actions">${switchControl}<button class="small" data-action="test" data-provider="${esc(p.id)}" onclick="testProvider(${arg})" ${!online || t?.wait ? 'disabled' : ''}>${testLabel}</button><button class="small" data-action="probe" data-provider="${esc(p.id)}" onclick="probeModels(${arg})" ${!online || mp?.wait ? 'disabled' : ''} title="对每个模型各发一次真实请求，会消耗额度">${isCodexGroup ? '路由器测活' : '测活'}</button><button class="small" data-action="edit" data-provider="${esc(p.id)}" onclick="openProvider(${arg})">编辑</button><button class="small" data-action="toggle" data-provider="${esc(p.id)}" onclick="toggleProvider(${arg})" ${!online ? 'disabled' : ''}>${p.enabled ? '停用' : '启用'}</button><button class="small danger" data-action="delete" data-provider="${esc(p.id)}" onclick="delProvider(${arg})" ${!online ? 'disabled' : ''}>删除</button></div></article>`;
+      <div class="foot provider-actions">${switchControl}
+        <button class="small provider-icon-action" data-action="test" data-provider="${esc(p.id)}" onclick="testProvider(${arg})" ${!online || t?.wait ? 'disabled' : ''} title="${testLabel}：由 Mixrouter 发起一次真实请求" aria-label="${testLabel}"><span class="icon" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m7 4 9 6-9 6z"/></svg></span><span class="sr-only">${testLabel}</span></button>
+        <button class="small provider-icon-action" data-action="probe" data-provider="${esc(p.id)}" onclick="probeModels(${arg})" ${!online || mp?.wait ? 'disabled' : ''} title="${isCodexGroup ? '路由器测活' : '测活'}：对每个模型各发一次真实请求，会消耗额度" aria-label="${isCodexGroup ? '路由器测活' : '测活'}"><span class="icon" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 10h4l2-5 4 10 2-5h4"/></svg></span><span class="sr-only">${isCodexGroup ? '路由器测活' : '测活'}</span></button>
+        <button class="small provider-icon-action" data-action="edit" data-provider="${esc(p.id)}" onclick="openProvider(${arg})" title="编辑渠道" aria-label="编辑"><span class="icon" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m12 4 4 4M4 12l9-9 4 4-9 9-5 1z"/></svg></span><span class="sr-only">编辑</span></button>
+        <button class="small provider-icon-action" data-action="toggle" data-provider="${esc(p.id)}" onclick="toggleProvider(${arg})" ${!online ? 'disabled' : ''} title="${p.enabled ? '停用' : '启用'}渠道；不撤销客户端直连配置" aria-label="${p.enabled ? '停用' : '启用'}"><span class="icon" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2.5v7M5.5 5a7 7 0 1 0 9 0"/></svg></span><span class="sr-only">${p.enabled ? '停用' : '启用'}</span></button>
+        <button class="small danger provider-icon-action" data-action="delete" data-provider="${esc(p.id)}" onclick="delProvider(${arg})" ${!online ? 'disabled' : ''} title="删除渠道" aria-label="删除"><span class="icon" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h14M7 5V3h6v2M5 5l1 12h8l1-12M8 8v6M12 8v6"/></svg></span><span class="sr-only">删除</span></button>
+      </div></article>`;
   }).join('');
   // 轮询只更新状态,但不能在用户正操作卡片时拆 DOM:下拉展开时重建会把菜单关掉,焦点恢复也救不回来。
   // 焦点在卡片内的输入/下拉上就等失焦后的下一次刷新再重绘;按钮没有展开态,照旧重建并恢复焦点。
@@ -338,8 +352,15 @@ function syncCodexModeDraft() {
   }
   $('m-codex-mode-hint').textContent = chat ? 'Chat Completions 渠道需经 Mixrouter 转换为 Codex 所用协议。'
     : '直连：Codex → 渠道；路由：Codex → Mixrouter → 渠道。';
+  for (const id of ['m-codex-mode-direct', 'm-codex-mode-router']) {
+    const input = $(id);
+    input?.parentElement?.classList.toggle('is-selected', input.checked);
+    input?.parentElement?.classList.toggle('is-disabled', input.disabled);
+  }
 }
 $('m-wire')?.addEventListener('change', syncCodexModeDraft);
+$('m-codex-mode-direct')?.addEventListener('change', syncCodexModeDraft);
+$('m-codex-mode-router')?.addEventListener('change', syncCodexModeDraft);
 function closeModal() { if (savingProvider) return toast('正在保存，请稍候'); hideDialog(); $('m-key').value = ''; keyDraft = []; modelDraft = []; resetModelDiscovery(); }
 
 // 多 Key(同渠道多账号):弹窗里维护清单,卡片下拉里切当前生效那把
@@ -486,6 +507,7 @@ function syncDiscoverySelectionDom() {
 function renderModelDiscovery() {
   const box = $('m-model-discovery'); if (!box) return;
   const total = discoveryState.models.length, rows = discoveryVisibleModels();
+  box.classList.toggle('has-models', total > 0 && rows.length > 0);
   const selected = discoveryState.selected;
   updateDiscoveryApplyButton();
   if (!total) { box.innerHTML = '<p class="muted">还没有获取到模型。填好 Base URL 与 Key 后点「获取模型列表」。</p>'; return; }

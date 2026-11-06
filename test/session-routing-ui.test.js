@@ -1157,11 +1157,42 @@ test('对话名是系统指令时显示人话,原文留在 title,搜索仍按原
   assert.equal(h.get('sess-body').innerHTML.includes('&lt;INSTRUCTIONS&gt;</span>'), false, '原文不当主文案');
   h.run("setSessQuery('tinyfish')");
   assert.equal((h.get('sess-body').innerHTML.match(/<tr data-session=/g) || []).length, 1, '搜索面仍是原始对话名');
-  // 普通标题照常显示,「#123」这类开头也算系统指令前缀(真实数据里用户标题不以 # 开头)
+  // 普通标题照常显示;#开头的真实用户标题不属于注入块白名单。
   data.sessions[0].label = '修复登录跳转';
   const plain = await harness(data);
   plain.run("view = 'sessions'; renderSessions()");
   assert.match(rowOf(plain, 'alpha001'), /<span class="lbl" title="修复登录跳转">修复登录跳转<\/span>/);
+});
+
+test('会话标题注入白名单支持大小写和属性,普通Markdown与未知标签正文保留', async () => {
+  const h = await harness();
+  h.run("view = 'sessions'; renderSessions()");
+  const render = label => h.run(`sessionLabelHtml(${JSON.stringify(label)})`);
+  for (const label of ['# AGENTS.md instructions', '# CLAUDE.md rules', '<INSTRUCTIONS source="file">rules', '<environment_context cwd="/tmp">env', '<USER_INSTRUCTIONS priority="high">rules', '<System-Reminder role="system">hint']) {
+    assert.match(render(label), /lbl-system.*系统指令，无标题/, label);
+  }
+  for (const label of ['# 修复登录问题', '#123 真实标题', '# AGENTS.md-notes', 'AGENTS.md 文件在哪']) {
+    assert.doesNotMatch(render(label), /lbl-system/, label);
+    assert.ok(render(label).includes('>' + label + '</span>'), label);
+  }
+  assert.match(render('<session id="123">修复登录跳转</session>'), /title="&lt;session id=&quot;123&quot;&gt;修复登录跳转&lt;\/session&gt;">修复登录跳转<\/span>/);
+  assert.match(render('<custom><b>真实提问</b></custom>'), />真实提问<\/span>/);
+  assert.match(h.get('sess-chips').innerHTML, /活跃会话/);
+  assert.doesNotMatch(h.get('sess-chips').innerHTML, /活跃对话/);
+});
+
+test('分槽表显隐显式写data状态,WebKit不依赖动态has', async () => {
+  const h = await harness();
+  h.run('renderSlotStats({reqs: 1, by_slot: {main: {reqs: 1, in: 10, out: 5, cache: 0}}})');
+  assert.equal(h.get('slot-stats-panel').dataset.hasRows, 'true');
+  assert.equal(h.get('slot-stats-table').hidden, false);
+  h.run('renderSlotStats({reqs: 0, by_slot: {}})');
+  assert.equal(h.get('slot-stats-panel').dataset.hasRows, 'false');
+  assert.equal(h.get('slot-stats-table').hidden, true);
+  const css = fs.readFileSync(path.join(__dirname, '../public/styles/observe.css'), 'utf8');
+  assert.doesNotMatch(css, /:has\(/, 'observe状态用JS class/data,无运行时has');
+  assert.match(css, /\.c-usage b::after[^}]*content: "次"/);
+  assert.match(css, /\.c-usage span::before[^}]*content: "入\/出 /);
 });
 
 test('compactUnchanged:载入后为真并禁用保存,改动后为假,服务端版本变化也不算一致', async () => {

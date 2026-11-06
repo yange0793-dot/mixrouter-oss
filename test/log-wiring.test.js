@@ -60,7 +60,7 @@ const ask = (model, extra = {}) => raw(proxyPort, 'POST', '/v1/messages',
 // request_id 也是运行时字段:它由入口写进字面量(没接 trace store 时是空串),
 // 所以无论 /api/attempts 有没有接线,日志键集都是同一套。
 const RUNTIME_FIELDS = ['app', 'attempts', 'bytes_in', 'cache_read', 'context', 'effort', 'err', 'err_class', 'failover', 'in', 'key_id', 'key_source', 'kind', 'model_in',
-  'model_out', 'ms', 'out', 'pool', 'provider', 'request_id', 'rule', 'session', 'session_kind', 'slot', 'status', 'sticky',
+  'model_out', 'ms', 'out', 'pool', 'provider', 'provider_app', 'provider_id', 'request_id', 'rule', 'session', 'session_kind', 'slot', 'status', 'sticky',
   'strategy', 'stream', 'ts', 'ttfb_ms', 'upstream_model', 'wire'].sort();
 const keysOf = o => Object.keys(o).sort();
 // 槽位分组合计。瘦身后普通路由规则已删除,唯一能给请求打上 slot 标签的路径是槽位别名,
@@ -107,6 +107,8 @@ test('代理请求真的写进了 /api/logs(写侧接线)', async () => {
   const { logs } = JSON.parse((await ui('GET', '/api/logs')).text);
   assert.strictEqual(logs.length, 1, '一次请求恰好一条日志');
   assert.strictEqual(logs[0].provider, '回显渠道');
+  assert.strictEqual(logs[0].provider_id, 'p-echo', '渠道 id 与显示名一起记');
+  assert.strictEqual(logs[0].provider_app, 'claude');
   assert.strictEqual(logs[0].model_in, 'echo-model');
 });
 
@@ -166,6 +168,7 @@ test('全部既有端点在接线后仍返回原形状(回归闸门)', async () 
   assert.deepStrictEqual(keysOf(state.stats), ['exact', 'inTok', 'outTok', 'reqs', 'since']);
   assert.strictEqual(state.stats.exact, false);
   assert.ok(Number.isFinite(Date.parse(state.stats.since)));
+  assert.match(state.ui_revision, /^[0-9a-f]{12}$/, '真实装配下 /api/state 带静态资源指纹');
   assert.strictEqual(state.stats.reqs, stats.reqs);
   assert.ok(Object.hasOwn(state, 'providers') && Object.hasOwn(state, 'slots'));
 });

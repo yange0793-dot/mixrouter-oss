@@ -19,7 +19,7 @@ const source = fs.readFileSync(path.join(__dirname, '../public/js/attempt-flow.j
 class El {
   constructor(id = '', tag = 'div') {
     this.id = id; this.tagName = String(tag).toUpperCase();
-    this.style = {}; this.dataset = {}; this.hidden = false;
+    this.style = {}; this.dataset = {}; this.hidden = false; this.open = false;
     this.children = []; this.parentNode = null; this.textContent = ''; this.className = '';
     this._html = ''; this.events = {}; this.attrs = {};
     this.classList = { add() {}, remove() {}, toggle() {}, contains: () => false };
@@ -311,6 +311,46 @@ test('服务端文本一律转义:模型名 / 渠道 id / 错误解释都进不�
   assert.ok(!html.includes('<img'), '原始标签不得进入 innerHTML');
   assert.ok(html.includes('&lt;img'), '必须转义后展示');
   assert.ok(!html.includes('href="javascript:'), 'javascript: 目标不得被渲染成链接');
+});
+
+test('高并发默认只显示耗时最长5条,更多展开随刷新保持,阶段不重复', async () => {
+  const traces = Array.from({ length: 12 }, (_, i) => trace({ id: 'live-' + i, duration_ms: (i + 1) * 1000 }));
+  const h = harness({ traces });
+  await settle();
+  const panel = h.document.getElementById('attempt-flow');
+  const active = panel.querySelector('#attempt-flow-active');
+  const ids = value => [...value.matchAll(/data-id="([^"]+)"/g)].map(m => m[1]);
+  assert.deepEqual(ids(active.innerHTML), ['live-11', 'live-10', 'live-9', 'live-8', 'live-7']);
+  assert.doesNotMatch(active.innerHTML, /最近一步/, '卡片标题已经说明阶段,不再重复同文');
+  const more = panel.querySelector('#attempt-flow-more-wrap');
+  assert.equal(more.hidden, false);
+  assert.equal(panel.querySelector('#attempt-flow-more-summary').textContent, '还有7个进行中的请求');
+  assert.equal(ids(panel.querySelector('#attempt-flow-more').innerHTML).length, 7);
+  more.open = true;
+  await h.sandbox.AttemptFlow.refresh();
+  await settle();
+  assert.equal(more.open, true, '轮询不重建details,展开状态保留');
+  assert.equal(panel.querySelector('#attempt-flow-more-wrap'), more);
+  assert.doesNotMatch(panel.innerHTML, /内存里，\s+不含/, '隐私文案没有换行引入的多余空格');
+});
+
+test('无进行中但有历史时收为一行,可展开历史且刷新不收起', async () => {
+  const h = harness({ traces: [trace({ id: 'done-compact', terminal: true, status: 200 })] });
+  await settle();
+  const panel = h.document.getElementById('attempt-flow');
+  const history = panel.querySelector('#attempt-flow-done-wrap');
+  const toggle = panel.querySelector('#attempt-flow-history-toggle');
+  assert.equal(panel.dataset.state, 'history');
+  assert.equal(panel.querySelector('#attempt-flow-active').innerHTML, '');
+  assert.equal(toggle.hidden, false);
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+  toggle.emit('click', {});
+  assert.equal(history.open, true);
+  assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+  await h.sandbox.AttemptFlow.refresh();
+  await settle();
+  assert.equal(history.open, true);
+  assert.equal(toggle.textContent, '收起历史');
 });
 
 test('读取失败就地说明,不用 toast 盖住日志页', async () => {

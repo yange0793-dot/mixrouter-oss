@@ -625,7 +625,7 @@ test('编辑覆盖层先处理草稿，目录变化不能误用旧覆盖信息',
   assert.equal(h.get('window-value').value, '400k'); assert.equal(h.get('window-scope').value, 'project');
   const load = h.run('editWindowOverride()'); h.run('finishConfirm(true)'); await load;
   assert.equal(h.get('window-scope').value, 'local'); assert.equal(h.get('window-value').value, '350000');
-  assert.match(h.get('window-current').textContent, /settings.local.json/);
+  assert.match(h.get('window-current').title, /settings.local.json/);
   assert.equal(h.requests.some(r => r.method === 'POST'), false);
   h.run("document.getElementById('window-project').value='/another'; windowProjectChanged()");
   assert.equal(h.get('window-edit-override').hidden, true);
@@ -638,7 +638,7 @@ test('窗口读取期间的新值保留且覆盖提示仍更新，保存期间�
   const loading = h.run('loadCompactWindow()'); h.run("setWindowValue('400k')");
   await h.run('pendingRead()'); await loading;
   assert.equal(h.get('window-value').value, '400k'); assert.equal(h.run('windowDirty'), true);
-  assert.match(h.get('window-coverage-text').textContent, /项目未检查/);
+  assert.match(h.get('window-coverage-text').textContent, /未指定项目.*覆盖尚未检查/);
   h.run("globalThis.fetch = (url, opt) => url === '/api/compact/window' ? new Promise(resolve => { pendingRead = async () => resolve(await realFetch(url,opt)); }) : realFetch(url,opt)");
   const saving = h.run('saveCompactWindow()'); h.run('finishConfirm(true)');
   await new Promise(resolve => setImmediate(resolve));
@@ -1131,6 +1131,55 @@ test('disconnect leaves a labelled stale snapshot, not a green online state, the
   assert.equal(h.get('connection-banner').classList.contains('show'), false);
 });
 
+test('界面修订首次读取只记基线,相同修订的轮询不提示更新', async () => {
+  const data = fixture(); data.ui_revision = 'ui-one';
+  const h = await harness(data);
+  assert.equal(h.run('loadedUiRevision'), 'ui-one');
+  assert.equal(h.get('ui-update-banner').classList.contains('show'), false);
+  await h.run('refresh()');
+  assert.equal(h.get('ui-update-banner').classList.contains('show'), false);
+});
+
+test('界面修订变化显示非阻断横幅,保留编辑焦点和输入,刷新按钮重载页面', async () => {
+  const data = fixture(); data.ui_revision = 'ui-one';
+  const h = await harness(data);
+  h.run("view = 'sessions'; renderSessions()");
+  const search = h.get('sess-search'); search.value = '正在输入'; search.focus();
+  const writes = h.get('sess-body').htmlWrites;
+  data.ui_revision = 'ui-two'; await h.run('refresh()');
+  assert.equal(h.get('ui-update-banner').classList.contains('show'), true);
+  assert.match(html, /id="ui-update-banner"[^>]*role="status"><span>界面已更新<\/span>/);
+  assert.equal(h.run('loadedUiRevision'), 'ui-one', '基线是本页已加载的界面,不能随轮询变化');
+  assert.equal(h.document.activeElement, search);
+  assert.equal(search.value, '正在输入');
+  assert.equal(h.get('sess-body').htmlWrites, writes);
+  assert.equal(h.get('workspace').inert, false);
+  assert.equal(h.run('activeDialog'), null);
+  h.run('globalThis.uiReloadCount = 0; globalThis.location = { reload() { uiReloadCount++; } }');
+  await h.run('refresh()');
+  assert.equal(h.get('ui-update-banner').classList.contains('show'), true);
+  assert.equal(h.run('uiReloadCount'), 0, '只提示更新,不能自动重载页面');
+  h.get('ui-update-refresh').click();
+  assert.equal(h.run('uiReloadCount'), 1);
+});
+
+test('旧后端缺少或返回空界面修订时不提示,首次非空修订才记基线', async () => {
+  const data = fixture();
+  const h = await harness(data);
+  assert.equal(h.get('ui-update-banner').classList.contains('show'), false);
+  assert.equal(h.run('loadedUiRevision'), null);
+  for (const revision of [undefined, null, '', '   ']) {
+    data.ui_revision = revision; await h.run('refresh()');
+    assert.equal(h.get('ui-update-banner').classList.contains('show'), false);
+    assert.equal(h.run('loadedUiRevision'), null);
+  }
+  data.ui_revision = 'ui-one'; await h.run('refresh()');
+  assert.equal(h.run('loadedUiRevision'), 'ui-one');
+  assert.equal(h.get('ui-update-banner').classList.contains('show'), false);
+  delete data.ui_revision; await h.run('refresh()');
+  assert.equal(h.get('ui-update-banner').classList.contains('show'), false);
+});
+
 test('dialog traps Tab in both directions, Escape cancels and returns focus, tabs support arrows', async () => {
   const h = await harness();
   const opener = h.get('new-provider'); opener.focus(); h.run('openProvider()');
@@ -1410,7 +1459,7 @@ function codexCompactFixture() {
 
 test('Codex threshold saves k/m inputs with the original revision and explicit file confirmation', async () => {
   const h = await harness(codexCompactFixture()); h.run("setApp('codex')");
-  assert.equal(h.get('codex-compact-input').value, '200000');
+  assert.equal(h.get('codex-compact-input').value, '200,000');
   assert.match(h.get('codex-compact-facts').innerHTML, /磁盘已配.*200,000.*默认阈值.*225,000.*推算有效阈值.*200,000/);
   assert.match(html, /id="codex-compact-restart">[^<]*不会热改[^<]*新开会话[^<]*profile[^<]*CLI/);
   assert.match(html, /aria-describedby="codex-compact-help codex-compact-status"/);
@@ -1421,7 +1470,7 @@ test('Codex threshold saves k/m inputs with the original revision and explicit f
   assert.deepEqual(h.requests.findLast(r => r.url === '/api/codex/config' && r.method === 'POST').body,
     { action: 'compact_threshold', model_auto_compact_token_limit: '220k', revision: 'codex-one' });
   assert.equal(h.run('codexCompactDraft.dirty'), false);
-  assert.equal(h.get('codex-compact-input').value, '220000');
+  assert.equal(h.get('codex-compact-input').value, '220,000');
   assert.match(h.get('codex-compact-status').textContent, /已保存到磁盘.*不会热改/);
   h.run("setCodexCompactValue('1m')"); await h.confirm('saveCodexCompact()');
   assert.equal(h.requests.findLast(r => r.url === '/api/codex/config' && r.method === 'POST').body.model_auto_compact_token_limit, '1m');
@@ -1557,7 +1606,7 @@ test('Codex late polling cannot overwrite saved threshold and read-time typing r
   h.run("const thresholdPollFetch = fetch; globalThis.resolveThresholdPoll = null; fetch = async (url,opt) => { const response = await thresholdPollFetch(url,opt); if (url !== '/api/state') return response; const old = await response.json(); return new Promise(resolve => { resolveThresholdPoll = () => resolve({ok:true,json:async()=>old}); }); }");
   const polling = h.run('refresh()'); await new Promise(resolve => setImmediate(resolve)); await h.confirm('saveCodexCompact()');
   h.run('resolveThresholdPoll()'); await polling;
-  assert.equal(h.run('state.live.codex.revision'), 'codex-saved'); assert.equal(h.get('codex-compact-input').value, '210000');
+  assert.equal(h.run('state.live.codex.revision'), 'codex-saved'); assert.equal(h.get('codex-compact-input').value, '210,000');
   h.run("fetch = thresholdPollFetch; const thresholdReadFetch = fetch; globalThis.resolveThresholdRead = null; fetch = async (url,opt) => { const response = await thresholdReadFetch(url,opt); if (url !== '/api/codex/config') return response; const result = await response.json(); result.codex.revision = 'codex-new-read'; return new Promise(resolve => { resolveThresholdRead = () => resolve({ok:true,json:async()=>result}); }); }");
   const reading = h.run('loadCodexCompact()'); await new Promise(resolve => setImmediate(resolve));
   h.run("setCodexCompactValue('220k'); resolveThresholdRead()"); await reading;
@@ -1579,7 +1628,7 @@ test('Codex threshold reports backup warnings and never claims success for an un
 test('Codex clean threshold follows new disk revision but focused unfinished input is not overwritten', async () => {
   const data = codexCompactFixture(), h = await harness(data); h.run("setApp('codex')");
   data.live.codex.revision = 'codex-two'; data.live.codex.compaction.configured = 190000; await h.run('refresh()');
-  assert.equal(h.get('codex-compact-input').value, '190000'); assert.equal(h.run('codexCompactDraft.revision'), 'codex-two');
+  assert.equal(h.get('codex-compact-input').value, '190,000'); assert.equal(h.run('codexCompactDraft.revision'), 'codex-two');
   const input = h.get('codex-compact-input'); input.focus(); input.value = '22';
   data.live.codex.revision = 'codex-three'; data.live.codex.compaction.configured = 180000; await h.run('refresh()');
   assert.equal(input.value, '22'); assert.equal(h.run('codexCompactDraft.revision'), 'codex-two');
@@ -1613,7 +1662,7 @@ test('Concurrent Codex slot and threshold saves preserve newest threshold and ho
     assert.equal(h.run('state.live.codex.model_auto_compact_token_limit'), 212000, first);
     assert.equal(h.run('state.live.codex.model'), 'mixr-main', first);
     assert.equal(h.run('state.slots.codex[0].model'), 'gpt-other', first);
-    assert.equal(h.get('codex-compact-input').value, '212000', first);
+    assert.equal(h.get('codex-compact-input').value, '212,000', first);
     assert.match(h.get('codex-model-status').textContent, /即时/, first);
   }
 });
@@ -1911,7 +1960,7 @@ test('provider overview resolves configured slots without claiming a live reques
   h.run("setApp('codex')");
   assert.match(h.get('liveinfo').innerHTML, /Chosen upstream/);
   assert.match(h.get('liveinfo').innerHTML, /chosen-model/);
-  assert.match(h.get('liveinfo').innerHTML, /配置供应商/);
+  assert.match(h.get('liveinfo').innerHTML, /当前渠道/);
   assert.equal(h.get('providers-title').textContent, '渠道与 Key', '标题对所有客户端同一口径');
   h.run("connectionExpanded.codex = true; renderProviders()");
   assert.match(h.get('liveinfo').innerHTML, /connection-details" open/);
@@ -1933,7 +1982,7 @@ test('当前配置摘要对两个客户端同构:字段一致、连接详情可�
   for (const app of ['claude', 'codex']) {
     h.run(`connectionExpanded.${app} = false; setApp('${app}')`);
     const info = h.get('liveinfo').innerHTML;
-    for (const field of ['配置供应商', '默认模型', '接入方式', 'connection-details', '连接配置']) assert.match(info, new RegExp(field));
+    for (const field of ['当前渠道', '默认模型', '接入方式', 'connection-details', '连接配置']) assert.match(info, new RegExp(field));
     assert.doesNotMatch(info, /connection-details" open/, `${app} 默认收起`);
   }
   // Codex 路由模式:供应商与模型取槽位,展开状态跨轮询保留且按客户端各记各的
@@ -2073,7 +2122,7 @@ test('渠道卡片分区:身份/状态/内容/动作语义清晰,账号与动作
   assert.match(grid, /<header class="top provider-identity">/);
   // ASCII 名称取前两位做头像;状态徽标在身份块里,内容块放地址与协议/模型
   assert.match(grid, /<span class="provider-avatar" aria-hidden="true">AL<\/span>/);
-  assert.match(grid, /<div class="provider-info"><h3 class="name">Alpha<\/h3><div class="provider-status">/);
+  assert.match(grid, /<div class="provider-info"><h3 class="name" title="Alpha">Alpha<\/h3><div class="provider-status">/);
   assert.match(grid, /<div class="foot provider-actions">/);
   assert.match(grid, /<div class="provider-models tags">/);
   assert.match(grid, /<div class="provider-meta mono keyrow"><span class="key-label">Key<\/span>/);
@@ -2378,7 +2427,7 @@ test('概览:版本/修订/进程/运行时长/客户端接入三行/接入地�
   assert.equal(h.get('ov-uptime').textContent, '2m 5s');
   assert.match(h.get('ov-pid').textContent, /4242/);
   assert.equal(h.get('ov-reqs').textContent, '12');
-  assert.match(h.get('ov-tokens').textContent, /输入 100 \/ 输出 40/);
+  assert.match(h.get('ov-tokens').textContent, /新增输入 100 \/ 输出 40/);
   // 原静态文案「失败后仍可重试」是冷却功能删除后的遗留;现在按协议组给出从 state 读到的会话数,归组口径留在 title。
   assert.equal(h.get('ov-cooldowns').textContent, 'Anthropic 2 · OpenAI 1');
   assert.match(h.get('ov-cooldowns').getAttribute('title'), /按协议组归组/);
@@ -2545,7 +2594,7 @@ test('设置页:备份清点显示每池份数/下次删哪几个/保留上限,�
   assert.match(dirs, /下一次备份会删：settings\.json\.bak-mixui-20260101-000000-000-abcd/, '下次删哪几个');
   assert.match(dirs, /保留上限 5 份/, '保留上限');
   assert.match(dirs, /abcdef012345/, '摘要要显示');
-  assert.match(h.get('backup-status').textContent, /不含任何配置正文/);
+  assert.match(h.get('backup-status').title, /不含任何配置正文/);
   // 没有任何"一键恢复"入口。注意:面板文案里必须能说清"没有恢复按钮"这件事本身,
   // 所以只禁 <button>/onclick,不禁止"恢复"这个词出现在说明文字里。
   const settingsHtml = html.slice(html.indexOf('<section id="view-settings"'));
@@ -2564,7 +2613,7 @@ test('设置页:路由解释明确写成预测,不当成实际落点', async () 
   // 分发只认精确槽位别名与唯一已登记模型:这里用夹具里绑了 Alpha 的 mixr-main 槽位。
   h.run("document.getElementById('preview-model').value = 'mixr-main'; loadPreview()");
   await new Promise(resolve => setImmediate(resolve));
-  assert.match(h.get('preview-body').innerHTML, /这是预测，不是实际落点/, '结果里也要重申');
+  assert.match(panel, /<p class="cfg-critical"[^>]*><strong>这是预测，不是(?:请求的)?实际落点。<\/strong>/, '预测与实际的区别必须可见，结果区不重复说明');
   assert.match(h.get('preview-body').innerHTML, /Alpha/, '候选要列出来');
   assert.match(h.get('preview-body').innerHTML, /<dt>预测首选<\/dt><dd>Alpha<\/dd>/, '读取真实 API 的 selection.predicted,不能把候选当预测');
   assert.match(h.get('preview-status').textContent, /解释完成/);
@@ -2714,7 +2763,7 @@ test('今日请求:exact 才是全天数;否则注明计数起点,title 写清�
   }
   assert.equal(h.get('ov-reqs-scope').textContent, '');
   assert.equal(h.get('st-req-scope').textContent, '');
-  assert.equal(h.get('ov-tokens').textContent, '输入 1.23M / 输出 890', '不再出现「≥」');
+  assert.equal(h.get('ov-tokens').textContent, '新增输入 1.23M / 输出 890', '不再出现「≥」');
 
   // 不是全天:计数从 since 开始。用本地时区构造今天 09:05,不随运行环境漂移。
   const since = new Date(); since.setHours(9, 5, 0, 0);
@@ -2764,12 +2813,15 @@ test('离线时会话表的改绑、配置与解绑一并禁用;改绑失败后�
   assert.ok(h.get('sess-body').htmlWrites > writes, '缓存作废后下一次渲染一定重写,下拉回到服务端绑定');
 });
 
-// Mixrouter.app 用 WKWebView。WebKit 在 innerHTML 改写子节点之后不一定重算 `:has(… :empty)`,
-// 2026-11-06 会话表和诊断表因此在 App 里按 0×0 渲染(Chrome 正常)。依赖运行时内容的显隐改由 JS 写属性。
-test('样式表不用 :has(…:empty) 判断运行时内容', () => {
+// Mixrouter.app 用 WKWebView。子节点增删、选中和 hidden 变化不保证触发 :has 重算,
+// 运行时状态由 JS 写在容器上。这里只允许随整块标记生成、不会单独变化的三种结构。
+test('样式表的 :has 只匹配静态结构,不判断运行时内容或控件状态', () => {
   const dir = path.join(__dirname, '..', 'public', 'styles');
+  const staticStructure = new Set(['> .metric-icon', '.provider-identity', '+ .iconbtn']);
   for (const name of fs.readdirSync(dir).filter(f => f.endsWith('.css'))) {
     const css = fs.readFileSync(path.join(dir, name), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
-    assert.deepEqual(css.match(/[^{}]*:has\([^)]*:empty[^{]*/g) || [], [], name);
+    const dynamic = [...css.matchAll(/:has\(([^)]*)\)/g)]
+      .map(match => match[1].trim()).filter(selector => !staticStructure.has(selector));
+    assert.deepEqual(dynamic, [], name + ': 动态状态请使用容器 class/data 属性');
   }
 });

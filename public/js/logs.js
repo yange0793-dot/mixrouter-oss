@@ -9,6 +9,7 @@ const LOG_ERR_CLASS_LABEL = {
 let statsSequence = 0, slotStatsLoaded = false;
 function slotStatsUnavailable(reason) {
   if (!slotStatsLoaded) $('slot-stats-table').hidden = true;
+  $('slot-stats-panel').dataset.hasRows = $('slot-stats-table').hidden ? 'false' : 'true';
   $('slot-stats-status').textContent = reason + (slotStatsLoaded ? '；以下为陈旧数据，保留上次读取的分槽快照。' : '；尚无可用分槽快照。');
   $('slot-stats-status').classList.add('stale');
 }
@@ -32,6 +33,7 @@ function renderSlotStats(s) {
     return `<tr><th scope="row">${esc(label(name))}</th><td>${count(row?.reqs)}</td>${['in', 'out', 'cache'].map(key => tokCell(row?.[key])).join('')}</tr>`;
   }).join('');
   $('slot-stats-table').hidden = names.length === 0;
+  $('slot-stats-panel').dataset.hasRows = names.length ? 'true' : 'false';
   $('slot-stats-status').textContent = names.length ? '按请求实际命中的槽位聚合；旧日志缺少槽位时保留为未知。'
     : s.reqs === 0 ? '当前内存窗口没有请求。' : '本次响应没有分槽明细，不能视为零用量。';
   $('slot-stats-status').classList.remove('stale');
@@ -49,7 +51,7 @@ async function loadStats() {
     const chips = [
       ['总请求', fmtCount(s.reqs)],
       ['成功率', fmtPct(s.reqs > 0 ? s.ok * 100 / s.reqs : null)],
-      ['输入 tokens', fmtTok(s.inTok), tip(s.inTok)],
+      ['新增输入', fmtTok(s.inTok), tip(s.inTok)],
       ['输出 tokens', fmtTok(s.outTok), tip(s.outTok)],
       ['缓存读', fmtTok(s.cache), tip(s.cache)],
     ];

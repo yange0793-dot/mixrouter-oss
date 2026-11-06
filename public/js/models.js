@@ -171,6 +171,7 @@ function renderCodexCompact() {
     codexCompactDraft = { value: codexCompactInitial(live), revision: live.revision, dirty: false };
     input.value = codexCompactDraft.value;
   }
+  if (!focused) input.value = codexCompactDraft.value.replace(/^(\d+)$/, digits => /[1-9]/.test(digits) ? digits.replace(/\B(?=(\d{3})+(?!\d))/g, ',') : digits);
   const token = value => typeof value === 'number' && Number.isFinite(value) ? `${value.toLocaleString()} tokens` : '未知 / Codex 自行决定';
   const configured = compact ? compact.configured : live.model_auto_compact_token_limit;
   const invalid = (compact?.warnings || []).some(warning => String(warning).includes('model_auto_compact_token_limit') && String(warning).includes('不是正安全整数'));
@@ -199,6 +200,10 @@ function renderCodexCompact() {
   status.classList.toggle('warn', !gate && !codexCompactError && conflict);
   status.classList.toggle('busy', !gate && busy);
 }
+$('codex-compact-input')?.addEventListener('focus', event => {
+  if (codexCompactDraft) event.target.value = codexCompactDraft.value.replace(/^\d{1,3}(?:,\d{3})+$/, digits => digits.replace(/,/g, ''));
+});
+$('codex-compact-input')?.addEventListener('blur', () => renderCodexCompact());
 function setCodexCompactValue(value) {
   if (!codexCompactDraft) return;
   codexCompactDraft.value = String(value); codexCompactDraft.dirty = true;
@@ -235,7 +240,8 @@ async function saveCodexCompact(forcedValue) {
   const gate = codexCompactGate();
   if (gate) { codexCompactError = gate; renderCodexCompact(); return; }
   if (forcedValue !== 'auto' && !codexCompactDraft.dirty) return;
-  const raw = forcedValue === 'auto' ? 'auto' : codexCompactDraft.value.trim().toLowerCase();
+  const raw = forcedValue === 'auto' ? 'auto' : codexCompactDraft.value.trim().toLowerCase()
+    .replace(/^\d{1,3}(?:,\d{3})+(?:\.\d+)?[km]?$/, grouped => grouped.replace(/,/g, ''));
   const match = raw.match(/^(\d+)(?:\.(\d+))?([km])?$/);
   const scale = match?.[3] === 'm' ? 6 : match?.[3] === 'k' ? 3 : 0;
   const fraction = (match?.[2] || '').replace(/0+$/, '');
@@ -427,16 +433,23 @@ function renderSlots(force) {
     if (mark) { const el = $('slots-rows').querySelector(mark); if (el) el.focus(); }
   }
 }
-// 折叠标题里的一行摘要:每个槽一枚 tag(槽名 → 渠道 · 模型),完整别名/env/渠道放 title。
+// 相同渠道 id 与有效模型合成一枚 tag;每槽的别名/env/落点仍完整保留在 title。
 function renderSlotsSummary(list, isClaude) {
   const box = $('slots-summary'); if (!box) return;
-  const html = list.length ? list.map(s => {
+  const targets = new Map();
+  for (const s of list) {
     const ch = providers(curApp).find(p => p.id === s.provider);
     const model = s.model || (isClaude ? ch?.models?.[0] : ch?.model) || '渠道默认';
+    const key = JSON.stringify([s.provider || '', model]);
     const target = !s.provider ? '未配置' : !ch ? '渠道已删除' : `${ch.name} · ${model}`;
     const title = [SLOT_LABELS[s.name] || s.name, s.alias, s.env, s.provider ? `${ch?.name || s.provider}${ch ? ' @ ' + model : '（渠道已删除）'}` : '未配置'].filter(Boolean).join(' · ');
-    return `<span class="tag${s.provider && ch ? '' : ' unset'}" title="${esc(title)}">${esc(s.name)} → ${esc(target)}</span>`;
-  }).join('') : `<span class="tag unset">${isClaude ? '槽位未配置' : '没有自定义槽位'}</span>`;
+    if (!targets.has(key)) targets.set(key, { names: [], titles: [], target, unset: !s.provider || !ch });
+    const group = targets.get(key);
+    group.names.push(s.name); group.titles.push(title);
+  }
+  const html = list.length ? [...targets.values()].map(group =>
+    `<span class="tag${group.unset ? ' unset' : ''}" title="${esc(group.titles.join('\n'))}">${esc(group.names.join(' / '))} → ${esc(group.target)}</span>`
+  ).join('') : `<span class="tag unset">${isClaude ? '槽位未配置' : '没有自定义槽位'}</span>`;
   if (box.innerHTML !== html) box.innerHTML = html;
 }
 async function putSlot(app, name, value) {

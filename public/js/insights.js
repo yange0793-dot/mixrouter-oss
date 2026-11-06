@@ -312,6 +312,32 @@ function insightsUpdateControls() {
   if (requests) requests.disabled = insightsState.requestsLoading || !insightsOnline();
 }
 
+function insightsEnsureModelGrid() {
+  let grid = insightsEl('insights-models-grid');
+  if (grid || !document.createElement) return grid;
+  const table = insightsEl('insights-models-table');
+  if (!table || !table.parentNode) return null;
+  grid = document.createElement('div');
+  grid.id = 'insights-models-grid';
+  grid.className = 'insights-model-grid';
+  table.parentNode.insertBefore(grid, table);
+  return grid;
+}
+function insightsModelCard(group, models) {
+  const entry = group.entry;
+  const name = entry.provider_name || entry.provider || '—';
+  const rows = group.rows.map(index => {
+    const model = models[index];
+    const observation = model.observation && typeof model.observation === 'object' ? model.observation : null;
+    const observed = observation && observation.upstream_model
+      ? `<span class="insights-sub" title="上游响应自报,不是身份认证">自报 ${insightsEsc(observation.upstream_model)}</span>` : '';
+    return `<li><span class="ins-model"><span class="insights-model-name" title="${insightsEsc(model.model || '—')}">${insightsEsc(model.model || '—')}</span>${observed}</span>`
+      + `<button class="small quiet" type="button" title="未登记;登记能力只影响本页显示,不改路由或客户端配置" onclick="insightsSelectModel(${index});insightsEditModel()">登记</button></li>`;
+  }).join('');
+  return `<section class="insights-model-card"><div class="insights-model-card-head"><span class="insights-group-name" title="渠道 ID：${insightsEsc(entry.provider || '—')}">${insightsEsc(name)}</span>`
+    + `<span class="insights-group-meta">${insightsEsc(insightsAppLabel(entry.app))} · ${fmtCount(group.rows.length)} 个模型</span></div>`
+    + `<p class="insights-unregistered" title="上下文窗口、最大输出、视觉与推理档位均未登记;没有登记就是未知,不按模型名推断">能力未登记</p><ul>${rows}</ul></section>`;
+}
 function insightsRenderModels() {
   const status = insightsEl('insights-models-status');
   if (status) {
@@ -321,14 +347,21 @@ function insightsRenderModels() {
   const models = Array.isArray(insightsState.models) ? insightsState.models : [];
   const layout = models.some(insightsHasCapability) ? 'full' : 'compact';
   const head = INSIGHTS_MODEL_HEAD[layout];
+  const groups = insightsModelGroups(models);
+  const grid = insightsEnsureModelGrid();
+  const useGrid = !!(grid && layout === 'compact' && models.length);
+  if (grid) {
+    grid.hidden = !useGrid;
+    if (useGrid) grid.innerHTML = groups.map(group => insightsModelCard(group, models)).join('');
+  }
   const rows = insightsEl('insights-models-rows');
   if (rows) {
-    rows.innerHTML = insightsModelGroups(models).map(group => insightsGroupRow(group.entry, group.rows.length, head.length)
+    rows.innerHTML = useGrid ? '' : groups.map(group => insightsGroupRow(group.entry, group.rows.length, head.length)
       + group.rows.map(index => insightsModelRow(models[index], index, layout)).join('')).join('');
   }
   const table = insightsEl('insights-models-table');
   if (table) {
-    table.hidden = !models.length;
+    table.hidden = !models.length || useGrid;
     if (table.setAttribute) table.setAttribute('data-layout', layout);
     const thead = table.querySelector ? table.querySelector('thead') : null;
     if (thead) thead.innerHTML = `<tr>${head.join('')}</tr>`;

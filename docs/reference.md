@@ -637,6 +637,7 @@ MIXR_DATA_DIR=/absolute/path node scripts/diagnose-upstream.js --mode provider -
 | `slot` | 命中的槽位;空槽记 `none`,缺字段的旧日志记 `unknown` |
 | `sticky` / `strategy` / `rule` | 是否走了会话粘性 / 策略 / 命中的标识。`rule` 现在的取值只有三类内置来源:`slot:<组>/<槽名>`(槽位)、`model:<渠道ID>`(精确登记模型)与压缩规则自己的标识;不再有用户可编辑的通用规则,`strategy` 对固定顺序的单渠道请求通常为空。旧日志里的历史值照读 |
 | `key_id` / `key_source` | 用哪把 Key(**非明文**的来源标记) |
+| `provider` / `provider_id` / `provider_app` | 渠道显示名 / 渠道 id / 渠道所在的渠道库(`claude`、`codex`)。显示名可改、可重名;`provider_app` 可以与 `app` 不同(Codex 共用压缩落到 Claude 渠道库的渠道)。旧日志没有后两个字段 |
 | `effort` | 真的发上去的思考强度档位 |
 | `model_in` / `model_out` | 客户端说的模型 / 实际发给上游的模型 |
 | `think` / `reasoning` / `tools_dropped` | 排查上游 400 的证据 |
@@ -652,7 +653,7 @@ MIXR_DATA_DIR=/absolute/path node scripts/diagnose-upstream.js --mode provider -
 路由准备阶段的拒绝(模型没有精确登记、多个渠道登记同一模型、渠道停用、协议不匹配、
 固定 Key 不可用等)在 HTTP 返回错误前
 同步追加日志,记录短会话身份、请求模型、状态码与错误码;`attempts` 为 0,`provider`、
-`model_out`、`rule` 与 `slot` 为空,tokens 为 0,不臆测尚未取得的路由计划。这些拒绝不发上游;
+`provider_id`、`provider_app`、`model_out`、`rule` 与 `slot` 为空,tokens 为 0,不臆测尚未取得的路由计划。这些拒绝不发上游;
 记录日志不额外创建/结算会话、不计为 active、不创建尝试过程。无路由失败不新建会话,
 但固定 Key 错误等准备路径此前可能已有会话记录。不回填历史拒绝;Host、跨站来源、内容类型与
 坏 JSON 等入口校验错误不写这类日志。
@@ -696,17 +697,26 @@ Codex `no_route_error` 的日志 `err` 以固定布尔诊断
   tokens_out, cache_read}`,按请求数降序。
   `series[].t` 是本地时间:`bucket=hour` 为 `YYYY-MM-DDTHH:00`,`bucket=day` 为 `YYYY-MM-DD`。
 - 控制台使用 `GET /api/usage?dashboard=1`。这是显式扩展;不带它的旧调用保持原字段与子串筛选。
-  扩展模式下 `provider` 精确匹配日志供应商名,`model` 精确匹配实际模型(`model_out || model_in`),
+  扩展模式下 `provider` 精确匹配日志供应商名,`channel` 精确匹配渠道键(`by_channel[].channel`),
+  `model` 精确匹配实际模型(`model_out || model_in`),
   `status=ok|err` 筛选请求结果;带错误信息的 200 也算失败。时间、协议组、供应商、模型与状态
   同时约束指标、日历与三类明细,不把磁盘累计和内存日志窗口混在一起。
   原响应额外包含 `dashboard`:
   - `daily`:按本地日期汇总的 `{t, reqs, tokens_in, tokens_out, cache_read}`。
+  - `by_channel`:按渠道分组的 `{channel, provider_id, app, name, reqs, tokens_in, tokens_out, cache_read}`,
+    按请求数降序。新日志按 `provider_id` 分组(`channel` 为 `id:<provider_id>`),`app` 是渠道所在的渠道库,
+    `name` 取该渠道最新一条日志的显示名。旧日志没有 id:同一 `app` 里恰好有一个同名渠道就并进去;
+    同一 `app` 里没有同名渠道时,并进另一个渠道库里新日志显示**服务过这个 `app`** 的唯一同名渠道
+    (Codex 共用压缩);否则单独成组(`channel` 为 `name:<app>:<显示名>`,`provider_id` 为空);
+    没选出渠道的请求为 `none`。
+    顶层 `by_provider` 仍按显示名合计,口径不变。
   - `records`: `{rows, total, offset, limit, has_more}`。`rows` 只含日志白名单字段,
     按时间倒序;`offset` 默认 0,`limit` 默认 50、最多 200(超出按上限截断)。每次同步为当前快照,
     翻页不是永久游标。`offset` / `limit` 非非负整数、或 `status` 不是 `ok|err` 时返回 400,
     错误码分别是 `USAGE_PAGINATION_INVALID` 与 `USAGE_STATUS_INVALID`。
-  - `facets.providers` / `facets.models`: `{value, label}` 选项。按时间、协议组与状态生成,
-    不被当前供应商/模型选择截成单一选项;选择没有结果时不会静默清空筛选。
+  - `facets.providers` / `facets.models` / `facets.channels`: `{value, label}` 选项(`channels` 的 `value`
+    是渠道键,另带 `app` 与 `provider_id`)。按时间、协议组与状态生成,
+    不被当前供应商/模型/渠道选择截成单一选项;选择没有结果时不会静默清空筛选。
   - `coverage`: `{first_ts, last_ts}` 是当前可用日志的观测边界(筛选前),不是连续完整保留的承诺;
     无日志时为 `null`。默认保留 30 天,不为画满一年的格子而改保留设置。
 

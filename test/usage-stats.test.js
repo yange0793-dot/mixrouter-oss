@@ -433,6 +433,7 @@ test('dashboard:daily/series/分组与 totals 同源同口径(token 逐项相等
     assert.strictEqual(sum(out.dashboard.daily, 'tokens_out'), out.totals.tokens_out, `${label} daily.tokens_out`);
     assert.strictEqual(sum(out.dashboard.daily, 'cache_read'), out.totals.cache_read, `${label} daily.cache_read`);
     assert.strictEqual(sum(out.by_provider, 'tokens_in'), out.totals.tokens_in, `${label} 分组 tokens_in`);
+    assert.strictEqual(sum(out.dashboard.by_channel, 'tokens_in'), out.totals.tokens_in, `${label} 渠道分组 tokens_in`);
     assert.strictEqual(sum(out.by_model, 'cache_read'), out.totals.cache_read, `${label} 分组 cache_read`);
     assert.strictEqual(out.totals.tokens_total,
       out.totals.tokens_in + out.totals.tokens_out + out.totals.cache_read, `${label} tokens_total 口径`);
@@ -490,6 +491,89 @@ test('dashboard:facets 在 provider/model 过滤前统计,选中值没有数据�
   assert.deepStrictEqual(ghost.dashboard.facets.providers.at(-1), { value: '不存在的渠道', label: '不存在的渠道' });
   assert.deepStrictEqual(ghost.dashboard.facets.models.at(-1), { value: '不存在的模型', label: '不存在的模型' });
   assert.deepStrictEqual(ghost.dashboard.facets.providers.map(f => f.value), ['alpha', 'beta', 'gamma', '不存在的渠道']);
+});
+
+// #21:显示名不唯一 —— 两个渠道库都有 AgentRouter,同一个库里也能重名。新日志按 provider_id 分组、
+// 协议组取渠道所在的库;旧日志(没有 id)按 (app, 显示名) 找唯一的同库同名渠道并进去。
+test('dashboard:by_channel 按渠道 id 分组,旧日志按同库同名并入,channel 精确筛选', async () => {
+  const at = n => iso(NOW - n * MIN);
+  const file = dashFixture('channels.jsonl', [
+    logRow({ ts: at(1), provider: 'AgentRouter', provider_id: 'p-ar', provider_app: 'claude', model_in: 'm', model_out: 'm', in: 10 }),
+    logRow({ ts: at(2), provider: 'AgentRouter', provider_id: 'c-ar', provider_app: 'codex', app: 'codex', model_in: 'm', model_out: 'm', in: 20 }),
+    // Codex 共用压缩落在 Claude 库的渠道上:请求的 app 是 codex,渠道的协议组仍是 claude
+    logRow({ ts: at(3), provider: 'Happy coding', provider_id: 'p-hc', provider_app: 'claude', app: 'codex', model_in: 'm', model_out: 'm', in: 30 }),
+    logRow({ ts: at(4), provider: 'happy coding', provider_id: 'c-hc', provider_app: 'codex', app: 'codex', model_in: 'm', model_out: 'm', in: 40 }),
+    // 改名:同一个 id 的旧名字;名字取最新一条
+    logRow({ ts: at(5), provider: '旧名字', provider_id: 'p-ar', provider_app: 'claude', model_in: 'm', model_out: 'm', in: 1 }),
+    // 同一个库里两个同名渠道
+    logRow({ ts: at(6), provider: '同名', provider_id: 'p-s1', provider_app: 'claude', model_in: 'm', model_out: 'm', in: 2 }),
+    logRow({ ts: at(7), provider: '同名', provider_id: 'p-s2', provider_app: 'claude', model_in: 'm', model_out: 'm', in: 3 }),
+    // 旧日志:没有 provider_id
+    logRow({ ts: at(8), provider: 'AgentRouter', model_in: 'm', model_out: 'm', in: 100 }),               // → p-ar
+    logRow({ ts: at(9), provider: 'AgentRouter', app: 'codex', model_in: 'm', model_out: 'm', in: 200 }), // → c-ar
+    logRow({ ts: at(10), provider: '旧名字', model_in: 'm', model_out: 'm', in: 300 }),                   // 改名前的旧名 → p-ar
+    logRow({ ts: at(11), provider: '同名', model_in: 'm', model_out: 'm', in: 400 }),                     // 两个候选,不猜
+    logRow({ ts: at(12), provider: '删掉的渠道', model_in: 'm', model_out: 'm', in: 500 }),               // 没有候选
+    logRow({ ts: at(13), provider: '', model_in: 'm', model_out: 'm', status: 503, err: 'no route' }),
+    // 旧日志的共用压缩:app=codex,codex 库里没有 'Happy coding'(只有小写的另一个渠道),
+    // 新日志显示 p-hc 服务过 codex 请求 → 并进 p-hc
+    logRow({ ts: at(14), provider: 'Happy coding', app: 'codex', model_in: 'm', model_out: 'm', in: 600 }),
+    // 另一个库的同名渠道没服务过本 app:不并(本库的同名渠道可能只是部署后还没被用过)
+    logRow({ ts: at(15), provider: '仅OpenAI有', provider_id: 'c-only', provider_app: 'codex', app: 'codex', model_in: 'm', model_out: 'm', in: 4 }),
+    logRow({ ts: at(16), provider: '仅OpenAI有', model_in: 'm', model_out: 'm', in: 700 }),
+  ]);
+  const s = createUsageSummary({ file });
+
+  const all = await s.summarize({ range: 'all', dashboard: '1' });
+  const byKey = Object.fromEntries(all.dashboard.by_channel.map(c => [c.channel, c]));
+  assert.deepStrictEqual(byKey['id:p-ar'], { channel: 'id:p-ar', provider_id: 'p-ar', app: 'claude', name: 'AgentRouter',
+    reqs: 4, tokens_in: 411, tokens_out: 0, cache_read: 0 }, '新日志 + 改名前的同 id + 两条旧日志合成一行,名字用最新的');
+  assert.deepStrictEqual(byKey['id:c-ar'], { channel: 'id:c-ar', provider_id: 'c-ar', app: 'codex', name: 'AgentRouter',
+    reqs: 2, tokens_in: 220, tokens_out: 0, cache_read: 0 }, '另一个库的同名渠道是另一行');
+  assert.deepStrictEqual(byKey['id:p-hc'], { channel: 'id:p-hc', provider_id: 'p-hc', app: 'claude', name: 'Happy coding',
+    reqs: 2, tokens_in: 630, tokens_out: 0, cache_read: 0 }, '协议组取渠道所在的库;旧日志里的共用压缩也并进来');
+  assert.strictEqual(byKey['id:c-hc'].reqs, 1, '只差大小写的另一个渠道不吃这条旧日志');
+  assert.strictEqual(byKey['id:c-only'].reqs, 1);
+  assert.strictEqual(byKey['name:claude:仅OpenAI有'].tokens_in, 700, '另一个库的同名渠道没服务过 claude 请求,旧日志单独成组');
+  assert.strictEqual(byKey['id:p-s1'].reqs, 1);
+  assert.strictEqual(byKey['id:p-s2'].reqs, 1, '同库同名的两个渠道各占一行');
+  assert.deepStrictEqual(byKey['name:claude:同名'], { channel: 'name:claude:同名', provider_id: '', app: 'claude', name: '同名',
+    reqs: 1, tokens_in: 400, tokens_out: 0, cache_read: 0 }, '有两个候选的旧日志单独成组,不并进任何一个');
+  assert.strictEqual(byKey['name:claude:删掉的渠道'].provider_id, '');
+  assert.deepStrictEqual(byKey.none, { channel: 'none', provider_id: '', app: '', name: '(未知)',
+    reqs: 1, tokens_in: 0, tokens_out: 0, cache_read: 0 });
+  assert.strictEqual(all.dashboard.by_channel.length, 11);
+  assert.deepStrictEqual(all.dashboard.by_channel.slice(0, 2).map(c => c.channel), ['id:p-ar', 'id:c-ar'], '按请求数降序');
+  // 老字段不动:by_provider 仍按显示名合计,两个库的 AgentRouter 仍是一行
+  assert.strictEqual(all.by_provider.find(p => p.name === 'AgentRouter').reqs, 4);
+
+  // channel 精确筛选:并进来的旧日志算在内,同名的另一个渠道不算
+  const one = await s.summarize({ range: 'all', dashboard: '1', channel: 'id:p-ar' });
+  assert.strictEqual(one.totals.reqs, 4);
+  assert.strictEqual(one.totals.tokens_in, 411);
+  assert.strictEqual(one.dashboard.records.total, 4);
+  assert.deepStrictEqual(one.dashboard.by_channel.map(c => c.channel), ['id:p-ar']);
+  assert.strictEqual(one.dashboard.facets.channels.length, 11, 'facets 在渠道筛选之前统计');
+  assert.deepStrictEqual(one.dashboard.facets.channels.find(f => f.value === 'id:c-ar'),
+    { value: 'id:c-ar', label: 'AgentRouter', app: 'codex', provider_id: 'c-ar' });
+  assert.strictEqual((await s.summarize({ range: 'all', dashboard: '1', channel: 'none' })).totals.reqs, 1);
+
+  // 选中的渠道被 app 筛掉:结果为空,但下拉仍有这一项,写的是渠道名而不是渠道键
+  const scoped = await s.summarize({ range: 'all', dashboard: '1', app: 'codex', channel: 'id:p-ar' });
+  assert.strictEqual(scoped.totals.reqs, 0);
+  const scopedValues = scoped.dashboard.facets.channels.map(f => f.value);
+  assert.deepStrictEqual(scopedValues.slice(0, 2), ['id:c-ar', 'id:p-hc'], '请求数降序,同数按名字;p-hc 是 Claude 库的共用压缩渠道');
+  assert.deepStrictEqual(scopedValues.slice(2, 4).sort(), ['id:c-hc', 'id:c-only']);
+  assert.deepStrictEqual(scoped.dashboard.facets.channels.at(-1), { value: 'id:p-ar', label: 'AgentRouter', app: 'claude', provider_id: 'p-ar' });
+  const gone = await s.summarize({ range: 'all', dashboard: '1', channel: 'id:gone' });
+  assert.deepStrictEqual(gone.dashboard.facets.channels.at(-1), { value: 'id:gone', label: 'id:gone', app: '', provider_id: '' });
+
+  // 老参数含义不变:dashboard=1 下 provider 仍按显示名精确匹配(两个库的 AgentRouter 都算)
+  assert.strictEqual((await s.summarize({ range: 'all', dashboard: '1', provider: 'AgentRouter' })).totals.reqs, 4);
+  // 不带 dashboard=1 时 channel 不参与
+  const legacy = await s.summarize({ range: 'all', channel: 'id:p-ar' });
+  assert.strictEqual(legacy.totals.reqs, 16);
+  assert.strictEqual('dashboard' in legacy, false);
 });
 
 test('dashboard:coverage 取过滤前的全部可用数据,不随区间收窄', async () => {
@@ -561,7 +645,7 @@ test('API /api/usage?dashboard=1:扩展键、分页、白名单,老响应键不�
   const r = await json('GET', `/api/usage?range=all&dashboard=1&provider=${provider}`);
   assert.strictEqual(r.status, 200);
   assert.deepStrictEqual(Object.keys(r.body).sort(), ['by_model', 'by_provider', 'dashboard', 'scope', 'series', 'totals']);
-  assert.deepStrictEqual(Object.keys(r.body.dashboard).sort(), ['coverage', 'daily', 'facets', 'records']);
+  assert.deepStrictEqual(Object.keys(r.body.dashboard).sort(), ['by_channel', 'coverage', 'daily', 'facets', 'records']);
   assert.strictEqual(r.body.totals.reqs, 3);
   assert.strictEqual(r.body.dashboard.records.total, 3);
   assert.deepStrictEqual(r.body.dashboard.records.rows.map(x => x.in), [1, 2, 3]);

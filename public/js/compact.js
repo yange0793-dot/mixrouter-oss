@@ -51,10 +51,13 @@ function compactKeySupported(c = state?.compact) {
 }
 function renderCompactKeys() {
   if (!compactDraft) return;
+  const hint = $('compact-key-hint');
   if (!compactKeySupported()) {
     $('compact-key').innerHTML = `<option value="${esc(compactDraft.key_id)}">${compactDraft.key_id ? '未保存的固定 Key（' + esc(compactDraft.key_id) + '）' : '当前服务端不支持指定 Key'}</option>`;
     $('compact-key').value = compactDraft.key_id; $('compact-key').disabled = true;
-    $('compact-key-hint').textContent = '当前服务端尚不支持指定Key，更新服务后可用。' + (compactDraft.key_id ? '原固定 Key 草稿保留，不能提交给旧服务；可重新载入放弃草稿。' : '渠道和模型仍可保存，本次不会提交 Key 选择。');
+    hint.textContent = '当前服务端尚不支持指定Key，更新服务后可用。' + (compactDraft.key_id ? '原固定 Key 草稿保留，不能提交给旧服务；可重新载入放弃草稿。' : '渠道和模型仍可保存，本次不会提交 Key 选择。');
+    hint.title = hint.textContent;
+    hint.classList.add('is-warning');
     return;
   }
   const provider = state.compact.providers.find(p => p.id === compactDraft.provider);
@@ -67,10 +70,15 @@ function renderCompactKeys() {
   if ($('compact-key').innerHTML !== options) $('compact-key').innerHTML = options;
   $('compact-key').value = compactDraft.key_id;
   $('compact-key').disabled = !compactDraft.provider;
-  $('compact-key-hint').textContent = missing || selected?.enabled === false
+  const unavailable = !!missing || selected?.enabled === false;
+  hint.textContent = unavailable
     ? '原固定 Key 已不可用，选择仍保留；请明确改选可用 Key 或跟随渠道当前 Key，不会自动替换。'
+    : compactDraft.key_id ? `固定 Key：${selected.label || selected.id}`
+      : `跟随渠道当前 Key${active ? '：' + (active.label || active.id) : ''}`;
+  hint.title = unavailable ? hint.textContent
     : compactDraft.key_id ? '固定 Key 只影响两条压缩规则，不切换渠道当前账号。'
       : `跟随渠道当前 Key${active ? '：' + (active.label || active.id) + '（' + active.id + '）' : ''}；渠道切换当前账号后压缩也会跟随。`;
+  hint.classList.toggle('is-warning', unavailable);
 }
 // 「压缩选择与上次载入一致」:有草稿、服务端版本没变、草稿没动过。app.js 用它禁用 #save-compact,
 // 和 #save-window 一样没有改动就不能点;状态行也按它写那句「一致」。
@@ -94,7 +102,7 @@ function splitStatusLine(label, ok, text, neg = false) {
   const mark = neg ? '·' : ok === true ? '✓' : ok === false ? '✗' : '·';
   return `<span class="ss-item ${cls}"><b aria-hidden="true">${mark}</b> ${esc(label)}：${esc(text)}</span>`;
 }
-// 还没保存过时整块收成一行灰字(仍逐段列出),保存过才升成一排带状态的 chips。
+// 还没保存过时只占一行，四项放进 details；保存后显式展示各段结果。
 function splitStatusBox(box, o) {
   box.classList.toggle('has-outcome', !!o);
   box.classList.toggle('is-pending', !o);
@@ -104,12 +112,13 @@ function renderSplitStatus() {
   if (!box) return;
   const o = compactOutcome;
   splitStatusBox(box, o);
-  compactPaint(box, '<span class="ss-title">保存结果</span><div class="ss-row">'
+  compactPaint(box, '<span class="ss-title">保存结果</span>'
+    + (o ? '<div class="ss-row">' : '<details class="cfg-more ss-details"><summary>尚无保存结果</summary><div class="ss-row">')
     + splitStatusLine('请求', o ? o.saved : null, o ? (o.saved ? '已成功返回' : o.error || '未成功') : '尚未保存过')
     + splitStatusLine('已写盘', o ? o.written : null, o ? (o.written ? '配置已写入服务端磁盘' : '未确认写盘') : '尚未保存过')
     + splitStatusLine('服务已加载', o ? o.loaded : null, o ? (o.loaded ? '运行中的服务按新压缩规则分发' : '未确认服务已加载') : '尚未保存过')
     + splitStatusLine('客户端需重开', o ? o.restart : null, o ? '不需要（压缩落点在服务端，下次请求即用新规则）' : '尚未保存过', true)
-    + '</div>');
+    + (o ? '</div>' : '</div></details>'));
   renderWindowStatus();
 }
 // 窗口保存的四段与压缩模型不同:窗口是**磁盘配置**,服务端从不热读它——"已写盘"成立,
@@ -120,12 +129,13 @@ function renderWindowStatus() {
   if (!box) return;
   const o = windowOutcome;
   splitStatusBox(box, o);
-  compactPaint(box, '<span class="ss-title">保存结果</span><div class="ss-row">'
+  compactPaint(box, '<span class="ss-title">保存结果</span>'
+    + (o ? '<div class="ss-row">' : '<details class="cfg-more ss-details"><summary>尚无保存结果</summary><div class="ss-row">')
     + splitStatusLine('请求', o ? o.saved : null, o ? (o.saved ? '已成功返回' : o.error || '未成功') : '尚未保存过')
     + splitStatusLine('已写盘', o ? o.written : null, o ? (o.written ? '已写入所选配置层文件' : '未确认写盘') : '尚未保存过')
     + splitStatusLine('服务已加载', null, '不适用（服务端不读这份磁盘配置，运行中的会话不会热改）')
     + splitStatusLine('客户端需重开', o ? o.restart : null, o ? '需要（新开会话，或在该项目目录 claude --continue 后生效）' : '尚未保存过', true)
-    + '</div>');
+    + (o ? '</div>' : '</div></details>'));
 }
 function markCompactDirty() { compactDirty = true; compactRevision++; updateCompactStatus(); setConnection(online); }
 function pickCompactProvider(provider) {
@@ -256,10 +266,13 @@ function renderCompactWindow(w, preserveValue = false) {
   if (!preserveValue) $('window-value').value = String(w.value);
   const top = w.configured.source === 'auto' ? '磁盘上各层都未设置，用 Claude Code 默认值'
     : `磁盘上生效的是${windowLabel[w.configured.source] || w.configured.source}层的 ${windowTok(w.configured.value)}`;
-  $('window-current').textContent = `所选${windowLabel[w.scope]}层：${windowTok(w.value)} · ${w.target}。${top}（不是运行中会话的实测值）。`;
-  $('window-current').title = `所选层 ${windowRaw(w.value)}；生效层 ${windowRaw(w.configured.value)}`;
-  $('window-coverage-text').textContent = windowCoverageText(w);
+  $('window-current').textContent = `所选${windowLabel[w.scope]}层：${windowTok(w.value)} · 磁盘生效：${w.configured.source === 'auto' ? 'Claude Code 默认值' : `${windowLabel[w.configured.source] || w.configured.source}层 ${windowTok(w.configured.value)}`}`;
+  $('window-current').title = `所选文件 ${w.target}；${top}（不是运行中会话的实测值）。所选层 ${windowRaw(w.value)}；生效层 ${windowRaw(w.configured.value)}`;
   const coverage = windowCoverage(w);
+  const coverageText = windowCoverageText(w);
+  $('window-coverage-text').textContent = coverage.overridden_by || coverage.environment_override ? coverageText
+    : coverage.project_checked ? '已检查项目：没有更高磁盘层覆盖。' : '未指定项目：项目与本地层覆盖尚未检查。';
+  $('window-coverage-text').title = coverageText;
   coverageTone($('window-coverage'), { note: !coverage.project_checked, warn: !!coverage.overridden_by || coverage.environment_override });
   $('window-edit-override').hidden = !coverage.overridden_by;
   $('window-layers').innerHTML = w.layers.map(layer => `<div class="wl-row"><span class="wl-scope">${esc(windowLabel[layer.scope] || layer.scope)}</span>`

@@ -30,11 +30,12 @@ function boundSourceOf(b) {
 const BOUND_SOURCE = { manual: ['手动钉定', 'pin'], auto: ['自动分配', 'auto'], none: ['未绑定', 'off'] };
 // 旧会话的对话名可能是从 system / developer 块里抽出来的(AGENTS.md、<INSTRUCTIONS>、<environment_context> …),
 // 不是用户起的标题。显示成一句人话,原文留在 title 和搜索里;后端已改抽取逻辑,这里只兜旧数据。
-const SYSTEM_LABEL_RE = /^\s*(?:#|<|(?:AGENTS|CLAUDE)\.md\b)/i;
+const SYSTEM_LABEL_RE = /^\s*(?:#\s+(?:AGENTS|CLAUDE)\.md(?=\s|$)|<(?:INSTRUCTIONS|environment_context|user_instructions|system-reminder)(?=[\s/>]|$))/i;
 function sessionLabelHtml(label) {
   if (!label) return '<span class="lbl" title="">—</span>';
   if (SYSTEM_LABEL_RE.test(label)) return `<span class="lbl lbl-system" title="${esc(label)}">系统指令，无标题</span>`;
-  return `<span class="lbl" title="${esc(label)}">${esc(label)}</span>`;
+  const text = String(label).replace(/<\/?[a-z][^>]*(?:>|$)/gi, '').replace(/\s+/g, ' ').trim();
+  return `<span class="lbl" title="${esc(label)}">${esc(text || '—')}</span>`;
 }
 // 搜索框里没有筛东西、也没选协议组 —— 空表的文案要按它决定该劝"换关键词"还是"换分组"。
 const sessionFiltered = () => !!sessQuery.trim() || !!sessApp;
@@ -104,7 +105,7 @@ function renderSessions() {
   const mismatched = list.filter(s => actualDiffers(s)).length;
   // 「实际 ≠ 绑定」是这一页唯一必须一眼看到的计数:非零时加 chip-alert 染 warn,为零时保持安静。
   $('sess-chips').innerHTML = [
-    ['活跃对话', list.length, false],
+    ['活跃会话', list.length, false],
     ['Anthropic / OpenAI', `${all.filter(s => (s.app || 'claude') === 'claude').length} / ${all.filter(s => s.app === 'codex').length}`, false],
     ['手动钉定', pinned, false],
     ['实际 ≠ 绑定', mismatched, mismatched > 0],
@@ -141,8 +142,8 @@ function renderSessions() {
       <td class="c-usage"><b>${fmtCount(s.reqs || 0)}</b><span title="输入 ${fmtCount(s.inTok || 0)} / 输出 ${fmtCount(s.outTok || 0)} tokens">${fmtTok(s.inTok || 0)} / ${fmtTok(s.outTok || 0)}</span></td>
       <td class="c-active"${s.lastUsed ? ` title="${fmtFullTime(s.lastUsed)}"` : ''}>${fmtWhen(s.lastUsed || null)}</td>
       <td class="c-ops"><div class="sess-acts">
-        <button class="small sess-config" onclick="openRouting(${handlerArg(s.key)})" ${online ? '' : 'disabled'} aria-label="配置会话 ${esc(s.short)} 的 Key 与槽位">配置 Key / 槽位</button>
-        <button class="small" onclick="gotoLogs(${handlerArg(s.short)})">日志</button>
+        <button class="small sess-config" onclick="openRouting(${handlerArg(s.key)})" ${online ? '' : 'disabled'} title="配置 Key / 槽位" aria-label="配置会话 ${esc(s.short)} 的 Key 与槽位">配置</button>
+        <button class="small sess-log" onclick="gotoLogs(${handlerArg(s.short)})" title="查看会话 ${esc(s.short)} 的请求日志">日志</button>
         <button class="small danger" onclick="unbindSession(${handlerArg(s.key)})" ${online ? '' : 'disabled'}>解绑</button>
       </div></td></tr>`;
   }).join('');
@@ -176,7 +177,7 @@ function actualCell(s, bound) {
   ].filter(Boolean);
   return `<span class="actual-cell${diff ? ' diff' : ''}">
     <span class="sum"><span class="ac-name" title="${esc(name)}">${esc(name)}</span>${a.status ? reqStatusHtml(a) : ''}</span>
-    <span class="sub">${esc(a.model || '—')}</span>
+    <span class="sub" title="${esc(a.model || '')}">${esc(a.model || '—')}</span>
     ${meta.length ? `<span class="meta">${meta.join(' · ')}</span>` : ''}
     ${diff ? `<span class="sub why" title="${esc(why[1])}">${why[0]}</span>` : ''}</span>`;
 }

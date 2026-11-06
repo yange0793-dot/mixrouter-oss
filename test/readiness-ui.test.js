@@ -190,11 +190,14 @@ async function harness(initial = fixture()) {
   const body = new Element('body', 'body');
   const documentElement = new Element('', 'html');
 
-  // 页面里真正有父子关系的几处:向导入口要插在 .apptabs 前,后备池容器要跟在 #slots-rows 后。
+  // 页面父子关系:向导入口与 #liveinfo 相邻组成状态卡,后备池跟在 #slots-rows 后。
   const providersView = get('view-providers');
   const tabs = new Element('', 'div');
   tabs.setAttribute('class', 'apptabs');
   providersView.appendChild(tabs);
+  const agentPanel = get('agent-panel');
+  providersView.appendChild(agentPanel);
+  agentPanel.appendChild(get('liveinfo'));
   const slotsPanel = get('slots-panel');
   const slotsRows = get('slots-rows');
   slotsPanel.appendChild(slotsRows);
@@ -762,6 +765,15 @@ test('首帧没拿到状态快照时说「正在读取」，不谎称离线', as
   h.run("lastSync = new Date(); setConnection(false, '连接中断')");
   await h.run('readinessRender()');
   assert.match(h.get('readiness-body').innerHTML, /控制台离线：向导不会读取/);
+});
+
+test('接入向导作为状态卡工具头与 liveinfo 相邻,打开向导不是主操作且挂载不写配置', async () => {
+  const h = await harness();
+  const entry = h.get('readiness-entry'), live = h.get('liveinfo');
+  assert.equal(entry.parentNode, live.parentNode);
+  assert.equal(entry.nextSibling, live, '入口和事实在同一状态卡连续呈现');
+  assert.doesNotMatch(entry.innerHTML.match(/<button\b[^>]*id="readiness-open"[^>]*>/)?.[0] || '', /\bprimary\b/);
+  assert.equal(h.requests.some(r => r.method !== 'GET'), false, '入口不新增自动写入');
 });
 
 test('关闭的接入向导入口跟随当前客户端，切换页面不丢弃向导草稿', async () => {

@@ -300,6 +300,7 @@ function renderRoutingEditor() {
     <div class="rt-list">${keys}</div>
     <p>槽位 Key 与继承来源</p><div class="rt-list">${names.map(name => routingSlotRow(name, true)).join('')}</div>
   </details>`;
+  box.querySelectorAll('.rc-line').forEach(row => row.classList.toggle('has-reset', !!row.querySelector('.iconbtn')));
 }
 function routingSetKey(pid, kid) {
   if (!routingDraft) return;
