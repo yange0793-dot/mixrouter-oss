@@ -188,6 +188,96 @@ test('Codex legacy main/reviewer preview follows production resolver and native 
     { 'old-native': 'mixr-main', 'old-review': 'mixr-reviewer' }, 'hot edits must not register new or fuzzy legacy IDs');
 });
 
+test('Codex current native default resolves duplicate provider models through main and preserves Fast tier', async () => {
+  assert.equal((await put(activeSlots())).status, 200);
+  for (const provider of router._state.store.codex) provider.models = ['new-native-default'];
+  fs.writeFileSync(file, config.patch(fs.readFileSync(file, 'utf8'), { top: {
+    model: 'new-native-default', service_tier: 'priority' } }));
+  const source = JSON.parse(fs.readFileSync(path.join(root, 'mixrouter-model-catalog.source.json'), 'utf8'));
+  assert.equal(Object.hasOwn(source.legacy_models, 'new-native-default'), false);
+  const result = await previewMatchesResolver('new-native-default', nativeContext());
+  assert.equal(result.ok, true);
+  assert.equal(result.matched.slot, 'main');
+  assert.equal(result.selection.predicted.providerId, 'native');
+  assert.equal(result.selection.predicted.model, 'target-a');
+  const actual = await request(proxy, '/v1/responses', {
+    model: 'new-native-default', input: 'fast task', service_tier: 'priority', stream: false }, 'POST', {
+    'session-id': 'preview-same-session', 'user-agent': nativeContext().ua,
+    authorization: 'Bearer ' + router.ROUTER_TOKEN });
+  assert.equal(actual.status, 200);
+  assert.equal(actual.headers['x-mixrouter-model'], 'target-a');
+  assert.equal(actual.headers['x-mixrouter-provider'], result.selection.predicted.providerName);
+  assert.equal(hits.at(-1).body.model, 'target-a');
+  assert.equal(hits.at(-1).body.service_tier, 'priority');
+});
+
+test('Codex current native roles override stale legacy mappings and identical defaults prefer main', async () => {
+  assert.equal((await put(activeSlots())).status, 200);
+  fs.writeFileSync(file, config.patch(fs.readFileSync(file, 'utf8'), { top: {
+    model: 'old-review', review_model: 'old-native' } }));
+  for (const [model, slot, target] of [['old-review', 'main', 'target-a'], ['old-native', 'reviewer', 'target-r']]) {
+    const result = await previewMatchesResolver(model, nativeContext());
+    assert.equal(result.matched.slot, slot);
+    assert.equal(result.selection.predicted.model, target);
+    const actual = await nativeSend(model);
+    assert.equal(actual.status, 200);
+    assert.equal(hits.at(-1).body.model, target);
+  }
+  fs.writeFileSync(file, config.patch(fs.readFileSync(file, 'utf8'), { top: { review_model: 'old-review' } }));
+  const same = await previewMatchesResolver('old-review', nativeContext());
+  assert.equal(same.matched.slot, 'main');
+  assert.equal(same.selection.predicted.model, 'target-a');
+  assert.equal((await nativeSend('old-review')).headers['x-mixrouter-model'], 'target-a');
+});
+
+test('Codex current default mapping does not relax native context or alias other duplicate models and slot targets', async () => {
+  assert.equal((await put(activeSlots())).status, 200);
+  for (const provider of router._state.store.codex) provider.models = ['new-native-default', 'other-duplicate', 'target-a'];
+  fs.writeFileSync(file, config.patch(fs.readFileSync(file, 'utf8'), { top: { model: 'new-native-default' } }));
+  const cases = [
+    ['new-native-default', { token: '' }, { authorization: '' }],
+    ['new-native-default', { token: 'external' }, { authorization: 'Bearer external' }],
+    ['new-native-default', { ua: 'openai-python/1.0' }, { 'user-agent': 'openai-python/1.0' }],
+    ['new-native-default', { session: '' }, { 'session-id': '' }],
+    ['other-duplicate', {}, {}], ['target-a', {}, {}],
+  ];
+  for (const [model, context, headers] of cases) {
+    const result = await previewMatchesResolver(model, { ...nativeContext(), ...context });
+    assert.equal(result.ok, false, JSON.stringify([model, context]));
+    assert.equal(result.matched.slot, null);
+    assert.equal(result.error.code, 'model_ambiguous_error');
+    assert.equal(result.error.httpStatus, 409);
+    const actual = await nativeSend(model, headers);
+    assert.equal(actual.status, 409);
+    assert.equal(actual.body.error.code, 'model_ambiguous_error');
+  }
+  assert.equal(hits.length, 0);
+});
+
+test('Codex live native default changes take effect in the same session without rewriting client files', async () => {
+  assert.equal((await put(activeSlots())).status, 200);
+  for (const provider of router._state.store.codex) provider.models = ['first-native-default', 'second-native-default'];
+  const sourceFile = path.join(root, 'mixrouter-model-catalog.source.json');
+  const source = fs.readFileSync(sourceFile, 'utf8'), catalogText = fs.readFileSync(catalogFile, 'utf8');
+  for (const model of ['first-native-default', 'second-native-default']) {
+    assert.equal(Object.hasOwn(JSON.parse(source).legacy_models, model), false);
+    const text = config.patch(fs.readFileSync(file, 'utf8'), { top: { model, service_tier: 'priority' } });
+    fs.writeFileSync(file, text);
+    const result = await previewMatchesResolver(model, nativeContext());
+    assert.equal(result.matched.slot, 'main');
+    assert.equal(result.selection.predicted.model, 'target-a');
+    const actual = await nativeSend(model);
+    assert.equal(actual.status, 200);
+    assert.equal(hits.at(-1).body.model, 'target-a');
+    assert.equal(fs.readFileSync(file, 'utf8'), text, 'routing must not rewrite the live native model or Fast setting');
+  }
+  const previous = await previewMatchesResolver('first-native-default', nativeContext());
+  assert.equal(previous.error.code, 'model_ambiguous_error', 'a replaced default must not become a new legacy alias');
+  assert.equal((await nativeSend('first-native-default')).status, 409);
+  assert.equal(fs.readFileSync(sourceFile, 'utf8'), source);
+  assert.equal(fs.readFileSync(catalogFile, 'utf8'), catalogText);
+});
+
 test('Codex legacy preview only maps the exact legacy ID with full native context; nothing else falls back', async () => {
   assert.equal((await put(activeSlots())).status, 200);
   // 正向对照:同一份快照下,旧 ID 在完整原生上下文里就是 main 槽位。
