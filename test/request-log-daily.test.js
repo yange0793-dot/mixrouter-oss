@@ -17,14 +17,14 @@ function logPath(t) {
   return path.join(root, 'requests.jsonl');
 }
 
-test('daily totals keep every request after the 500-entry ring evicts records', async t => {
+test('daily totals keep every request after the 1000-entry ring evicts records', async t => {
   const file = logPath(t);
   fs.writeFileSync(file, lines([record(stamp(5))]));
   const log = createRequestLog({ file, now: () => morning, rotateDaily: false });
   await log.restoreToday();
   for (let i = 0; i < 1200; i++) log.append(record(stamp(6)));
-  assert.equal(log.list({ limit: 5000 }).logs.length, 500);
-  assert.equal(log.summary().reqs, 500);
+  assert.equal(log.list({ limit: 5000 }).logs.length, 1000);
+  assert.equal(log.summary().reqs, 1000);
   assert.deepEqual(log.today(), { reqs: 1200, inTok: 2400, outTok: 3600, exact: true });
   await log.flush();
 });

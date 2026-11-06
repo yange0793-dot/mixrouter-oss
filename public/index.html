@@ -171,13 +171,17 @@
           </div>
         </div>
         <!-- 一句话说明数据来自哪里、筛选作用于哪些区域:不点开「数据来源」也知道在看什么。 -->
-        <p class="hint usage-intro" id="usage-intro">数字来自本机请求日志与尚未落盘的内存窗口；区间、协议组与筛选同时作用于下面的卡片、图表和所有表格。</p>
+        <p class="hint usage-intro" id="usage-intro">查看每次请求的真实用量。统计覆盖全部匹配记录，请求明细默认展示最近 1000 条。</p>
         <!-- 统计口径不占首屏:默认收起,由「数据来源」按钮展开;开合记在浏览器偏好里。 -->
         <div class="panel usage-source" id="usage-source" hidden>
           <h2>数据来源与统计口径</h2>
           <div class="hint" id="usage-source-detail">请求数、tokens 与缓存命中全部来自本机请求日志（内存中最近的请求加上 logs/requests.jsonl）。「全部」指本机当前可用的日志范围，不是账号历史总量，也不读取任何上游账单。tokens 取上游回报的真实用量；缓存命中率 = 缓存读 /（新增输入 + 缓存读）。成功率按请求最终状态统计，断流与客户端取消即使 HTTP 状态是 200 也计为失败。</div>
         </div>
         <div class="usage-bar">
+          <label class="usage-filter usage-date-filter" for="usage-range-select">
+            <svg class="ic" viewBox="0 0 18 18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.5" y="4" width="13" height="11.5" rx="2"/><path d="M6 2v4m6-4v4M3 8h12"/></svg><span class="sr-only">区间</span>
+            <select id="usage-range-select" onchange="setUsageRange(this.value)"><option value="today" selected>今天</option><option value="24h">近 24 小时</option><option value="7d">近 7 天</option><option value="30d">近 30 天</option><option value="all">全部日志</option><option value="custom">自定义日期</option></select>
+          </label>
           <!-- 协议组按协议标注,不按客户端推断:哪个客户端发出的请求就按它用的协议归组。 -->
           <div class="usage-apps" role="group" aria-label="协议组">
             <button class="seg" type="button" data-usage-app="" onclick="setUsageFilter('app', '')" aria-pressed="true" aria-label="全部协议组">全部</button>
@@ -185,26 +189,73 @@
             <button class="seg" type="button" data-usage-app="codex" onclick="setUsageFilter('app', 'codex')" aria-pressed="false" aria-label="OpenAI Responses 与 Chat Completions 协议">OpenAI</button>
           </div>
           <div class="usage-filters">
-            <label class="usage-filter" for="usage-range-select"><span>区间</span>
-              <select id="usage-range-select" onchange="setUsageRange(this.value)"><option value="today">今天</option><option value="24h">近 24 小时</option><option value="7d">近 7 天</option><option value="30d">近 30 天</option><option value="all" selected>全部</option></select></label>
             <label class="usage-filter" for="usage-provider"><span>供应商</span>
               <select id="usage-provider" onchange="setUsageFilter('provider', this.value)"><option value="">全部供应商</option></select></label>
             <label class="usage-filter" for="usage-model"><span>模型</span>
               <select id="usage-model" onchange="setUsageFilter('model', this.value)"><option value="">全部模型</option></select></label>
-            <label class="usage-filter" for="usage-status-filter"><span>状态</span><span class="sr-only">（筛选本页全部卡片、热力图与表格）</span>
-              <select id="usage-status-filter" onchange="setUsageStatus(this.value)"><option value="">全部状态</option><option value="ok">仅成功</option><option value="err">仅失败</option></select></label>
             <button class="small" type="button" id="usage-clear-filters" onclick="clearUsageFilters()">清除筛选</button>
           </div>
           <!-- 旧版协议组下拉保留为兼容层:隐藏但仍在 DOM 里,老脚本读到空值不会报错。 -->
           <select id="usage-app" aria-label="协议组" hidden onchange="setUsageFilter('app', this.value)"><option value="">全部协议组</option><option value="claude">Claude / Anthropic</option><option value="codex">Codex / OpenAI</option></select>
         </div>
+        <form id="usage-custom-range" class="usage-custom-range" hidden onsubmit="applyUsageDates(event)">
+          <label for="usage-from">开始日期<input type="date" id="usage-from" required></label>
+          <span class="usage-date-separator" aria-hidden="true">—</span>
+          <label for="usage-to">结束日期<input type="date" id="usage-to" required></label>
+          <button class="small" type="submit">应用日期</button>
+          <span class="hint" id="usage-date-error" role="status">按本地日期统计，包含结束当天。</span>
+        </form>
+        <p class="usage-note" id="usage-status" role="status">尚未读取用量。</p>
         <div id="usage-data-frame">
           <div class="usage-grid">
             <div class="metric"><span class="metric-label">总请求数</span><b id="usage-reqs">—</b><small id="usage-request-hint">含成功与失败</small></div>
-            <div class="metric"><span class="metric-label">真实消耗 Tokens</span><b id="usage-tokens">—</b><small id="usage-token-split">输入 / 输出 / 缓存</small></div>
+            <div class="metric"><span class="metric-label">Tokens 合计</span><b id="usage-tokens">—</b><small id="usage-token-split">输入 / 输出 / 缓存</small></div>
             <div class="metric"><span class="metric-label">缓存命中率</span><b id="usage-cache">—</b><small id="usage-cache-hint">缓存读 / (新增输入 + 缓存读)</small></div>
             <div class="metric metric-rate"><span class="metric-label">成功率 <b class="metric-fail" id="usage-fail" hidden></b></span><b id="usage-success">—</b><small id="usage-ok-rate">按请求最终状态</small></div>
           </div>
+          <div class="usage-detail-head">
+            <div class="usage-detail-tabs" role="tablist" aria-label="用量明细">
+              <button class="seg" type="button" role="tab" id="usage-tab-requests" data-usage-tab="requests" aria-controls="usage-detail-panel" aria-selected="true" onclick="setUsageTab('requests')">请求日志 <span class="usage-tab-count" id="usage-requests-count">—</span></button>
+              <button class="seg" type="button" role="tab" id="usage-tab-providers" data-usage-tab="providers" aria-controls="usage-detail-panel" aria-selected="false" tabindex="-1" onclick="setUsageTab('providers')">供应商 <span class="usage-tab-count" id="usage-providers-count">—</span></button>
+              <button class="seg" type="button" role="tab" id="usage-tab-models" data-usage-tab="models" aria-controls="usage-detail-panel" aria-selected="false" tabindex="-1" onclick="setUsageTab('models')">模型 <span class="usage-tab-count" id="usage-models-count">—</span></button>
+            </div>
+            <div class="usage-table-tools">
+              <form class="usage-search" role="search" onsubmit="setUsageSearch(event)">
+                <svg class="ic" viewBox="0 0 18 18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7.5" cy="7.5" r="4.5"/><path d="m11 11 4 4"/></svg>
+                <input id="usage-search" type="search" maxlength="200" placeholder="搜索模型、渠道、请求 ID" aria-label="搜索模型、渠道、请求 ID 或会话，回车应用" oninput="scheduleUsageSearch()">
+              </form>
+              <label class="usage-filter" for="usage-status-filter"><span class="sr-only">请求结果（筛选本页全部统计）</span>
+                <select id="usage-status-filter" onchange="setUsageStatus(this.value)"><option value="">全部结果</option><option value="ok">仅成功</option><option value="err">仅失败</option></select></label>
+              <label class="usage-filter" for="usage-status-code"><span class="sr-only">HTTP 状态码</span>
+                <select id="usage-status-code" onchange="setUsageFilter('statusCode', this.value)"><option value="">全部状态码</option></select></label>
+              <button class="small quiet" id="usage-export" type="button" onclick="exportUsagePage()" disabled title="导出当前页，保留完整数值">导出本页</button>
+              <details class="usage-columns" id="usage-column-menu">
+                <summary aria-label="设置显示列与行距" title="显示列与行距"><svg class="ic" viewBox="0 0 18 18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.5" y="3" width="13" height="12" rx="1.5"/><path d="M7 3v12m4-12v12"/></svg><span class="sr-only">显示设置</span></summary>
+                <div class="usage-columns-panel">
+                  <label class="usage-density-label" for="usage-density">行距<select id="usage-density" onchange="setUsageDensity(this.value)"><option value="compact">紧凑</option><option value="comfortable">宽松</option></select></label>
+                  <fieldset id="usage-column-options"><legend>请求日志显示列</legend></fieldset>
+                </div>
+              </details>
+            </div>
+          </div>
+          <div class="usage-records-window" id="usage-records-window">
+            <label class="usage-filter" for="usage-records-scope"><span class="sr-only">请求明细范围</span><select id="usage-records-scope" onchange="setUsageRecordsScope(this.value)"><option value="recent">最近 1000 条</option><option value="history">保留历史</option></select></label>
+            <p class="hint" id="usage-records-hint">仅展示筛选内最新 1000 条；统计仍按全部匹配记录计算。更早记录请切换保留历史。</p>
+          </div>
+          <div class="table-wrap usage-table" id="usage-detail-panel" role="tabpanel" aria-labelledby="usage-tab-requests" tabindex="0">
+            <table id="usage-detail-table"><caption class="sr-only">用量明细；可点击数值表头排序</caption>
+              <thead id="usage-table-head"><tr><th scope="col">时间</th><th scope="col">协议组</th><th scope="col">供应商</th><th scope="col">模型</th><th scope="col">新增输入</th><th scope="col">输出</th><th scope="col">缓存读取</th><th scope="col">状态</th><th scope="col">速度</th><th scope="col">首响应</th></tr></thead>
+              <tbody id="usage-rows"></tbody></table>
+          </div>
+          <div class="usage-pagination">
+            <label class="usage-page-size" for="usage-page-size">每页<select id="usage-page-size" onchange="setUsagePageSize(this.value)"><option value="25">25</option><option value="50" selected>50</option><option value="100">100</option><option value="200">200</option></select>条</label>
+            <p class="hint" id="usage-count">等待读取明细。</p>
+            <div class="usage-page-controls"><button class="small" type="button" id="usage-prev" onclick="usagePage(-1)">上一页</button>
+              <span id="usage-page-label" role="status">第 1 页</span>
+              <button class="small" type="button" id="usage-next" onclick="usagePage(1)">下一页</button></div>
+          </div>
+          <details class="usage-analytics" id="usage-analytics" ontoggle="setUsageAnalytics(this.open)">
+            <summary>用量趋势与日历<span class="usage-analytics-hint">展开查看每日分布、速度与首响应</span></summary>
           <details class="usage-more-metrics" id="usage-more-metrics">
             <summary>更多指标</summary>
             <div class="usage-more-grid">
@@ -252,31 +303,13 @@
               <button class="small" type="button" id="usage-calendar-expand" onclick="expandUsageCalendar()" hidden>查看更早的 53 周</button>
             </div>
           </div>
-          <p class="usage-note" id="usage-status" role="status">尚未读取用量。</p>
           <details class="usage-trend-table" id="usage-daily-details">
             <summary>按日查看数据</summary>
             <div class="table-wrap"><table><caption class="sr-only">按日用量</caption>
               <thead><tr><th scope="col">日期</th><th scope="col">请求</th><th scope="col">新增输入</th><th scope="col">输出</th><th scope="col">缓存命中</th><th scope="col">合计</th></tr></thead>
               <tbody id="usage-daily-rows"></tbody></table></div>
           </details>
-          <div class="usage-detail-head">
-            <div class="usage-detail-tabs" role="tablist" aria-label="用量明细">
-              <button class="seg" type="button" role="tab" id="usage-tab-requests" data-usage-tab="requests" aria-controls="usage-detail-panel" aria-selected="true" onclick="setUsageTab('requests')">请求日志</button>
-              <button class="seg" type="button" role="tab" id="usage-tab-providers" data-usage-tab="providers" aria-controls="usage-detail-panel" aria-selected="false" tabindex="-1" onclick="setUsageTab('providers')">供应商</button>
-              <button class="seg" type="button" role="tab" id="usage-tab-models" data-usage-tab="models" aria-controls="usage-detail-panel" aria-selected="false" tabindex="-1" onclick="setUsageTab('models')">模型</button>
-            </div>
-            <p class="hint" id="usage-count">等待读取明细。</p>
-          </div>
-          <div class="table-wrap usage-table" id="usage-detail-panel" role="tabpanel" aria-labelledby="usage-tab-requests" tabindex="0">
-            <table id="usage-detail-table"><caption class="sr-only">用量明细</caption>
-              <thead id="usage-table-head"><tr><th scope="col">时间</th><th scope="col">协议组</th><th scope="col">供应商</th><th scope="col">模型</th><th scope="col">新增输入</th><th scope="col">输出</th><th scope="col">缓存命中</th><th scope="col">状态</th><th scope="col">速度</th><th scope="col">首响应</th></tr></thead>
-              <tbody id="usage-rows"></tbody></table>
-          </div>
-          <div class="usage-pagination">
-            <button class="small" type="button" id="usage-prev" onclick="usagePage(-1)">上一页</button>
-            <span id="usage-page-label" role="status">第 1 页</span>
-            <button class="small" type="button" id="usage-next" onclick="usagePage(1)">下一页</button>
-          </div>
+          </details>
         </div>
       </section>
 
@@ -403,18 +436,26 @@
       </section>
 
       <section id="view-diagnostics" style="display:none" data-empty aria-labelledby="logs-title">
-        <div class="head"><div><h1 id="logs-title">诊断</h1><div class="sub" title="请求日志与分槽用量都来自内存里最近 500 条请求，不是全量历史；统计是内存窗口聚合，不是费用。">内存里最近 500 条请求，按协议组归组；只是内存窗口统计，不是费用。</div></div><div class="actions"><label class="rc-mini"><input type="checkbox" id="logs-auto" checked>自动刷新（5 秒）</label></div></div>
+        <div class="head"><div><h1 id="logs-title">诊断</h1><div class="sub">最近 1000 条请求 · 历史保留 30 天，上限 10 万条</div></div><div class="actions"><label class="rc-mini"><input type="checkbox" id="logs-auto" checked>自动刷新（5 秒）</label></div></div>
         <div class="banner" id="logs-error" role="status"></div>
         <div class="chips" id="stat-chips"></div>
         <!-- 首屏主任务是把最近的请求（尤其是失败的）看清楚：筛选与日志表排在统计明细之前。 -->
+        <div class="log-range">
+          <label for="f-scope">范围<select id="f-scope" onchange="changeLogsScope()"><option value="recent">最近 1000 条</option><option value="history">历史日志</option></select></label>
+          <div id="logs-history-range" hidden>
+            <label for="f-since">开始时间<input type="datetime-local" id="f-since" step="1"></label>
+            <label for="f-until">结束时间<input type="datetime-local" id="f-until" step="1"></label>
+          </div>
+        </div>
         <div class="logbar">
           <label>协议组<select id="f-app"><option value="">全部</option><option value="claude">Claude / Anthropic</option><option value="codex">Codex / OpenAI</option></select></label>
           <label>渠道<input type="text" id="f-provider" placeholder="渠道名子串"></label><label>模型<input type="text" id="f-model" placeholder="模型名子串"></label><label>会话<input type="text" id="f-session" placeholder="会话短 id"></label>
           <label>状态<select id="f-status"><option value="">全部</option><option value="ok">仅成功（2xx/3xx）</option><option value="err">仅失败（4xx/5xx/断连）</option></select></label><label>失败分类<select id="f-errclass"><option value="">全部</option><option value="stream_aborted">断流（status 记 200）</option><option value="cancelled">客户端取消</option><option value="econnreset">连接被重置</option><option value="upstream_server">上游故障</option><option value="upstream_request">上游拒绝</option><option value="budget_exhausted">额度耗尽</option><option value="rate_limit">限流</option><option value="authentication">认证失败</option><option value="network_error">网络错误</option></select></label><button class="small" onclick="loadLogs()">应用</button><button class="small" onclick="clearFilters()">清空</button>
         </div>
         <p class="table-scroll-hint" aria-hidden="true">表格可横向滚动 →</p>
-        <div class="table-wrap log-table-wrap" id="logs-table" tabindex="0" role="region" aria-label="请求日志表，可横向滚动"><table class="log-table"><caption class="sr-only">最近请求日志</caption>
-          <colgroup><col class="lc-time"><col class="lc-sess"><col class="lc-prov"><col class="lc-model"><col class="lc-tokens"><col class="lc-speed"><col class="lc-ttfb"><col class="lc-bytes"><col class="lc-status"><col class="lc-err"></colgroup>          <thead><tr><th scope="col" title="请求开始时间；按开始时间倒序">开始时间</th><th scope="col">会话</th><th scope="col">渠道 / 协议组</th><th scope="col">模型 入 → 出</th><th scope="col" class="num">tokens <span class="th-note">入 / 出 · 缓存</span></th><th scope="col" class="num">速度</th><th scope="col" class="num" title="请求发出到上游响应头到达的耗时，不是首个内容 token 的时间">首响应</th><th scope="col" class="num">耗时 <span class="th-note">请求体</span></th><th scope="col" class="num">状态</th><th scope="col">错误</th></tr></thead><tbody id="logs-body"></tbody></table></div>
+        <p class="hint diag-scope" id="logs-order-hint">最近内存窗口按开始时间倒序，每次显示 50 条。</p>
+        <div class="table-wrap log-table-wrap" id="logs-table" tabindex="0" role="region" aria-label="请求日志表，可横向滚动"><table class="log-table"><caption class="sr-only">请求日志</caption>
+          <colgroup><col class="lc-time"><col class="lc-sess"><col class="lc-prov"><col class="lc-model"><col class="lc-tokens"><col class="lc-speed"><col class="lc-ttfb"><col class="lc-bytes"><col class="lc-status"><col class="lc-err"></colgroup>          <thead><tr><th scope="col" title="请求开始时间；历史查询按日志写入顺序排列">开始时间</th><th scope="col">会话</th><th scope="col">渠道 / 协议组</th><th scope="col">模型 入 → 出</th><th scope="col" class="num">tokens <span class="th-note">入 / 出 · 缓存</span></th><th scope="col" class="num">速度</th><th scope="col" class="num" title="请求发出到上游响应头到达的耗时，不是首个内容 token 的时间">首响应</th><th scope="col" class="num">耗时 <span class="th-note">请求体</span></th><th scope="col" class="num">状态</th><th scope="col">错误</th></tr></thead><tbody id="logs-body"></tbody></table></div>
         <div class="empty" id="logs-empty" style="display:none"><b>暂无请求</b>通过本地路由发起调用后，请求会显示在这里。</div>
         <div class="panel" id="slot-stats-panel" aria-labelledby="slot-stats-title">
           <h2 id="slot-stats-title">分槽用量</h2>

@@ -620,8 +620,9 @@ MIXR_DATA_DIR=/absolute/path node scripts/diagnose-upstream.js --mode provider -
 ### 请求日志
 
 `<MIXR_DATA_DIR>/logs/requests.jsonl`,每条一行,字段以 `LOG_FIELDS` 白名单为准。按 **UTC 跨日 + 5MiB**
-轮转,使用不覆盖的唯一归档名,默认保留 30 天;gzip 默认关闭,`MIXR_LOG_COMPRESS=on` 启用。
-旧 `requests.jsonl.old` 可查但不覆盖、不压缩、不自动清理。
+轮转,使用不覆盖的唯一归档名,默认保留 30 天且总计最多 100,000 条,超限自动删除最旧记录。
+启动、追加写入与定时维护会清理归档;gzip 默认关闭,`MIXR_LOG_COMPRESS=on` 启用。
+旧 `requests.jsonl.old` 仍可查、不压缩,但也计入保留时间与总条数上限。
 
 关键字段:
 
@@ -662,8 +663,9 @@ Codex `no_route_error` 的日志 `err` 以固定布尔诊断
 截断错误文本时仍保留身份诊断,HTTP 错误 message 原样不改。日志脱敏也覆盖本次客户端令牌
 (即使它未登记),不保存凭据、原始 UA、请求头或请求体;三个值不能替代旧 ID 登记与受管配置检查。
 
-**查询**:`mixctl logs` 走运行中服务的 `GET /api/logs`,默认查内存环(最近 500 条),
-默认返回 20 条;重启后内存环重新开始,查旧记录用 `--history`。
+**查询**:`mixctl logs` 走运行中服务的 `GET /api/logs`,默认查内存环(最近 1,000 条),
+默认返回 20 条;启动时从磁盘恢复保留的最近记录,查更早记录用 `--history`。
+控制台诊断页默认读取最近 1,000 条、每次展开 50 条;切到历史可按日期和其他条件查询,再按游标读取更早记录。
 `--since` / `--until` 含边界,接受 ISO 时间或 epoch 毫秒;`--provider`、`--model`、
 `--session`、`--err_class` 是忽略大小写的子串筛选,`--slot` 精确匹配,`--status` 接受
 `ok`、`err` 或具体状态码。`--history` 每页最多 1000 条,响应给 `scope`、`skipped` 和
@@ -701,7 +703,10 @@ Codex `no_route_error` 的日志 `err` 以固定布尔诊断
   `model` 精确匹配实际模型(`model_out || model_in`),
   `status=ok|err` 筛选请求结果;带错误信息的 200 也算失败。时间、协议组、供应商、模型与状态
   同时约束指标、日历与三类明细,不把磁盘累计和内存日志窗口混在一起。
+  `status_code=100..599|0` 独立匹配 HTTP 状态码（0 为未收到响应）；`search` 是不区分大小写的子串搜索，
+  匹配渠道名/ID、模型及别名、请求 ID、会话，最多 200 字符。两者同样作用于整页聚合。
   原响应额外包含 `dashboard`:
+  - `outcomes`: `{succeeded, failed}`，按最终结果精确计数，不从四舍五入的成功率反算。
   - `daily`:按本地日期汇总的 `{t, reqs, tokens_in, tokens_out, cache_read}`。
   - `by_channel`:按渠道分组的 `{channel, provider_id, app, name, reqs, tokens_in, tokens_out, cache_read}`,
     按请求数降序。新日志按 `provider_id` 分组(`channel` 为 `id:<provider_id>`),`app` 是渠道所在的渠道库,
@@ -710,15 +715,24 @@ Codex `no_route_error` 的日志 `err` 以固定布尔诊断
     (Codex 共用压缩);否则单独成组(`channel` 为 `name:<app>:<显示名>`,`provider_id` 为空);
     没选出渠道的请求为 `none`。
     顶层 `by_provider` 仍按显示名合计,口径不变。
-  - `records`: `{rows, total, offset, limit, has_more}`。`rows` 只含日志白名单字段,
-    按时间倒序;`offset` 默认 0,`limit` 默认 50、最多 200(超出按上限截断)。每次同步为当前快照,
+  - `records`: `{rows, total, offset, limit, has_more, sort, order}`。`rows` 只含日志白名单字段，
+    `sort` 支持 `ts`（默认）、`in`、`out`、`cache_read`、`ms`、`ttfb_ms`、`speed_tps`，`order=asc|desc`（默认 desc）。
+    在全部匹配记录上排序后切页，缺失的耗时/速度始终排在末尾；同值按时间、来源位置降序稳定排列。
+    `offset` 默认 0,`limit` 默认 50、最多 200(超出按上限截断)。每次同步为当前快照,
     翻页不是永久游标。`offset` / `limit` 非非负整数、或 `status` 不是 `ok|err` 时返回 400,
     错误码分别是 `USAGE_PAGINATION_INVALID` 与 `USAGE_STATUS_INVALID`。
+    非法排序返回 `USAGE_SORT_INVALID`，超长搜索返回 `USAGE_SEARCH_INVALID`，HTTP 状态码格式错误返回 `USAGE_STATUS_INVALID`，均为 400。
   - `facets.providers` / `facets.models` / `facets.channels`: `{value, label}` 选项(`channels` 的 `value`
     是渠道键,另带 `app` 与 `provider_id`)。按时间、协议组与状态生成,
     不被当前供应商/模型/渠道选择截成单一选项;选择没有结果时不会静默清空筛选。
+    搜索和 HTTP 状态码也约束这些选项；`facets.status_codes` 在时间、协议组、请求结果和搜索后、HTTP 状态码筛选前生成。
   - `coverage`: `{first_ts, last_ts}` 是当前可用日志的观测边界(筛选前),不是连续完整保留的承诺;
-    无日志时为 `null`。默认保留 30 天,不为画满一年的格子而改保留设置。
+    无日志时为 `null`。默认保留 30 天且最多 100,000 条,不为画满一年的格子而改保留设置。
+  - `records_scope=recent|history` 只约束请求明细,不改变指标、分组、趋势与筛选选项。
+    `recent` 先取筛选结果中最新 1,000 条再按所选列排序分页;`history` 查询全部保留的匹配记录。
+    API 省略此参数默认 `history`,控制台默认显式传 `recent`;`records.scope` 返回范围,
+    `records.total` 是范围内可翻页条数,`records.matched_total` 是完整筛选匹配数。
+    非法范围返回 400 `USAGE_RECORDS_SCOPE_INVALID`。
 
 ### 返回归档(显式开启)
 
@@ -796,7 +810,7 @@ require 之后再改不生效。
 | `MIXROUTER_PORT` / `MIXUI_PORT` | 8787 / 8788 | 代理口 / 控制台口 |
 | `MIXROUTER_ALT_PORTS` | 空 | 逗号分隔,在这些端口上也服务同一个代理 |
 | `MIXR_DATA_DIR` | 仓库根 | providers / routes(压缩设置)/ slots / sessions / logs 的总目录 |
-| `MIXR_LOG_RETENTION_DAYS` | 30 | 新请求日志归档保留天数(0–36500);`0` 永久保留 |
+| `MIXR_LOG_RETENTION_DAYS` | 30 | 请求日志归档保留天数(0–36500);`0` 关闭按天清理,仍受总计 100,000 条上限约束 |
 | `MIXR_LOG_COMPRESS` | 关 | 仅 `on` 启用新请求日志归档 gzip |
 | `MIXR_LOG_RETAIN_DAYS` / `MIXR_LOG_SWEEP_MS` | 2 / 21600000 | responses 归档与 launchd.log 的保留天数与清理周期 |
 | `MIXR_CLAUDE_SETTINGS` | `~/.claude/settings.json` | Claude Code 客户端配置 |

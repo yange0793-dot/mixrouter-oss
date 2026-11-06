@@ -19,6 +19,8 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'mixr-usage-'));
 process.env.MIXR_DATA_DIR = TMP;
 process.env.MIXR_CLAUDE_SETTINGS = path.join(TMP, 'settings.json');
 process.env.MIXR_CODEX_CONFIG = path.join(TMP, 'config.toml');
+// 此文件测查询范围(包含40天前样本),不让启动保留策略先删掉夹具。
+process.env.MIXR_LOG_RETENTION_DAYS = '0';
 
 const LOG_DIR = path.join(TMP, 'logs');
 const LOG = path.join(LOG_DIR, 'requests.jsonl');
@@ -645,7 +647,7 @@ test('API /api/usage?dashboard=1:扩展键、分页、白名单,老响应键不�
   const r = await json('GET', `/api/usage?range=all&dashboard=1&provider=${provider}`);
   assert.strictEqual(r.status, 200);
   assert.deepStrictEqual(Object.keys(r.body).sort(), ['by_model', 'by_provider', 'dashboard', 'scope', 'series', 'totals']);
-  assert.deepStrictEqual(Object.keys(r.body.dashboard).sort(), ['by_channel', 'coverage', 'daily', 'facets', 'records']);
+  assert.deepStrictEqual(Object.keys(r.body.dashboard).sort(), ['by_channel', 'coverage', 'daily', 'facets', 'outcomes', 'records']);
   assert.strictEqual(r.body.totals.reqs, 3);
   assert.strictEqual(r.body.dashboard.records.total, 3);
   assert.deepStrictEqual(r.body.dashboard.records.rows.map(x => x.in), [1, 2, 3]);

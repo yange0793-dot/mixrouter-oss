@@ -115,14 +115,14 @@ Not a good fit:
   then search and select models to add; manual entry remains available.
   A collapsible desktop sidebar, mobile navigation drawer, system/light/dark themes,
   `⌘K` / `Ctrl+K` quick navigation, and page deep links are supported.
-  The usage page shares one set of filters across request/token totals, cache and success rates,
-  a calendar heatmap, and request/provider/model table tabs. The heatmap initially spans 13–53 weeks
-  based on log coverage, with older data available by expanding it. It counts currently available logs
-  and never converts usage into money.
+  The usage page opens on today with a compact request table, provider/model groups, and drill-down.
+  Search, custom dates, request outcomes, and HTTP status codes filter all totals and tables together.
+  Sort across all matching requests before pagination, choose columns and row density, or export the current page as CSV.
+  Failure counts are exact; trends and the calendar expand on demand. Only available local logs are counted, without converting usage into money.
 
 ![Local console, Claude Code providers page: client entries in the sidebar, provider rows, enablement and connection status, account switching, and layout switch](docs/images/console-providers.jpg)
 
-![Local console, Usage page: four metric cards, a calendar heatmap, and request/provider/model tables sharing one filter set](docs/images/console-usage.jpg)
+![Local console, Usage page: compact usage summary and request table with shared search, filters, and provider/model groups](docs/images/console-usage.jpg)
 
 *Demo data; no real providers or credentials.*
 

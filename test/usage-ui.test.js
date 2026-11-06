@@ -132,8 +132,13 @@ function harness(options = {}) {
     'usage-status-filter', 'usage-source', 'usage-source-toggle', 'usage-source-detail',
     'usage-calendar-expand', 'usage-prev', 'usage-next', 'usage-table-head', 'usage-rows',
     'usage-daily-details', 'usage-daily-rows', 'usage-fail',
-    'usage-side-active', 'usage-side-daily-label', 'usage-side-daily', 'usage-side-peak'];
+    'usage-side-active', 'usage-side-daily-label', 'usage-side-daily', 'usage-side-peak',
+    'usage-search', 'usage-status-code', 'usage-from', 'usage-to', 'usage-custom-range', 'usage-date-error',
+    'usage-page-size', 'usage-density', 'usage-column-options', 'usage-export',
+    'usage-requests-count', 'usage-providers-count', 'usage-models-count',
+    'usage-records-window', 'usage-records-scope', 'usage-records-hint'];
   for (const id of ids) elements.set(id, new Element(id));
+  if (options.analytics) elements.set('usage-analytics', new Element('usage-analytics', 'details'));
   // 结构:.usage-chart > #usage-chart-holder > (#usage-heatmap, #usage-chart-empty, tooltip)
   const chart = new Element('usage-chart');
   chart.className = 'usage-chart';
@@ -228,9 +233,16 @@ function harness(options = {}) {
       }
       const payload = structuredClone(gate ? gate.body : response);
       // 像真实后端一样回显本次请求的 offset,分页测试才能推进到下一页。
-      const requested = Number(new URL(url, 'http://local').searchParams.get('offset'));
+      const params = new URL(url, 'http://local').searchParams;
+      const requested = Number(params.get('offset'));
       if (payload && payload.dashboard && payload.dashboard.records && Number.isFinite(requested)) {
-        payload.dashboard.records.offset = requested;
+        const records = payload.dashboard.records;
+        records.scope = params.get('records_scope') || 'history';
+        records.matched_total = records.matched_total ?? records.total;
+        records.total = records.scope === 'recent' ? Math.min(1000, records.matched_total) : records.matched_total;
+        records.offset = requested;
+        records.sort = params.get('sort') || 'ts';
+        records.order = params.get('order') || 'desc';
       }
       return { ok: true, status: 200, json: async () => payload };
     },
@@ -323,6 +335,7 @@ function usageFixture(options = {}) {
       { model: 'mystery-model', reqs: 12, tokens_in: 2000, tokens_out: 1000, cache_read: 2000 },
     ],
     dashboard: {
+      outcomes: { succeeded: 41, failed: 1 },
       daily,
       by_channel: [
         { channel: 'id:p-main', provider_id: 'p-main', app: 'claude', name: '主力渠道', reqs: 25, tokens_in: 5000, tokens_out: 2500, cache_read: 5000 },
@@ -395,16 +408,18 @@ test('四张指标卡:请求/tokens/缓存/成功率,补充指标进更多指标
   assert.equal(h.get('usage-fail').hidden, true);
 });
 
-test('查询:默认全部区间,带 dashboard=1 与 offset/limit;筛选值进同一个查询串', async () => {
+test('查询:默认今天,带 dashboard=1 与 offset/limit;筛选值进同一个查询串', async () => {
   const h = harness();
   await h.run('loadUsage()');
   const url = h.requests.at(-1).url;
   assert.match(url, /^\/api\/usage\?/);
   assert.match(url, /dashboard=1/);
-  assert.match(url, /range=all/);
+  assert.match(url, /range=today/);
   assert.match(url, /offset=0/);
   assert.match(url, /limit=50/);
-  assert.equal(h.get('usage-range-select').value, 'all');
+  assert.match(url, /records_scope=recent/);
+  assert.equal(h.get('usage-range-select').value, 'today');
+  assert.equal(h.get('usage-records-scope').value, 'recent');
 
   h.run("setUsageFilter('app', 'codex')");
   assert.match(h.requests.at(-1).url, /app=codex/);
@@ -616,7 +631,7 @@ test('标签页:请求/供应商/模型同批筛选,表头与 aria 跟着切', a
   assert.match(h.get('usage-rows').innerHTML, /Anthropic/);
   // 速度由 out / ms 算出,格式与诊断页一致(1500 / 2s = 750)。
   assert.match(h.run('fmtRate({ out: 1500, ms: 2000 })'), /^750\D/);
-  assert.ok(h.get('usage-rows').innerHTML.includes(`<td>${h.run('fmtRate({ out: 1500, ms: 2000 })')}</td>`));
+  assert.match(h.get('usage-rows').innerHTML, /data-column="speed_tps"[^>]*>750tok\/s<\/td>/);
   // err 覆盖数值 200:主文案是「失败」,HTTP 状态码是次级小字,原始错误进 title。
   assert.ok(h.get('usage-rows').innerHTML.includes('<span class="usage-st" title="HTTP 200 · upstream boom"><span class="badge err badge-dot">失败</span><span class="usage-st-code">200</span></span>'));
 
@@ -649,8 +664,8 @@ test('请求明细:model_out 为主、别名次要标注,缺失遥测显示「�
   h.setResponse(missing);
   await h.run('loadUsage()');
   const row = h.get('usage-rows').innerHTML;
-  assert.match(row, /<td>—<\/td>/, '缺少 token/速度/首字一律「—」');
-  assert.doesNotMatch(row, /<td>0<\/td>/, '缺失遥测不能显示成 0');
+  assert.match(row, /<td[^>]*>—<\/td>/, '缺少 token/速度/首响应一律「—」');
+  assert.doesNotMatch(row, /<td[^>]*>0<\/td>/, '缺失遥测不能显示成 0');
   h.run("setUsageTab('models')");
   h.run("setUsageTab('requests')");
 
@@ -665,9 +680,9 @@ test('请求明细:model_out 为主、别名次要标注,缺失遥测显示「�
   h.setResponse(zeros);
   await h.run('loadUsage()');
   const [reported, zero, partial] = h.get('usage-rows').innerHTML.split('</tr>');
-  assert.match(reported, /<td>10<\/td><td>0<\/td><td>0<\/td>/, '记了用量的行里 0 照实显示');
-  assert.match(zero, /<td>0<\/td><td>0<\/td><td>0<\/td>/, '失败记录里的 0 也按服务端值显示');
-  assert.match(partial, /<td>10<\/td><td>—<\/td><td>—<\/td>/, '已知输入量不能让未知输出和缓存变成 0');
+  assert.match(reported, /<td[^>]*>10<\/td><td[^>]*>0<\/td><td[^>]*>0<\/td>/, '记了用量的行里 0 照实显示');
+  assert.match(zero, /<td[^>]*>0<\/td><td[^>]*>0<\/td><td[^>]*>0<\/td>/, '失败记录里的 0 也按服务端值显示');
+  assert.match(partial, /<td[^>]*>10<\/td><td[^>]*>—<\/td><td[^>]*>—<\/td>/, '已知输入量不能让未知输出和缓存变成 0');
 });
 
 test('请求明细:状态给人话标签,状态码作次级小字,原始错误进 title;时间点按今天/今年/更早缩写', async () => {
@@ -686,9 +701,9 @@ test('请求明细:状态给人话标签,状态码作次级小字,原始错误�
   await h.run('loadUsage()');
   const [today, thisYear, older] = h.get('usage-rows').innerHTML.split('</tr>');
   // 时间点:今天 HH:mm:ss,今年 MM-DD HH:mm,更早 YYYY-MM-DD;完整时间一律在 title。
-  assert.match(today, /^<tr><td title="2026-11-06 09:05:07">09:05:07<\/td>/);
-  assert.match(thisYear, /^<tr><td title="2026-03-03 08:09:10">03-03 08:09<\/td>/);
-  assert.match(older, /^<tr><td title="2025-12-31 23:00:00">2025-12-31<\/td>/);
+  assert.match(today, /^<tr><td data-column="ts" title="2026-11-06 09:05:07">09:05:07<\/td>/);
+  assert.match(thisYear, /^<tr><td data-column="ts" title="2026-03-03 08:09:10">03-03 08:09<\/td>/);
+  assert.match(older, /^<tr><td data-column="ts" title="2025-12-31 23:00:00">2025-12-31<\/td>/);
   // err_class 换成诊断页筛选里的同一套叫法;原始分类码只在 title 里,不当主文案。
   assert.ok(today.includes('<span class="usage-st" title="HTTP 200 · stream_aborted"><span class="badge err badge-dot">断流</span><span class="usage-st-code">200</span></span>'));
   assert.ok(thisYear.includes('<span class="usage-st" title="HTTP 429 · rate_limit · slow down"><span class="badge err badge-dot">限流</span><span class="usage-st-code">429</span></span>'));
@@ -701,7 +716,7 @@ test('分页:请求页走服务端 offset,供应商页本地切片且不重新�
   await h.run('loadUsage()');
   // 总数只在表格上方的计数行出现一次,分页行只说第几页。
   assert.equal(h.get('usage-page-label').textContent, '第 1 / 3 页');
-  assert.equal(h.get('usage-count').textContent, '共 120 条请求 · 按时间倒序');
+  assert.equal(h.get('usage-count').textContent, '最近 120 条请求 · 按时间降序');
   assert.equal(h.get('usage-prev').disabled, true);
   assert.equal(h.get('usage-next').disabled, false);
 
@@ -1038,10 +1053,10 @@ test('来源说明:只说「当前可用日志」,不冒充完整保留期;首�
   assert.equal(h.get('usage-source').hidden, true);
 });
 
-test('默认区间全部、热力图按覆盖周显示;日期键原样回显,不做 UTC 平移', async () => {
+test('默认区间今天、热力图按覆盖周显示;日期键原样回显,不做 UTC 平移', async () => {
   const h = harness();
   await h.run('loadUsage()');
-  assert.equal(h.state.range, 'all');
+  assert.equal(h.state.range, 'today');
   const today = dateKey(new Date());
   const cell = cellFor(h, today);
   assert.equal(cell['data-date'], today, '日期键按本地日期原样出现');
@@ -1118,7 +1133,7 @@ test('供应商页签:按后端渠道分组,「(未知)」写成人话,撞名按
   await h.run('loadUsage()');
   h.run("setUsageTab('providers')");
   const rows = h.get('usage-rows').innerHTML;
-  assert.match(rows, /<td><span class="usage-prov-unknown" title="请求失败于选渠道之前,或日志缺 provider 字段">未记录渠道<\/span><\/td>/);
+  assert.match(rows, /<span class="usage-prov-unknown" title="请求失败于选渠道之前,或日志缺 provider 字段">未记录渠道<\/span>/);
   assert.doesNotMatch(rows, /\(未知\)/, '不显示后端的占位名');
   // 两个协议组里都叫 AgentRouter:两行,各自写协议组;不分大小写撞名的 Happy coding 同理。
   assert.match(rows, /AgentRouter<span class="usage-prov-app" title="Anthropic 协议组的渠道 · id p-ar">Anthropic<\/span>/);
@@ -1130,7 +1145,7 @@ test('供应商页签:按后端渠道分组,「(未知)」写成人话,撞名按
   assert.match(rows, /同名<span class="usage-prov-app" title="Anthropic 协议组的渠道 · id p-s1">Anthropic · p-s1<\/span>/);
   assert.match(rows, /同名<span class="usage-prov-app" title="Anthropic 协议组的渠道 · id p-s2">Anthropic · p-s2<\/span>/);
   assert.match(rows, /同名<span class="usage-prov-app" title="Anthropic 协议组 · 旧日志没有渠道 id,只记了显示名">Anthropic · 旧日志<\/span>/);
-  assert.match(rows, /<td>主力渠道<\/td>/, '不撞名的行不加小标');
+  assert.match(rows, />主力渠道<\/button><\/td>/, '不撞名的行不加小标');
   assert.match(h.get('usage-count').textContent, /共 9 个供应商/);
   // 筛选下拉:值是渠道键,文字与表格同一套区分规则。
   const options = h.get('usage-provider').innerHTML;
@@ -1229,8 +1244,180 @@ test('趋势空响应与筛选样式:无series明确空态,data属性替代运�
   assert.match(css, /\.usage-filter\[data-active="true"\]/);
 });
 
-test('分页标签:页数用千分位', async () => {
-  const h = harness({ response: usageFixture({ total: 73800 }) });
+test('请求明细默认最近1000条、每页50条，保留全量统计并可切历史', async () => {
+  const fixture = usageFixture({ total: 81000 });
+  fixture.totals.reqs = 81000;
+  const h = harness({ response: fixture });
   await h.run('loadUsage()');
-  assert.equal(h.get('usage-page-label').textContent, '第 1 / 1,476 页');
+  assert.equal(h.get('usage-page-label').textContent, '第 1 / 20 页');
+  assert.equal(h.get('usage-requests-count').textContent, '1,000');
+  assert.equal(h.get('usage-reqs').textContent, '81,000');
+  assert.match(h.get('usage-count').textContent, /^最近 1,000 条请求/);
+  assert.match(h.get('usage-count').title, /81,000/);
+  assert.match(h.get('usage-records-hint').textContent, /统计仍按全部匹配记录/);
+  h.state.offset = 950;
+  const before = h.requests.length;
+  h.run('usagePage(1)');
+  assert.equal(h.requests.length, before, '最近窗口不能翻到第21页');
+
+  h.state.provider = 'id:p-main';
+  h.state.status = 'err';
+  await h.run("setUsageRecordsScope('history')");
+  const params = new URL(h.requests.at(-1).url, 'http://local').searchParams;
+  assert.equal(params.get('records_scope'), 'history');
+  assert.equal(params.get('offset'), '0');
+  assert.equal(params.get('channel'), 'id:p-main');
+  assert.equal(params.get('status'), 'err');
+  assert.equal(h.get('usage-page-label').textContent, '第 1 / 1,620 页');
+  assert.equal(h.get('usage-requests-count').textContent, '81,000');
+  assert.match(h.get('usage-records-hint').textContent, /保留历史/);
+  assert.equal(h.get('usage-reqs').textContent, '81,000');
+  h.run("setUsageTab('providers')");
+  assert.equal(h.get('usage-records-window').hidden, true);
+  h.run("setUsageTab('requests')");
+  assert.equal(h.get('usage-records-window').hidden, false);
+  await h.run("setUsageRecordsScope('recent')");
+  assert.equal(h.get('usage-page-label').textContent, '第 1 / 20 页');
+});
+
+test('保留历史只在本次页面启用，不写入下次打开的偏好', async () => {
+  const h = harness();
+  h.run("localStorage.setItem('mixr.usage.prefs', JSON.stringify({ recordsScope: 'history', range: 'all' }))");
+  await h.run('loadUsage()');
+  assert.equal(h.state.recordsScope, 'recent');
+  assert.match(h.requests.at(-1).url, /range=all.*records_scope=recent/);
+  await h.run("setUsageRecordsScope('history')");
+  h.run('usageSavePrefs()');
+  assert.doesNotMatch(h.run("localStorage.getItem('mixr.usage.prefs')"), /recordsScope/);
+});
+
+test('搜索防抖、状态码和结果组成同一次服务端查询，清空恢复全部', async () => {
+  const h = harness();
+  await h.run('loadUsage()');
+  const before = h.requests.length;
+  h.get('usage-search').value = 'first';
+  h.run('scheduleUsageSearch()');
+  h.get('usage-search').value = 'model-final';
+  h.run('scheduleUsageSearch()');
+  assert.equal(h.requests.length, before);
+  h.fireTimeouts();
+  assert.equal(h.requests.length, before + 1);
+  assert.match(h.requests.at(-1).url, /search=model-final/);
+  h.run("setUsageFilter('statusCode', '200')");
+  h.run("setUsageStatus('err')");
+  const params = new URL(h.requests.at(-1).url, 'http://local').searchParams;
+  assert.equal(params.get('status_code'), '200');
+  assert.equal(params.get('status'), 'err');
+  assert.equal(params.get('search'), 'model-final');
+  h.run('clearUsageFilters()');
+  assert.equal(h.get('usage-search').value, '');
+  assert.doesNotMatch(h.requests.at(-1).url, /search=|status_code=|status=/);
+});
+
+test('自定义日期发送本地日界，结束当天包含在区间内', async () => {
+  const h = harness({ now: new Date(2026, 10, 6, 18) });
+  await h.run('loadUsage()');
+  h.run("setUsageRange('custom')");
+  assert.equal(h.get('usage-custom-range').hidden, false);
+  h.get('usage-from').value = '2026-11-01';
+  h.get('usage-to').value = '2026-11-05';
+  h.run('applyUsageDates({ preventDefault() {} })');
+  const params = new URL(h.requests.at(-1).url, 'http://local').searchParams;
+  assert.equal(Date.parse(params.get('from')), new Date(2026, 10, 1).getTime());
+  assert.equal(Date.parse(params.get('to')), new Date(2026, 10, 6).getTime() - 1);
+  const before = h.requests.length;
+  h.get('usage-from').value = '2026-11-06';
+  h.run('applyUsageDates({ preventDefault() {} })');
+  assert.equal(h.requests.length, before);
+  assert.match(h.get('usage-date-error').textContent, /不能晚于/);
+});
+
+test('表头排序与每页数量重置分页，服务器回传方向驱动 aria-sort', async () => {
+  const h = harness();
+  await h.run('loadUsage()');
+  h.state.offset = 100;
+  h.run("setUsageSort('out')");
+  await h.run('loadUsage()');
+  assert.match(h.requests.at(-1).url, /sort=out&order=desc/);
+  assert.equal(h.state.offset, 0);
+  assert.match(h.get('usage-table-head').innerHTML, /data-column="out" aria-sort="descending"/);
+  h.run("setUsageSort('out')");
+  await h.run('loadUsage()');
+  assert.match(h.get('usage-table-head').innerHTML, /data-column="out" aria-sort="ascending"/);
+  h.run("setUsagePageSize('100')");
+  assert.match(h.requests.at(-1).url, /limit=100/);
+  const before = h.requests.length;
+  h.run("setUsagePageSize('0'); setUsageSort('constructor')");
+  assert.equal(h.requests.length, before);
+});
+
+test('显示列和行距只改本地偏好，时间和模型始终保留', async () => {
+  const h = harness();
+  await h.run('loadUsage()');
+  const before = h.requests.length;
+  h.run("setUsageColumn('cache_read', false); setUsageColumn('ts', false); setUsageDensity('comfortable')");
+  assert.deepEqual([...h.state.hiddenColumns], ['cache_read']);
+  assert.equal(h.get('usage-detail-panel').getAttribute('data-density'), 'comfortable');
+  assert.equal(h.requests.length, before);
+  assert.match(h.run("localStorage.getItem('mixr.usage.prefs')"), /comfortable/);
+  h.run("setUsageColumn('cache_read', true)");
+  assert.equal(h.state.hiddenColumns.length, 0);
+});
+
+test('图表默认折叠且不渲染，展开时使用同一份用量快照', async () => {
+  const h = harness({ analytics: true });
+  await h.run('loadUsage()');
+  assert.equal(h.get('usage-analytics').open, false);
+  assert.equal(h.state.heatModel, null);
+  const before = h.requests.length;
+  h.run('setUsageAnalytics(true)');
+  assert.ok(h.state.heatModel);
+  assert.ok(h.state.trendRefs);
+  assert.equal(h.requests.length, before);
+  const html = fs.readFileSync(path.join(ROOT, 'public/index.html'), 'utf8');
+  assert.ok(html.indexOf('id="usage-detail-panel"') < html.indexOf('id="usage-analytics"'));
+});
+
+test('失败数使用精确结果而不是成功率反算；旧服务端缺失时不猜测', async () => {
+  const fixture = usageFixture();
+  fixture.totals.reqs = 20001;
+  fixture.totals.ok_rate = 100;
+  fixture.dashboard.outcomes = { succeeded: 20000, failed: 1 };
+  const h = harness({ response: fixture });
+  await h.run('loadUsage()');
+  assert.equal(h.get('usage-fail').textContent, '失败 1 次');
+  delete fixture.dashboard.outcomes;
+  h.setResponse(fixture);
+  await h.run('loadUsage()');
+  assert.equal(h.get('usage-fail').hidden, true);
+});
+
+test('供应商与模型点击下钻请求列表，计数来自当前筛选结果', async () => {
+  const h = harness();
+  await h.run('loadUsage()');
+  assert.equal(h.get('usage-requests-count').textContent, '120');
+  assert.equal(h.get('usage-providers-count').textContent, '3');
+  assert.equal(h.get('usage-models-count').textContent, '2');
+  h.run("setUsageTab('models'); usageDrillDown('model', 'mystery-model')");
+  assert.equal(h.state.tab, 'requests');
+  assert.match(h.requests.at(-1).url, /model=mystery-model/);
+  assert.equal(h.state.offset, 0);
+});
+
+test('CSV 导出保留完整数值，转义引号与公式前缀，空结果不能导出', async () => {
+  const fixture = usageFixture();
+  fixture.dashboard.records.rows[0].provider = '=HYPERLINK("example")';
+  fixture.dashboard.records.rows[0].in = 1234567;
+  const h = harness({ response: fixture });
+  await h.run('loadUsage()');
+  const csv = h.run('usageCsv(usageState.data)');
+  assert.ok(csv.startsWith('\ufeff'));
+  assert.match(csv, /"1234567"/);
+  assert.ok(csv.includes('"\'=HYPERLINK(""example"")"'));
+  assert.match(csv, /请求 ID/);
+  assert.equal(h.get('usage-export').disabled, false);
+  fixture.dashboard.records.rows = [];
+  h.setResponse(fixture);
+  await h.run('loadUsage()');
+  assert.equal(h.get('usage-export').disabled, true);
 });
