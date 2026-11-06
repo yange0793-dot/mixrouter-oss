@@ -166,6 +166,7 @@ test('全部既有端点在接线后仍返回原形状(回归闸门)', async () 
   assert.deepStrictEqual(keysOf(state.stats), ['exact', 'inTok', 'outTok', 'reqs', 'since']);
   assert.strictEqual(state.stats.exact, false);
   assert.ok(Number.isFinite(Date.parse(state.stats.since)));
+  assert.match(state.ui_revision, /^[0-9a-f]{12}$/, '真实装配下 /api/state 带静态资源指纹');
   assert.strictEqual(state.stats.reqs, stats.reqs);
   assert.ok(Object.hasOwn(state, 'providers') && Object.hasOwn(state, 'slots'));
 });
