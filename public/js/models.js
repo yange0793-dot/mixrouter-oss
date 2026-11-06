@@ -314,7 +314,9 @@ function renderCodexDirectModels(force) {
           ${known.map(model => `<option value="${esc(model)}" ${selected === model ? 'selected' : ''}>${esc(model)}</option>`).join('')}
           <option value="__custom__">自定义模型…</option>
         </select>`;
-    return `<div class="rc-line codex-direct-line"><div class="field slot-ident">${label}<span class="mono">${key}</span></div><label class="field">${esc(codexDirectProviderName(live))}${control}</label></div>`;
+    // 渠道名是这一行控件的标签,和下拉同一行,不再浮在下拉上方。
+    const provider = codexDirectProviderName(live);
+    return `<div class="rc-line codex-direct-line"><div class="field slot-ident">${label}<span class="mono">${key}</span></div><label class="field direct-control"><span class="direct-provider" title="直连渠道 ${esc(provider)}">${esc(provider)}</span>${control}</label></div>`;
   }).join('');
   if (fields.innerHTML !== rows && (force || !fields.contains(document.activeElement))) fields.innerHTML = rows;
   for (const key of ['model', 'review_model']) $('codex-direct-' + key).disabled = locked;
@@ -345,6 +347,9 @@ async function saveCodexDirectModel(key, value) {
         : runtime?.status === 'no_matching_threads' ? '模型已保存；没有沿用原默认模型的活动会话'
         : runtime?.status === 'unsupported' ? '模型已保存；会话热切换需要 Node.js 22 或更新版本'
         : runtime?.status === 'not_running' ? '模型已保存；未检测到运行中的 Codex 后台'
+        : runtime?.status === 'home_mismatch' ? '模型已保存；运行中的 Codex 后台读的是另一份配置目录，未热切换'
+        : runtime?.status === 'unavailable' ? '模型已保存；连不上 Codex 后台，未热切换，重新打开会话后生效'
+        : runtime?.status === 'restart_required' ? '模型已保存；渠道已变，重启 Codex 后生效'
         : runtime ? '模型已保存；运行时同步未完成，重新打开会话后生效'
         : `${key === 'review_model' ? '审查模型' : '模型'}已保存；Codex 重新读取配置后生效`;
     toastWithBackupWarnings(codexDirectMessage, result);
@@ -368,22 +373,15 @@ function renderCodexModels(force) {
   $('codex-model-status').hidden = false;
   $('codex-models-hint').textContent = direct ? 'Codex 直连'
     : '选择渠道与落点模型；路由请求即时切换，模型列表自动同步，不改渠道默认模型。';
-  if (direct) {
-    const compactPanel = $('codex-compact-panel');
-    if (compactPanel?.parentElement === fields) $('codex-models').appendChild(compactPanel);
-    renderCodexDirectModels(force);
-    return;
-  }
+  if (direct) { renderCodexDirectModels(force); return; }
   const rows = ['main', 'reviewer'].map(name => codexSlotRow(
     (slotsOf().codex || []).find(s => s.name === name) || { name, alias: 'mixr-' + name, provider: '', model: '', configured_model: '' }
   )).join('');
   const focused = fields.contains(document.activeElement) ? document.activeElement.id : '';
+  // 阈值面板留在 #codex-model-fields 之外(静态标记里就排在两行槽位之后):重绘槽位不碰它的草稿,
+  // 键盘顺序 main → reviewer → 阈值与视觉顺序一致。
   if (fields._codexRows !== rows && (force || !focused)) {
-    const compactPanel = $('codex-compact-panel');
-    // 主模型后放同一个面板节点:保持键盘顺序与视觉顺序一致,且重绘槽位时不拆掉阈值草稿。
-    if (compactPanel?.parentElement === fields && $('codex-models').appendChild) $('codex-models').appendChild(compactPanel);
     fields.innerHTML = rows; fields._codexRows = rows;
-    if ($('codex-slot-main')?.after && compactPanel) $('codex-slot-main').after(compactPanel);
     if (focused) $(focused)?.focus();
   }
   for (const name of ['main', 'reviewer']) {
@@ -411,6 +409,7 @@ function renderSlots(force) {
   $('slots-apply').hidden = !isClaude;
   $('slots-apply').disabled = !isClaude || !online || slotSaving.size > 0 || !!slotModelEdit.claude;
   const list = slotsOf()[curApp] || [];
+  renderSlotsSummary(isClaude ? list : list.filter(s => !['main', 'reviewer'].includes(s.name)), isClaude);
   const rows = isClaude
     ? list.map(claudeSlotRow).join('')
     : list.filter(s => !['main', 'reviewer'].includes(s.name)).map(codexSlotRow).join('') + `<div class="rc-line">
@@ -427,6 +426,18 @@ function renderSlots(force) {
     $('slots-rows').innerHTML = rows;
     if (mark) { const el = $('slots-rows').querySelector(mark); if (el) el.focus(); }
   }
+}
+// 折叠标题里的一行摘要:每个槽一枚 tag(槽名 → 渠道 · 模型),完整别名/env/渠道放 title。
+function renderSlotsSummary(list, isClaude) {
+  const box = $('slots-summary'); if (!box) return;
+  const html = list.length ? list.map(s => {
+    const ch = providers(curApp).find(p => p.id === s.provider);
+    const model = s.model || (isClaude ? ch?.models?.[0] : ch?.model) || '渠道默认';
+    const target = !s.provider ? '未配置' : !ch ? '渠道已删除' : `${ch.name} · ${model}`;
+    const title = [SLOT_LABELS[s.name] || s.name, s.alias, s.env, s.provider ? `${ch?.name || s.provider}${ch ? ' @ ' + model : '（渠道已删除）'}` : '未配置'].filter(Boolean).join(' · ');
+    return `<span class="tag${s.provider && ch ? '' : ' unset'}" title="${esc(title)}">${esc(s.name)} → ${esc(target)}</span>`;
+  }).join('') : `<span class="tag unset">${isClaude ? '槽位未配置' : '没有自定义槽位'}</span>`;
+  if (box.innerHTML !== html) box.innerHTML = html;
 }
 async function putSlot(app, name, value) {
   if (!online) { toast('控制台离线，未保存槽位改动', 'err'); renderSlots(true); return false; }

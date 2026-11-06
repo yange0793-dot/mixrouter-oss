@@ -317,7 +317,8 @@
     try { body.setAttribute('data-app', APPS.includes(appName) ? appName : DEFAULT_APP); } catch {}
   }
   // 用量页有自己的「立即同步」,模型与方案页各有页内刷新;顶栏的全局刷新在那里只会
-  // 让人以为数据没刷新,所以这些页隐藏它。其余页保留。
+  // 让人以为数据没刷新,所以这些页隐藏它。其余页保留。全局刷新排在顶栏最右端,页内刷新
+  // 排在本页动作的最后,两种情况下主刷新都落在同一个位置(见 index.html 顶栏注释)。
   function syncRefresh(viewName) {
     const button = el('refresh-btn');
     if (button) button.hidden = viewName === 'usage' || viewName === 'insights' || viewName === 'profiles';

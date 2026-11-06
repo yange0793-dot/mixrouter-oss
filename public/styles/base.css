@@ -282,7 +282,11 @@ button.small.cur { color: var(--accent-text); border-color: var(--accent-line); 
 button.quiet { background: transparent; border-color: transparent; color: var(--dim); box-shadow: none; }
 button.quiet:hover:not(:disabled) { background: var(--nav-active); border-color: transparent; color: var(--text); }
 button:disabled { cursor: not-allowed; opacity: .45; }
-button.primary:disabled { box-shadow: none; }
+/* 禁用的主按钮退回中性:半透明的强调色在暗色下和「选中 / 激活」几乎一样,会被读成已开启。 */
+button.primary:disabled {
+  background: var(--surface-2); border-color: var(--border); color: var(--faint);
+  box-shadow: none; opacity: 1;
+}
 /* Icon button: a transparent control-height square. */
 .icon-button {
   display: inline-grid; place-items: center; width: var(--control-h); height: var(--control-h); min-height: 0;
@@ -419,6 +423,7 @@ body[data-connection=online] .run { color: var(--ok-text); }
 body[data-connection=offline] .run { color: var(--err-text); }
 .status .row { display: flex; justify-content: space-between; gap: 10px; margin-top: 4px; }
 .status .row b { color: var(--text); font: 500 12.5px/1.5 var(--sans); font-variant-numeric: tabular-nums; }
+.status .row .row-scope { color: var(--warn-text); font-size: 11.5px; white-space: nowrap; }
 /* 连接状态是一颗发光点 + 一枚紧凑胶囊;端口与用量收进 <details>,st-* ID 一个不少。
    summary 占满整行,箭头贴在侧栏右缘,不浮在文字中间。 */
 details.sidebar-status { border: 0; padding: 0; }
@@ -527,13 +532,14 @@ body.shell-ready .breadcrumb-base, body.shell-ready .breadcrumb-sep { display: n
 #topbar-page-actions .rc-mini { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 .usage-last-sync { font-size: 12.5px; color: var(--dim); white-space: nowrap; }
 .topbar-quiet { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
-/* Page actions and the global chrome (跳转 / 刷新) are two different jobs. When the page has
+/* Page actions and the global chrome (跳转) are two different jobs. When the page has
    actions, a hairline separates them so the row never reads as one long button strip. */
 .topbar-actions:has(#topbar-page-actions:not(:empty)) .topbar-quiet,
 .topbar-actions:has(.topbar-page-actions:not(:empty)) .topbar-quiet {
-  padding-left: 12px; border-left: 1px solid var(--border);
+  padding-right: 12px; border-right: 1px solid var(--border);
 }
-.topbar-quiet > button.quiet { min-height: 32px; padding: 4px 10px; }
+/* 全局刷新固定在顶栏最右端。 */
+.topbar-refresh, #refresh-btn { min-height: 32px; padding: 4px 10px; flex-shrink: 0; }
 .local-tag { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 2px 7px; color: var(--dim); font-size: 12px; letter-spacing: 0; }
 /* ⌘K 跳转按钮画成一枚搜索框:输入框底色、胶囊形、左侧放大镜、右端快捷键提示。 */
 .quick-nav-button {
@@ -599,6 +605,8 @@ body.shell-ready .head .actions:empty { display: none; }
 /* 修订号与进程/端口是要核对的标识:等宽数字。 */
 #ov-revision, #ov-pid { font-family: var(--mono); font-size: 12px; }
 .metric:has(> .metric-icon) .metric-label { padding-right: 40px; }
+/* 「今日请求」不是全天精确数时,标签后跟一句计数起点(自 HH:mm 起 / 本次运行)。 */
+.metric-scope:not(:empty) { color: var(--warn-text); font-size: 12px; font-weight: 400; margin-left: 4px; white-space: nowrap; }
 .metric-icon {
   position: absolute; top: 16px; right: 16px;
   display: grid; place-items: center; width: 30px; height: 30px;
@@ -606,10 +614,6 @@ body.shell-ready .head .actions:empty { display: none; }
   box-shadow: inset 0 0 0 1px var(--accent-soft);
 }
 .metric-icon svg { width: 16px; height: 16px; display: block; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-.provider-summary { margin-top: 20px; margin-bottom: 0; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
-.provider-summary .metric { padding: 16px 18px; }
-.provider-summary .metric b { font-size: 24px; }
-.provider-summary .metric small { font-size: 12.5px; }
 
 /* ---- Shared surfaces ------------------------------------------------------- */
 /* Card = surface + hairline border + lg radius + highlight/shadow. A sub-block inside a card is
@@ -674,8 +678,14 @@ body.shell-ready .head .actions:empty { display: none; }
 .rc-line > .field { flex: 1; min-width: 150px; }
 /* 槽位别名列(名称 + 别名 + 环境变量)。固定宽度让每行的渠道/模型下拉起点一致:
    以前靠行内 style 写 170px,但内容一长就被撑开,五行控件各错一截。 */
-.rc-line > .slot-ident { flex: 0 0 216px; min-width: 0; }
-.rc-line > .slot-ident .mono { overflow-wrap: anywhere; }
+/* 身份块和右侧下拉同高、贴底(rc-line 是 align-items:flex-end),内容在这个高度里垂直居中:
+   中线对准下拉,而不是对准「标签 + 下拉」整列。两行的 env 名会上下溢出这个高度,落在标签行的空白里。 */
+.rc-line > .slot-ident {
+  flex: 0 0 216px; min-width: 0; height: var(--control-h); justify-content: center; gap: 2px;
+  font-size: 13px; font-weight: 600; color: var(--text);
+}
+/* 别名 / env 名只在空格、「·」处换行,不从单词中间断开(ANTHROPIC_DEFAULT_SONNET_MODEL 整段保留)。 */
+.rc-line > .slot-ident .mono { font-size: 11px; line-height: 1.5; font-weight: 400; color: var(--dim); overflow-wrap: break-word; word-break: normal; }
 /* 行内小图标按钮:默认悬停是中性的(上移 / 下移也用它);删除、清空这类再加 .danger,悬停才变危险色。 */
 .iconbtn { color: var(--dim); padding: 4px 8px; }
 .iconbtn:hover:not(:disabled) { background: var(--nav-active); color: var(--text); }
@@ -775,9 +785,9 @@ summary::marker { color: var(--faint); }
 #codex-compact-status.warn { color: var(--warn-text); }
 .codex-slot-line { display: grid; grid-template-columns: 216px minmax(0, 1fr) minmax(0, 1fr) auto 32px; align-items: end; }
 .codex-slot-line > .field { min-width: 0; }
-.codex-slot-line > .slot-ident { align-self: center; }
+.codex-slot-line > .slot-ident { align-self: end; }
 .codex-slot-line .slot-state { align-self: center; }
-.codex-slot-line select, .codex-slot-line input { width: 100%; min-width: 0; min-height: 38px; font: 14px var(--sans); }
+.codex-slot-line select, .codex-slot-line input { width: 100%; min-width: 0; min-height: var(--control-h); font: 14px var(--sans); }
 .codex-slot-line select {
   appearance: none; -webkit-appearance: none; padding-right: 30px;
   background-image: linear-gradient(45deg, transparent 50%, var(--dim) 50%), linear-gradient(135deg, var(--dim) 50%, transparent 50%);
@@ -947,7 +957,7 @@ summary::marker { color: var(--faint); }
 #prov-grid[data-layout="grid"] .provider-meta { font-size: 12.5px; }
 #prov-grid[data-layout="grid"] .provider-meta .testline { width: 100%; }
 
-/* Advanced slots disclosure, below the library for every client. */
+/* Advanced slots disclosure: right after the client state, above the library, for every client. */
 .advanced-slots,
 details.advanced-slots {
   margin-top: 16px; border: 1px solid var(--border); border-radius: var(--radius-lg);
@@ -956,7 +966,7 @@ details.advanced-slots {
 .advanced-slots > summary, details.advanced-slots > summary {
   padding: 13px 18px; font-size: 13.5px; font-weight: 600; color: var(--text);
 }
-.advanced-slots > summary span, details.advanced-slots > summary span { color: var(--dim); font-weight: 400; font-size: 12.5px; margin-left: 6px; }
+.advanced-slots > summary > span, details.advanced-slots > summary > span { color: var(--dim); font-weight: 400; font-size: 12.5px; margin-left: 6px; }
 .advanced-slots[open] > summary, details.advanced-slots[open] > summary { border-bottom: 1px solid var(--border-soft); }
 .advanced-slots > .panel, .advanced-slots > #slots-panel {
   border: 0; border-radius: 0; margin: 0; background: transparent; padding: 18px;
@@ -965,10 +975,8 @@ details.advanced-slots {
 
 /* ---- Overview -------------------------------------------------------------- */
 .overview-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: stretch; margin-bottom: 16px; }
-.overview-layout > .panel {
-  margin-bottom: 0; border: 0; border-radius: 0; box-shadow: none;
-  background: transparent; padding: 18px 0;
-}
+/* 两块接入信息和上面的指标卡、事项条同一层级:都是卡片。 */
+.overview-layout > .panel { margin-bottom: 0; }
 .overview-layout > .panel > .hint { margin-bottom: 8px; }
 /* Label/value rows: a fixed label column so every value starts at the same x. */
 .ov-row {
@@ -1156,8 +1164,9 @@ td .pin-sel { min-width: 135px; padding: 4px 6px; font-size: 13px; }
 }
 .mask.show { display: flex; animation: mixr-fade var(--dur-slow) var(--ease); }
 .modal {
+  --modal-pad: 24px; --modal-pad-x: var(--modal-pad);
   background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--radius-xl); width: 560px; max-width: 100%; padding: 24px;
+  border-radius: var(--radius-xl); width: 560px; max-width: 100%; padding: var(--modal-pad) var(--modal-pad-x);
   max-height: 90vh; max-height: 90dvh; overflow-y: auto; overscroll-behavior: contain;
   box-shadow: var(--highlight), var(--shadow-overlay);
 }
@@ -1165,7 +1174,16 @@ td .pin-sel { min-width: 135px; padding: 4px 6px; font-size: 13px; }
 .modal h3 { font-size: 18px; font-weight: 650; letter-spacing: 0; }
 .modal .description { font-size: 13px; color: var(--dim); line-height: 1.65; margin-top: 6px; }
 .modal label { display: block; margin: 14px 0 6px; font-size: 13px; }
-.modal .foot { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border-soft); }
+/* 页脚吸底:长表单不用滚到底才能保存。负外边距贴齐弹窗内边距,bottom 取负的内边距,
+   让页脚落在弹窗下边缘;底色要实心,正文从它下面滚过。页面要改弹窗内边距时改
+   --modal-pad / --modal-pad-x,不要直接写 padding,否则页脚会和边缘错开。 */
+.modal .foot {
+  position: sticky; bottom: calc(-1 * var(--modal-pad)); z-index: 1;
+  display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px;
+  margin: 24px calc(-1 * var(--modal-pad-x)) calc(-1 * var(--modal-pad));
+  padding: 16px var(--modal-pad-x) var(--modal-pad);
+  background: var(--surface); border-top: 1px solid var(--border-soft);
+}
 .modal .chk { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
 .modal .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
 .modal fieldset { border: 0; margin-top: 14px; }
@@ -1589,7 +1607,8 @@ body[data-connection=offline] .sidebar-status .status b { opacity: .72; }
   .quick-nav-button { width: auto; }
   .topbar-heading { flex: 1 1 auto; min-width: 0; gap: 8px; }
   .topbar-actions { display: contents; }
-  .topbar-quiet { order: 1; flex: 0 0 auto; margin-left: auto; gap: 4px; padding-left: 0; border-left: 0; }
+  .topbar-quiet { order: 1; flex: 0 0 auto; margin-left: auto; gap: 4px; padding-right: 0; border-right: 0; }
+  .topbar-refresh, #refresh-btn { order: 1; }
   /* 本页动作:一行横向滚动,不换行也不缩字;溢出用滚动而不是挤成两行。 */
   .topbar-page-actions, #topbar-page-actions {
     order: 2; flex: 1 1 100%; min-width: 0; justify-content: flex-start; gap: 6px;
@@ -1607,7 +1626,7 @@ body[data-connection=offline] .sidebar-status .status b { opacity: .72; }
   /* display:contents 之后 .topbar-actions 不再当盒子:第一行的右端对齐交给 .topbar-quiet 自己,
      竖分隔线只在同一行真的有本页动作时才有意义,窄屏去掉(这里要压过上面的 :has 规则)。 */
   .topbar-actions:has(#topbar-page-actions:not(:empty)) .topbar-quiet,
-  .topbar-actions:has(.topbar-page-actions:not(:empty)) .topbar-quiet { padding-left: 0; border-left: 0; }
+  .topbar-actions:has(.topbar-page-actions:not(:empty)) .topbar-quiet { padding-right: 0; border-right: 0; }
   .breadcrumb { font-size: 13px; gap: 8px; }
   .top-meta { font-size: 12.5px; gap: 8px; flex-wrap: wrap; }
   .local-tag { display: none; }
@@ -1620,7 +1639,6 @@ body[data-connection=offline] .sidebar-status .status b { opacity: .72; }
   .metric b { font-size: 24px; }
   .metric-icon { top: 14px; right: 14px; width: 26px; height: 26px; }
   .metric:has(> .metric-icon) .metric-label { padding-right: 32px; }
-  .provider-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .usage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
   .usage-grid .metric { padding: 16px; }
   .usage-grid .metric b { font-size: 26px; letter-spacing: 0; }
@@ -1630,6 +1648,7 @@ body[data-connection=offline] .sidebar-status .status b { opacity: .72; }
   .mode-grid { grid-template-columns: 1fr; }
   .panel { padding: 16px; }
   .rc-line > .field { min-width: 100%; }
+  .rc-line > .slot-ident { height: auto; }
   .codex-slot-line { grid-template-columns: minmax(0, 1fr) 32px; }
   .codex-slot-line > .field { grid-column: 1 / -1; min-width: 0; }
   .codex-slot-line .slot-state { grid-column: 1; }
@@ -1668,7 +1687,7 @@ body[data-connection=offline] .sidebar-status .status b { opacity: .72; }
   .sessbar { align-items: stretch; }
   .sessbar label { max-width: 100%; }
   .sessbar button { margin-left: 0; justify-content: center; }
-  .modal { padding: 20px; border-radius: var(--radius-lg); }
+  .modal { --modal-pad: 20px; border-radius: var(--radius-lg); }
   .mask { padding: 12px; }
   .modal .grid2 { grid-template-columns: 1fr; }
   .rt-line { flex-direction: column; align-items: stretch; }
@@ -1726,7 +1745,6 @@ body[data-connection=offline] .sidebar-status .status b { opacity: .72; }
   #view-overview .metric b { font-size: 22px; margin-top: 8px; }
   #view-overview .metric small { font-size: 12.5px; margin-top: 4px; }
   .usage-grid { grid-template-columns: minmax(0, 1fr); }
-  .provider-summary { grid-template-columns: minmax(0, 1fr); }
   .quick-nav-button .kbd { display: none; }
   .quick-nav-button > span:not(.kbd) { display: none; }
   .quick-nav-button { width: var(--control-h); min-height: var(--control-h); padding: 0; justify-content: center; }

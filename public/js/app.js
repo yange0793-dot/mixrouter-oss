@@ -158,29 +158,21 @@ const fmtWhen = t => {
   if (d.toDateString() === now.toDateString()) return full.slice(11);
   return d.getFullYear() === now.getFullYear() ? full.slice(5, 16) : full.slice(0, 10);
 };
-// 「今日请求」只统计内存 ring(容量 = /api/stats 的 scope.capacity,默认 500)。今天的请求数到了容量,
-// 说明窗口已满、更早的请求可能已被挤掉:请求数写「500+」,tokens 前加「≥」。容量读失败或还没读到就照常显示。
-let statsCapacity = null, statsCapacityTask = null;
-// 容量是启动配置,一次页面加载只读一次;返回同一个 promise,测试可以直接 await。
-function loadStatsCapacity() {
-  if (!statsCapacityTask) statsCapacityTask = api('/api/stats').then(s => {
-    const cap = Number(s?.scope?.capacity);
-    if (!(cap > 0)) return;
-    statsCapacity = cap;
-    if (state) { renderOverview(); renderOverviewPage(); }
-  }).catch(() => {});
-  return statsCapacityTask;
-}
+// 「今日请求」来自 /api/state 的 stats(本地日历日)。exact === true 才是全天精确数;否则计数从 since
+// (ISO,服务启动或日志可读的起点)开始,没有 since 就只覆盖本次运行。不是全天时数字照常显示,
+// 旁边注明起点,title 写清不是全天、全天总数去哪看。
 function todayView(stats) {
-  const cap = statsCapacity && stats.reqs >= statsCapacity ? statsCapacity : 0;
-  const tok = v => (cap && v != null ? '≥' : '') + fmtTok(v);
+  const since = stats.since ? new Date(stats.since) : null;
+  const sinceOk = !!since && !Number.isNaN(since.getTime());
+  // 起点在今天写 HH:mm,跨天(服务从昨天跑到今天、日志起点更早)写 MM-DD HH:mm。
+  const hm = !sinceOk ? '' : since.toDateString() === new Date().toDateString() ? fmtFullTime(since).slice(11, 16) : fmtFullTime(since).slice(5, 16);
+  const scope = stats.exact === true ? '' : hm ? `自 ${hm} 起` : '本次运行';
   return {
-    reqs: cap ? fmtCount(cap) + '+' : fmtCount(stats.reqs),
-    reqsTitle: cap ? `内存窗口只保留最近 ${fmtCount(cap)} 条，今天的实际请求可能更多；准确数字看「用量统计」`
-      : `今天（本地日历日）的请求数，只统计内存里最近 ${fmtCount(statsCapacity || 500)} 条`,
-    inTok: tok(stats.inTok), outTok: tok(stats.outTok),
-    total: stats.inTok == null || stats.outTok == null ? '—' : tok(stats.inTok + stats.outTok),
-    tokNote: cap ? '；内存窗口已满，今天的实际值可能更多' : '',
+    reqs: fmtCount(stats.reqs), scope,
+    reqsTitle: stats.exact === true ? '今天（本地日历日）全天的请求数'
+      : `不是全天计数：只统计${hm ? ' ' + fmtFullTime(since) + ' 之后' : '本次运行以来'}的请求，今天更早的请求不在内；全天总数看「用量统计」`,
+    inTok: fmtTok(stats.inTok), outTok: fmtTok(stats.outTok),
+    tokNote: scope ? `；${scope}，不是全天` : '',
   };
 }
 
@@ -247,8 +239,9 @@ function setConnection(connected, error = '') {
   $('connection-message').textContent = connected ? '' : `控制台离线${reason ? '：' + reason : ''}。${lastSync ? '数据停在 ' + fmtWhen(lastSync) + ' 的最后快照，运行时长和指标不再更新' : '尚无可用快照'}；每 5 秒自动重试，压缩草稿仍保留。`;
   $('connection-message').setAttribute('title', !connected && error ? (lastSync ? fmtFullTime(lastSync) + ' · ' : '') + error : '');
   $('new-provider').disabled = !state;
-  // 缺渠道或模型名时保存必被拦下,按钮直接禁用,不让人点了才看到报错。
-  $('save-compact').disabled = !connected || !state?.compact || savingCompact || !compactDraft?.provider || !compactDraft.model?.trim();
+  // 缺渠道或模型名时保存必被拦下,按钮直接禁用,不让人点了才看到报错;草稿与上次载入一致时也没有可保存的(和 #save-window 同一口径)。
+  $('save-compact').disabled = !connected || !state?.compact || savingCompact || !compactDraft?.provider || !compactDraft.model?.trim()
+    || compactUnchanged();
   $('save-window').disabled = !connected || !windowSnapshot || !windowDirty || savingWindow || !!windowLoadTask;
   // 会话覆盖弹窗:离线、没读到服务端版本、或正在保存时,三扇门都封掉
   if (typeof updateRoutingButtons === 'function') updateRoutingButtons();
@@ -264,22 +257,15 @@ function setConnection(connected, error = '') {
   if (changed && state) renderSlots(true);
 }
 function renderOverview() {
-  const ps = allProviders(), stats = state.stats || {}, today = todayView(stats);
+  const stats = state.stats || {}, today = todayView(stats);
   $('ver').textContent = state.version ?? '—';
   // 端口与进程号是标识符,不加千分位。计数用千分位,tokens 用缩写并把完整数字放 title。
   $('st-proxy').textContent = state.proxy_port ?? '—'; $('st-ui').textContent = state.ui_port ?? '—';
   $('st-up').textContent = fmtUp(state.uptime_s);
   $('st-req').textContent = today.reqs; $('st-req').setAttribute('title', today.reqsTitle);
+  $('st-req-scope').textContent = today.scope;
   $('st-tok').textContent = today.inTok + ' / ' + today.outTok;
   $('st-tok').setAttribute('title', `输入 ${fmtCount(stats.inTok)} / 输出 ${fmtCount(stats.outTok)}${today.tokNote}`);
-  $('metric-providers').textContent = ps.filter(p => p.enabled).length;
-  $('metric-providers-hint').textContent = `共 ${ps.length} 个渠道 · 启用不代表连通`;
-  $('metric-requests').textContent = today.reqs; $('metric-requests').setAttribute('title', today.reqsTitle);
-  $('metric-tokens').textContent = today.total;
-  $('metric-tokens').setAttribute('title', stats.inTok == null || stats.outTok == null ? '' : fmtCount(stats.inTok + stats.outTok) + today.tokNote);
-  $('metric-tokens-hint').textContent = `输入 ${today.inTok} / 输出 ${today.outTok}`;
-  // 说明行保留 index.html 的静态口径(按协议组识别):这里原来写的「失败后仍可重试」是冷却功能删掉后的遗留。
-  $('metric-sessions').textContent = fmtCount(state.sessions?.length);
   for (const app of Object.keys(APPS)) {
     const count = providers(app).length;
     $('count-' + app).textContent = count;
@@ -319,8 +305,6 @@ function refresh() {
       // 概览在 setConnection 之后渲染:客户端状态那三行要读 online(liveFacts 的口径),
       // 早一步渲染就会把一次成功的刷新说成"待确认"。
       renderOverviewPage();
-      // 「今日请求」要和内存窗口容量比一次才知道满没满;容量每次页面加载只读一次。
-      loadStatsCapacity();
       if (view === 'providers') renderProviders();
       reconcileRouting();
       // 5 秒轮询不得打断正在编辑的用户。会话页的可编辑控件有两处:表格里的绑定下拉,以及表格外的搜索框。
@@ -504,6 +488,7 @@ function renderOverviewPage() {
   $('ov-pid').setAttribute('title', `进程 ${state.pid || '未提供'} · 代理端口 ${state.proxy_port ?? '—'} · 控制台端口 ${state.ui_port ?? '—'}`);
   const today = todayView(stats);
   $('ov-reqs').textContent = today.reqs; $('ov-reqs').setAttribute('title', today.reqsTitle);
+  $('ov-reqs-scope').textContent = today.scope;
   $('ov-tokens').textContent = `输入 ${today.inTok} / 输出 ${today.outTok}`;
   $('ov-tokens').setAttribute('title', `输入 ${fmtCount(stats.inTok)} / 输出 ${fmtCount(stats.outTok)} tokens${today.tokNote}`);
   // 会话按协议组归组(不是按客户端):直接给两组各几个,原来这里是冷却功能删掉后留下的固定句子。

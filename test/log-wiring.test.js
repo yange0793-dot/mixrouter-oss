@@ -163,7 +163,9 @@ test('全部既有端点在接线后仍返回原形状(回归闸门)', async () 
   assert.strictEqual(slotReqs(stats.by_slot), stats.reqs, '每一条请求都要归进某个槽位分组(none = 非槽位请求)');
   assert.deepStrictEqual(keysOf(stats.by_slot.none), ['cache', 'in', 'out', 'reqs']);
   const state = JSON.parse((await ui('GET', '/api/state')).text);
-  assert.deepStrictEqual(keysOf(state.stats), ['inTok', 'outTok', 'reqs']);
+  assert.deepStrictEqual(keysOf(state.stats), ['exact', 'inTok', 'outTok', 'reqs', 'since']);
+  assert.strictEqual(state.stats.exact, false);
+  assert.ok(Number.isFinite(Date.parse(state.stats.since)));
   assert.strictEqual(state.stats.reqs, stats.reqs);
   assert.ok(Object.hasOwn(state, 'providers') && Object.hasOwn(state, 'slots'));
 });

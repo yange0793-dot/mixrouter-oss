@@ -44,7 +44,6 @@
 #view-providers .filters select { min-height: 32px; }
 #view-providers .layout-switch button { min-height: 32px; min-width: 34px; }
 #view-providers .filters input { width: 220px; }
-#view-providers .provider-summary { margin-top: 16px; }
 
 /* ---- 2. Shared channel-card anatomy ---------------------------------------- */
 #prov-grid .card { gap: 8px; padding: 13px 16px; }
@@ -63,6 +62,10 @@
 #prov-grid .provider-status .badge.info {
   background: var(--ok-soft); color: var(--ok-text); border-color: var(--ok-line);
 }
+/* Claude 路由模式:只被非主槽引用的渠道。同一句「路由在用」,比主槽的实底低一级(描边、无底色)。 */
+#prov-grid .provider-status .badge.route {
+  background: transparent; color: var(--accent-text); border-color: var(--accent-line);
+}
 #prov-grid .card.off .provider-info .name { color: var(--dim); }
 /* Selected in the library but not written to the client yet: a quieter accent mark than
    the verified state, so "库里选的" and "客户端真在用" stay visually distinct. */
@@ -73,7 +76,8 @@
 }
 body[data-connection=offline] #prov-grid .provider-status .badge.on,
 body[data-connection=offline] #prov-grid .provider-status .badge.sel,
-body[data-connection=offline] #prov-grid .provider-status .badge.info {
+body[data-connection=offline] #prov-grid .provider-status .badge.info,
+body[data-connection=offline] #prov-grid .provider-status .badge.route {
   background: var(--surface-2); color: var(--dim); border-color: var(--border-soft);
 }
 #prov-grid .card.sel { border-color: var(--accent-line); }
@@ -90,6 +94,8 @@ body[data-connection=offline] #prov-grid .card.sel { border-color: var(--border)
 #prov-grid .provider-models { gap: 4px; }
 #prov-grid .tag { font-size: 12px; padding: 0 6px; }
 #prov-grid .note { font-size: 12.5px; line-height: 1.6; }
+/* 开发备注只占一行,全文在 title;停用 Key 的告警照常换行,不截。 */
+#prov-grid .note.dev-note { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal; }
 
 /* Account picker: label, select and account count stay on one line. */
 #prov-grid .provider-meta {
@@ -102,6 +108,7 @@ body[data-connection=offline] #prov-grid .card.sel { border-color: var(--border)
   font: 12.5px/1.5 var(--mono); color: var(--text);
 }
 #prov-grid .provider-meta .keycount { font-size: 12px; color: var(--dim); }
+#prov-grid .provider-meta .key-label { font: 500 11.5px/1.4 var(--sans); color: var(--dim); letter-spacing: .2px; }
 #prov-grid .provider-meta .testline { grid-column: 1 / -1; white-space: normal; text-align: right; }
 /* 模型测活结果同样占满 meta 区一整行;它是逐行清单,左对齐比贴着右边缘的右对齐好读。 */
 #prov-grid .provider-meta .probelines,
@@ -122,11 +129,13 @@ body[data-connection=offline] #prov-grid .card.sel { border-color: var(--border)
 #prov-grid .provider-actions button.primary:disabled {
   background: transparent; color: var(--dim); border-color: var(--border);
 }
-#prov-grid .card.cur .provider-actions button.primary:not(:disabled) {
-  background: var(--accent); color: var(--on-accent); border-color: var(--accent);
-}
 /* 当前渠道的「重新写入」在 accent-soft 行底上会糊成一片:给它一条 accent 边框。 */
 #prov-grid .provider-actions button.cur:not(:disabled) { border-color: var(--accent-line); color: var(--accent-text); }
+/* 只能走路由的 Claude 渠道:动作区第一位放说明标签,和按钮同高对齐。 */
+#prov-grid .provider-actions .route-only-tag {
+  display: inline-flex; align-items: center; min-height: 32px; padding: 0 10px;
+  font: 12.5px/1.4 var(--sans); color: var(--dim); cursor: help;
+}
 #prov-grid .provider-actions [data-action="delete"] {
   margin-left: 4px; padding-left: 12px;
   background: transparent; border-color: transparent; border-left-color: var(--border-soft);
@@ -229,6 +238,7 @@ body[data-connection=offline] #prov-grid .card.sel { border-color: var(--border)
   #liveinfo .current-config { gap: 2px 14px; }
   #liveinfo .current-config > div { flex-basis: 100%; }
   #liveinfo .current-config dt { min-width: 72px; }
+  #liveinfo .connection-details > summary { min-height: 32px; padding: 6px 0; box-sizing: border-box; line-height: 20px; }
 
   /* Phone width: label, select and account count share one line; only test output wraps. */
   #prov-grid .provider-meta { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; }
@@ -308,7 +318,7 @@ body[data-client="codex"][data-codex-mode="direct"] #kf-health { display: none; 
 #provider-form label.chk { margin: 12px 0 4px; line-height: 1.55; }
 
 @media (max-width: 640px) {
-  #mask .modal { width: 100%; padding: 18px 16px; }
+  #mask .modal { width: 100%; --modal-pad: 18px; --modal-pad-x: 16px; }
   #m-keys .rc-line { grid-template-columns: minmax(0, 1fr) 32px; }
   #m-keys .rc-line .field:first-child { grid-column: 1 / -1; }
   #m-discovery .md-controls { align-items: stretch; }
@@ -318,8 +328,37 @@ body[data-client="codex"][data-codex-mode="direct"] #kf-health { display: none; 
 /* ---- 7. Codex client panel on this page ----------------------------------- */
 /* Two slots, one threshold panel: title beside the controls, facts on one line,
    explanation folded. Help text is reference material and opens on demand. */
-#view-providers .codex-models { gap: 10px; padding-bottom: 11px; margin-bottom: 10px; }
-#view-providers .codex-models > .hint { font-size: 12.5px; line-height: 1.55; }
+#view-providers .codex-models {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px 16px; padding-bottom: 11px; margin-bottom: 10px;
+}
+/* 头行:说明在左、生效状态在右(#codex-model-status 原本在底部单独一行)。其余块占满整行。 */
+#view-providers .codex-models > *,
+#view-providers .codex-models > .model-fields > * { grid-column: 1 / -1; }
+#view-providers .codex-models > .hint { grid-column: 1; font-size: 12.5px; line-height: 1.55; align-self: center; }
+#view-providers .codex-models > .model-actions {
+  order: -1; grid-column: 2; margin: 0; justify-content: flex-end; text-align: right;
+  max-width: 420px; font-size: 12.5px; color: var(--dim);
+}
+#view-providers #codex-model-status.ok { color: var(--ok-text); }
+#view-providers #codex-model-status.warn { color: var(--warn-text); }
+#view-providers #codex-model-status.err { color: var(--err-text); }
+/* main 与 reviewer 连排,阈值卡作为次级块放在两行之后。 */
+#view-providers #codex-slot-reviewer { order: 1; }
+#view-providers #codex-compact-panel { order: 2; margin-top: 4px; }
+#view-providers #codex-config-details { order: 3; }
+/* 直连:渠道名是控件标签,和下拉同一行。 */
+#view-providers .codex-direct-line { align-items: center; }
+#view-providers .codex-direct-line > .slot-ident { align-self: center; }
+#view-providers .codex-direct-line > .direct-control { flex-direction: row; align-items: center; gap: 10px; }
+#view-providers .direct-control > .direct-provider {
+  flex: 0 1 auto; max-width: 40%; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-size: 13px; color: var(--dim);
+}
+#view-providers .direct-control > select,
+#view-providers .direct-control > input { flex: 1 1 0; width: auto; }
+#view-providers .direct-control > button { flex: 0 0 auto; }
 #view-providers .codex-compact {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -349,6 +388,9 @@ body[data-client="codex"][data-codex-mode="direct"] #kf-health { display: none; 
 #view-providers #codex-config-details .config-warnings { font-size: 12.5px; line-height: 1.65; margin: 8px 0 0; padding-left: 18px; }
 
 @media (max-width: 860px) {
+  #view-providers .codex-models > .hint,
+  #view-providers .codex-models > .model-actions { grid-column: 1 / -1; }
+  #view-providers .codex-models > .model-actions { justify-content: flex-start; text-align: left; max-width: none; }
   #view-providers .codex-compact {
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas: "head" "controls" "facts" "help" "status";
@@ -357,3 +399,24 @@ body[data-client="codex"][data-codex-mode="direct"] #kf-health { display: none; 
   #view-providers .codex-compact-controls .field { flex: 1 1 100%; }
   #view-providers #codex-compact-status { justify-self: start; text-align: left; }
 }
+
+/* ---- 8. Slot disclosure summary ------------------------------------------- */
+/* 折叠标题下一行:每个槽一枚 tag(槽名 → 渠道 · 模型),展开后由下面的表接管,摘要收起。 */
+#slots-details > summary .slots-summary {
+  display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0 0; min-width: 0;
+}
+#slots-details > summary .slots-summary .tag {
+  margin: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 12px/1.5 var(--mono); color: var(--tag-text);
+}
+#slots-details > summary .slots-summary .tag.unset { color: var(--dim); border-style: dashed; }
+#slots-details > summary .slots-summary:empty,
+#slots-details[open] > summary .slots-summary { display: none; }
+
+/* ---- 9. Claude slot table ------------------------------------------------- */
+/* 每行右侧控件上方有「渠道 / 落点模型」小标签:身份列按行中线居中会比下拉高出半个标签。
+   贴底对齐到下拉那一行,行与行之间留出间距,不让下一行标签顶住上一行下拉。 */
+#slots-rows { display: grid; gap: 12px; }
+#slots-rows > .rc-line > .slot-ident { align-self: flex-end; min-height: var(--control-h); justify-content: center; }
+#slots-rows > .rc-line > .slot-state,
+#slots-rows > .rc-line > .iconbtn { align-self: flex-end; min-height: var(--control-h); display: inline-flex; align-items: center; }

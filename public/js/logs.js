@@ -61,7 +61,28 @@ async function loadStats() {
     setLogError('stats', '统计读取失败：' + e.message);
   }
 }
-let logsSequence = 0, lastLogsHtml = null;
+// 请求状态单元(诊断表与会话「最近实际请求」共用,写法同用量页):人话徽章是主文案,
+// HTTP 状态码退成 dim 等宽小字。err / err_class 优先于数字上的 200(断流时 status 仍记 200);
+// 状态码 0 = 没拿到上游响应,不显示「0」。失败分类的细分标签在诊断表的错误列,这里只分成功/失败。
+function reqStatusHtml({ status, err_class: errClass, err } = {}) {
+  const code = Number.isFinite(status) && status > 0 ? status : 0;
+  if (!code && !errClass && !err) return '<span class="dim">—</span>';
+  const failed = !!errClass || !!err || !code || code >= 400;
+  const raw = [errClass, err ? String(err).slice(0, 300) : ''].filter(Boolean).join(' · ');
+  const title = `${code ? `HTTP ${code}` : '没有拿到上游响应'}${raw ? ' · ' + raw : ''}`;
+  return `<span class="req-st" title="${esc(title)}"><span class="badge ${failed ? 'err' : 'ok'} badge-dot">${failed ? '失败' : '成功'}</span>`
+    + `${code ? `<span class="req-st-code">${code}</span>` : ''}</span>`;
+}
+// 日志列表:ring 按**完成**顺序追加,而 ts 是请求**开始**时间(lib/http/proxy.js 的 started),
+// 长请求会晚于后发的短请求入列 —— 直接用返回顺序,时间列就不是单调的。这里按 ts 降序重排(同 ts 保持原序),
+// 解析不了的 ts 沉底。默认只渲染最近 50 行,「显示更多」每次多 50 行;展开数随筛选条件重置,轮询不重置。
+const LOGS_PAGE = 50;
+let logsSequence = 0, lastLogsHtml = null, logsShown = LOGS_PAGE, logsQuery = null, logsRows = [];
+const logTsOf = l => { const n = typeof l.ts === 'number' ? l.ts : Date.parse(l.ts); return Number.isFinite(n) ? n : -Infinity; };
+function sortLogs(logs) {
+  return logs.map((l, i) => [logTsOf(l), i, l]).sort((a, b) => b[0] - a[0] || a[1] - b[1]).map(x => x[2]);
+}
+function showMoreLogs() { logsShown += LOGS_PAGE; renderLogRows(); }
 const logErrors = {};
 function setLogError(source, message) {
   logErrors[source] = message; const messages = Object.values(logErrors).filter(Boolean);
@@ -79,44 +100,51 @@ async function loadLogs() {
     if ($('f-status').value) q.set('status', $('f-status').value);
     if ($('f-errclass').value) q.set('err_class', $('f-errclass').value);
     q.set('limit', '200');
-    const { logs } = await api('/api/logs?' + q.toString());
+    const query = q.toString();
+    const { logs } = await api('/api/logs?' + query);
     if (sequence !== logsSequence) return;
+    if (query !== logsQuery) { logsQuery = query; logsShown = LOGS_PAGE; }
+    logsRows = sortLogs(logs);
     $('logs-empty').style.display = logs.length ? 'none' : '';
     $('logs-empty').innerHTML = '<b>没有匹配的请求</b>调整筛选条件，或通过本地路由发起调用。';
-    const html = logs.map(l => {
-      const cls = l.status >= 500 || l.status === 0 || l.err ? 'st5' : l.status >= 400 ? 'st4' : 'st2';
-      const sess = l.session
-        ? `<span class="sess-tag" title="${esc(l.session_kind || '')}">${esc(l.session)}</span>`
-        : '<span class="dim">—</span>';
-      const fo = l.failover ? ' <span class="cool" title="首选渠道失败,已转移到当前渠道">已转移</span>' : '';
-      const tr = l.wire === 'chat' && (l.kind === 'responses') ? ' <span class="cool" title="responses→chat 协议翻译">协议翻译</span>' : '';
-      const appTag = l.app === 'codex' ? '<span class="badge info">OpenAI</span>' : '<span class="badge info">Anthropic</span>';
-      // 模型名常是长串:换行会把一列撑成三行,这里只做「入 → 出」两段,超宽由列宽截断。
-      // 两段都带 title —— 被省略掉的那半截才是排查时要读的原文。
-      const swap = l.model_out && l.model_out !== l.model_in
-        ? `<span class="mdl-out" title="${esc(l.model_out)}">→ ${esc(l.model_out)}</span>` : '';
-      // 错误列:失败分类给人话标签当主文案,原始枚举进 title;原始错误文本退到下一行小字,全文同样在 title。
-      const errLabel = l.err_class ? `<span class="err-label" title="失败分类 ${esc(l.err_class)}">${esc(Object.hasOwn(LOG_ERR_CLASS_LABEL, l.err_class) ? LOG_ERR_CLASS_LABEL[l.err_class] : l.err_class)}</span>` : '';
-      const errMsg = l.err ? `<span class="err-text" title="${esc(l.err)}">${esc(l.err)}</span>` : '';
-      // tokens 与缓存合成一格(上行入/出,下行缓存读与命中率)。缓存读数不能只剩百分比 ——
-      // 「命中 300、占比 75%」是两个不同的量,少了读数就没法判断省了多少。cacheHitText 两者都给。
-      // 入/出 0 是没记到用量的占位,显示「—」;超过 1000 缩写成 K/M/B,完整数字放 title。
-      const tokTitle = l.in >= 1000 || l.out >= 1000
-        ? ` title="输入 ${fmtCount(l.in || 0)} / 输出 ${fmtCount(l.out || 0)}"` : '';
-      const tok = `<span class="tok-main"${tokTitle}>${l.in ? fmtTok(l.in) : '—'} / ${l.out ? fmtTok(l.out) : '—'}</span><span class="tok-sub">缓存 ${cacheHitText(l)}</span>`;
-      return `<tr><td class="c-time" title="${fmtFullTime(l.ts)}">${fmtWhen(l.ts)}</td><td class="c-sess">${sess}</td>
-        <td class="c-prov"><span class="prov-name" title="${esc(l.provider || '')}">${esc(l.provider || '—')}</span><span class="prov-meta">${appTag}${fo}${tr}</span></td>
-        <td class="c-model"><span class="mdl-in" title="${esc(l.model_in || '')}">${esc(l.model_in || '—')}</span>${swap}</td>
-        <td class="num c-tok">${tok}</td>
-        <td class="num">${fmtRate(l)}</td><td class="num">${fmtTtfb(l.ttfb_ms)}</td>
-        <td class="num c-bytes"><span>${fmtTtfb(l.ms)}</span><span class="sub">${fmtBytes(l.bytes_in)}</span></td>
-        <td class="num c-status"><span class="code-pill ${cls}">${l.status || '—'}</span></td>
-        <td class="c-err">${errLabel}${errMsg}</td></tr>`;
-    }).join('');
-    // 5 秒自动刷新内容没变就不重写:整表重写会清掉用户正在选中复制的文字(错误文本、模型名)。
-    if (html !== lastLogsHtml) { $('logs-body').innerHTML = html; lastLogsHtml = html; }
+    renderLogRows();
     setLogError('logs', '');
   } catch (e) { if (sequence === logsSequence) setLogError('logs', '日志读取失败：' + e.message); }
+}
+function renderLogRows() {
+  const logs = logsRows, shown = logs.slice(0, logsShown), rest = logs.length - shown.length;
+  const html = shown.map(l => {
+    const sess = l.session
+      ? `<span class="sess-tag" title="${esc(l.session_kind || '')}">${esc(l.session)}</span>`
+      : '<span class="dim">—</span>';
+    const fo = l.failover ? ' <span class="cool" title="首选渠道失败,已转移到当前渠道">已转移</span>' : '';
+    const tr = l.wire === 'chat' && (l.kind === 'responses') ? ' <span class="cool" title="responses→chat 协议翻译">协议翻译</span>' : '';
+    const appTag = l.app === 'codex' ? '<span class="badge info">OpenAI</span>' : '<span class="badge info">Anthropic</span>';
+    // 模型名常是长串:换行会把一列撑成三行,这里只做「入 → 出」两段,超宽由列宽截断。
+    // 两段都带 title —— 被省略掉的那半截才是排查时要读的原文。
+    const swap = l.model_out && l.model_out !== l.model_in
+      ? `<span class="mdl-out" title="${esc(l.model_out)}">→ ${esc(l.model_out)}</span>` : '';
+    // 错误列:失败分类给人话标签当主文案,原始枚举进 title;原始错误文本退到下一行小字,全文同样在 title。
+    const errLabel = l.err_class ? `<span class="err-label" title="失败分类 ${esc(l.err_class)}">${esc(Object.hasOwn(LOG_ERR_CLASS_LABEL, l.err_class) ? LOG_ERR_CLASS_LABEL[l.err_class] : l.err_class)}</span>` : '';
+    const errMsg = l.err ? `<span class="err-text" title="${esc(l.err)}">${esc(l.err)}</span>` : '';
+    // tokens 与缓存合成一格(上行入/出,下行缓存读与命中率)。缓存读数不能只剩百分比 ——
+    // 「命中 300、占比 75%」是两个不同的量,少了读数就没法判断省了多少。cacheHitText 两者都给。
+    // 入/出 0 是没记到用量的占位,显示「—」;超过 1000 缩写成 K/M/B,完整数字放 title。
+    const tokTitle = l.in >= 1000 || l.out >= 1000
+      ? ` title="输入 ${fmtCount(l.in || 0)} / 输出 ${fmtCount(l.out || 0)}"` : '';
+    const tok = `<span class="tok-main"${tokTitle}>${l.in ? fmtTok(l.in) : '—'} / ${l.out ? fmtTok(l.out) : '—'}</span><span class="tok-sub">缓存 ${cacheHitText(l)}</span>`;
+    return `<tr><td class="c-time" title="${fmtFullTime(l.ts)}">${fmtWhen(l.ts)}</td><td class="c-sess">${sess}</td>
+      <td class="c-prov"><span class="prov-name" title="${esc(l.provider || '')}">${esc(l.provider || '—')}</span><span class="prov-meta">${appTag}${fo}${tr}</span></td>
+      <td class="c-model"><span class="mdl-in" title="${esc(l.model_in || '')}">${esc(l.model_in || '—')}</span>${swap}</td>
+      <td class="num c-tok">${tok}</td>
+      <td class="num c-speed">${fmtRate(l)}</td><td class="num c-ttfb">${fmtTtfb(l.ttfb_ms)}</td>
+      <td class="num c-bytes"><span>${fmtTtfb(l.ms)}</span><span class="sub">${fmtBytes(l.bytes_in)}</span></td>
+      <td class="num c-status">${reqStatusHtml(l)}</td>
+      <td class="c-err">${errLabel}${errMsg}</td></tr>`;
+  }).join('') + (rest > 0 ? `<tr class="logs-more"><td colspan="10"><button type="button" class="small quiet" onclick="showMoreLogs()">显示更多（还剩 ${fmtCount(rest)} 条）</button>`
+    + `<span class="dim">已显示最近 ${fmtCount(shown.length)} / ${fmtCount(logs.length)} 条</span></td></tr>` : '');
+  // 5 秒自动刷新内容没变就不重写:整表重写会清掉用户正在选中复制的文字(错误文本、模型名)。
+  if (html !== lastLogsHtml) { $('logs-body').innerHTML = html; lastLogsHtml = html; }
 }
 function clearFilters() {
   $('f-app').value = ''; $('f-provider').value = ''; $('f-model').value = ''; $('f-session').value = ''; $('f-status').value = ''; $('f-errclass').value = '';

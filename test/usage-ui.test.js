@@ -138,6 +138,8 @@ function harness(options = {}) {
   const chart = new Element('usage-chart');
   chart.className = 'usage-chart';
   const holder = get('usage-chart-holder');
+  // 日历列数按容器宽度算:默认 0(还没量到,退回 13 周的最短窗口),铺满宽度的用例显式给宽。
+  holder.clientWidth = options.holderWidth ?? 0;
   chart.appendChild(holder);
   holder.appendChild(get('usage-heatmap'));
   holder.appendChild(get('usage-chart-empty'));
@@ -171,6 +173,7 @@ function harness(options = {}) {
   let timerId = 0;
   let timeoutId = 0;
   const documentHandlers = {};
+  const windowHandlers = {};
   const document = {
     visibilityState: 'visible',
     activeElement: null,
@@ -193,7 +196,7 @@ function harness(options = {}) {
     static now() { return fixedMs; }
   };
   const context = vm.createContext({
-    document, console, window: { addEventListener: () => {} },
+    document, console, window: { addEventListener: (name, callback) => { (windowHandlers[name] ||= []).push(callback); } },
     localStorage: { getItem: k => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) },
     URLSearchParams, URL, Date: Clock, Math, JSON, Number, Object, Array, String, Set, Map, Promise, Error, isNaN,
     AbortController: class {
@@ -238,6 +241,8 @@ function harness(options = {}) {
     toasts: [],
   });
   context.toast = message => context.toasts.push(message);
+  // app.js 的 state(渠道库):供应商页签按它判断撞名的渠道属于哪个协议组。
+  if (options.appState) context.state = options.appState;
   // 顶层 function 声明会挂到 vm 的全局对象上,但 const 不会 —— 用脚本尾部导出这些名字。
   vm.runInContext(APP_FORMATTERS, context, { filename: 'public/js/app.js (formatters)' });
   vm.runInContext(SOURCE + '\n;globalThis.__t = { usageState, usageHeatLevel, usageHeatThresholds, usageQuery, usageHeatModel, usageDayLabel, usageHeatCellText, getDaily: () => usageState.dailyRefs };', context, { filename: 'public/js/usage.js' });
@@ -253,6 +258,7 @@ function harness(options = {}) {
     helpers: context.__t,
     segs,
     setResponse: value => { response = value; },
+    resize: () => { for (const callback of windowHandlers.resize || []) callback(); },
     failNext: error => { failNext = error; },
     /** 挂起下一次 fetch,返回放行函数(用于验证「最后一次查询胜出」)。 */
     defer: body => {
@@ -1032,4 +1038,102 @@ test('默认区间全部、热力图按覆盖周显示;日期键原样回显,不
   const label = h.get('usage-chart-tooltip').textContent;
   const parts = today.split('-').map(Number);
   assert.match(label, new RegExp(`${parts[1]}月${parts[2]}日`), '浮层日期与数据日期一致');
+});
+
+// #18:日历撑满卡片宽度。列数 = 容器放得下几列 16px 的格子;日志只有几天时,覆盖起点一周之前的
+// 未覆盖格不再画满斜纹(data-gap,只留平涂底),空白处写「某日前无日志」,摘要行不再重复。
+test('热力图铺满宽度:列数按容器宽度算,长段未覆盖压成空白并写明「某日前无日志」', async () => {
+  const now = new Date(2026, 10, 6, 12); // 周五
+  const fixture = usageFixture({ now, coverageDays: 1, scopeDays: 1 });
+  // 1100px 卡片:可用 1100 - 6 - 26 = 1068px,每列 16 + 3 → ceil(1071 / 19) = 57 列。
+  const h = harness({ now, response: fixture, holderWidth: 1100 });
+  await h.run('loadUsage()');
+  const cells = cellsOf(h.get('usage-heatmap').innerHTML);
+  assert.equal(cells.length, 57 * 7, '宽卡片画满 57 周,而不是 13 周挤在左边');
+  assert.equal(h.get('usage-heatmap').attributes['data-density'], 'compact', '格子接近 16px 时写全七个星期');
+  const firstLog = dateKey(addDays(now, -1));
+  // 覆盖起点所在周(第 56 列)与它前一列画斜纹;再往前的未覆盖格只占位。
+  const gap = cells.filter(cell => cell['data-gap'] === 'true');
+  assert.equal(gap.length, 55 * 7, '覆盖起点前一周之前整列留空');
+  assert.ok(gap.every(cell => cell['data-coverage'] === 'outside' && cell['data-level'] === '0'), '留空的格子仍是「未覆盖」,不是 0');
+  assert.match(gap[0]['aria-label'], /未覆盖/, '读屏仍读作未覆盖');
+  assert.ok(gap.every(cell => !cell['data-inactive']), '留空格不再叠「区间外」淡化');
+  const hatched = cells.filter(cell => cell['data-coverage'] === 'outside' && !cell['data-gap']);
+  assert.ok(hatched.length >= 1 && hatched.length <= 13, '斜纹只剩覆盖边界那一两列');
+  const html = h.get('usage-heatmap').innerHTML;
+  assert.match(html, new RegExp(`<span class="heatmap-gap-note" style="width:${(55 / 57 * 100).toFixed(3)}%" title="数据源没有这些日期的日志,不是 0"><span>${firstLog} 前无日志</span></span>`));
+  assert.equal(h.get('usage-calendar-summary').hidden, true, '空白处已写明,摘要行不重复同一句');
+  assert.equal(h.get('usage-range-label').textContent, `最近 57 周 · ${cells[0]['data-date']} 起`);
+
+  // 手机宽度:334px 卡片 → ceil((334 - 32 + 3) / 19) = 17 列;窗口缩放时重画。
+  h.get('usage-chart-holder').clientWidth = 334;
+  h.resize();
+  assert.equal(cellsOf(h.get('usage-heatmap').innerHTML).length, 17 * 7, '窄卡片按宽度重算列数');
+  const again = h.get('usage-heatmap').innerHTML;
+  h.resize();
+  assert.equal(h.get('usage-heatmap').innerHTML, again, '宽度没变不重画');
+  // 视图隐藏(宽度量到 0):沿用上一次的列数,不缩回 13 周。
+  h.get('usage-chart-holder').clientWidth = 0;
+  h.resize();
+  await h.run('loadUsage()');
+  assert.equal(cellsOf(h.get('usage-heatmap').innerHTML).length, 17 * 7);
+});
+
+test('热力图铺满宽度:覆盖本来就比卡片长时按覆盖画;空白不够宽时说明留在摘要行', async () => {
+  const now = new Date(2026, 9, 19, 12);
+  // 90 天覆盖 = 14 周;334px 卡片只放得下 17 周 → 17 周,前 2 列留空(太窄,不写字)。
+  const h = harness({ now, response: usageFixture({ now }), holderWidth: 334 });
+  await h.run('loadUsage()');
+  const cells = cellsOf(h.get('usage-heatmap').innerHTML);
+  assert.equal(cells.length, 17 * 7);
+  assert.equal(cells.filter(cell => cell['data-gap'] === 'true').length, 2 * 7);
+  assert.doesNotMatch(h.get('usage-heatmap').innerHTML, /heatmap-gap-note/, '两列放不下说明文字');
+  assert.equal(h.get('usage-calendar-summary').hidden, false, '说明仍在摘要行');
+  // 400 天历史比卡片宽:仍按 53 周画,在自己的滚动区里横向滚。
+  const long = harness({ now, response: usageFixture({ now, coverageDays: 400, scopeDays: 400 }), holderWidth: 334 });
+  await long.run('loadUsage()');
+  assert.equal(cellsOf(long.get('usage-heatmap').innerHTML).length, 53 * 7);
+  assert.equal(long.get('usage-heatmap').attributes['data-density'], 'dense', '格子被压到最小时星期只标一半');
+});
+
+// #21:后端把缺 provider 字段的行归到「(未知)」;两个协议组各有一个同名渠道时聚合表里是两行同样的名字。
+test('供应商页签:「(未知)」写成人话,撞名的渠道按渠道库补协议组小标', async () => {
+  const fixture = usageFixture();
+  fixture.by_provider = [
+    { provider: 'Happy coding', name: 'Happy coding', reqs: 770, tokens_in: 1, tokens_out: 1, cache_read: 0 },
+    { provider: 'happy coding', name: 'happy coding', reqs: 75, tokens_in: 1, tokens_out: 1, cache_read: 0 },
+    { provider: 'AgentRouter', name: 'AgentRouter', reqs: 785, tokens_in: 1, tokens_out: 1, cache_read: 0 },
+    { provider: '(未知)', name: '(未知)', reqs: 16, tokens_in: 0, tokens_out: 0, cache_read: 0 },
+    { provider: '主力渠道', name: '主力渠道', reqs: 5, tokens_in: 1, tokens_out: 1, cache_read: 0 },
+  ];
+  fixture.dashboard.facets.providers = fixture.by_provider.map(p => ({ value: p.name, label: p.name }));
+  const appState = { providers: {
+    claude: [{ name: 'Happy coding' }, { name: 'AgentRouter' }, { name: '主力渠道' }],
+    codex: [{ name: 'happy coding' }, { name: 'AgentRouter' }],
+  } };
+  const h = harness({ response: fixture, appState });
+  await h.run('loadUsage()');
+  h.run("setUsageTab('providers')");
+  const rows = h.get('usage-rows').innerHTML;
+  assert.match(rows, /<td><span class="usage-prov-unknown" title="请求失败于选渠道之前,或日志缺 provider 字段">未记录渠道<\/span><\/td>/);
+  assert.doesNotMatch(rows, /\(未知\)/, '不显示后端的占位名');
+  assert.match(rows, /Happy coding<span class="usage-prov-app" title="Anthropic 协议组的渠道">Anthropic<\/span>/);
+  assert.match(rows, /happy coding<span class="usage-prov-app" title="OpenAI 协议组的渠道">OpenAI<\/span>/);
+  // 两个协议组里都叫 AgentRouter:日志只记显示名,这一行是合计,要说清楚。
+  assert.match(rows, /AgentRouter<span class="usage-prov-app" title="两个协议组里都有这个名字的渠道;日志只记显示名,这一行是两者合计">Anthropic \+ OpenAI<\/span>/);
+  assert.match(rows, /<td>主力渠道<\/td>/, '不撞名的行不加小标');
+  // 筛选下拉:值仍是「(未知)」(与后端分组键一致),只换显示文字。
+  assert.match(h.get('usage-provider').innerHTML, /<option value="\(未知\)">未记录渠道<\/option>/);
+
+  // 拿不到渠道库(旧外壳 / 测试桩)时不瞎猜协议组,只保留原名。
+  const bare = harness({ response: fixture });
+  await bare.run('loadUsage()');
+  bare.run("setUsageTab('providers')");
+  assert.doesNotMatch(bare.get('usage-rows').innerHTML, /usage-prov-app/);
+});
+
+test('分页标签:页数用千分位', async () => {
+  const h = harness({ response: usageFixture({ total: 73800 }) });
+  await h.run('loadUsage()');
+  assert.equal(h.get('usage-page-label').textContent, '第 1 / 1,476 页');
 });

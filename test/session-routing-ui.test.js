@@ -243,7 +243,7 @@ test('三层分开读得到:当前绑定带来源标记,最近实际请求独立
   assert.match(manual, /<span class="sub">暂无<\/span>/, '没有实际请求记录时必须显示「暂无」');
   assert.match(manual, /<option value="o1" selected>Beta/, '「暂无」说归说,绑定那份仍要照常可读可改');
   // 硬要求:不许拿绑定值冒充实际落点——「暂无」那一格里不能出现绑定渠道名
-  const actualCell = manual.match(/<td>(<span class="actual-cell[\s\S]*?)<\/td>/)[1];
+  const actualCell = manual.match(/<td class="c-actual">(<span class="actual-cell[\s\S]*?)<\/td>/)[1];
   assert.equal(actualCell.includes('Beta'), false, '不能拿绑定渠道冒充最近实际落点');
 
   // 统计条把「实际 ≠ 绑定」单独数出来,而不是揉进"活跃对话"里
@@ -302,11 +302,14 @@ test('最近实际与当前绑定不同要显式标出:钉的渠道挂了、请�
   const row = rowOf(h, 'beta002');
   // 两个渠道名都要读得出来:绑定列是 Beta,实际列是 Alpha
   assert.match(row, /<option value="o1" selected>Beta/, '当前绑定仍是 Beta');
-  const actualCell = row.match(/<td>(<span class="actual-cell[\s\S]*?)<\/td>/)[1];
+  const actualCell = row.match(/<td class="c-actual">(<span class="actual-cell[\s\S]*?)<\/td>/)[1];
   assert.match(actualCell, /Alpha/, '实际落点要显示 Alpha');
   assert.match(actualCell, /class="actual-cell diff"/, '不一致要染上 warn 色的类');
   assert.match(actualCell, /与当前绑定不同/, '要有一句人话点明不一致');
   assert.match(actualCell, /502/, '失败状态码也要照实显示');
+  // 状态写法同用量页:人话徽章当主文案,状态码退成 dim 等宽小字(原来是裸的「502」方块)。
+  assert.match(actualCell, /<span class="badge err badge-dot">失败<\/span><span class="req-st-code">502<\/span>/);
+  assert.match(actualCell, /class="sub why" title="当前绑定的渠道是 Beta，实际落在 Alpha">与当前绑定不同/, '提示写清比的是当前绑定');
   assert.match(h.get('sess-chips').innerHTML, /实际 ≠ 绑定<b>1<\/b>/, '统计条要数得出来');
 });
 
@@ -1022,10 +1025,12 @@ test('槽位实际请求对照该槽配置,不因主链与子代理渠道不同�
   h.run("view = 'sessions'; renderSessions()");
   assert.equal(/与当前绑定不同/.test(rowOf(h, 'alpha001')), false);
   assert.match(h.get('sess-chips').innerHTML, /实际 ≠ 绑定<b>0<\/b>/);
-  h.data.sessions[0].actual.provider = 'a1';
+  Object.assign(h.data.sessions[0].actual, { provider: 'a1', provider_name: 'Alpha' });
   await h.run('refresh()');
   h.run('renderSessions()');
-  assert.match(rowOf(h, 'alpha001'), /与当前绑定不同/);
+  // 槽位请求比的是该槽配置,不是当前绑定:文案按比较对象写(未绑定的行也不会再说「与当前绑定不同」)。
+  assert.match(rowOf(h, 'alpha001'), /class="sub why" title="槽位 subagent 配置的渠道是 Ghost Host，实际落在 Alpha">与槽位配置不同/);
+  assert.equal(/与当前绑定不同/.test(rowOf(h, 'alpha001')), false);
   assert.match(h.get('sess-chips').innerHTML, /实际 ≠ 绑定<b>1<\/b>/);
 });
 
@@ -1083,4 +1088,104 @@ test('会话自定义模型回车收尾并去空白,换渠道清模型和 Key,�
   h.run("routingRemoveSlot('subagent')");
   assert.equal(h.run('routingDraft.slots.subagent'), undefined);
   assert.equal(h.run('routingDraft.slots.main.provider'), 'a1');
+});
+
+// ---------------- 第 2 轮显示修复:诊断分页与排序、请求状态徽章、系统指令标题、压缩脏检查、手机备份表 ----------------
+const logRow = i => ({ ts: new Date(Date.UTC(2026, 10, 6, 1, 0, 0) + i * 1000).toISOString(), status: 200, app: 'claude',
+  provider: 'Alpha', model_in: 'm-' + i, in: 1, out: 1 });
+async function withLogs(h, logs) {
+  h.run(`globalThis.__logs = ${JSON.stringify(logs)}; globalThis.__realFetch2 = fetch;
+    fetch = async (url, opt) => url.startsWith('/api/logs') ? { ok: true, json: async () => ({ logs: structuredClone(__logs) }) } : __realFetch2(url, opt)`);
+  await h.run('loadLogs()');
+}
+const logModels = h => [...h.get('logs-body').innerHTML.matchAll(/class="mdl-in" title="([^"]+)"/g)].map(m => m[1]);
+
+test('诊断表按开始时间倒序:ring 按完成顺序返回时也不乱序', async () => {
+  const h = await harness();
+  // 服务端返回顺序是完成顺序(新完成在前):m-1 开始得早、完成得晚,排在 m-2 前面
+  const logs = [logRow(1), logRow(2), logRow(0), { ...logRow(9), ts: 'not-a-date', model_in: 'm-bad' }];
+  await withLogs(h, logs);
+  assert.deepEqual(logModels(h), ['m-2', 'm-1', 'm-0', 'm-bad'], '按 ts 降序,解析不了的 ts 沉底');
+});
+
+test('诊断表默认 50 行,「显示更多」写明还剩多少;轮询不收起,换筛选才回到 50 行', async () => {
+  const h = await harness();
+  const logs = Array.from({ length: 120 }, (_, i) => logRow(i)).reverse();
+  await withLogs(h, logs);
+  assert.equal(logModels(h).length, 50);
+  assert.match(h.get('logs-body').innerHTML, /onclick="showMoreLogs\(\)">显示更多（还剩 70 条）<\/button><span class="dim">已显示最近 50 \/ 120 条/);
+  h.run('showMoreLogs()');
+  assert.equal(logModels(h).length, 100);
+  assert.match(h.get('logs-body').innerHTML, /还剩 20 条/);
+  // 5 秒轮询走同一个 loadLogs:展开数保留
+  await h.run('loadLogs()');
+  assert.equal(logModels(h).length, 100, '轮询不能把展开状态冲掉');
+  h.run('showMoreLogs()');
+  assert.equal(logModels(h).length, 120);
+  assert.doesNotMatch(h.get('logs-body').innerHTML, /showMoreLogs/, '全部显示后不再有「显示更多」');
+  // 筛选条件变了就是另一份列表,回到默认 50 行
+  h.get('f-model').value = 'm-';
+  await h.run('loadLogs()');
+  assert.equal(logModels(h).length, 50);
+});
+
+test('诊断表状态列:人话徽章当主文案,状态码是 dim 小字;断流的 200 仍算失败,没拿到响应不显示 0', async () => {
+  const h = await harness();
+  await withLogs(h, [
+    { ...logRow(4), status: 200 },
+    { ...logRow(3), status: 200, err_class: 'stream_aborted', err: 'upstream stream ended early' },
+    { ...logRow(2), status: 502 },
+    { ...logRow(1), status: 0, err_class: 'network_error' },
+  ]);
+  const cells = [...h.get('logs-body').innerHTML.matchAll(/<td class="num c-status">([\s\S]*?)<\/td>/g)].map(m => m[1]);
+  assert.match(cells[0], /title="HTTP 200"><span class="badge ok badge-dot">成功<\/span><span class="req-st-code">200<\/span>/);
+  assert.match(cells[1], /title="HTTP 200 · stream_aborted · upstream stream ended early"><span class="badge err badge-dot">失败<\/span><span class="req-st-code">200</);
+  assert.match(cells[2], /badge err badge-dot">失败<\/span><span class="req-st-code">502</);
+  assert.match(cells[3], /title="没有拿到上游响应 · network_error"><span class="badge err badge-dot">失败<\/span><\/span>$/);
+  assert.doesNotMatch(cells.join(''), /code-pill|>0</, '旧的状态码方块和「0」都不再出现');
+});
+
+test('对话名是系统指令时显示人话,原文留在 title,搜索仍按原文命中', async () => {
+  const data = fixture();
+  const raw = '# AGENTS.md instructions <INSTRUCTIONS> <!-- tinyfish -->';
+  data.sessions[0].label = raw;
+  data.sessions[1].label = '<environment_context> cwd=/tmp';
+  const h = await harness(data);
+  h.run("view = 'sessions'; renderSessions()");
+  assert.match(rowOf(h, 'alpha001'), new RegExp(`<span class="lbl lbl-system" title="${raw.replace(/</g, '&lt;').replace(/>/g, '&gt;')}">系统指令，无标题</span>`));
+  assert.match(rowOf(h, 'beta002'), /lbl-system" title="&lt;environment_context&gt; cwd=\/tmp">系统指令，无标题/);
+  assert.equal(h.get('sess-body').innerHTML.includes('&lt;INSTRUCTIONS&gt;</span>'), false, '原文不当主文案');
+  h.run("setSessQuery('tinyfish')");
+  assert.equal((h.get('sess-body').innerHTML.match(/<tr data-session=/g) || []).length, 1, '搜索面仍是原始对话名');
+  // 普通标题照常显示,「#123」这类开头也算系统指令前缀(真实数据里用户标题不以 # 开头)
+  data.sessions[0].label = '修复登录跳转';
+  const plain = await harness(data);
+  plain.run("view = 'sessions'; renderSessions()");
+  assert.match(rowOf(plain, 'alpha001'), /<span class="lbl" title="修复登录跳转">修复登录跳转<\/span>/);
+});
+
+test('compactUnchanged:载入后为真并禁用保存,改动后为假,服务端版本变化也不算一致', async () => {
+  const data = fixture();
+  data.compact = { key_selection_supported: true, revision: 'rev-one', mode: 'single', selection: { provider: 'a1', model: 'claude-special', key_id: '' }, providers: [data.providers.claude[0]], rules: [] };
+  const h = await harness(data);
+  assert.equal(h.run('compactUnchanged()'), true);
+  assert.equal(h.get('compact-msg').textContent, '压缩选择与上次载入一致。');
+  assert.equal(h.get('save-compact').disabled, true, '没有改动时保存按钮禁用(同 #save-window)');
+  h.run("pickCompactModel('claude-alt')");
+  assert.equal(h.run('compactUnchanged()'), false);
+  assert.equal(h.get('save-compact').disabled, false);
+  h.run('loadCompactDraft()');
+  assert.equal(h.run('compactUnchanged()'), true, '重新载入后回到一致');
+  h.run("state.compact.revision = 'rev-two'");
+  assert.equal(h.run('compactUnchanged()'), false, '服务端规则变了就不是「与上次载入一致」');
+});
+
+test('备份行:文件名、大小、时间、摘要各有 class,摘要同时进文件名 title(手机上摘要列收起)', async () => {
+  const h = await harness();
+  const card = h.run(`backupDirCard({ id: 'claude', label: 'Claude 设置', ok: true, dir: '/tmp/x', total: 1,
+    backups: [{ name: 'settings.json.bak-mixui-20260101-000000-000-abcd', size: 2048, iso: '2026-01-01T00:00:00.000Z', sha256_12: 'abcdef012345' }] }, 5)`);
+  assert.match(card, /<td class="mono bk-name" title="settings\.json\.bak-mixui-20260101-000000-000-abcd\n摘要 abcdef012345">/);
+  assert.match(card, /<td class="num bk-size" title="2,048 字节">2\.0KB<\/td>/);
+  assert.match(card, /<td class="mono bk-time" title="[^"]+">/);
+  assert.match(card, /<td class="mono bk-sha">abcdef012345<\/td>/);
 });

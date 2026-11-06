@@ -50,10 +50,12 @@ function backupDirCard(d, keep) {
   // 清单按时间升序回来:取最近 12 份并把新的放上面。大小按 1024 进制,精确字节数放 title。
   const rows = list.slice(-12).reverse().map(b => {
     const full = fmtFullTime(b.iso);
-    return `<tr><td class="mono" title="${esc(b.name)}">${esc(b.name)}${b.legacy ? '<span class="badge off bk-legacy">旧格式</span>' : ''}</td>`
-      + `<td class="num"${Number.isFinite(b.size) ? ` title="${fmtCount(b.size)} 字节"` : ''}>${fmtBytes(b.size)}</td>`
-      + `<td class="mono"${full === '—' ? '' : ` title="${full}"`}>${fmtWhen(b.iso)}</td>`
-      + `<td class="mono">${esc(b.sha256_12 || '—')}</td></tr>`;
+    // 手机上摘要列收起、大小与时间并到文件名下面一行(config.css),所以文件名的 title 带上摘要。
+    const nameTitle = b.sha256_12 ? `${b.name}\n摘要 ${b.sha256_12}` : b.name;
+    return `<tr><td class="mono bk-name" title="${esc(nameTitle)}">${esc(b.name)}${b.legacy ? '<span class="badge off bk-legacy">旧格式</span>' : ''}</td>`
+      + `<td class="num bk-size"${Number.isFinite(b.size) ? ` title="${fmtCount(b.size)} 字节"` : ''}>${fmtBytes(b.size)}</td>`
+      + `<td class="mono bk-time"${full === '—' ? '' : ` title="${full}"`}>${fmtWhen(b.iso)}</td>`
+      + `<td class="mono bk-sha">${esc(b.sha256_12 || '—')}</td></tr>`;
   }).join('');
   // 读失败的池不能说"这个池里还没有备份"——那是另一件事,并排摆出来会互相打脸。
   // 空池同理:上一行已经写了"共 0 份…",不再补一句同义的空话。错误码给人话,原值放 mono。

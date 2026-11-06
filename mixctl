@@ -349,7 +349,9 @@ async function status() {
       process.exitCode = 1;
     } else console.log(`代码:   已加载当前源码 ${diskRevision.slice(0, 12)}`);
     console.log(`端口:   代理 :${s.proxy_port}  控制台 :${s.ui_port}`);
-    console.log(`今日:   ${s.stats.reqs} 次请求,入 ${s.stats.inTok} / 出 ${s.stats.outTok} tokens`);
+    const scope = s.stats.exact === true ? '今日'
+      : s.stats.exact === false ? `今日(自 ${new Date(s.stats.since).toLocaleString('zh-CN', { hour12: false })} 起,非全天)` : '今日(近期窗口)';
+    console.log(`${scope}:   ${s.stats.reqs} 次请求,入 ${s.stats.inTok} / 出 ${s.stats.outTok} tokens`);
   } catch { console.log('控制台不可达'); process.exitCode = 1; }
 }
 async function ls() {

@@ -87,6 +87,10 @@ class El {
   set innerHTML(value) { this._html = String(value ?? ''); }
   get innerHTML() { return this._html; }
   focus() { this.focused = true; }
+  setAttribute(name, value) { (this.attributes ||= {})[name] = String(value); }
+  getAttribute(name) { return this.attributes && name in this.attributes ? this.attributes[name] : null; }
+  // 模型表的表头由 insights.js 按布局重写:只造 thead 这一个子元素。
+  querySelector(selector) { return selector === 'thead' ? (this.thead ||= new El()) : null; }
 }
 
 function applySpec(entry, spec) {
@@ -261,9 +265,14 @@ test('模型表:手工值、来源、视觉与推理档位;未登记字段显式
   assert.match(rows, /title="暂无成功请求的观察">—</);
   assert.ok(rows.includes('<span class="insights-unknown" title="未知：没有登记，不按模型名推断">—</span>'));
   assert.match(rows, /未知/);
-  // 协议组与用量、诊断同一套叫法。
-  assert.match(rows, /<td>Anthropic<\/td>/);
-  assert.match(rows, /<td>OpenAI<\/td>/);
+  // 协议组与用量、诊断同一套叫法;协议组与渠道不再每行重复,写在分组行里(渠道名 + 协议组 · 模型数)。
+  assert.ok(rows.includes('<span class="insights-group-name" title="渠道 ID：p1">Alpha</span><span class="insights-group-meta">Anthropic · 1 个模型</span>'));
+  assert.ok(rows.includes('<span class="insights-group-name" title="渠道 ID：p2">Beta</span><span class="insights-group-meta">OpenAI · 1 个模型</span>'));
+  assert.doesNotMatch(rows, /<td>Anthropic<\/td>/, '协议组不再单占一列');
+  assert.match(rows, /colspan="7"/, '有登记值时是完整布局:模型 + 四个能力列 + 自报 + 操作');
+  assert.equal(h.get('insights-models-table').getAttribute('data-layout'), 'full');
+  assert.match(h.get('insights-models-table').thead.innerHTML, /上下文窗口.*最大输出.*视觉.*推理档位.*最近上游自报/);
+  assert.doesNotMatch(h.get('insights-models-table').thead.innerHTML, /协议组|渠道/);
   assert.doesNotMatch(rows, /0 tokens/, '未知不能渲染成 0');
   assert.match(rows, /onclick="insightsSelectModel\(0\)"/);
   assert.match(rows, /onclick="insightsSelectModel\(1\)"/);
@@ -429,4 +438,36 @@ test('恶意模型/渠道/自报/会话名一律转义', async () => {
   assert.doesNotMatch(h.get('insights-request-detail').innerHTML, /<img/);
   assert.match(h.get('insights-request-detail').innerHTML, /&lt;img/);
   assert.doesNotMatch(h.get('insights-context-summary').innerHTML, /<img/);
+});
+
+// #11:一个能力都没登记时,四个能力列全是「—」:折成一列「能力:未登记」,操作直接是「登记」。
+// 同一渠道的模型归到一个分组行下,渠道名只出现一次。
+test('模型表:全部未登记时折成一列「能力」,按渠道分组', async () => {
+  const blank = { value: null, source: 'unknown' };
+  const caps = { context_window: blank, max_output_tokens: blank, vision: blank, reasoning_levels: blank };
+  const models = { revision: 'rev-u', models: [
+    { app: 'claude', provider: 'p1', provider_name: 'Alpha', model: 'm-1', capabilities: caps, observation: null },
+    { app: 'claude', provider: 'p1', provider_name: 'Alpha', model: 'm-2', capabilities: caps,
+      observation: { requested_model: 'm-2', upstream_model: 'm-2-real', status: 200, ts: '2026-11-02T10:00:00.000Z' } },
+    { app: 'codex', provider: 'p1', provider_name: 'Alpha', model: 'm-3', capabilities: caps, observation: null },
+  ] };
+  const h = await loaded({ models });
+  const rows = h.get('insights-models-rows').innerHTML;
+  const table = h.get('insights-models-table');
+  assert.equal(table.getAttribute('data-layout'), 'compact');
+  assert.match(table.thead.innerHTML, />能力</);
+  assert.doesNotMatch(table.thead.innerHTML, /上下文窗口<|最大输出<|推理档位</, '空列不再单独占表头');
+  assert.equal((rows.match(/>未登记</g) || []).length, 3);
+  assert.doesNotMatch(rows, />—</, '整表不再铺满「—」');
+  assert.match(rows, /自报 m-2-real/, '有上游自报的行仍然显示自报');
+  // 同名渠道但协议组不同,是两个分组(Alpha · Anthropic 两个模型,Alpha · OpenAI 一个)。
+  assert.equal((rows.match(/class="insights-group"/g) || []).length, 2);
+  assert.match(rows, /Anthropic · 2 个模型/);
+  assert.match(rows, /OpenAI · 1 个模型/);
+  assert.match(rows, /colspan="3"/);
+  // 「登记」直接打开编辑表单;索引仍指向原始顺序。
+  assert.match(rows, /onclick="insightsSelectModel\(2\);insightsEditModel\(\)">登记</);
+  h.run('insightsSelectModel(2);insightsEditModel()');
+  assert.equal(h.run('insightsState.editingModel'), true);
+  assert.match(h.get('insights-model-detail').innerHTML, /编辑能力：m-3/);
 });
