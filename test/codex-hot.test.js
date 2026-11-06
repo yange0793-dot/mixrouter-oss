@@ -180,7 +180,7 @@ test('Codex legacy main/reviewer preview follows production resolver and native 
     reviewer: { provider: 'chat', model: 'preview-review-b' } })).status, 200);
   await compare('old-review', 'preview-review-b', 'reviewer');
   assert.equal(hits.at(-1).url, '/v1/chat/completions');
-  for (const ua of ['codex_desktop/0.162.1', 'codex_cli_rs/0.162.1', 'codex_exec/0.162.1', 'codex/0.162.1', 'codex 0.162.1']) {
+  for (const ua of ['codex_desktop/0.162.1', 'codex_cli_rs/0.162.1', 'codex_exec/0.162.1', 'codex-tui/0.167.0', 'codex/0.162.1', 'codex 0.162.1']) {
     await compare('old-native', 'preview-main-b', 'main', ua);
   }
   assert.equal(hits.at(-1).url, '/v1/responses');
@@ -188,94 +188,26 @@ test('Codex legacy main/reviewer preview follows production resolver and native 
     { 'old-native': 'mixr-main', 'old-review': 'mixr-reviewer' }, 'hot edits must not register new or fuzzy legacy IDs');
 });
 
-test('Codex current native default resolves duplicate provider models through main and preserves Fast tier', async () => {
+test('Codex TUI resolves duplicate legacy models through main and preserves priority tier', async () => {
   assert.equal((await put(activeSlots())).status, 200);
-  for (const provider of router._state.store.codex) provider.models = ['new-native-default'];
-  fs.writeFileSync(file, config.patch(fs.readFileSync(file, 'utf8'), { top: {
-    model: 'new-native-default', service_tier: 'priority' } }));
+  for (const provider of router._state.store.codex) provider.models = ['old-native'];
+  const ua = 'codex-tui/0.167.0 (Mac OS 13.7.8; x86_64) ghostty/1.4.0 (codex-tui; 0.167.0)';
   const source = JSON.parse(fs.readFileSync(path.join(root, 'mixrouter-model-catalog.source.json'), 'utf8'));
-  assert.equal(Object.hasOwn(source.legacy_models, 'new-native-default'), false);
-  const result = await previewMatchesResolver('new-native-default', nativeContext());
+  assert.equal(source.legacy_models['old-native'], 'mixr-main');
+  const result = await previewMatchesResolver('old-native', { ...nativeContext(), ua });
   assert.equal(result.ok, true);
   assert.equal(result.matched.slot, 'main');
   assert.equal(result.selection.predicted.providerId, 'native');
   assert.equal(result.selection.predicted.model, 'target-a');
   const actual = await request(proxy, '/v1/responses', {
-    model: 'new-native-default', input: 'fast task', service_tier: 'priority', stream: false }, 'POST', {
-    'session-id': 'preview-same-session', 'user-agent': nativeContext().ua,
+    model: 'old-native', input: 'fast task', service_tier: 'priority', stream: false }, 'POST', {
+    'session-id': 'preview-same-session', 'user-agent': ua,
     authorization: 'Bearer ' + router.ROUTER_TOKEN });
   assert.equal(actual.status, 200);
   assert.equal(actual.headers['x-mixrouter-model'], 'target-a');
   assert.equal(actual.headers['x-mixrouter-provider'], result.selection.predicted.providerName);
   assert.equal(hits.at(-1).body.model, 'target-a');
   assert.equal(hits.at(-1).body.service_tier, 'priority');
-});
-
-test('Codex current native roles override stale legacy mappings and identical defaults prefer main', async () => {
-  assert.equal((await put(activeSlots())).status, 200);
-  fs.writeFileSync(file, config.patch(fs.readFileSync(file, 'utf8'), { top: {
-    model: 'old-review', review_model: 'old-native' } }));
-  for (const [model, slot, target] of [['old-review', 'main', 'target-a'], ['old-native', 'reviewer', 'target-r']]) {
-    const result = await previewMatchesResolver(model, nativeContext());
-    assert.equal(result.matched.slot, slot);
-    assert.equal(result.selection.predicted.model, target);
-    const actual = await nativeSend(model);
-    assert.equal(actual.status, 200);
-    assert.equal(hits.at(-1).body.model, target);
-  }
-  fs.writeFileSync(file, config.patch(fs.readFileSync(file, 'utf8'), { top: { review_model: 'old-review' } }));
-  const same = await previewMatchesResolver('old-review', nativeContext());
-  assert.equal(same.matched.slot, 'main');
-  assert.equal(same.selection.predicted.model, 'target-a');
-  assert.equal((await nativeSend('old-review')).headers['x-mixrouter-model'], 'target-a');
-});
-
-test('Codex current default mapping does not relax native context or alias other duplicate models and slot targets', async () => {
-  assert.equal((await put(activeSlots())).status, 200);
-  for (const provider of router._state.store.codex) provider.models = ['new-native-default', 'other-duplicate', 'target-a'];
-  fs.writeFileSync(file, config.patch(fs.readFileSync(file, 'utf8'), { top: { model: 'new-native-default' } }));
-  const cases = [
-    ['new-native-default', { token: '' }, { authorization: '' }],
-    ['new-native-default', { token: 'external' }, { authorization: 'Bearer external' }],
-    ['new-native-default', { ua: 'openai-python/1.0' }, { 'user-agent': 'openai-python/1.0' }],
-    ['new-native-default', { session: '' }, { 'session-id': '' }],
-    ['other-duplicate', {}, {}], ['target-a', {}, {}],
-  ];
-  for (const [model, context, headers] of cases) {
-    const result = await previewMatchesResolver(model, { ...nativeContext(), ...context });
-    assert.equal(result.ok, false, JSON.stringify([model, context]));
-    assert.equal(result.matched.slot, null);
-    assert.equal(result.error.code, 'model_ambiguous_error');
-    assert.equal(result.error.httpStatus, 409);
-    const actual = await nativeSend(model, headers);
-    assert.equal(actual.status, 409);
-    assert.equal(actual.body.error.code, 'model_ambiguous_error');
-  }
-  assert.equal(hits.length, 0);
-});
-
-test('Codex live native default changes take effect in the same session without rewriting client files', async () => {
-  assert.equal((await put(activeSlots())).status, 200);
-  for (const provider of router._state.store.codex) provider.models = ['first-native-default', 'second-native-default'];
-  const sourceFile = path.join(root, 'mixrouter-model-catalog.source.json');
-  const source = fs.readFileSync(sourceFile, 'utf8'), catalogText = fs.readFileSync(catalogFile, 'utf8');
-  for (const model of ['first-native-default', 'second-native-default']) {
-    assert.equal(Object.hasOwn(JSON.parse(source).legacy_models, model), false);
-    const text = config.patch(fs.readFileSync(file, 'utf8'), { top: { model, service_tier: 'priority' } });
-    fs.writeFileSync(file, text);
-    const result = await previewMatchesResolver(model, nativeContext());
-    assert.equal(result.matched.slot, 'main');
-    assert.equal(result.selection.predicted.model, 'target-a');
-    const actual = await nativeSend(model);
-    assert.equal(actual.status, 200);
-    assert.equal(hits.at(-1).body.model, 'target-a');
-    assert.equal(fs.readFileSync(file, 'utf8'), text, 'routing must not rewrite the live native model or Fast setting');
-  }
-  const previous = await previewMatchesResolver('first-native-default', nativeContext());
-  assert.equal(previous.error.code, 'model_ambiguous_error', 'a replaced default must not become a new legacy alias');
-  assert.equal((await nativeSend('first-native-default')).status, 409);
-  assert.equal(fs.readFileSync(sourceFile, 'utf8'), source);
-  assert.equal(fs.readFileSync(catalogFile, 'utf8'), catalogText);
 });
 
 test('Codex legacy preview only maps the exact legacy ID with full native context; nothing else falls back', async () => {
@@ -291,7 +223,7 @@ test('Codex legacy preview only maps the exact legacy ID with full native contex
     ['old-native', { token: '' }, { authorization: '' }],
     ['old-native', { token: 'wrong-local-token' }, { authorization: 'Bearer wrong-local-token' }],
     ['old-native', { session: 'cxf:fingerprint-preview' }, { 'session-id': '' }],
-    ...['codex_desktop_evil/0.162.1', 'codex_other/0.162.1', 'codex_desktop', 'openai-python/1.0']
+    ...['codex_desktop_evil/0.162.1', 'codex_other/0.162.1', 'codex_desktop', 'codex-tui-evil/0.167.0', 'codex-tui', 'openai-python/1.0']
       .map(ua => ['old-native', { ua }, { 'user-agent': ua }]),
   ];
   for (const [model, patch, headers] of cases) {
@@ -452,12 +384,12 @@ test('Codex Desktop retains exact previous main/reviewer IDs and observes hot ed
   assert.equal(hits.at(-1).url, '/v1/chat/completions');
   assert.equal((await send('old-native')).headers['x-mixrouter-model'], 'desktop-main-b', 'reviewer must not capture the next main request');
   assert.equal(hits.at(-1).url, '/v1/responses');
-  for (const ua of ['codex_cli_rs/0.162.1', 'codex_exec/0.162.1', 'codex/0.162.1', 'codex 0.162.1']) {
+  for (const ua of ['codex_cli_rs/0.162.1', 'codex_exec/0.162.1', 'codex-tui/0.167.0', 'codex/0.162.1', 'codex 0.162.1']) {
     assert.equal((await send('old-native', { 'user-agent': ua })).headers['x-mixrouter-model'], 'desktop-main-b', ua);
   }
   for (const [model, extra] of [['old-native-extra', {}], ['OLD-NATIVE', {}], ['unknown-desktop-model', {}],
     ['old-native', { authorization: 'Bearer wrong-local-token' }], ['old-native', { 'session-id': '' }],
-    ...['codex_desktop_evil/0.162.1', 'codex_other/0.162.1', 'codex_desktop', 'openai-python/1.0']
+    ...['codex_desktop_evil/0.162.1', 'codex_other/0.162.1', 'codex_desktop', 'codex-tui-evil/0.167.0', 'codex-tui', 'openai-python/1.0']
       .map(ua => ['old-native', { 'user-agent': ua }])]) {
     expectNoRoute(await send(model, extra), JSON.stringify([model, extra]));
   }
