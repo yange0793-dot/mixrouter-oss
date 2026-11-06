@@ -2,9 +2,13 @@
    只加新类,不改 base.css 里既有选择器:面板本身复用 .panel / .hint / .mono / .badge,
    这里只管列表、卡片与详情。颜色一律走既有 token(自动跟随明暗主题),不引入新色值。 */
 
+.attempt-flow-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; margin-bottom: 12px; }
+.attempt-flow-head h2 { margin: 0; }
+.attempt-flow-head .attempt-history-toggle { margin-left: auto; min-height: 32px; }
+.attempt-flow:not([data-state="live"]) .attempt-flow-head { margin-bottom: 0; }
 .attempt-flow-status {
   font-size: 13px; color: var(--dim); line-height: 1.6;
-  margin: -4px 0 12px; overflow-wrap: anywhere;
+  margin: 0; overflow-wrap: anywhere;
 }
 .attempt-flow-status.err { color: var(--err-text); }
 
@@ -56,23 +60,24 @@
 }
 
 /* 已结束:折叠在 <details> 里,默认不展开。展开开关用同一个细箭头。 */
-.attempt-flow-done { margin-top: 14px; }
-.attempt-flow-done > summary {
+.attempt-flow-done, .attempt-flow-overflow, .attempt-flow-info { margin-top: 12px; }
+.attempt-flow-info .hint { margin: 8px 0 0; font-size: 12.5px; line-height: 1.6; }
+.attempt-flow-done > summary, .attempt-flow-overflow > summary, .attempt-flow-info > summary {
   display: flex; align-items: center; gap: 8px; min-height: 32px;
   cursor: pointer; color: var(--dim); font-size: 13px;
   padding: 0; list-style: none; user-select: none;
 }
-.attempt-flow-done > summary:hover { color: var(--text); }
-.attempt-flow-done > summary::before {
+.attempt-flow-done > summary:hover, .attempt-flow-overflow > summary:hover, .attempt-flow-info > summary:hover { color: var(--text); }
+.attempt-flow-done > summary::before, .attempt-flow-overflow > summary::before, .attempt-flow-info > summary::before {
   content: ''; flex: 0 0 auto; width: 6px; height: 6px; margin: 0 2px;
   border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
   transform: rotate(-45deg); transition: transform var(--dur) var(--ease);
 }
-.attempt-flow-done[open] > summary::before { transform: rotate(45deg); }
-.attempt-flow-done > summary::-webkit-details-marker { display: none; }
-.attempt-flow-done > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: var(--radius-xs); }
-.attempt-flow-done[hidden] { display: none; }
-.attempt-flow-done > .attempt-flow-list { margin-top: 8px; }
+.attempt-flow-done[open] > summary::before, .attempt-flow-overflow[open] > summary::before, .attempt-flow-info[open] > summary::before { transform: rotate(45deg); }
+.attempt-flow-done > summary::-webkit-details-marker, .attempt-flow-overflow > summary::-webkit-details-marker, .attempt-flow-info > summary::-webkit-details-marker { display: none; }
+.attempt-flow-done > summary:focus-visible, .attempt-flow-overflow > summary:focus-visible, .attempt-flow-info > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: var(--radius-xs); }
+.attempt-flow-done[hidden], .attempt-flow-overflow[hidden] { display: none; }
+.attempt-flow-done > .attempt-flow-list, .attempt-flow-overflow > .attempt-flow-list { margin-top: 8px; }
 
 /* 展开开关:原有的 ▸/▾ 字符只留给读屏之外的旧环境;这里画成与 summary 一致的细箭头。 */
 .attempt-toggle {
@@ -151,7 +156,7 @@ button.attempt-toggle:hover:not(:disabled) { color: var(--text); border-color: v
 .attempt-detail .attempt-flow-guide a { color: var(--accent-text); margin-left: 6px; }
 
 @media (max-width: 860px) {
-  .attempt-card > header .mono { flex-basis: 100%; white-space: normal; order: 1; }
+  .attempt-card > header .mono { flex-basis: 100%; white-space: nowrap; order: 1; }
   .attempt-time { margin-left: auto; }
   .attempt-toggle { width: 32px; height: 32px; min-width: 32px; min-height: 32px; }
   .attempt-flow-done > summary { min-height: 36px; }

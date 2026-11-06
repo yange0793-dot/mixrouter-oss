@@ -29,18 +29,13 @@ const USAGE_DETAIL_HEAD = {
 };
 const USAGE_WEEK_COUNT = 53;
 const USAGE_MAX_EXPAND = 8;
-// 量不到容器宽度(视图隐藏、测试桩)时的最短窗口:一个季度(13 周)。
-const USAGE_HEAT_MIN_WEEKS = 13;
-// 日历铺满卡片宽度:周数 = 容器能放下几列「封顶 16px 的格子」。格子与 usage.css 的
-// --usage-cell-max / --usage-gap / 星期列宽同值;格子小于 USAGE_HEAT_SPARSE_CELL 时
-// 星期只标一/三/五/日。
-const USAGE_HEAT_CELL_MAX = 16;
+// 格子与 usage.css 的 --usage-cell-max / --usage-gap / 星期列宽同值。
+// 短历史不补空白列;长历史压小格子或在自己的容器内横向滚动。
+const USAGE_HEAT_CELL_MAX = 18;
 const USAGE_HEAT_CELL_MIN = 9;
 const USAGE_HEAT_GAP = 3;
 const USAGE_HEAT_LABEL_W = 18 + 8;
 const USAGE_HEAT_SPARSE_CELL = 13;
-// 未覆盖的空白列至少这么多才在里面写「某日前无日志」,否则说明留在图下摘要行。
-const USAGE_HEAT_NOTE_MIN_COLS = 10;
 
 // 页面状态只在这里一处。`data` 是上次成功读取的响应;失败时保留旧数据并标 stale。
 const usageState = {
@@ -51,7 +46,7 @@ const usageState = {
   heatExpanded: 0, heatDate: null, heatFocus: false, heatKeyMode: false,
   heatSig: '', heatModel: null, heatLive: null, dailyRefs: null, heatFit: 0,
   legendResolved: false, legendHost: null, legendExtra: null,
-  sourceOpen: false,
+  sourceOpen: false, trendRefs: null, trendRows: [], trendIndex: 0,
 };
 
 // ---- 数值格式 -------------------------------------------------------------
@@ -300,6 +295,11 @@ function usageSyncChrome() {
     // 用户正打开着下拉时不要动它的值,否则列表会跳。
     if (el && document.activeElement !== el) el.value = value;
   }
+  for (const [id, value] of [['usage-provider', usageState.provider], ['usage-model', usageState.model], ['usage-status-filter', usageState.status]]) {
+    const el = $(id);
+    const filter = el && el.closest ? el.closest('.usage-filter') : null;
+    if (filter) filter.setAttribute('data-active', value ? 'true' : 'false');
+  }
   // 「清除筛选」平时只是个安静的次要动作,有筛选时才有边框和强调色:它不该和筛选控件抢注意力。
   const clear = $('usage-clear-filters');
   if (clear) {
@@ -417,7 +417,10 @@ function setUsageMetric(metric) {
   usageState.metric = metric;
   usageSavePrefs();
   usageSyncChrome();
-  if (usageState.data) usageRenderHeat(usageState.data); // 纯前端重画,不发请求
+  if (usageState.data) {
+    usageRenderHeat(usageState.data);
+    usageRenderTrend(usageState.data); // 同一批 series,纯前端重画,不发请求
+  }
 }
 function setUsageInterval(value) {
   const seconds = Number(value);
@@ -475,6 +478,7 @@ function usageRender(data) {
   usageRenderCards(data);
   usageRenderFilters(data);
   usageRenderHeat(data);
+  usageRenderTrend(data);
   usageRenderDetail(data);
   usageRenderPagination(data);
   usageRenderSource(data);
@@ -505,11 +509,13 @@ function usageRenderCards(data) {
       .join('');
   }
   set('usage-cache', usageRatio(totals.cache_hit_rate));
-  set('usage-cache-hint', '缓存读取 / (新增输入 + 缓存读取)');
+  set('usage-cache-hint', `读取 ${fmtTok(totals.cache_read)} tokens`,
+    `缓存命中率 = 缓存读取 / (新增输入 + 缓存读取);读取 ${fmtCount(totals.cache_read)} tokens`);
   const rate = usageNum(totals.ok_rate);
   set('usage-success', fmtPct(rate));
-  // 次数已在「总请求数」卡里,这里只说成功按什么判定。
-  set('usage-ok-rate', rate === null ? '暂无成功率样本' : '按最终状态判定,断流与取消计为失败');
+  const failed = (reqs !== null && rate !== null) ? Math.max(0, Math.round(reqs * (100 - rate) / 100)) : null;
+  set('usage-ok-rate', failed === null ? '暂无成功率样本' : `${fmtCount(reqs)} 次请求样本`,
+    '成功率 = 成功请求 / 总请求;按最终状态判定,断流与取消计为失败');
   // 成功率低于 95% 时把数字本身染成告警色:失败是这页唯一需要人动手看的数字。
   const success = $('usage-success');
   if (success && success.classList) {
@@ -519,7 +525,6 @@ function usageRenderCards(data) {
   // 失败条数单独标出来:成功率要心算,失败次数直接给。「0 次」时不出徽标,免得抢注意力。
   const failEl = $('usage-fail');
   if (failEl) {
-    const failed = (reqs !== null && rate !== null) ? Math.max(0, Math.round(reqs * (100 - rate) / 100)) : null;
     failEl.hidden = !failed;
     failEl.textContent = failed ? `失败 ${fmtCount(failed)} 次` : '';
     if (failed && failEl.setAttribute) {
@@ -604,6 +609,192 @@ function usageRenderFilters(data) {
   usageFillSelect('usage-model', modelFacets, usageState.model, '全部模型');
 }
 
+// ---- 区间趋势:只用本次响应的 series -----------------------------------------
+function usageTrendRows(data) {
+  const hourly = data && data.scope && data.scope.bucket === 'hour';
+  const rows = new Map();
+  for (const bucket of Array.isArray(data && data.series) ? data.series : []) {
+    const t = String(bucket && bucket.t || '');
+    if (!usageParseDayKey(t)) continue;
+    const key = hourly ? t : t.slice(0, 10);
+    const row = rows.get(key) || { t: key, reqs: 0, tokens_in: 0, tokens_out: 0, cache_read: 0, tokens: 0 };
+    row.reqs += usageNum(bucket.reqs) || 0;
+    row.tokens_in += usageNum(bucket.tokens_in) || 0;
+    row.tokens_out += usageNum(bucket.tokens_out) || 0;
+    row.cache_read += usageNum(bucket.cache_read) || 0;
+    row.tokens = row.tokens_in + row.tokens_out + row.cache_read;
+    rows.set(key, row);
+  }
+  return [...rows.values()].sort((a, b) => a.t.localeCompare(b.t));
+}
+function usageEnsureTrend() {
+  if (usageState.trendRefs) return usageState.trendRefs;
+  const holder = $('usage-chart-holder');
+  const chart = holder && holder.parentNode;
+  if (!chart || !document.createElement) return null;
+  const root = document.createElement('section');
+  root.id = 'usage-trend';
+  root.className = 'usage-trend';
+  root.setAttribute('aria-labelledby', 'usage-trend-title');
+  const title = document.createElement('h3');
+  title.id = 'usage-trend-title';
+  const plot = document.createElement('div');
+  plot.className = 'usage-trend-plot';
+  const tip = document.createElement('div');
+  tip.id = 'usage-trend-tooltip';
+  tip.className = 'usage-trend-tooltip';
+  tip.setAttribute('role', 'tooltip');
+  tip.hidden = true;
+  const live = document.createElement('p');
+  live.className = 'sr-only';
+  live.setAttribute('aria-live', 'polite');
+  const details = document.createElement('details');
+  details.className = 'usage-trend-table';
+  const summary = document.createElement('summary');
+  const wrap = document.createElement('div');
+  wrap.className = 'table-wrap';
+  const table = document.createElement('table');
+  const head = document.createElement('thead');
+  head.innerHTML = '<tr>' + ['时间', '请求', '新增输入', '输出', '缓存读取', '合计 tokens'].map(text => `<th scope="col">${text}</th>`).join('') + '</tr>';
+  const body = document.createElement('tbody');
+  body.id = 'usage-trend-rows';
+  table.appendChild(head);
+  table.appendChild(body);
+  wrap.appendChild(table);
+  details.appendChild(summary);
+  details.appendChild(wrap);
+  root.appendChild(title);
+  root.appendChild(plot);
+  root.appendChild(tip);
+  root.appendChild(live);
+  root.appendChild(details);
+  chart.appendChild(root);
+  usageState.trendRefs = { root, title, plot, tip, live, details, summary, body };
+  plot.addEventListener('pointerover', event => {
+    const mark = event.target.closest && event.target.closest('[data-trend-index]');
+    if (mark) usageShowTrend(Number(mark.getAttribute('data-trend-index')), mark);
+  });
+  plot.addEventListener('click', event => {
+    const mark = event.target.closest && event.target.closest('[data-trend-index]');
+    if (mark) usageShowTrend(Number(mark.getAttribute('data-trend-index')), mark);
+  });
+  plot.addEventListener('pointerleave', () => {
+    if (!plot.contains || !plot.contains(document.activeElement)) tip.hidden = true;
+  });
+  plot.addEventListener('focusin', event => {
+    const mark = event.target.closest && event.target.closest('[data-trend-index]');
+    if (mark) usageShowTrend(Number(mark.getAttribute('data-trend-index')), mark, true);
+  });
+  plot.addEventListener('focusout', event => {
+    if (!event.relatedTarget || !plot.contains || !plot.contains(event.relatedTarget)) tip.hidden = true;
+  });
+  plot.addEventListener('keydown', usageTrendKey);
+  return usageState.trendRefs;
+}
+function usageTrendTime(t, full = false) {
+  const parts = usageParseDayKey(t);
+  if (!parts) return '—';
+  const hour = /T(\d{2}):/.exec(t);
+  return `${full || parts.y !== new Date().getFullYear() ? parts.y + '-' : ''}${usagePad(parts.m)}-${usagePad(parts.d)}${hour ? ' ' + hour[1] + ':00' : ''}`;
+}
+function usageRenderTrend(data) {
+  const refs = usageEnsureTrend();
+  if (!refs) return;
+  const rows = usageTrendRows(data);
+  const hourly = data && data.scope && data.scope.bucket === 'hour';
+  const metric = usageState.metric;
+  const width = Math.max(Number(refs.plot.clientWidth) || 480, rows.length * 8 + 60);
+  const signature = [hourly, metric, width, ...rows.map(row => `${row.t}:${row.reqs}:${row.tokens_in}:${row.tokens_out}:${row.cache_read}`)].join('|');
+  if (refs.signature === signature) return; // 同版轮询保留焦点与当前读数,不重建SVG
+  refs.signature = signature;
+  const focused = refs.plot.contains && refs.plot.contains(document.activeElement);
+  const focusDate = focused && usageState.trendRows[usageState.trendIndex] ? usageState.trendRows[usageState.trendIndex].t : '';
+  usageState.trendRows = rows;
+  const found = focusDate ? rows.findIndex(row => row.t === focusDate) : -1;
+  usageState.trendIndex = found >= 0 ? found : Math.min(usageState.trendIndex, Math.max(0, rows.length - 1));
+  refs.title.textContent = `${USAGE_METRIC_LABELS[metric]} 趋势`;
+  refs.summary.textContent = `${hourly ? '按小时' : '按日'}查看趋势数据(${fmtCount(rows.length)} ${hourly ? '小时' : '天'})`;
+  refs.details.hidden = !rows.length;
+  refs.tip.hidden = true;
+  refs.body.innerHTML = rows.map(row => `<tr><td>${usageTrendTime(row.t, true)}</td><td>${fmtCount(row.reqs)}</td>`
+    + [row.tokens_in, row.tokens_out, row.cache_read, row.tokens].map(value => `<td${usageTokTitle(value)}>${fmtTok(value)}</td>`).join('') + '</tr>').join('');
+  if (!rows.length) {
+    refs.plot.innerHTML = '<p class="hint">本次查询没有返回趋势数据。</p>';
+    return;
+  }
+  // 单一零基线,柱宽封顶 24px。空桶仍可聚焦,不把零值画成有高度的柱。
+  const left = 44, right = width - 12, top = 18, bottom = 160;
+  const values = rows.map(row => metric === 'reqs' ? row.reqs : row.tokens);
+  const max = Math.max(...values, 0);
+  const step = 10 ** Math.floor(Math.log10(max || 1));
+  const unit = max / step;
+  const ceiling = Math.max(1, (unit <= 1 ? 1 : unit <= 2 ? 2 : unit <= 5 ? 5 : 10) * step);
+  const slot = (right - left) / rows.length;
+  const barWidth = Math.max(2, Math.min(24, slot - 2));
+  const format = value => metric === 'reqs' ? (value >= 1000 ? fmtTok(value) : fmtCount(value)) : fmtTok(value);
+  const grid = [0, ceiling / 2, ceiling].filter((value, index, all) => metric !== 'reqs' || Number.isInteger(value) || index === all.length - 1)
+    .map(value => {
+      const y = bottom - value / ceiling * (bottom - top);
+      return `<line x1="${left}" y1="${y}" x2="${right}" y2="${y}"/><text x="${left - 8}" y="${y + 4}" text-anchor="end">${format(value)}</text>`;
+    }).join('');
+  const marks = rows.map((row, index) => {
+    const value = values[index];
+    const x = left + index * slot + (slot - barWidth) / 2;
+    const y = bottom - value / ceiling * (bottom - top);
+    const radius = Math.min(4, barWidth / 2, (bottom - y) / 2);
+    const path = value ? `<path class="usage-trend-bar" d="M${x},${bottom}V${y + radius}Q${x},${y} ${x + radius},${y}H${x + barWidth - radius}Q${x + barWidth},${y} ${x + barWidth},${y + radius}V${bottom}Z"/>` : '';
+    return `<g data-trend-index="${index}" role="img" tabindex="${index === usageState.trendIndex ? '0' : '-1'}" aria-label="${usageTrendTime(row.t, true)},${fmtCount(value)} ${metric === 'reqs' ? '次请求' : 'tokens'}">`
+      + `<rect class="usage-trend-hit" x="${left + index * slot}" y="${top}" width="${slot}" height="${bottom - top}"/>${path}</g>`;
+  }).join('');
+  // 只在首/中/尾标时间,不让每根柱子都挤一个标签。跨天时标签保留日期。
+  const tickIndexes = hourly && width < 420 ? [0, rows.length - 1] : [0, Math.floor((rows.length - 1) / 2), rows.length - 1];
+  const ticks = [...new Set(tickIndexes)].map(index => {
+    const x = left + (index + .5) * slot;
+    const label = hourly && rows.every(row => row.t.slice(0, 10) === rows[0].t.slice(0, 10))
+      ? usageTrendTime(rows[index].t).split(' ').pop() : usageTrendTime(rows[index].t);
+    return `<text x="${x}" y="184" text-anchor="${index === 0 ? 'start' : index === rows.length - 1 ? 'end' : 'middle'}">${label}</text>`;
+  }).join('');
+  refs.plot.innerHTML = `<svg viewBox="0 0 ${width} 198" style="min-width:${width}px" role="group" aria-label="${hourly ? '按小时' : '按日'}${USAGE_METRIC_LABELS[metric]}柱状趋势,零基线;方向键查看,Esc 收起读数">`
+    + `<g class="usage-trend-axis">${grid}${ticks}</g>${marks}</svg>`;
+  if (focused) {
+    const element = refs.plot.querySelector(`[data-trend-index="${usageState.trendIndex}"]`);
+    if (element && element.focus) element.focus();
+    usageShowTrend(usageState.trendIndex, element, true);
+  }
+}
+function usageShowTrend(index, element, announce = false) {
+  const refs = usageState.trendRefs;
+  const row = usageState.trendRows[index];
+  if (!refs || !row) return;
+  usageState.trendIndex = index;
+  const value = usageState.metric === 'reqs' ? row.reqs : row.tokens;
+  const text = `${fmtCount(value)} ${usageState.metric === 'reqs' ? '次请求' : 'tokens'}\n${usageTrendTime(row.t, true)}`;
+  refs.tip.textContent = text;
+  refs.tip.hidden = false;
+  if (element && element.getBoundingClientRect && refs.root.getBoundingClientRect) {
+    const box = refs.root.getBoundingClientRect();
+    const mark = element.getBoundingClientRect();
+    const tipWidth = Math.min(refs.tip.offsetWidth || 180, box.width - 16);
+    refs.tip.style.left = Math.round(Math.min(Math.max(8, mark.left - box.left + mark.width / 2 - tipWidth / 2), Math.max(8, box.width - tipWidth - 8))) + 'px';
+    refs.tip.style.top = '28px';
+  }
+  if (announce) refs.live.textContent = text;
+}
+function usageTrendKey(event) {
+  const refs = usageState.trendRefs;
+  if (!refs || !['ArrowLeft', 'ArrowRight', 'Home', 'End', 'Escape'].includes(event.key)) return;
+  event.preventDefault();
+  if (event.key === 'Escape') { refs.tip.hidden = true; return; }
+  const last = usageState.trendRows.length - 1;
+  const index = event.key === 'Home' ? 0 : event.key === 'End' ? last
+    : Math.max(0, Math.min(last, usageState.trendIndex + (event.key === 'ArrowLeft' ? -1 : 1)));
+  const marks = refs.plot.querySelectorAll('[data-trend-index]');
+  marks.forEach(mark => mark.setAttribute('tabindex', Number(mark.getAttribute('data-trend-index')) === index ? '0' : '-1'));
+  const element = refs.plot.querySelector(`[data-trend-index="${index}"]`);
+  if (element && element.focus) element.focus();
+  usageShowTrend(index, element, true);
+}
+
 // ---- 卡片 → 热力图 ---------------------------------------------------------
 // daily:后端给的按日汇总(本地日期)。旧后端没有 dashboard 时,从 series 按天求和 ——
 // 同一批行、同一种口径,只是粒度粗一点,不会造出不存在的历史。
@@ -664,7 +855,7 @@ function usageHeatLevel(value, thresholds) {
   return 4;
 }
 
-// 一次算清 371 格(可扩展到多个 53 周块)的日期、数值、状态与色阶。纯计算,不改 DOM。
+// 一次算清实际覆盖周(每块最多53周)的日期、数值、状态与色阶。纯计算,不改 DOM。
 function usageHeatModel(data) {
   const scope = (data && data.scope) || {};
   const dashboard = (data && data.dashboard) || {};
@@ -690,28 +881,17 @@ function usageHeatModel(data) {
     ? (todayKey > covFirstKey ? todayKey : usageLocalDayKey(coverage.last_ts) || todayKey)
     : (hasDashboard ? null : rangeEndKey);
 
-  // 窗口宽度 = max(数据真正覆盖到的周数, 卡片放得下的周数):日历永远撑满卡片宽度。
-  // 日志只有最近几天时,前面的周仍然画出来,但覆盖起点一周之前的格子标成 gap ——
-  // 只占位、不画斜纹(见 usageRenderHeat 的「某日前无日志」说明)。裁剪只决定画到哪一列,
-  // 0 / 未覆盖 / 区间外的判定都不变;「查看更早的 53 周」每点一次往前加一块。
+  // 从第一周有日志处开始,不为填满容器补空白周。长历史每次最多展开一块,最后一块只画实际剩余周。
   const expanded = Math.max(0, usageState.heatExpanded | 0);
-  const dataStartKey = covFirstKey && covFirstKey > rangeStartKey ? covFirstKey : rangeStartKey;
+  const dataStartKey = covFirstKey || rangeStartKey;
   const dataStart = usageDayDate(dataStartKey) || anchor;
   const dataStartWeek = usageAddDays(dataStart, -usageMondayIndex(dataStart));
   const weeksNeeded = Math.max(1, Math.round((weekStart - dataStartWeek) / (7 * 86400000)) + 1);
-  const fitWeeks = usageState.heatFit > 0 ? usageState.heatFit : USAGE_HEAT_MIN_WEEKS;
-  const weeks = Math.max(Math.min(USAGE_WEEK_COUNT, weeksNeeded), fitWeeks) + USAGE_WEEK_COUNT * expanded;
+  const weeks = Math.min(weeksNeeded, USAGE_WEEK_COUNT * (expanded + 1));
   const gridStart = usageAddDays(weekStart, -(weeks - 1) * 7);
   const gridEnd = usageAddDays(weekStart, 6);
   const gridStartKey = usageDayKey(gridStart);
   const gridEndKey = usageDayKey(gridEnd);
-  // 覆盖起点所在周的前一列开始才画斜纹;再往前的列整列留空。完全没有日志时整张都留空,
-  // 由空态文案说明。
-  const covStart = covFirstKey ? usageDayDate(covFirstKey) : null;
-  const covWeek = covStart
-    ? Math.round((usageAddDays(covStart, -usageMondayIndex(covStart)) - gridStart) / (7 * 86400000)) : weeks + 1;
-  const gapCols = Math.max(0, Math.min(weeks, covWeek - 1));
-
   const cells = [];
   const byKey = new Map();
   for (let index = 0; index < weeks * 7; index += 1) {
@@ -732,7 +912,6 @@ function usageHeatModel(data) {
       active: key >= rangeStartKey && key <= rangeEndKey,
       covered,
       future,
-      gap: !covered && !future && Math.floor(index / 7) < gapCols,
       level: 0,
     };
     cells.push(cell);
@@ -753,9 +932,11 @@ function usageHeatModel(data) {
   // 月份标签:从每列第一天取月份,变化处换标签并计算跨列宽度。
   const months = [];
   for (let week = 0; week < weeks; week += 1) {
-    const month = usageAddDays(gridStart, week * 7).getMonth() + 1;
+    const date = usageAddDays(gridStart, week * 7);
+    const month = date.getMonth() + 1;
+    const year = date.getFullYear();
     const last = months[months.length - 1];
-    if (!last || last.month !== month) months.push({ month, start: week, span: 1 });
+    if (!last || last.month !== month || last.year !== year) months.push({ year, month, start: week, span: 1 });
     else last.span += 1;
   }
 
@@ -773,12 +954,12 @@ function usageHeatModel(data) {
   const hasRequests = daysWithReqs > 0 || (total !== null && total > 0);
 
   return {
-    weeks, gridStart, gridEnd, gridStartKey, gridEndKey, rangeStartKey, rangeEndKey, gapCols,
+    weeks, gridStart, gridEnd, gridStartKey, gridEndKey, rangeStartKey, rangeEndKey,
     todayKey, cells, byKey, months, thresholds, activeDays, daysWithReqs, hasRequests,
     hasCoverage: !!covFirstKey, coverageStartKey: covFirstKey,
     anyOutside, anyInactive, anyFuture,
     // 往前翻的入口:统计区间本身伸到当前块之前(例如「全部」而数据比画出来的更早)。
-    hasEarlier: rangeStartKey < gridStartKey,
+    hasEarlier: weeks < weeksNeeded, earlierWeeks: Math.min(USAGE_WEEK_COUNT, weeksNeeded - weeks),
     tabKey: latestActive ? latestActive.key : gridStartKey,
   };
 }
@@ -869,8 +1050,7 @@ function usageHeatLegend(model) {
   return `<div class="heatmap-legend">${parts.join('')}</div>`;
 }
 
-// 容器能放下几列「封顶 16px 的格子」:向上取整,让每列略小于封顶值、刚好铺满。
-// 量不到宽度(视图隐藏、测试桩)时 heatFit 保持上一次的值;从没量到过(0)时模型退回 USAGE_HEAT_MIN_WEEKS。
+// 容器尺寸只用于格子密度,不决定周数。量不到宽度时沿用上一次尺寸。
 function usageHeatAvail() {
   const holder = $('usage-chart-holder');
   const width = holder ? Number(holder.clientWidth) || 0 : 0;
@@ -880,9 +1060,8 @@ function usageMeasureHeat() {
   const avail = usageHeatAvail();
   // 视图隐藏时量到 0:沿用上一次的列数,不为看不见的页面重画。
   if (!avail) return false;
-  const fit = Math.ceil((avail + USAGE_HEAT_GAP) / (USAGE_HEAT_CELL_MAX + USAGE_HEAT_GAP));
-  const changed = fit !== usageState.heatFit;
-  usageState.heatFit = fit;
+  const changed = avail !== usageState.heatFit;
+  usageState.heatFit = avail;
   return changed;
 }
 // 这么多周时每格大约多宽(只用来决定星期标签写几个字;真实尺寸由样式表的 minmax 给)。
@@ -894,16 +1073,17 @@ function usageHeatCellSize(weeks) {
 }
 // 卡片宽度变了(窗口缩放、侧栏收起、视图从隐藏变可见)才重画;同宽的回调直接跳过。
 function usageHeatResize() {
-  if (!usageState.data || !usageMeasureHeat()) return;
-  usageRenderHeat(usageState.data);
+  if (!usageState.data) return;
+  if (usageMeasureHeat()) usageRenderHeat(usageState.data);
+  usageRenderTrend(usageState.data);
 }
 
 function usageRenderHeat(data) {
   usageMeasureHeat();
   const model = usageHeatModel(data);
   usageState.heatModel = model;
-  // 空白列够宽时,「某日前无日志」直接写在空白处;否则仍由图下摘要行说明。
-  model.gapNote = !!(model.coverageStartKey && model.gapCols >= USAGE_HEAT_NOTE_MIN_COLS);
+  const chart = $('usage-chart-holder') && $('usage-chart-holder').parentNode;
+  if (chart && chart.setAttribute) chart.setAttribute('data-split', model.weeks <= 13 ? 'true' : 'false');
   usageRenderHeatSummary(model);
 
   const empty = $('usage-chart-empty');
@@ -926,6 +1106,7 @@ function usageRenderHeat(data) {
     root.setAttribute('role', 'group');
     root.setAttribute('data-weeks', String(model.weeks));
     root.setAttribute('data-density', sparse ? 'compact' : 'dense');
+    root.setAttribute('style', `--usage-cell:${usageHeatCellSize(model.weeks)}px`);
   }
   if (!root || sig === usageState.heatSig) return;
   usageState.heatSig = sig;
@@ -935,42 +1116,41 @@ function usageRenderHeat(data) {
   const tabKey = usageState.heatDate || model.tabKey;
   // 月份标签:列数太少的月(窗口首尾常有 1 周残月)不写文字,只占位 —— 否则
   // 「10月」会直接压到右边「11月」上。整月的 4–5 列永远够宽。
-  const months = model.months.map(month => `<span class="heatmap-month" style="grid-column:${month.start + 1} / span ${month.span}">${month.span >= 3 ? month.month + '月' : ''}</span>`).join('');
+  const months = model.months.map((month, index) => {
+    const label = month.month === 1 || (index === 0 && month.year !== new Date().getFullYear())
+      ? `${month.year}/${month.month}` : `${month.month}月`;
+    return `<span class="heatmap-month" title="${month.year}年${month.month}月" style="grid-column:${month.start + 1} / span ${month.span}">${month.span >= 3 ? label : ''}</span>`;
+  }).join('');
   // 七行固定周一到周日。格子够大时写全七个字;密排时行很窄,只标一/三/五/日。
   const weekdays = [0, 1, 2, 3, 4, 5, 6]
     .map(row => `<span>${sparse || row % 2 === 0 ? USAGE_WEEKDAY_CHARS[(row + 1) % 7] : ''}</span>`).join('');
   const cells = model.cells.map(cell => {
     // 区间外的日期淡化显示:它既不是 0,也不该和真实 0 抢同一块底色。
-    const ghosts = !cell.active && !cell.future && !cell.gap;
+    const ghosts = !cell.active && !cell.future;
     const attrs = [
       'class="heatmap-cell"',
+      ghosts ? 'style="opacity:0.35"' : '',
       'role="img"',
       `data-date="${cell.key}"`,
       `data-level="${cell.level}"`,
       `data-active="${cell.active}"`,
       `data-coverage="${cell.covered ? 'inside' : 'outside'}"`,
-      // 覆盖起点一周之前:仍是「未覆盖」(浮层、读屏照旧),只是不画斜纹,整段留空。
-      cell.gap ? 'data-gap="true"' : '',
       ghosts ? 'data-inactive="true"' : '',
-      ghosts ? 'style="opacity:0.35"' : '',
       cell.future ? 'data-future="true"' : '',
       `tabindex="${cell.key === tabKey ? '0' : '-1'}"`,
       `aria-label="${esc(usageHeatCellLabel(cell))}"`,
     ].filter(Boolean).join(' ');
     return `<div ${attrs}></div>`;
   }).join('');
-  const gapNote = model.gapNote
-    ? `<span class="heatmap-gap-note" style="width:${(model.gapCols / model.weeks * 100).toFixed(3)}%" title="数据源没有这些日期的日志,不是 0"><span>${esc(model.coverageStartKey)} 前无日志</span></span>`
-    : '';
   const gridLabel = `按日用量热力图,${model.weeks} 周,周一为第一行;方向键逐日查看,点击或聚焦查看数值`;
   if (root.setAttribute) root.setAttribute('aria-label', gridLabel);
-  // 格子尺寸交给样式表:每列 minmax(最小, 16px) 均分卡片宽度,行内只放布局。
+  // 月份与日格共用实测格子宽度;不足一屏的日历靠左,不拉大列间距。
   // 外层两列网格让星期标签与日历共用同一套行高,月份行与格子共用同一套列宽。
   const layout = '<div class="heatmap-layout" style="display:grid;grid-template-columns:auto minmax(0,1fr);column-gap:8px;row-gap:4px">'
     + '<span aria-hidden="true"></span>'
     + `<div class="heatmap-months" aria-hidden="true">${months}</div>`
     + `<div class="heatmap-weekdays" aria-hidden="true">${weekdays}</div>`
-    + `<div class="heatmap-grid">${cells}${gapNote}</div>`
+    + `<div class="heatmap-grid">${cells}</div>`
     + '</div>';
 
   // 图例:外壳已有就用它的色阶,只补当前窗口出现的状态色块;否则在热力图里自建一份。
@@ -1008,13 +1188,14 @@ function usageRenderHeatSummary(model) {
   if (label) {
     // 窗口是「最近 N 周」,不是固定 53 周:默认按数据覆盖裁剪,展开后才变长。
     const windowLabel = usageState.heatExpanded > 0 ? `已展开 ${model.weeks} 周` : `最近 ${model.weeks} 周`;
-    label.textContent = `${windowLabel} · ${model.gridStartKey} 起`;
+    const start = model.coverageStartKey && model.coverageStartKey > model.gridStartKey ? model.coverageStartKey : model.gridStartKey;
+    const end = model.rangeEndKey < model.todayKey ? model.rangeEndKey : model.todayKey;
+    label.textContent = `${windowLabel} · ${start} – ${end}`;
     if (label.setAttribute) label.setAttribute('title', `${model.gridStartKey} – ${model.gridEndKey},每列一周,周一在上`);
   }
   const summary = $('usage-calendar-summary');
   if (summary) {
-    // 空白处已经写了「某日前无日志」时不再在摘要行重复一遍。
-    const note = model.anyOutside && model.coverageStartKey && !model.gapNote
+    const note = model.anyOutside && model.coverageStartKey
       ? `最早一条日志 ${model.coverageStartKey},之前的日期未覆盖。` : '';
     summary.textContent = note;
     summary.hidden = !note;
@@ -1026,7 +1207,7 @@ function usageRenderHeatSummary(model) {
     expand.hidden = !model.hasEarlier;
     expand.disabled = !model.hasEarlier || capped;
     if (model.hasEarlier && capped) expand.textContent = '已展开到上限';
-    else if (model.hasEarlier) expand.textContent = '查看更早的 53 周';
+    else if (model.hasEarlier) expand.textContent = `查看更早的 ${model.earlierWeeks} 周`;
   }
 }
 

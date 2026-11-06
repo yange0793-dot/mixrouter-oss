@@ -1,6 +1,6 @@
 'use strict';
-// 模型方案(#profiles)的定向回归:只跑真实 public/js/profiles.js,配最小的 DOM/api 边界。
-// 不联网、不读写真实 profiles.json。
+// 模型方案(#profiles)与 O3/O4 配置文案的定向回归，配最小的 DOM/api 边界。
+// 不联网、不读写真实 profiles.json 或配置；compact/settings 只验证本子块改动。
 //
 // 钉住几件会静默骗人的事:
 //   · 保存只发快照,不切换;revision 随请求带上;
@@ -17,6 +17,9 @@ const vm = require('node:vm');
 
 const ROOT = path.resolve(__dirname, '..');
 const source = fs.readFileSync(path.join(ROOT, 'public/js/profiles.js'), 'utf8');
+const profilesCss = fs.readFileSync(path.join(ROOT, 'public/styles/profiles.css'), 'utf8');
+const compactSource = fs.readFileSync(path.join(ROOT, 'public/js/compact.js'), 'utf8');
+const settingsSource = fs.readFileSync(path.join(ROOT, 'public/js/settings.js'), 'utf8');
 const appSource = require('./console-source').consoleSource();
 const workspaceSource = fs.readFileSync(path.join(ROOT, 'public/js/workspace.js'), 'utf8');
 const html = fs.readFileSync(path.join(ROOT, 'public/index.html'), 'utf8');
@@ -49,16 +52,32 @@ class El {
   constructor(id = '') {
     this.id = id; this.hidden = false; this.disabled = false; this.value = '';
     this.checked = false; this.textContent = ''; this.className = ''; this._html = ''; this.focused = false;
+    this.focusVisible = true; this.parentElement = null; this.listeners = new Map(); this.attributes = new Map();
+    const classes = new Set();
+    this.classList = {
+      add: name => classes.add(name), remove: name => classes.delete(name), contains: name => classes.has(name),
+      toggle: (name, on = !classes.has(name)) => { if (on) classes.add(name); else classes.delete(name); return on; },
+    };
   }
   set innerHTML(value) { this._html = String(value ?? ''); }
   get innerHTML() { return this._html; }
-  focus() { this.focused = true; }
+  setAttribute(name, value) { this.attributes.set(name, String(value)); }
+  closest(selector) { return selector === 'label' ? this.parentElement : null; }
+  matches(selector) { return selector === ':focus-visible' && this.focused && this.focusVisible; }
+  addEventListener(event, listener) { this.listeners.set(event, [...this.listeners.get(event) || [], listener]); }
+  dispatch(event) { for (const listener of this.listeners.get(event) || []) listener(); }
+  focus() { this.focused = true; this.dispatch('focus'); }
+  blur() { this.focused = false; this.dispatch('blur'); }
 }
 
 function harness({ online = true, list = LIST, preview = PREVIEW } = {}) {
   const elements = new Map();
   const get = id => {
-    if (!elements.has(id)) elements.set(id, new El(id));
+    if (!elements.has(id)) {
+      const node = new El(id);
+      elements.set(id, node);
+      if (id === 'profiles-app-claude' || id === 'profiles-app-codex') node.parentElement = get(id + '-label');
+    }
     return elements.get(id);
   };
   get('profiles-app-claude').checked = true;
@@ -111,6 +130,145 @@ async function loaded(options) {
   await h.settle();
   return h;
 }
+
+function configHarness() {
+  const elements = new Map(), calls = [];
+  const get = id => { if (!elements.has(id)) elements.set(id, new El(id)); return elements.get(id); };
+  let responder = async () => { throw new Error('unexpected request'); };
+  const context = vm.createContext({
+    document: { getElementById: get, querySelector: () => null }, window: { addEventListener() {} },
+    $: get, esc: value => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch])),
+    fmtTok: String, fmtCount: value => Number(value).toLocaleString('en-US'), fmtTtfb: value => `${value}ms`, fmtBytes: value => `${value}B`,
+    fmtWhen: () => '12:34:56', fmtFullTime: () => '2026-11-06 12:34:56',
+    state: { compact: { key_selection_supported: true, selection: { key_id: '' }, providers: [{ id: 'p1', active_key: 'k1',
+      keys: [{ id: 'k1', label: '当前账号', enabled: true }, { id: 'k2', label: '固定账号', enabled: true }] }] } },
+    compactDraft: { provider: 'p1', model: 'model', key_id: '' }, compactOutcome: null, windowOutcome: null,
+    liveHealth: null, healthError: '', view: 'settings', GROUPS: { claude: 'Claude', codex: 'Codex' }, providers: () => [],
+    api: (url, options = {}) => { calls.push({ url, options }); return responder(url, options); },
+  });
+  vm.runInContext(compactSource, context, { filename: 'public/js/compact.js' });
+  vm.runInContext(settingsSource, context, { filename: 'public/js/settings.js' });
+  return { get, calls, run: code => vm.runInContext(code, context), respond: next => { responder = next; } };
+}
+
+test('O3:原生 legend 不浮动进 grid，checked/focus 由事件 class 同步，不依赖 :has', () => {
+  assert.match(profilesCss, /\.profiles-apps \{ display: block;/);
+  assert.match(profilesCss, /\.profiles-apps legend \{ float: none; width: auto; white-space: nowrap;/);
+  assert.doesNotMatch(profilesCss, /:has\(/, '所有动态状态都由 JS 维护，WebKit 不靠重新计算 :has');
+  const h = harness(), claude = h.get('profiles-app-claude'), codex = h.get('profiles-app-codex');
+  assert.equal(claude.parentElement.classList.contains('is-checked'), true, '初始化读取真实 checked 属性');
+  assert.equal(codex.parentElement.classList.contains('is-checked'), false);
+  codex.checked = true; codex.dispatch('change');
+  assert.equal(codex.parentElement.classList.contains('is-checked'), true);
+  codex.checked = false; codex.dispatch('change');
+  assert.equal(codex.parentElement.classList.contains('is-checked'), false);
+  claude.checked = false; h.run('profilesRender()');
+  assert.equal(claude.parentElement.classList.contains('is-checked'), false, '程序改选后重绘也能同步');
+  codex.focusVisible = false; codex.focus();
+  assert.equal(codex.parentElement.classList.contains('is-focused'), false, '鼠标聚焦不冒充键盘焦点');
+  codex.dispatch('keydown');
+  assert.equal(codex.parentElement.classList.contains('is-focused'), true, '已有鼠标焦点转为键盘操作仍显示焦点环');
+  codex.parentElement.dispatch('pointerdown');
+  assert.equal(codex.parentElement.classList.contains('is-focused'), false);
+  codex.focusVisible = true; codex.focus();
+  assert.equal(codex.parentElement.classList.contains('is-focused'), true);
+  codex.blur();
+  assert.equal(codex.parentElement.classList.contains('is-focused'), false);
+});
+
+test('O4:正常 Key 显示当前账号，作用域进 title；失效与旧服务警示仍可见', () => {
+  const h = configHarness();
+  h.run('renderCompactKeys()');
+  assert.equal(h.get('compact-key-hint').textContent, '跟随渠道当前 Key：当前账号');
+  assert.match(h.get('compact-key-hint').title, /渠道切换当前账号后压缩也会跟随/);
+  h.run("compactDraft.key_id = 'k2'; renderCompactKeys()");
+  assert.equal(h.get('compact-key-hint').textContent, '固定 Key：固定账号');
+  assert.match(h.get('compact-key-hint').title, /只影响两条压缩规则，不切换渠道当前账号/);
+  h.run("compactDraft.key_id = 'removed'; renderCompactKeys()");
+  assert.match(h.get('compact-key-hint').textContent, /不可用.*选择仍保留.*不会自动替换/);
+  assert.equal(h.get('compact-key').value, 'removed');
+  assert.equal(h.get('compact-key-hint').classList.contains('is-warning'), true);
+  h.run('state.compact.key_selection_supported = false; renderCompactKeys()');
+  assert.match(h.get('compact-key-hint').textContent, /更新服务后可用.*草稿保留.*不能提交给旧服务/);
+  assert.equal(h.get('compact-key').disabled, true);
+  h.run("state.compact.key_selection_supported = true; compactDraft.key_id = ''; renderCompactKeys()");
+  assert.equal(h.get('compact-key-hint').classList.contains('is-warning'), false);
+  assert.equal(h.calls.length, 0, '文案渲染不新增请求');
+});
+
+test('O4:窗口首行突出层与数值，路径进 title，真实覆盖和重开语义不隐藏', () => {
+  const h = configHarness();
+  const w = { scope: 'global', value: 400, target: '/project/.claude/settings.json', configured: { source: 'project', value: 300 },
+    coverage: { project_checked: true, overridden_by: 'project', environment_override: true }, warnings: ['额外警示'],
+    layers: [{ scope: 'global', value: 400, file: '/project/.claude/settings.json', exists: true }] };
+  h.run(`renderCompactWindow(${JSON.stringify(w)})`);
+  assert.equal(h.get('window-current').textContent, '所选用户全局层：400 · 磁盘生效：项目层 300');
+  assert.doesNotMatch(h.get('window-current').textContent, /settings\.json/);
+  assert.match(h.get('window-current').title, /\/project\/\.claude\/settings\.json.*不是运行中会话的实测值.*autoCompactWindow = 400/);
+  assert.match(h.get('window-coverage-text').textContent, /被项目层覆盖.*保存本层不会改变.*存在环境覆盖/);
+  assert.equal(h.get('window-coverage').classList.contains('offline'), true);
+  assert.match(h.get('window-warnings').textContent, /额外警示/);
+  assert.match(h.get('window-restart').textContent, /不会热改.*新开会话.*claude --continue.*\/autocompact/);
+  h.get('window-value').value = '777';
+  w.coverage = { project_checked: false };
+  h.run(`renderCompactWindow(${JSON.stringify(w)}, true)`);
+  assert.equal(h.get('window-value').value, '777', '短文案不得覆盖未保存草稿');
+  assert.equal(h.get('window-coverage-text').textContent, '未指定项目：项目与本地层覆盖尚未检查。');
+  assert.match(h.get('window-coverage-text').title, /不能判断某个项目的有效窗口/);
+  assert.equal(h.get('window-coverage').classList.contains('offline'), false);
+});
+
+test('O4:尚无保存结果折叠四项，真实结果展开并继续区分写盘、加载与重开', () => {
+  const h = configHarness();
+  assert.match(h.get('compact-status').innerHTML, /<details class="cfg-more ss-details"><summary>尚无保存结果<\/summary>/);
+  assert.equal((h.get('compact-status').innerHTML.match(/尚未保存过/g) || []).length, 4);
+  h.run('compactOutcome = { saved: true, written: true, loaded: true, restart: false }; renderSplitStatus()');
+  assert.doesNotMatch(h.get('compact-status').innerHTML, /ss-details/);
+  assert.match(h.get('compact-status').innerHTML, /已写盘：配置已写入服务端磁盘/);
+  assert.match(h.get('compact-status').innerHTML, /服务已加载：运行中的服务按新压缩规则分发/);
+  assert.match(h.get('compact-status').innerHTML, /客户端需重开：不需要/);
+  assert.match(h.get('window-status').innerHTML, /ss-details/, '两块状态独立');
+  h.run('windowOutcome = { saved: true, written: true, restart: true }; renderWindowStatus()');
+  assert.doesNotMatch(h.get('window-status').innerHTML, /ss-details/);
+  assert.match(h.get('window-status').innerHTML, /服务已加载：不适用.*运行中的会话不会热改/);
+  assert.match(h.get('window-status').innerHTML, /客户端需重开：需要/);
+});
+
+test('O4:设置读取成功只显示事实，边界说明进 title；失败仍保留结果与下一步', async () => {
+  const h = configHarness();
+  h.respond(async url => url === '/api/backups' ? { dirs: [], keep: 5 } : { settings: { total_deadline_ms: 400 }, providers: [] });
+  await h.run('loadBackups()'); await h.run('loadHealth()');
+  assert.equal(h.get('backup-status').textContent, '已清点 0 个备份池 · 12:34:56');
+  assert.match(h.get('backup-status').title, /不含任何配置正文/);
+  assert.equal(h.get('health-status').textContent, '已读取 · 12:34:56');
+  assert.match(h.get('health-status').title, /不代表上游此刻连得通/);
+  const previous = h.get('health-body').innerHTML;
+  h.respond(async () => { throw new Error('test read failure'); });
+  await h.run('loadBackups()'); await h.run('loadHealth()');
+  assert.match(h.get('backup-status').textContent, /读取失败.*下面是 12:34:56.*重新清点备份/);
+  assert.equal(h.get('backup-dirs').classList.contains('is-stale'), true);
+  assert.match(h.get('health-status').textContent, /读取失败.*可能已过期/);
+  assert.equal(h.get('health-body').innerHTML, previous);
+  assert.ok(h.calls.every(call => !call.options.method), '只读加载不得新增写请求');
+});
+
+test('O4:备份仅显示实际删除警示，异常文件和预测结果的警告仍保留', () => {
+  const h = configHarness();
+  const d = { id: 'claude', label: 'Claude 设置', ok: true, backups: [], total: 0, next_delete: [] };
+  assert.doesNotMatch(h.run(`backupDirCard(${JSON.stringify(d)}, 5)`), /bk-next|下一次备份会删/);
+  d.next_delete = ['old-backup']; d.unparsable = [{ name: 'odd-backup', reason: 'invalid time' }];
+  const card = h.run(`backupDirCard(${JSON.stringify(d)}, 5)`);
+  assert.match(card, /bk-next has-next.*下一次备份会删：old-backup/);
+  assert.match(card, /解析不出时间.*odd-backup.*照样占保留池名额/);
+  d.ok = false; d.error = { code: 'ENOENT' };
+  assert.match(h.run(`backupDirCard(${JSON.stringify(d)}, 5)`), /目录不存在.*没查成不等于零份备份/);
+  const result = h.run(`previewBody(${JSON.stringify({ matched: { via: 'slot' }, selection: { predicted: { providerName: 'Alpha' } },
+    candidates: [{ providerId: 'p1', providerName: 'Alpha', model: 'm1', wire: 'responses', eligible: true }], warnings: [{ message: '候选配置警告' }] })})`);
+  assert.match(result, /^<dl class="config-facts">/);
+  assert.match(result, /<dt>预测首选<\/dt><dd>Alpha<\/dd>/);
+  assert.match(result, /不代表上游此刻连得通/);
+  assert.match(result, /config-warnings.*候选配置警告/);
+});
 
 test('index/外壳接线:两个新视图入口、脚本样式与 typeof 钩子', () => {
   assert.match(html, /id="view-profiles"/);

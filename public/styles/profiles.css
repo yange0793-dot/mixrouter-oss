@@ -5,8 +5,10 @@
 .profiles-save-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
 .profiles-save-row > .field { flex: 1 1 280px; min-width: 0; gap: 6px; font-size: 12.5px; line-height: 1.5; color: var(--dim); }
 .profiles-save-row > .field input { min-height: var(--control-h); }
-.profiles-apps { display: grid; grid-template-columns: repeat(2, max-content); column-gap: 8px; border: 0; margin: 0; padding: 0; min-width: 0; }
-.profiles-apps legend { float: left; grid-column: 1 / -1; padding: 0; margin: 0 0 6px; font-size: 12.5px; line-height: 1.5; color: var(--dim); }
+/* 保留原生 fieldset/legend 排版，不把浮动 legend 放进 grid；WebKit 会把它压成逐字竖排。 */
+.profiles-apps { display: block; border: 0; margin: 0; padding: 0; min-width: 0; flex: 0 0 auto; }
+.profiles-apps legend { float: none; width: auto; white-space: nowrap; padding: 0; margin: 0 0 6px; font-size: 12.5px; line-height: 1.5; color: var(--dim); }
+.profiles-apps label + label { margin-left: 8px; }
 .profiles-apps label {
   display: inline-flex; align-items: center; gap: 7px; height: var(--control-h); padding: 0 12px;
   border: 1px solid var(--border); border-radius: var(--radius); background: var(--input);
@@ -14,8 +16,8 @@
   transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
 .profiles-apps label:hover { border-color: var(--border-strong); }
-.profiles-apps label:has(input:checked) { border-color: var(--accent-line); background: var(--accent-soft); }
-.profiles-apps label:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
+.profiles-apps label.is-checked { border-color: var(--accent-line); background: var(--accent-soft); }
+.profiles-apps label.is-focused { outline: 2px solid var(--focus); outline-offset: 2px; }
 .profiles-apps input:focus-visible { outline: none; }
 .profiles-save-row > .primary { flex: 0 0 auto; min-height: var(--control-h); }
 #profiles-save-status { margin: 10px 0 0; font-size: 13px; }
@@ -61,8 +63,8 @@
 
 @media (max-width: 860px) {
   .profiles-save-row > .field, .profiles-apps { flex-basis: 100%; }
-  .profiles-apps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .profiles-apps label { height: 36px; }
+  .profiles-apps { width: 100%; }
+  .profiles-apps label { height: 36px; width: calc((100% - 12px) / 2); justify-content: center; }
   .profiles-save-row > .primary { width: 100%; min-height: 36px; }
   #view-profiles button { min-height: 36px; }
 }

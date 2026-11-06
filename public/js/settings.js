@@ -35,7 +35,8 @@ async function loadBackups() {
     $('backup-dirs').classList.remove('is-stale');
     const bad = dirs.filter(d => !d.ok).length;
     backupsReadAt = new Date(); backupsLoaded = true;
-    settingsStatus(box, `已清点 ${dirs.length} 个备份池${bad ? `（${bad} 个目录读取失败）` : ''} · ${fmtWhen(backupsReadAt)}。只显示文件名与摘要，不含任何配置正文。`);
+    settingsStatus(box, `已清点 ${dirs.length} 个备份池${bad ? `（${bad} 个目录读取失败）` : ''} · ${fmtWhen(backupsReadAt)}`);
+    box.title = '只显示文件名与摘要，不含任何配置正文。';
   } catch (e) {
     // 端点挂了只影响这一块:其它页的草稿、其它面板都不受牵连(每个 fetch 各自 try/catch)。
     // 上一次的清点结果留在原处,标成过期;从没读成功过时下面本来就是空的。
@@ -65,7 +66,7 @@ function backupDirCard(d, keep) {
     <div class="bk-head"><b>${esc(d.label || d.id)}</b><span class="badge ${d.ok ? 'on' : 'off'}">${d.ok ? '已清点' : '读取失败'}</span>
       <span class="mono">${esc(d.dir || '')}</span></div>
     ${d.ok ? `<p class="hint">共 ${fmtCount(d.total ?? list.length)} 份${d.legacy ? `，其中 ${fmtCount(d.legacy)} 份旧格式` : ''} · 保留上限 ${keep == null ? '—' : `${fmtCount(keep)} 份`}</p>
-      <p class="hint bk-next${nextDelete.length ? ' has-next' : ''}">下一次备份会删：${nextDelete.length ? nextDelete.map(esc).join('、') : '无（池未满）'}</p>`
+      ${nextDelete.length ? `<p class="hint bk-next has-next">下一次备份会删：${nextDelete.map(esc).join('、')}</p>` : ''}`
       : `<p class="hint">这个目录没查成：${reason ? `${reason}（${code}）` : code || '未知原因'}。没查成不等于零份备份。</p>`}
     ${unparsable.length ? `<p class="hint">名字像备份但解析不出时间的有 ${fmtCount(unparsable.length)} 个：${unparsable.map(u => `<span class="mono" title="${esc(u.reason || '')}">${esc(u.name)}</span>`).join('、')}。它们照样占保留池名额。</p>` : ''}
     ${rows ? `<div class="table-wrap"><table><caption class="sr-only">${esc(d.label || d.id)} 备份清单</caption><thead><tr><th scope="col">文件名</th><th scope="col" class="num">大小</th><th scope="col">时间</th><th scope="col" title="sha256 的前 12 位">摘要</th></tr></thead><tbody>${rows}</tbody></table></div>${list.length > 12 ? `<p class="hint">只显示最近 12 份，共 ${fmtCount(list.length)} 份。</p>` : ''}` : ''}
@@ -100,7 +101,8 @@ async function loadHealth() {
         : '');
     $('health-body').classList.remove('is-stale');
     healthReadAt = new Date();
-    settingsStatus(box, `已读取 · ${fmtWhen(healthReadAt)}。只读视图，不改任何状态。`);
+    settingsStatus(box, `已读取 · ${fmtWhen(healthReadAt)}`);
+    box.title = '只读视图，不改任何状态。渠道可参与路由只是配置口径，不代表上游此刻连得通。';
     // 渠道页的卡片也要跟着更新(可用性徽标);拿不到健康不影响卡片渲染。
     if (view === 'providers') renderProviders();
   } catch (e) {
@@ -151,8 +153,7 @@ function previewBody(res) {
   const via = { compact: '压缩标记', slot: '槽位别名', model: '模型名' };
   const strategy = { priority: '主备顺序', round_robin: '轮询', weighted: '按权重', least_used: '最少使用', random: '随机' };
   const wire = { anthropic: 'Anthropic Messages', responses: 'Responses', chat: 'Chat Completions' };
-  return `<p class="hint"><strong>这是预测，不是实际落点。</strong></p>`
-    + `<dl class="config-facts">
+  return `<dl class="config-facts">
         <div><dt>命中方式</dt><dd>${labelled(via, m.via, '未提供')}</dd></div>
         <div><dt>命中规则</dt><dd>${m.ruleId ? `<span class="mono">${esc(m.ruleId)}</span>` : '未命中(没有可走的规则)'}</dd></div>
         <div><dt>分配策略</dt><dd>${labelled(strategy, m.strategy, '未提供')}</dd></div>

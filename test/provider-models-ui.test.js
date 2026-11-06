@@ -84,7 +84,8 @@ async function harness(data = fixture()) {
     removeAttribute(name) { delete this.attributes[name]; }
     getAttribute(name) { return this.attributes[name]; }
     addEventListener(name, callback) { (this.events[name] ||= []).push(callback); }
-    focus() { document.activeElement = this; }
+    focus() { document.activeElement = this; for (const fn of this.events.focus || []) fn({ target: this }); }
+    blur() { document.activeElement = document.body; for (const fn of this.events.blur || []) fn({ target: this }); }
     contains(el) { return el === this || !!el?.parentElement && this.contains(el.parentElement); }
     matches(selector) { return selector.split(',').some(s => s.trim() === this.tagName.toLowerCase()); }
     getClientRects() { return this.hidden ? [] : [{}]; }
@@ -447,6 +448,89 @@ function claudeRouterFixture() {
   return data;
 }
 const cardOf = (h, id) => h.get('prov-grid').innerHTML.match(new RegExp(`<article\\b[^>]*data-provider="${id}"[^>]*>[\\s\\S]*?</article>`))?.[0] || '';
+const cardOrder = h => Array.from(h.get('prov-grid').innerHTML.matchAll(/<article\b[^>]*data-provider="([^"]+)"/g), match => match[1]);
+
+test('直连渠道置顶,其余启用与停用渠道按原顺序分组,不修改渠道库', async () => {
+  const data = fixture(), [alpha, solo] = data.providers.claude;
+  data.providers.claude = [
+    { ...solo, id: 'off-1', enabled: false }, solo,
+    { ...solo, id: 'off-2', enabled: false }, { ...solo, id: 'enabled-2' }, alpha,
+  ];
+  const original = data.providers.claude.map(p => p.id);
+  const h = await harness(data);
+  h.run("view = 'providers'; renderProviders()");
+  assert.deepEqual(cardOrder(h), ['a1', 'a2', 'enabled-2', 'off-1', 'off-2']);
+  assert.deepEqual(list(h.run('providers("claude").map(p => p.id)')), original, '只排序显示,不改配置顺序');
+  h.get('provider-filter').value = 'enabled'; h.run('renderProviders()');
+  assert.deepEqual(cardOrder(h), ['a1', 'a2', 'enabled-2'], '筛选后仍按同一优先级显示');
+});
+
+test('Claude 路由:main 渠道→所有槽引用→启用→停用,未写入 env 的引用也置前且组内稳定', async () => {
+  const data = claudeRouterFixture(), [alpha, solo, conv] = data.providers.claude;
+  data.providers.claude = [
+    { ...conv, id: 'off-1', enabled: false }, conv,
+    { ...solo, id: 'sonnet-only', enabled: false }, { ...conv, id: 'enabled-2' },
+    solo, { ...conv, id: 'off-2', enabled: false }, alpha,
+  ];
+  Object.assign(data.slots.claude.find(s => s.name === 'sonnet'), { provider: 'sonnet-only', enabled: false });
+  const original = data.providers.claude.map(p => p.id);
+  const h = await harness(data);
+  h.run("view = 'providers'; renderProviders()");
+  assert.deepEqual(cardOrder(h), ['a1', 'sonnet-only', 'a2', 'a3', 'enabled-2', 'off-1', 'off-2']);
+  assert.doesNotMatch(cardOf(h, 'sonnet-only'), /路由在用/, '排序优先引用不等于客户端已在用');
+  assert.deepEqual(list(h.run('providers("claude").map(p => p.id)')), original);
+});
+
+test('Codex 直连按实际渠道置顶,路由按 main 与其它槽引用置顶', async () => {
+  const data = fixture(), [beta, chat] = data.providers.codex;
+  data.providers.codex = [chat, { ...beta, id: 'enabled-extra' }, { ...beta, id: 'review-only' }, beta];
+  data.current.codex = '@router';
+  Object.assign(data.live.codex, { router: false, connection_mode: 'direct', direct_provider_id: 'o1', direct_provider_name: 'Beta', base_url: beta.base_url, model: beta.model, review_model: '', revision: 'direct-one' });
+  const h = await harness(data);
+  h.run("view = 'providers'; setApp('codex')");
+  assert.deepEqual(cardOrder(h), ['o1', 'enabled-extra', 'review-only', 'o2'], '库内 current 仍为 @router 时也看实际直连渠道');
+  Object.assign(data.live.codex, { router: true, connection_mode: 'router', direct_provider_id: '', base_url: data.router.codex_base, model: 'mixr-main', review_model: 'mixr-reviewer' });
+  data.slots.codex = [
+    { name: 'main', alias: 'mixr-main', provider: 'o1', provider_name: 'Beta', model: 'gpt-test', enabled: true },
+    { name: 'reviewer', alias: 'mixr-reviewer', provider: 'review-only', provider_name: 'Beta', model: 'gpt-test', enabled: true },
+  ];
+  await h.run('refresh()');
+  assert.deepEqual(cardOrder(h), ['o1', 'review-only', 'enabled-extra', 'o2']);
+  for (const id of ['o1', 'review-only', 'enabled-extra', 'o2']) {
+    const button = cardOf(h, id).match(/<button\b[^>]*data-action="switch"[^>]*>/)?.[0];
+    assert.ok(button);
+    assert.doesNotMatch(button, /class="[^"]*\bprimary\b/, '路由模式不突出切换接入方式');
+  }
+});
+
+test('五个次级操作收为具名图标按钮,原 small/data-action/onclick 与危险类保留', async () => {
+  const h = await harness();
+  h.run("view = 'providers'; renderProviders()");
+  const cases = [
+    ['test', '测试', 'testProvider'], ['probe', '测活', 'probeModels'], ['edit', '编辑', 'openProvider'],
+    ['toggle', '停用', 'toggleProvider'], ['delete', '删除', 'delProvider'],
+  ];
+  const checkActions = (card, id, labels = {}) => {
+    assert.equal((card.match(/<button\b[^>]*\bprovider-icon-action\b/g) || []).length, 5);
+    for (const [action, defaultLabel, handler] of cases) {
+      const label = labels[action] || defaultLabel;
+      const button = card.match(new RegExp(`<button\\b[^>]*data-action="${action}"[^>]*>[\\s\\S]*?</button>`))?.[0];
+      assert.ok(button, action + ' 保留按钮');
+      assert.match(button, /class="[^"]*\bsmall\b/);
+      assert.match(button, /class="[^"]*\bprovider-icon-action\b/);
+      assert.ok(button.includes(`data-provider="${id}"`));
+      assert.ok(button.includes(`onclick="${handler}(${h.run('handlerArg(' + JSON.stringify(id) + ')')})"`), action + ' 保留原处理器与 HTML/JS 双层转义');
+      assert.ok(button.includes(`aria-label="${label}"`), action + ' 有可访问名称');
+      assert.match(button, /\btitle="[^"]+"/);
+      assert.match(button, /<span\b[^>]*aria-hidden="true"[^>]*>/, action + ' 图标不重复朗读');
+      assert.ok(new RegExp(`<span\\b[^>]*class="[^"]+"[^>]*>${label}</span>`).test(button), action + ' 保留隐藏文字');
+      if (action === 'delete') assert.match(button, /class="[^"]*\bdanger\b/);
+    }
+  };
+  checkActions(cardOf(h, 'a1'), 'a1');
+  h.run("curApp='codex'; renderProviders()");
+  checkActions(cardOf(h, 'o2'), 'o2', { test: '路由器检测', probe: '路由器测活', toggle: '启用' });
+});
 
 test('Claude 路由模式:按客户端 env 实际写入的槽位标「路由在用」,按钮写明会退出路由', async () => {
   const h = await harness(claudeRouterFixture());
@@ -461,12 +545,47 @@ test('Claude 路由模式:按客户端 env 实际写入的槽位标「路由在�
   assert.doesNotMatch(main + solo, /库内选中|已写入配置/);
   // 按钮做的是 switchClaude:写直连 = 退出路由,文案与 title 按真实效果写
   assert.match(main, /data-action="switch"[^>]*title="把此渠道写入 Claude 配置并退出路由模式[^"]*">改为直连<\/button>/);
+  for (const card of [main, solo]) assert.doesNotMatch(card.match(/<button\b[^>]*data-action="switch"[^>]*>/)?.[0] || '', /class="[^"]*\bprimary\b/, '路由模式下改为直连不是主操作');
   // #3 只能走路由的渠道不摆禁用主按钮,换成说明标签,原因在 title
   assert.doesNotMatch(conv, /data-action="switch"/);
   assert.match(conv, /<span class="tag route-only-tag" title="该渠道只挂 Codex 型通道[^"]*">仅路由可用<\/span>/);
   // 离线没有"在用"这回事
   h.run('online = false; renderProviders()');
   assert.doesNotMatch(h.get('prov-grid').innerHTML, /路由在用/);
+});
+
+test('当前配置按接入方式/当前渠道/默认模型分栏,长值保留 title,配置状态不冒充连通性', async () => {
+  const h = await harness();
+  h.run("view = 'providers'; renderProviders()");
+  const live = h.get('liveinfo').innerHTML;
+  const labels = [...live.matchAll(/<dt>([^<]+)<\/dt>/g)].map(match => match[1]);
+  assert.deepEqual(labels.slice(0, 3), ['接入方式', '当前渠道', '默认模型']);
+  assert.match(live, /<dd title="Alpha">Alpha<\/dd>/);
+  assert.match(live, /<dd class="mono" title="claude-special">claude-special<\/dd>/);
+  assert.match(live, /已写入配置/);
+  assert.doesNotMatch(live, /上游连通|上游可用/);
+  const css = fs.readFileSync(path.join(__dirname, '../public/styles/providers.css'), 'utf8');
+  assert.match(css, /#liveinfo \.current-config \{\s*display: grid; grid-template-columns:/);
+  assert.match(css, /\.keypick \{[^}]*padding: 2px 28px 2px 8px;/, '下拉文本留出箭头位置');
+  assert.match(css, /#view-providers \.prov-help > summary \{[^}]*display: list-item;/, 'WebKit 保留原生 disclosure 箭头');
+});
+
+test('Codex 接入单选的选中/禁用状态由 JS class 同步,模型发现清单状态也不依赖动态 has', async () => {
+  const h = await harness();
+  h.run("curApp='codex'; openProvider('o1'); document.getElementById('m-codex-mode-direct').parentElement=document.createElement('label'); document.getElementById('m-codex-mode-router').parentElement=document.createElement('label'); syncCodexModeDraft()");
+  const direct = h.get('m-codex-mode-direct'), router = h.get('m-codex-mode-router');
+  assert.equal(direct.parentElement.classList.contains('is-selected'), true);
+  assert.equal(router.parentElement.classList.contains('is-selected'), false);
+  h.get('m-wire').value = 'chat'; h.run('syncCodexModeDraft()');
+  assert.equal(direct.parentElement.classList.contains('is-disabled'), true);
+  assert.equal(direct.parentElement.classList.contains('is-selected'), false);
+  assert.equal(router.parentElement.classList.contains('is-selected'), true);
+  h.run("discoveryState.models=['visible-model']; renderModelDiscovery()");
+  assert.equal(h.get('m-model-discovery').classList.contains('has-models'), true);
+  h.run("setDiscoveryQuery('no-match')");
+  assert.equal(h.get('m-model-discovery').classList.contains('has-models'), false);
+  const css = fs.readFileSync(path.join(__dirname, '../public/styles/providers.css'), 'utf8');
+  assert.doesNotMatch(css, /:has\([^)]*(?:input:checked|input:disabled|\.md-list)/);
 });
 
 test('Claude 直连模式:当前渠道「重新写入」,其他渠道「直连此渠道」,路由徽标不出现', async () => {
@@ -491,14 +610,147 @@ test('渠道卡:开发备注单行截断留全文 title,停用 Key 告警照常�
   assert.match(css, /#prov-grid \.note\.dev-note \{[^}]*text-overflow: ellipsis/);
 });
 
-test('槽位折叠标题摘要:每槽一枚 tag,完整别名/env/渠道在 title,未配置单独标出', async () => {
-  const h = await harness(claudeRouterFixture());
+test('槽位折叠标题摘要:相同落点合并,每槽别名/env/渠道留在 title,未配置单独标出', async () => {
+  const data = claudeRouterFixture();
+  const h = await harness(data);
+  h.run("view = 'providers'; renderSlots(true)");
+  const summary = h.get('slots-summary').innerHTML;
+  assert.equal((summary.match(/<span class="tag/g) || []).length, 3);
+  assert.match(summary, />main \/ haiku → Alpha · claude-special<\/span>/);
+  assert.match(summary, />opus \/ sonnet → Solo · solo-model<\/span>/);
+  for (const slot of data.slots.claude) {
+    const tag = Array.from(summary.matchAll(/<span class="tag[^\"]*" title="([^\"]*)">([^<]*)<\/span>/g))
+      .find(match => match[2].split(' → ')[0].split(' / ').includes(slot.name));
+    assert.ok(tag, slot.name + ' 保留在摘要中');
+    assert.ok(tag[1].includes(slot.alias), slot.name + ' 保留别名');
+    assert.ok(tag[1].includes(slot.env), slot.name + ' 保留 env');
+    assert.ok(tag[1].includes(slot.provider ? `${slot.provider_name} @ ${slot.model}` : '未配置'), slot.name + ' 保留完整落点');
+  }
+  assert.match(summary, /<span class="tag unset" title="Subagent 槽 · mixr-subagent · CLAUDE_CODE_SUBAGENT_MODEL · 未配置">subagent → 未配置<\/span>/);
+});
+
+test('五个槽位有效落点相同只显示一枚 tag,配置模型留空也按渠道默认合并', async () => {
+  const data = claudeRouterFixture();
+  for (const slot of data.slots.claude) Object.assign(slot, { provider: 'a1', provider_name: 'Alpha', model: slot.name === 'main' ? 'claude-special' : '' });
+  const h = await harness(data);
+  h.run("view = 'providers'; renderSlots(true)");
+  const summary = h.get('slots-summary').innerHTML;
+  assert.equal((summary.match(/<span class="tag/g) || []).length, 1);
+  assert.match(summary, />main \/ opus \/ sonnet \/ haiku \/ subagent → Alpha · claude-special<\/span>/);
+  for (const slot of data.slots.claude) {
+    assert.ok(summary.includes(slot.alias));
+    assert.ok(summary.includes(slot.env));
+  }
+});
+
+test('同名渠道同模型不按显示名合并,不同失效渠道引用也各自保留', async () => {
+  const data = claudeRouterFixture();
+  data.providers.claude[1].name = 'Alpha';
+  for (const slot of data.slots.claude) Object.assign(slot, {
+    provider: { main: 'a1', opus: 'a2', sonnet: 'missing-1', haiku: 'missing-2', subagent: '' }[slot.name],
+    model: 'same-model',
+  });
+  const h = await harness(data);
   h.run("view = 'providers'; renderSlots(true)");
   const summary = h.get('slots-summary').innerHTML;
   assert.equal((summary.match(/<span class="tag/g) || []).length, 5);
-  assert.match(summary, /<span class="tag" title="主模型 main · mixr-main · ANTHROPIC_MODEL · Alpha @ claude-special">main → Alpha · claude-special<\/span>/);
-  assert.match(summary, /title="Opus 槽 · mixr-opus · ANTHROPIC_DEFAULT_OPUS_MODEL · Solo @ solo-model">opus → Solo · solo-model</);
-  assert.match(summary, /<span class="tag unset" title="Subagent 槽 · mixr-subagent · CLAUDE_CODE_SUBAGENT_MODEL · 未配置">subagent → 未配置<\/span>/);
+  assert.match(summary, />main → Alpha · same-model<\/span>/);
+  assert.match(summary, />opus → Alpha · same-model<\/span>/);
+  assert.match(summary, /<span class="tag unset" title="[^"]*missing-1（渠道已删除）">sonnet → 渠道已删除<\/span>/);
+  assert.match(summary, /<span class="tag unset" title="[^"]*missing-2（渠道已删除）">haiku → 渠道已删除<\/span>/);
+});
+
+function codexCompactUiFixture() {
+  const data = fixture();
+  data.current.codex = '@router';
+  Object.assign(data.live.codex, { router: true, connection_mode: 'router', model: 'mixr-main', review_model: 'mixr-reviewer',
+    base_url: data.router.codex_base, revision: 'compact-one', config_file: '/home/test/.codex/config.toml', model_auto_compact_token_limit: 500000,
+    compaction: { configured: 500000, default_limit: 900000, effective_limit: 500000, context_window: 1000000, context_source: 'catalog', capped: false, warnings: [] } });
+  return data;
+}
+
+test('Codex 阈值:失焦正整数千分位,聚焦恢复原始数字,轮询与焦点切换不领取新草稿版本', async () => {
+  const data = codexCompactUiFixture(), h = await harness(data);
+  h.run("view = 'providers'; setApp('codex')");
+  const input = h.get('codex-compact-input');
+  assert.equal(input.value, '500,000');
+  assert.equal(h.run('codexCompactDraft.value'), '500000', '显示格式不改变原始草稿');
+  assert.equal(input.events.focus.length, 1); assert.equal(input.events.blur.length, 1);
+  input.focus();
+  assert.equal(input.value, '500000');
+  assert.equal(h.run('codexCompactDraft.dirty'), false, '聚焦不是编辑');
+  h.run("setCodexCompactValue('750000')");
+  const editRevision = h.run('codexCompactEditRevision');
+  assert.equal(input.value, '750000', '聚焦时不格式化');
+  input.blur();
+  assert.equal(input.value, '750,000');
+  assert.equal(h.run('codexCompactDraft.value'), '750000');
+  assert.equal(h.run('codexCompactEditRevision'), editRevision, '格式化不增加编辑版本');
+  Object.assign(data.live.codex, { revision: 'compact-external', model_auto_compact_token_limit: 600000 });
+  data.live.codex.compaction.configured = 600000;
+  await h.run('refresh()');
+  assert.equal(input.value, '750,000', '轮询保留已有草稿');
+  assert.equal(h.run('codexCompactDraft.revision'), 'compact-one', '轮询不为草稿领取新磁盘版本');
+  input.focus();
+  assert.equal(input.value, '750000');
+  assert.equal(h.run('codexCompactDraft.revision'), 'compact-one');
+  input.blur();
+  assert.equal(input.value, '750,000');
+  assert.equal(input.events.focus.length, 1); assert.equal(input.events.blur.length, 1, '重绘不重复绑定');
+  for (const raw of ['auto', '200k', '1m', '1.5m', '0', '-10', '1.5', '500,00']) {
+    input.focus(); h.run(`setCodexCompactValue(${JSON.stringify(raw)})`); input.blur();
+    assert.equal(input.value, raw, raw + ' 不是正整数字符串,显示原样');
+    input.focus(); assert.equal(input.value, raw);
+  }
+  h.run("setCodexCompactValue('9007199254740991')"); input.blur();
+  assert.equal(input.value, '9,007,199,254,740,991', '显示分组直接操作字符串,不经过浮点数');
+  input.focus(); assert.equal(input.value, '9007199254740991');
+});
+
+test('正确分组的阈值粘贴按原始字段发送去逗号值,仍保留精度安全 k/m 解析', async () => {
+  const data = codexCompactUiFixture(), h = await harness(data);
+  h.run("view = 'providers'; setApp('codex')");
+  const input = h.get('codex-compact-input');
+  const cases = [
+    ['500,000', '500000', 500000], ['1,234.5k', '1234.5k', 1234500],
+    ['0.5m', '0.5m', 500000], ['9,007,199,254,740,991', '9007199254740991', Number.MAX_SAFE_INTEGER],
+  ];
+  let saves = 0;
+  h.fetchStub(async (url, options) => {
+    assert.equal(url, '/api/codex/config');
+    const body = JSON.parse(options.body), current = cases[saves++];
+    const codex = { ...data.live.codex, revision: 'compact-saved-' + saves, model_auto_compact_token_limit: current[2],
+      compaction: { ...data.live.codex.compaction, configured: current[2], effective_limit: current[2] } };
+    assert.equal(body.model_auto_compact_token_limit, current[1]);
+    return reply(200, { ok: true, codex });
+  });
+  for (const [pasted, normalized, value] of cases) {
+    input.focus(); h.run(`setCodexCompactValue(${JSON.stringify(pasted)})`); input.blur();
+    const revision = h.run('codexCompactDraft.revision');
+    assert.equal(h.run('codexCompactDraft.value'), pasted, '保存前不重写原始草稿');
+    const saving = h.run('saveCodexCompact()');
+    assert.ok(h.get('confirm-text').textContent.includes(String(value)));
+    h.run('finishConfirm(true)'); await saving;
+    assert.deepEqual(h.requests.findLast(r => r.url === '/api/codex/config' && r.method === 'POST').body,
+      { action: 'compact_threshold', model_auto_compact_token_limit: normalized, revision });
+    assert.equal(h.run('codexCompactDraft.dirty'), false);
+    assert.equal(input.value, String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ','));
+  }
+});
+
+test('不合法的逗号分组不能被去逗号后放行,小数与安全整数边界继续拒绝', async () => {
+  const h = await harness(codexCompactUiFixture());
+  h.run("view = 'providers'; setApp('codex')");
+  const input = h.get('codex-compact-input');
+  for (const invalid of ['500,00', '50,0000', '5,00,000', '500,,000', ',500000', '500000,', '1,23k', '0,000', '1,234.5', '1,234.5678k', '9,007,199,254,740,993']) {
+    input.focus(); h.run(`setCodexCompactValue(${JSON.stringify(invalid)})`); input.blur();
+    await h.run('saveCodexCompact()');
+    assert.match(h.get('codex-compact-status').textContent, /请输入 auto 或正整数 tokens/, invalid);
+    assert.equal(h.run('codexCompactDraft.value'), invalid, '失败时保留草稿');
+    assert.equal(h.run('codexCompactDraft.revision'), 'compact-one', '失败时保留原磁盘版本');
+    assert.equal(h.run('activeDialog'), null, '无效输入不进入确认');
+  }
+  assert.equal(h.requests.some(r => r.url === '/api/codex/config' && r.method === 'POST'), false, '无效分组不发送保存请求');
 });
 
 test('#29 多 Key 渠道隐藏无效的单行 API Key;清单删空后退回单 Key 并恢复提示', async () => {

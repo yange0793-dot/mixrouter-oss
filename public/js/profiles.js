@@ -219,6 +219,10 @@ function profilesRenderPreview() {
 }
 
 function profilesRender() {
+  for (const id of ['profiles-app-claude', 'profiles-app-codex']) {
+    const input = profilesEl(id);
+    input?.closest('label')?.classList.toggle('is-checked', input.checked);
+  }
   const list = Array.isArray(profilesState.profiles) ? profilesState.profiles : [];
   const revision = profilesState.revision === null || profilesState.revision === undefined
     ? '' : String(profilesState.revision).slice(0, 12);
@@ -502,4 +506,16 @@ function profilesSetVisible(on) {
   if (profilesState.visible && !profilesState.loaded && !profilesState.loading) profilesLoad(false);
 }
 
-if (typeof document !== 'undefined') profilesRender();
+if (typeof document !== 'undefined') {
+  for (const id of ['profiles-app-claude', 'profiles-app-codex']) {
+    const input = profilesEl(id);
+    const label = input?.closest('label');
+    if (!label) continue;
+    input.addEventListener('change', () => label.classList.toggle('is-checked', input.checked));
+    label.addEventListener('pointerdown', () => label.classList.remove('is-focused'));
+    input.addEventListener('focus', () => label.classList.toggle('is-focused', input.matches(':focus-visible')));
+    input.addEventListener('keydown', () => label.classList.add('is-focused'));
+    input.addEventListener('blur', () => label.classList.remove('is-focused'));
+  }
+  profilesRender();
+}

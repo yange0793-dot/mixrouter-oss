@@ -1610,7 +1610,7 @@
     entry.id = 'readiness-entry';
     entry.className = 'panel readiness-entry';
     entry.setAttribute('aria-labelledby', 'readiness-entry-title');
-    // 入口只是一条提示条:渠道列表才是这一页的主角,步骤说明留在向导弹窗里。
+    // 向导入口和当前配置共用一张状态卡;配置事实在下方分栏,步骤仍留在弹窗里。
     entry.innerHTML = `<div class="readiness-entry-row">
         <span class="readiness-entry-icon" aria-hidden="true"></span>
         <div class="readiness-entry-copy">
@@ -1618,13 +1618,17 @@
           <p class="hint" id="readiness-entry-status" role="status">读取客户端安装与配置状态后再开始。</p>
         </div>
         <div class="readiness-entry-actions">
-          <button class="small primary" type="button" id="readiness-open" onclick="readinessOpen()">打开接入向导</button>
+          <button class="small" type="button" id="readiness-open" onclick="readinessOpen()">打开接入向导</button>
           <button class="small quiet" type="button" id="readiness-undo-open" onclick="readinessOpenUndo()">撤销上次写入</button>
         </div>
       </div>`;
-    const tabs = view.querySelector('.apptabs');
-    if (tabs && tabs.parentNode === view) view.insertBefore(entry, tabs);
-    else view.appendChild(entry);
+    const live = rEl('liveinfo');
+    if (live?.parentNode) live.parentNode.insertBefore(entry, live);
+    else {
+      const tabs = view.querySelector('.apptabs');
+      if (tabs && tabs.parentNode === view) view.insertBefore(entry, tabs);
+      else view.appendChild(entry);
+    }
 
     // 概览页只加一个跳转入口,不放任何配置控件:点下去是切到渠道页并打开向导弹窗。
     const overview = rEl('view-overview');

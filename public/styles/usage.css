@@ -88,7 +88,7 @@
 /* ---- Intro + data-source panel ------------------------------------------------ */
 /* 页名与同步控件都搬进了顶栏,.head 只剩一个读屏标题,高度为 0:不再留它的 18px 下边距,
    intro 与其他页的 .sub 落在同一高度。 */
-#view-usage > .head:not(:has(.actions)) { margin-bottom: 0; }
+#view-usage > .head { margin-bottom: 0; }
 #view-usage .usage-intro { margin: 0 0 16px; max-width: 92ch; font-size: var(--fs-sm); line-height: 1.6; color: var(--dim); }
 #view-usage .usage-source { margin-bottom: 16px; }
 #view-usage .usage-source h2 { font-size: 15px; font-weight: 600; letter-spacing: 0; margin-bottom: 8px; }
@@ -158,9 +158,7 @@
 #view-usage #usage-model { width: 172px; }
 #view-usage #usage-status-filter { width: 104px; min-width: 0; }
 /* 选了具体值的筛选带一圈淡强调色:一眼看出哪些筛选正在生效。区间总有值,不参与。 */
-#view-usage .usage-filter:has(#usage-provider option[value=""]:not(:checked)),
-#view-usage .usage-filter:has(#usage-model option[value=""]:not(:checked)),
-#view-usage .usage-filter:has(#usage-status-filter option[value=""]:not(:checked)) {
+#view-usage .usage-filter[data-active="true"] {
   border-color: var(--accent-line);
   background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--input);
 }
@@ -252,11 +250,10 @@
 #view-usage .usage-more-grid > div > b { font: 600 18px/1.25 var(--sans); color: var(--text); font-variant-numeric: tabular-nums; }
 
 /* ---- Heatmap card ------------------------------------------------------------ */
-/* 格子封顶 24px(满 53 周时 22px),不再随卡片宽度拉成大方块。
-   周数少(compact)且 ≥1181px 时:日历在左,窗口概览三块小指标 + 摘要/图例在右,摘要贴着日历底边;
-   周数多(dense)或更窄时单列:标题 → 三块小指标 → 日历 → 摘要/图例。 */
+/* 格子封顶18px,从第一周有日志起。短覆盖在桌面左侧排日历,右侧留给所选区间趋势。
+   周数多或窄屏时单列:标题 → 窗口指标 → 日历/图例 → 趋势。 */
 #view-usage .usage-chart {
-  display: grid; grid-template-columns: minmax(0, 1fr); grid-template-areas: "head" "side" "body" "foot";
+  display: grid; grid-template-columns: minmax(0, 1fr); grid-template-areas: "head" "side" "body" "foot" "trend";
   align-items: start; gap: 0 32px; padding: 18px 20px 16px; margin: 0 0 16px;
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
   box-shadow: var(--highlight), var(--shadow-sm);
@@ -290,19 +287,17 @@
   font-variant-numeric: tabular-nums; white-space: nowrap;
 }
 
-/* 日历。滚动区留 3px 内边距,边缘格子的焦点环不被裁掉。列数由 usage.js 按卡片宽度定
-   (放得下几列 16px 的格子就画几周),每列 minmax(9px, 16px) 均分剩余宽度,所以日历横向铺满;
-   历史比卡片还长(展开、手机)时才在自己的滚动区里横向滚,锚在最近一周。 */
+/* 日历留3px内边距保护焦点环。列数只取真实覆盖周,格子9–18px;长历史在自己的容器横滚。 */
 #view-usage #usage-chart-holder {
   grid-area: body; min-width: 0; min-height: 0; direction: ltr; padding: 3px; margin: -3px;
   overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain;
 }
 #view-usage #usage-chart-holder > * { direction: ltr; }
-#view-usage #usage-heatmap { --usage-cell-max: 16px; --usage-gap: 3px; width: auto; min-width: 0; }
-#view-usage .heatmap-layout { justify-content: stretch; align-items: stretch; }
+#view-usage #usage-heatmap { --usage-cell-max: 18px; --usage-gap: 3px; width: max-content; min-width: 0; }
+#view-usage .heatmap-layout { justify-content: start; align-items: stretch; }
 #view-usage .heatmap-months {
-  display: grid; grid-auto-flow: column; grid-auto-columns: minmax(9px, var(--usage-cell-max));
-  gap: var(--usage-gap); justify-content: space-between; align-self: end; margin: 0;
+  display: grid; grid-auto-flow: column; grid-auto-columns: var(--usage-cell, 18px);
+  gap: var(--usage-gap); justify-content: start; align-self: end; margin: 0;
   font: 11.5px/1.4 var(--sans); color: var(--dim); white-space: nowrap;
 }
 #view-usage .heatmap-weekdays {
@@ -312,34 +307,20 @@
 }
 #view-usage .heatmap-grid {
   position: relative;
-  display: grid; grid-auto-flow: column; grid-auto-columns: minmax(9px, var(--usage-cell-max));
-  grid-template-rows: repeat(7, auto); gap: var(--usage-gap); justify-content: space-between; min-width: 0;
+  display: grid; grid-auto-flow: column; grid-auto-columns: var(--usage-cell, 18px);
+  grid-template-rows: repeat(7, auto); gap: var(--usage-gap); justify-content: start; min-width: 0;
 }
 #view-usage .heatmap-cell {
-  min-width: 0; min-height: 0; aspect-ratio: 1 / 1; border-radius: 3px;
+  width: var(--usage-cell, 18px); height: var(--usage-cell, 18px); min-width: 0; min-height: 0; max-width: 18px; max-height: 18px; aspect-ratio: 1 / 1; border-radius: 3px;
   transition: outline-color var(--dur) var(--ease);
 }
 #view-usage #usage-heatmap[data-density="dense"] .heatmap-cell { border-radius: 2px; }
 #view-usage .heatmap-cell:hover { outline: 1.5px solid var(--dim); outline-offset: 1px; }
 #view-usage .heatmap-cell:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; position: relative; z-index: 2; }
-/* 未覆盖:斜线比 base 稀一点。只画覆盖起点前的一列,更早的未覆盖格(data-gap)整段留空,
-   空白处由 .heatmap-gap-note 写明「某日前无日志」;浮层与读屏仍读作「未覆盖」。 */
+/* 起始周里早于第一条日志的日子仍是未覆盖,不是零;斜纹与明确读数同时保留。 */
 #view-usage .heatmap-cell[data-coverage="outside"],
 #view-usage .heatmap-legend [data-coverage="outside"] {
   background-image: repeating-linear-gradient(135deg, var(--heat-outside-line) 0 1px, transparent 1px 5px);
-}
-/* 只留未覆盖的平涂底色(没有斜纹、也不是 0 级色阶):日历的格子纹理还在,读起来不是「0 请求」。 */
-#view-usage .heatmap-cell[data-gap="true"] { background: var(--heat-outside); cursor: default; }
-#view-usage .heatmap-cell[data-gap="true"]:hover { outline: 0; }
-#view-usage .heatmap-gap-note {
-  position: absolute; top: 0; bottom: 0; left: 0; z-index: 1;
-  display: flex; align-items: center; justify-content: center; padding: 0 8px;
-  pointer-events: none; overflow: hidden;
-}
-#view-usage .heatmap-gap-note > span {
-  max-width: 100%; padding: 3px 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  background: var(--surface); border: 1px solid var(--border-soft); border-radius: var(--radius-pill);
-  font-size: 12.5px; color: var(--dim);
 }
 #view-usage .heatmap-cell[data-future="true"] { background: transparent; box-shadow: inset 0 0 0 1px var(--border-soft); }
 #view-usage #usage-chart-empty { margin: 10px 0 0; padding: 0; font-size: 12.5px; line-height: 1.5; color: var(--dim); }
@@ -381,6 +362,37 @@
   -webkit-mask: var(--usage-icon-prev) center / contain no-repeat; mask: var(--usage-icon-prev) center / contain no-repeat;
 }
 #view-usage #usage-calendar-expand:hover:not(:disabled) { background: var(--nav-active); color: var(--text); }
+
+/* ---- Selected interval: a single-series chart beside short calendars -------- */
+#view-usage .usage-trend { grid-area: trend; position: relative; min-width: 0; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border-soft); }
+#view-usage .usage-trend h3 { margin: 0 0 10px; font-size: 13px; font-weight: 600; color: var(--text); }
+#view-usage .usage-trend-plot { overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; }
+#view-usage .usage-trend-plot svg { display: block; width: 100%; height: 198px; overflow: visible; }
+#view-usage .usage-trend-axis line { stroke: var(--chart-grid); stroke-width: 1; }
+#view-usage .usage-trend-axis text { fill: var(--dim); font: 12px var(--sans); font-variant-numeric: tabular-nums; }
+#view-usage .usage-trend-bar { fill: var(--chart-series); }
+#view-usage .usage-trend-hit { fill: transparent; }
+#view-usage .usage-trend-plot [data-trend-index] { cursor: pointer; }
+#view-usage .usage-trend-plot [data-trend-index]:hover .usage-trend-bar { opacity: .7; }
+#view-usage .usage-trend-plot [data-trend-index]:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+#view-usage .usage-trend-plot [data-trend-index]:is(:hover, :focus-visible) .usage-trend-hit { fill: var(--chart-area); }
+#view-usage .usage-trend-tooltip { position: absolute; z-index: 5; pointer-events: none; padding: 8px 11px; max-width: calc(100% - 16px); background: var(--raised); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-lg); color: var(--text); font: 600 13px/1.5 var(--sans); font-variant-numeric: tabular-nums; white-space: pre-line; }
+#view-usage .usage-trend .usage-trend-table { margin: 4px 0 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+#view-usage .usage-trend .usage-trend-table > summary { width: fit-content; min-height: 32px; padding: 4px 0; font-size: 12px; font-weight: 400; color: var(--dim); }
+#view-usage .usage-trend .usage-trend-table[open] > summary { border-bottom: 0; }
+#view-usage .usage-trend .usage-trend-table table { min-width: 520px; }
+@media (min-width: 1181px) {
+  #view-usage .usage-chart[data-split="true"] { grid-template-columns: 300px minmax(0, 1fr); grid-template-areas: "head head" "side trend" "body trend" "foot trend"; gap: 0 28px; }
+  #view-usage .usage-chart[data-split="true"] .usage-trend { align-self: stretch; margin: 0; padding: 0 0 0 24px; border-top: 0; border-left: 1px solid var(--border-soft); }
+  #view-usage .usage-chart[data-split="true"] .usage-chart-side { background: transparent; border: 0; }
+  #view-usage .usage-chart[data-split="true"] .usage-side-row { flex-direction: column; align-items: flex-start; padding: 0 10px; gap: 3px; }
+  #view-usage .usage-chart[data-split="true"] .usage-side-row:first-child { padding-left: 0; }
+}
+@media (forced-colors: active) {
+  #view-usage .usage-trend-bar { fill: CanvasText; }
+  #view-usage .usage-trend-axis line { stroke: GrayText; }
+  #view-usage .usage-trend-axis text { fill: CanvasText; }
+}
 
 /* ---- Status line, daily table ------------------------------------------------ */
 #view-usage .usage-note {

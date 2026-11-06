@@ -16,6 +16,7 @@ const vm = require('node:vm');
 
 const SOURCE = fs.readFileSync(path.join(__dirname, '../public/js/workspace.js'), 'utf8');
 const INDEX = fs.readFileSync(path.join(__dirname, '../public/index.html'), 'utf8');
+const APP = fs.readFileSync(path.join(__dirname, '../public/js/app.js'), 'utf8');
 
 class ClassList {
   constructor() { this.items = new Set(); }
@@ -1023,4 +1024,114 @@ test('index.html:用量页 DOM 契约完整,且不再有面积图与费用', () 
   assert.ok(!/首字/.test(visible), '延迟指标要写「首响应」并给出解释');
   assert.match(visible, /首响应/, '补充指标标签用「首响应」');
   assert.match(visible, /不是首个内容 token/, '「首响应」要带 title 解释它测的是什么');
+});
+
+// ---------------------------------------------------------------- 概览小时数据
+// app.js 的真实概览逻辑在同一 DOM 替身里运行；只替掉业务边界，不复制渲染或轮询实现。
+function setupOverview() {
+  const h = setup();
+  const ids = [...INDEX.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]);
+  for (const id of ids) {
+    if (h.elements.has(id)) continue;
+    const element = new Element('div'); element.id = id; element.ownerDocument = h.doc;
+    h.elements.set(id, element);
+  }
+  const tabs = new Element('div');
+  h.doc.querySelector = selector => selector === '.apptabs' ? tabs : null;
+  h.doc.querySelectorAll = selector => selector === 'nav a' ? h.navLinks : selector === 'nav a[data-app]' ? h.navLinks.filter(a => a.dataset.app) : [];
+  let clock = new Date('2026-11-06T12:00:00').getTime();
+  class ClockDate extends Date {
+    constructor(...args) { super(...(args.length ? args : [clock])); }
+    static now() { return clock; }
+  }
+  Object.assign(h.context, { Date: ClockDate, AbortController, fetch: async () => { throw new Error('unexpected fetch'); }, setInterval: () => 1, clearInterval() {} });
+  vm.runInContext(APP, h.context, { filename: 'public/js/app.js' });
+  h.run("online = true; state = {stats:{reqs:4,inTok:100,outTok:20,exact:true},sessions:[]};");
+  const fixture = {
+    scope: { source: 'disk+memory', bucket: 'hour' },
+    totals: { reqs: 4, tokens_in: 200, tokens_out: 40, cache_read: 160, ok_rate: 75 },
+    series: [
+      { t: '2026-11-06T11:00', reqs: 3, tokens_in: 100, tokens_out: 20, cache_read: 80 },
+      { t: '2026-11-06T10:00', reqs: 1, tokens_in: 100, tokens_out: 20, cache_read: 80 },
+    ],
+  };
+  h.context.__usageFixture = fixture;
+  h.run("globalThis.__usageReads=[]; api = async path => { __usageReads.push(path); return __usageFixture; };");
+  return Object.assign(h, { advance(ms) { clock += ms; }, fixture, reads: () => Array.from(h.run('__usageReads')) });
+}
+
+test('概览仪表盘:四个关键指标、运行信息降小字、只请求与Tokens有真实小时图', async () => {
+  const overview = INDEX.slice(INDEX.indexOf('<section id="view-overview"'), INDEX.indexOf('<section id="view-usage"'));
+  for (const label of ['今日请求', '今日 Tokens', '成功率', '活跃会话']) assert.ok(overview.includes(label));
+  for (const id of ['ov-version', 'ov-uptime', 'ov-revision', 'ov-pid']) {
+    const metricBlock = overview.slice(overview.indexOf('class="metrics"'), overview.indexOf('class="ov-runtime"'));
+    assert.equal(metricBlock.includes(`id="${id}"`), false, `${id} 不能再占大指标卡`);
+  }
+  assert.equal([...overview.matchAll(/class="ov-trend"/g)].length, 2, '后端只提供请求/Tokens小时历史');
+  assert.doesNotMatch(overview, /<input\b|<select\b|<textarea\b/, '概览仍只有只读数据和跳转入口');
+  const h = setupOverview();
+  await h.run('loadOverviewUsage()');
+  assert.equal(h.get('ov-reqs').textContent, '4');
+  assert.equal(h.get('ov-token-total').textContent, '400', '真实消耗合计包含缓存读取');
+  assert.equal(h.get('ov-success').textContent, '75.0%');
+  assert.match(h.get('ov-token-total').getAttribute('title'), /新增输入 200 \/ 输出 40 \/ 缓存读取 160/);
+  assert.match(h.get('ov-hourly-rows').innerHTML, /10:00.*11:00/s, '小时数据按时间排序');
+  assert.match(h.get('ov-token-trend').innerHTML, /ov-trend-baseline/);
+  assert.match(h.get('ov-token-trend').getAttribute('aria-label'), /最近 11:00：200 Tokens/);
+});
+
+test('概览小时轮询:仅本页可见且在线、60秒节流与在途去重，state刷新不等待日志聚合', async () => {
+  const h = setupOverview();
+  h.run("view = 'usage'"); await h.run('loadOverviewUsage()'); assert.equal(h.reads().length, 0);
+  h.run("view = 'overview'"); h.doc.hidden = true; await h.run('loadOverviewUsage()'); assert.equal(h.reads().length, 0);
+  h.doc.hidden = false; h.run('online = false'); await h.run('loadOverviewUsage()'); assert.equal(h.reads().length, 0);
+  h.run('online = true'); await h.run('loadOverviewUsage()');
+  assert.match(h.reads()[0], /^\/api\/usage\?range=today&bucket=hour&dashboard=1&limit=1$/);
+  h.advance(59999); await h.run('loadOverviewUsage()'); assert.equal(h.reads().length, 1);
+  h.advance(1); await h.run('loadOverviewUsage()'); assert.equal(h.reads().length, 2);
+  h.advance(60000);
+  h.run("api = path => { __usageReads.push(path); return new Promise(resolve => { globalThis.__resolveUsage = resolve; }); }");
+  const first = h.run('loadOverviewUsage()'), second = h.run('loadOverviewUsage()');
+  assert.equal(first, second, '同一个在途任务共用Promise');
+  assert.equal(h.reads().length, 3);
+  assert.match(APP, /renderOverviewPage\(\);\s*loadOverviewUsage\(\);/, '成功state刷新触发但不await日志聚合');
+  h.run('__resolveUsage(__usageFixture)'); await first;
+});
+
+test('概览用量失败:旧值与趋势保留且标过期，失败尝试同样受60秒节流', async () => {
+  const h = setupOverview();
+  await h.run('loadOverviewUsage()');
+  const before = h.get('ov-token-trend').innerHTML;
+  h.advance(60000);
+  h.run("api = async path => { __usageReads.push(path); throw new Error('offline probe'); }");
+  assert.equal(await h.run('loadOverviewUsage()'), false);
+  assert.equal(h.get('ov-token-total').textContent, '400');
+  assert.equal(h.get('ov-token-trend').innerHTML, before);
+  assert.equal(h.get('ov-metric-tokens').dataset.stale, 'true');
+  assert.match(h.get('ov-usage-status').textContent, /数据过期.*保留/);
+  assert.match(h.get('ov-usage-status').getAttribute('title'), /offline probe/);
+  await h.run('loadOverviewUsage()'); assert.equal(h.reads().length, 2, '失败后不能立即重复请求');
+});
+
+test('概览小时图:键盘与指针同一读数，数据缺字段不伪造零', async () => {
+  const h = setupOverview();
+  await h.run('loadOverviewUsage()');
+  const plot = h.get('ov-req-trend');
+  const cross = new Element('line'), dot = new Element('circle'), tip = new Element('span');
+  plot.querySelector = selector => ({ '.ov-trend-crosshair': cross, '.ov-trend-dot': dot, '.ov-trend-tip': tip })[selector];
+  plot.getBoundingClientRect = () => ({ left: 0, width: 200 });
+  const focused = plot.emit('focus');
+  assert.equal(focused.defaultPrevented, false);
+  assert.match(tip.textContent, /11:00 · 3 次请求/);
+  const left = plot.emit('keydown', { key: 'ArrowLeft' });
+  assert.equal(left.defaultPrevented, true);
+  assert.match(tip.textContent, /10:00 · 1 次请求/);
+  plot.emit('pointermove', { clientX: 200 }); assert.match(tip.textContent, /11:00 · 3 次请求/);
+  assert.equal(plot.dataset.hover, 'true');
+  plot.emit('pointerleave'); assert.equal(plot.dataset.hover, 'false');
+  h.advance(60000);
+  h.run("__usageFixture = {totals: {reqs:0}, series:[]}");
+  assert.equal(await h.run('loadOverviewUsage()'), false);
+  assert.equal(h.get('ov-token-total').textContent, '400', '数据缺失保留旧数字，不冒充新零');
+  assert.match(h.get('ov-usage-status').getAttribute('title'), /数据不完整/);
 });

@@ -2,10 +2,9 @@
    Owned by the providers page. Shared tokens come from base.css; do not redefine them here.
    Load order: base.css → this file, so same-specificity rules here win.
 
-   Layout intent: the channel library is the page's main object. The wizard entry is a
-   single strip, the live client state is one summary line, and each channel row leads
-   with name + state + address. Secondary detail (model chips, note, account) is quieter,
-   and destructive actions are separated from the everyday ones. */
+   Layout intent: live connection facts occupy one status card, followed by merged slot
+   destinations and the channel library. Rows lead with channel identity and models;
+   address and account details stay quiet, and secondary actions become icon tools. */
 
 /* ---- 1. First screen ------------------------------------------------------- */
 /* The sidebar already lists the three clients. Keep the in-page tabs only where that
@@ -16,24 +15,37 @@
   :root[data-sidebar="rail"] #view-providers > .apptabs { display: inline-flex; }
 }
 
-/* Live client state: one summary line instead of a three-column information block. */
-#liveinfo { margin-bottom: 10px; }
+/* The wizard header and live facts form one status card. Facts have their own columns,
+   not a sentence of equally weighted values; technical details stay folded. */
+#liveinfo {
+  margin-bottom: 14px; padding: 0 18px 12px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+#readiness-entry + #liveinfo { border-top: 0; border-radius: 0 0 var(--radius-lg) var(--radius-lg); }
 #liveinfo .current-config {
-  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 22px;
-  margin: 0 0 6px; padding: 0 0 9px;
-  border-top: 0; border-bottom: 1px solid var(--border-soft);
+  display: grid; grid-template-columns: 1fr 1.2fr 1.65fr; gap: 0;
+  margin: 0 0 6px; padding: 13px 0 8px; border: 0;
 }
-#liveinfo .current-config > div {
-  display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 7px;
-  min-width: 0; padding: 0;
+#liveinfo .current-config.codex-config { grid-template-columns: 1fr 1.1fr 1.3fr .7fr; }
+#liveinfo .current-config > div { display: block; min-width: 0; padding: 0 16px; }
+#liveinfo .current-config > div:first-child { padding-left: 0; }
+#liveinfo .current-config > div:last-child { padding-right: 0; }
+#liveinfo .current-config > div + div { border-left: 1px solid var(--border-soft); }
+#liveinfo .current-config dt { font-size: 12px; margin: 0 0 5px; color: var(--dim); }
+#liveinfo .current-config dd {
+  margin: 0; min-width: 0; font-size: 15px; font-weight: 600; line-height: 1.45;
+  color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-#liveinfo .current-config > div + div { border-left: 0; padding-left: 0; }
-#liveinfo .current-config dt { font-size: 13px; margin: 0; white-space: nowrap; }
-#liveinfo .current-config dd { font-size: 13.5px; font-weight: 600; min-width: 0; }
-#liveinfo .current-config dd.mono { font-size: 12.5px; }
-#liveinfo .current-config small { display: inline; margin: 0; font-size: 12.5px; white-space: nowrap; }
-#liveinfo .connection-details { margin-bottom: 8px; }
-#liveinfo .connection-details > summary { padding: 2px 0; font-size: 13px; }
+#liveinfo .current-config dd.mono { font: 500 13px/1.65 var(--mono); color: var(--text); }
+#liveinfo .current-config small { display: block; margin: 4px 0 0; font-size: 12px; line-height: 1.4; color: var(--dim); }
+#liveinfo .mode-pill { display: inline-flex; align-items: center; gap: 7px; }
+#liveinfo .mode-pill.on { color: var(--accent-text); }
+#liveinfo .mode-pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: 0 0 auto; }
+#liveinfo .connection-details { margin-bottom: 0; }
+#liveinfo .connection-details > summary { padding: 6px 0; font-size: 12.5px; }
+#liveinfo .mode-grid { margin-top: 8px; }
+#liveinfo .config-line, #liveinfo .integration-note { font-size: 12.5px; line-height: 1.65; }
 
 /* Channel library header: title and controls on one line, controls compact. */
 #view-providers .channel-toolbar { margin: 12px 0 10px; align-items: flex-end; gap: 10px 18px; }
@@ -46,13 +58,15 @@
 #view-providers .filters input { width: 220px; }
 
 /* ---- 2. Shared channel-card anatomy ---------------------------------------- */
-#prov-grid .card { gap: 8px; padding: 13px 16px; }
+#prov-grid .card { gap: 10px; padding: 16px 18px; }
 #prov-grid .provider-identity { align-items: center; }
-#prov-grid .provider-avatar { width: 28px; height: 28px; border-radius: 7px; }
-#prov-grid .provider-info { gap: 4px; }
-#prov-grid .provider-info .name { font-size: 14.5px; line-height: 1.35; }
+#prov-grid .provider-avatar { width: 32px; height: 32px; border-radius: var(--radius); font-size: 12px; }
+#prov-grid .provider-info { gap: 5px; }
+#prov-grid .provider-info .name { font-size: 15px; line-height: 1.35; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #prov-grid .provider-status { gap: 5px; }
-#prov-grid .badge { font-size: 12px; padding: 1px 7px; }
+#prov-grid .badge { font-size: 11.5px; padding: 1px 7px; }
+#prov-grid .provider-status .provider-state.info { background: transparent; border-color: transparent; color: var(--dim); padding: 0; }
+#prov-grid .provider-status .provider-state.info::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--ok); }
 
 /* State colors on cards: current = accent, enabled = green, disabled = neutral.
    (Wizard/model-slot badges elsewhere keep base.css colors.) */
@@ -89,11 +103,13 @@ body[data-connection=offline] #prov-grid .card.cur,
 body[data-connection=offline] #prov-grid .card.sel { border-color: var(--border); }
 
 /* Address is reference, not a headline: one line, full URL in the title. */
-#prov-grid .endpoint { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-#prov-grid .provider-content { gap: 5px; }
-#prov-grid .provider-models { gap: 4px; }
-#prov-grid .tag { font-size: 12px; padding: 0 6px; }
-#prov-grid .note { font-size: 12.5px; line-height: 1.6; }
+#prov-grid .endpoint { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; color: var(--dim); }
+#prov-grid .provider-content { gap: 6px; }
+#prov-grid .provider-models { gap: 4px; align-items: center; }
+#prov-grid .tag { font-size: 11.5px; padding: 1px 6px; }
+#prov-grid .provider-models .model-tag { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#prov-grid .provider-models .wire-tag { background: transparent; border-color: transparent; color: var(--dim); padding-left: 0; }
+#prov-grid .note { font-size: 12px; line-height: 1.6; }
 /* 开发备注只占一行,全文在 title;停用 Key 的告警照常换行,不截。 */
 #prov-grid .note.dev-note { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal; }
 
@@ -104,8 +120,8 @@ body[data-connection=offline] #prov-grid .card.sel { border-color: var(--border)
   font-size: 12.5px; white-space: nowrap;
 }
 #prov-grid .provider-meta .keypick {
-  width: 100%; max-width: 210px; min-height: 32px; padding: 2px 6px;
-  font: 12.5px/1.5 var(--mono); color: var(--text);
+  width: 100%; max-width: 250px; min-height: 32px; padding: 2px 28px 2px 8px;
+  font: 12px/1.5 var(--mono); color: var(--dim); background-color: var(--panel);
 }
 #prov-grid .provider-meta .keycount { font-size: 12px; color: var(--dim); }
 #prov-grid .provider-meta .key-label { font: 500 11.5px/1.4 var(--sans); color: var(--dim); letter-spacing: .2px; }
@@ -114,9 +130,23 @@ body[data-connection=offline] #prov-grid .card.sel { border-color: var(--border)
 #prov-grid .provider-meta .probelines,
 #prov-grid .provider-meta > .probeline { grid-column: 1 / -1; white-space: normal; text-align: left; }
 
-/* Actions: everyday operations first, delete separated and quiet until hovered. */
-#prov-grid .provider-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-#prov-grid .provider-actions button { min-height: 32px; padding: 4px 11px; font-size: 13px; }
+/* One named action plus a quiet, accessible tool group. Destructive tools get their
+   status color only on hover; icons do not compete with the current channel. */
+#prov-grid .provider-actions { display: flex; flex-wrap: wrap; gap: 3px; align-items: center; }
+#prov-grid .provider-actions button { min-height: 32px; padding: 4px 11px; font-size: 12.5px; }
+#prov-grid .provider-actions [data-action="switch"],
+#prov-grid .provider-actions .route-only-tag { margin-right: 6px; }
+#prov-grid .provider-actions button.provider-icon-action {
+  display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+  width: 32px; height: 32px; padding: 0;
+  color: var(--dim); background: transparent; border-color: transparent;
+}
+#prov-grid .provider-actions button.provider-icon-action:hover:not(:disabled) {
+  color: var(--text); background: var(--surface-3); border-color: var(--border-soft);
+}
+#prov-grid .provider-actions .icon { display: inline-flex; width: 16px; height: 16px; }
+#prov-grid .provider-actions .icon svg { width: 100%; height: 100%; }
+#prov-grid .provider-actions button.provider-icon-action:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 /* One filled call to action per row would be five blues on screen; the switch action
    stays accent-outlined until hovered so the current channel keeps the only solid mark. */
 #prov-grid .provider-actions button.primary:not(:disabled) {
@@ -136,12 +166,10 @@ body[data-connection=offline] #prov-grid .card.sel { border-color: var(--border)
   display: inline-flex; align-items: center; min-height: 32px; padding: 0 10px;
   font: 12.5px/1.4 var(--sans); color: var(--dim); cursor: help;
 }
-#prov-grid .provider-actions [data-action="delete"] {
-  margin-left: 4px; padding-left: 12px;
-  background: transparent; border-color: transparent; border-left-color: var(--border-soft);
-  color: var(--dim);
+#prov-grid .provider-actions button.provider-icon-action[data-action="delete"] {
+  margin-left: 4px; padding: 0; border-left-color: var(--border-soft);
 }
-#prov-grid .provider-actions [data-action="delete"]:hover:not(:disabled) {
+#prov-grid .provider-actions button.provider-icon-action[data-action="delete"]:hover:not(:disabled) {
   color: var(--err-text); background: var(--err-soft); border-color: var(--err-line);
 }
 
@@ -152,19 +180,19 @@ body[data-connection=offline] #prov-grid .card.sel { border-color: var(--border)
 #prov-grid:not([data-layout="grid"]) { border-color: var(--border); }
 #prov-grid:not([data-layout="grid"]) > .card:has(.provider-identity) {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(270px, 325px);
   grid-template-areas:
     "identity meta"
     "content actions";
   align-items: start;
-  gap: 7px 26px;
-  padding: 12px 18px;
+  gap: 8px 22px;
+  padding: 16px 18px;
 }
 #prov-grid:not([data-layout="grid"]) > .card:has(.provider-identity) .provider-identity { grid-area: identity; }
 #prov-grid:not([data-layout="grid"]) > .card:has(.provider-identity) .provider-info { flex-direction: row; align-items: center; flex-wrap: wrap; gap: 2px 10px; }
 #prov-grid:not([data-layout="grid"]) > .card:has(.provider-identity) .provider-content { grid-area: content; min-width: 0; }
 #prov-grid:not([data-layout="grid"]) > .card:has(.provider-identity) .provider-meta {
-  grid-area: meta; justify-self: end; align-self: center; max-width: none;
+  grid-area: meta; justify-self: stretch; align-self: center; max-width: none;
 }
 #prov-grid:not([data-layout="grid"]) > .card:has(.provider-identity) .provider-actions {
   grid-area: actions; justify-self: end; align-self: end;
@@ -173,11 +201,12 @@ body[data-connection=offline] #prov-grid .card.sel { border-color: var(--border)
 #prov-grid:not([data-layout="grid"]) > .card.cur { box-shadow: inset 3px 0 0 var(--accent); }
 
 /* ---- 4. Grid layout: cards ------------------------------------------------ */
-#prov-grid[data-layout="grid"] > .card { gap: 9px; }
+#prov-grid[data-layout="grid"] { grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr)); gap: 12px; }
+#prov-grid[data-layout="grid"] > .card { gap: 12px; }
 #prov-grid[data-layout="grid"] .provider-meta { margin-top: 2px; }
 #prov-grid[data-layout="grid"] .provider-meta .testline { text-align: left; }
-#prov-grid[data-layout="grid"] .provider-actions { margin-top: auto; padding-top: 10px; border-top: 1px solid var(--border-soft); }
-#prov-grid[data-layout="grid"] .provider-actions [data-action="delete"] { margin-left: auto; border-left-color: transparent; }
+#prov-grid[data-layout="grid"] .provider-actions { margin-top: auto; padding-top: 12px; border-top: 1px solid var(--border-soft); }
+#prov-grid[data-layout="grid"] .provider-actions button.provider-icon-action[data-action="delete"] { margin-left: auto; border-left-color: transparent; }
 
 /* ---- 5. Narrow screens ---------------------------------------------------- */
 /* Below this the sidebar (or the drawer's neighbours) squeeze the row enough that a
@@ -235,9 +264,16 @@ body[data-connection=offline] #prov-grid .card.sel { border-color: var(--border)
   #view-providers .library-controls .filters select { width: 100%; }
   #view-providers .library-controls .layout-switch { margin-left: 0; justify-self: end; }
 
-  #liveinfo .current-config { gap: 2px 14px; }
-  #liveinfo .current-config > div { flex-basis: 100%; }
-  #liveinfo .current-config dt { min-width: 72px; }
+  #liveinfo { padding: 0 14px 10px; }
+  #liveinfo .current-config, #liveinfo .current-config.codex-config { grid-template-columns: minmax(0, 1fr); padding-top: 4px; }
+  #liveinfo .current-config > div {
+    display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: baseline; gap: 2px 10px;
+    padding: 10px 0;
+  }
+  #liveinfo .current-config > div + div { border-left: 0; border-top: 1px solid var(--border-soft); }
+  #liveinfo .current-config dt { margin: 0; }
+  #liveinfo .current-config dd { font-size: 14px; }
+  #liveinfo .current-config small { grid-column: 2; margin: 0; }
   #liveinfo .connection-details > summary { min-height: 32px; padding: 6px 0; box-sizing: border-box; line-height: 20px; }
 
   /* Phone width: label, select and account count share one line; only test output wraps. */
@@ -245,7 +281,8 @@ body[data-connection=offline] #prov-grid .card.sel { border-color: var(--border)
   #prov-grid .provider-meta .keypick { width: 100%; min-width: 0; max-width: 100%; }
   #prov-grid .provider-meta .testline { grid-column: 1 / -1; }
 
-  #prov-grid .provider-actions [data-action="delete"] { margin-left: auto; }
+  #prov-grid .provider-actions button.provider-icon-action { width: 34px; height: 34px; }
+  #prov-grid .provider-actions button.provider-icon-action[data-action="delete"] { margin-left: auto; }
 }
 
 /* ---- 6. Provider dialog --------------------------------------------------- */
@@ -278,10 +315,10 @@ body[data-connection=offline] #prov-grid .card.sel { border-color: var(--border)
   background: var(--panel); color: var(--text); cursor: pointer;
 }
 .codex-mode-options label:hover { background: var(--surface); }
-.codex-mode-options label:has(input:checked) {
+.codex-mode-options label.is-selected {
   border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent-text);
 }
-.codex-mode-options label:has(input:disabled) { cursor: not-allowed; color: var(--dim); opacity: .65; }
+.codex-mode-options label.is-disabled { cursor: not-allowed; color: var(--dim); opacity: .65; }
 #provider-form .codex-mode-options input { margin: 0; width: auto; min-height: auto; flex: 0 0 auto; }
 .codex-mode-options input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 #m-codex-mode-hint { margin: 6px 0 0; }
@@ -313,7 +350,11 @@ body[data-client="codex"][data-codex-mode="direct"] #kf-health { display: none; 
 #m-discovery .md-head b { font-size: 12.5px; }
 #m-discovery .md-head .hint { font-size: 12.5px; }
 #m-discovery .md-controls > button { min-height: 32px; }
-#m-discovery .md-results:has(.md-list) { max-height: 190px; }
+#m-discovery .md-results.has-models {
+  max-height: 190px; overflow: auto; overscroll-behavior: contain;
+  border: 1px solid var(--border-soft); border-radius: var(--radius);
+  background: var(--surface); padding: 3px 0;
+}
 #m-direct, #m-dropimg { margin-right: 6px; }
 #provider-form label.chk { margin: 12px 0 4px; line-height: 1.55; }
 
@@ -380,7 +421,7 @@ body[data-client="codex"][data-codex-mode="direct"] #kf-health { display: none; 
 #view-providers .codex-compact .prov-help > summary { font-size: 12.5px; padding: 0; }
 #view-providers .prov-help > summary {
   font-size: 12.5px; padding: 4px 0; min-height: 32px;
-  display: inline-flex; align-items: center; gap: 4px;
+  display: list-item; list-style-position: inside;
 }
 #view-providers .prov-help > .hint { font-size: 12.5px; line-height: 1.65; margin: 6px 0 0; }
 #view-providers #codex-compact-warnings { font-size: 12.5px; }
@@ -401,13 +442,16 @@ body[data-client="codex"][data-codex-mode="direct"] #kf-health { display: none; 
 }
 
 /* ---- 8. Slot disclosure summary ------------------------------------------- */
-/* 折叠标题下一行:每个槽一枚 tag(槽名 → 渠道 · 模型),展开后由下面的表接管,摘要收起。 */
+/* One pill per distinct destination. Slot names share the pill instead of repeating
+   identical channel/model facts five times; the expanded table remains the editor. */
 #slots-details > summary .slots-summary {
-  display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0 0; min-width: 0;
+  display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0; min-width: 0;
 }
 #slots-details > summary .slots-summary .tag {
-  margin: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font: 12px/1.5 var(--mono); color: var(--tag-text);
+  display: inline-flex; align-items: center; min-height: 28px; padding: 4px 10px;
+  margin: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere;
+  font: 12px/1.5 var(--mono); color: var(--text);
+  background: var(--panel); border-color: var(--border-soft); border-radius: var(--radius-pill);
 }
 #slots-details > summary .slots-summary .tag.unset { color: var(--dim); border-style: dashed; }
 #slots-details > summary .slots-summary:empty,

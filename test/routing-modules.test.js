@@ -447,7 +447,7 @@ test('applyLabel:内部文案不覆盖真标签;关标签开关时不写', () =>
   assert.equal(s.label, '帮我看下路由');
   identity.applyLabel(s, '别的对话内容');
   assert.equal(s.label, '帮我看下路由');
-  const t = { label: '<session> hi </session>' };
+  const t = { label: '<system-reminder> hi </system-reminder>' };
   identity.applyLabel(t, '真正的问题');
   assert.equal(t.label, '真正的问题');
   identity.applyLabel(t, '');

@@ -23,7 +23,13 @@
 }
 .cfg-more[open] > summary::before { transform: translateY(-1px) rotate(45deg); }
 .cfg-more > summary:hover { color: var(--text); }
-.cfg-more > .hint { margin: 6px 0 0; font-size: 13px; max-width: 92ch; }
+.cfg-more > .hint { margin: 6px 0 0; font-size: 13px; max-width: 80ch; }
+/* 必须在展开说明前看见的区别；不是普通灰色说明，也不冒充故障。 */
+#view-compact .cfg-critical, #view-settings .cfg-critical {
+  margin: 12px 0 0; padding-left: 10px; border-left: 2px solid var(--accent-line);
+  color: var(--text); font-size: 13px; line-height: 1.6;
+}
+#view-compact .cfg-critical strong, #view-settings .cfg-critical strong { font-weight: 600; }
 
 /* ---- 压缩设置 ------------------------------------------------------------------ */
 /* 当前落点是只读事实:凹陷块,和下面「改成什么」的控件分开。 */
@@ -45,6 +51,8 @@
 #view-compact .rc-line > .field { min-width: 0; gap: 6px; font-size: 12.5px; line-height: 1.5; color: var(--dim); }
 #view-compact .rc-line select, #view-compact .rc-line input { width: 100%; min-height: var(--control-h); }
 #view-compact #compact-key-hint, #view-compact #window-current { margin: 8px 0 0; font-size: 13px; line-height: 1.6; }
+#view-compact #compact-key-hint.is-warning { color: var(--warn-text); }
+#view-compact #window-current { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 /* 保存结果:没保存过与保存过都是同一块凹陷块,四段各是一枚胶囊;
    只有 ok / no 着色,「尚未保存过」「不适用」「客户端需重开」保持中性。 */
 #view-compact .split-status {
@@ -62,8 +70,10 @@
 #view-compact .split-status .ss-item b { font-weight: 700; }
 #view-compact .split-status .ss-item.ok { background: var(--ok-soft); border-color: var(--ok-line); color: var(--ok-text); }
 #view-compact .split-status .ss-item.no { background: var(--err-soft); border-color: var(--err-line); color: var(--err-text); }
-/* 还没保存过:四段仍逐段列出,但只是一行灰字,不画成四枚胶囊。 */
-#view-compact .split-status.is-pending { column-gap: 16px; }
+/* 尚无保存结果时只占一行；四项语义收在原生 details，真实结果仍全部显式显示。 */
+#view-compact .split-status.is-pending { column-gap: 8px; padding: 0; border: 0; background: none; }
+#view-compact .split-status .ss-details { margin-top: 0; }
+#view-compact .split-status .ss-details .ss-row { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 4px 0 0; }
 #view-compact .split-status.is-pending .ss-item { min-height: 0; padding: 0; border: 0; background: none; }
 
 /* savebar 里是「保存压缩模型」按钮加一行状态字,状态字为空时按钮仍要显示。 */
