@@ -212,6 +212,39 @@ test('面板插在诊断视图里,进行中/已结束分开显示,且不动日�
   assert.equal(h.document.getElementById('logs-body').innerHTML, '');
 });
 
+test('终态时长过一分钟写成 1m05s,事件时间按本地时区显示到毫秒', async () => {
+  const ts = '2026-01-01T00:00:01.250Z';
+  const done = trace({ id: 'done-3', terminal: true, status: 200, duration_ms: 65000,
+    events: [{ ts, phase: 'finished', attempt: 0, provider_id: '', model: '', key_id: '', status: 200, code: '', wait_ms: 0 }] });
+  const h = harness({ traces: [done] });
+  h.sandbox.AttemptFlow.mount();
+  await h.sandbox.AttemptFlow.refresh();
+  await settle();
+  const panel = h.document.getElementById('attempt-flow');
+  assert.ok(panel.querySelector('#attempt-flow-done').innerHTML.includes('<span class="attempt-time">1m05s</span>'), '不能写成 65.0s');
+  panel.emit('click', { target: { closest: () => ({ getAttribute: () => 'done-3' }) } });
+  await settle();
+  // UTC 串直接切会差出时区;期望值用本地 Date 现算,不随运行机器的时区漂
+  const d = new Date(ts), p = (n, w = 2) => String(n).padStart(w, '0');
+  const local = `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
+  assert.ok(panel.querySelector('#attempt-flow-done').innerHTML.includes(`<time>${local}</time>`));
+});
+
+test('终态卡片的失败分类用诊断表同一张对照表显示人话标签,单独加载时原样显示原始枚举', async () => {
+  const done = trace({ id: 'done-4', terminal: true, status: 502, code: 'upstream_server', duration_ms: 900 });
+  const h = harness({ traces: [done] });
+  h.sandbox.AttemptFlow.mount();
+  await h.sandbox.AttemptFlow.refresh();
+  await settle();
+  const finished = () => h.document.getElementById('attempt-flow').querySelector('#attempt-flow-done').innerHTML;
+  assert.ok(finished().includes('<span class="cool" title="失败分类 upstream_server">upstream_server</span>'), '没有对照表时不能吞掉分类');
+  // 浏览器里 logs.js 先加载,对照表是全局常量;这里放进沙箱再刷新一轮
+  h.sandbox.LOG_ERR_CLASS_LABEL = { upstream_server: '上游故障' };
+  await h.sandbox.AttemptFlow.refresh();
+  await settle();
+  assert.ok(finished().includes('<span class="cool" title="失败分类 upstream_server">上游故障</span>'));
+});
+
 test('展开终态才按需拉失败解释,并缓存同一分类', async () => {
   const done = trace({ id: 'done-2', terminal: true, status: 403, code: 'authentication', duration_ms: 900 });
   const h = harness({

@@ -37,7 +37,7 @@
 
 /* Channel library header: title and controls on one line, controls compact. */
 #view-providers .channel-toolbar { margin: 12px 0 10px; align-items: flex-end; gap: 10px 18px; }
-#view-providers .channel-toolbar h2 { font-size: 15px; letter-spacing: -.1px; }
+#view-providers .channel-toolbar h2 { font-size: 15px; letter-spacing: 0; }
 #view-providers .channel-toolbar p { font-size: 13px; margin-top: 2px; color: var(--dim); }
 #view-providers .filters label { font-size: 12.5px; color: var(--dim); }
 #view-providers .filters input,

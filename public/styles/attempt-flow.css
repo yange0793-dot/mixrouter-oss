@@ -3,122 +3,160 @@
    这里只管列表、卡片与详情。颜色一律走既有 token(自动跟随明暗主题),不引入新色值。 */
 
 .attempt-flow-status {
-  font-size: 13.5px; color: var(--dim); line-height: 1.6;
-  margin: -6px 0 14px; overflow-wrap: anywhere;
+  font-size: 13px; color: var(--dim); line-height: 1.6;
+  margin: -4px 0 12px; overflow-wrap: anywhere;
 }
 .attempt-flow-status.err { color: var(--err-text); }
 
 .attempt-flow-list { display: grid; gap: 8px; }
-.attempt-flow-empty { margin: 2px 0 6px; }
+.attempt-flow .attempt-flow-empty { margin: 0; font-size: 13px; color: var(--dim); }
 
 @media (prefers-reduced-motion: no-preference) {
   .attempt-card.live .attempt-dot { animation: attempt-pulse 1.6s ease-in-out infinite; }
 }
 
-/* 进行中的请求:一行一个,不换行挤掉信息 —— 模型名可以很长,超出的部分省略。 */
+/* 一条记录一行:模型名可以很长,超出的部分省略。进行中用 accent 淡底,已结束是内嵌块。 */
 .attempt-card {
-  border: 1px solid var(--border); border-radius: var(--radius);
-  background: var(--panel); padding: 10px 12px; min-width: 0;
+  border: 1px solid var(--border-soft); border-radius: var(--radius);
+  background: var(--panel); padding: 9px 12px; min-width: 0;
 }
 .attempt-card.live { border-color: var(--accent-line); background: var(--accent-soft); }
 .attempt-card > header {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  font-size: 13.5px; color: var(--text); min-width: 0;
+  min-height: 24px; font-size: 13px; color: var(--text); min-width: 0;
 }
 .attempt-card > header > b { font-weight: 600; }
 .attempt-card > header .mono {
-  font-family: var(--mono); font-size: 12.5px; color: var(--dim);
+  font-family: var(--mono); font-size: 12px; color: var(--dim);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   min-width: 0; flex: 1 1 200px;
 }
 .attempt-time {
-  margin-left: auto; font: 12.5px var(--mono); color: var(--dim);
+  margin-left: auto; font: 12px/1.5 var(--mono); color: var(--dim);
   font-variant-numeric: tabular-nums; white-space: nowrap;
 }
-.attempt-now { margin: 4px 0 0; font-size: 13px; }
+.attempt-card .attempt-now { margin: 4px 0 0 15px; font-size: 12.5px; color: var(--dim); }
+/* 失败分类:中性等宽小标签,跟在耗时后面。 */
+.attempt-card > header > .cool {
+  display: inline-flex; align-items: center; height: 20px; padding: 0 6px; flex: 0 0 auto;
+  border: 1px solid var(--border-soft); border-radius: var(--radius-xs); background: var(--surface-2);
+  color: var(--dim); font: 11.5px/1 var(--mono); white-space: nowrap;
+}
 
 .attempt-dot {
   width: 7px; height: 7px; border-radius: 50%;
   background: var(--accent); flex-shrink: 0;
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
-.attempt-card.done .attempt-dot { background: var(--border-strong); }
+.attempt-card.done .attempt-dot { background: var(--border-strong); box-shadow: none; }
 
 @keyframes attempt-pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: .35; transform: scale(.8); }
 }
 
-/* 已结束:折叠在 <details> 里,默认不展开。 */
-.attempt-flow-done { margin-top: 16px; }
+/* 已结束:折叠在 <details> 里,默认不展开。展开开关用同一个细箭头。 */
+.attempt-flow-done { margin-top: 14px; }
 .attempt-flow-done > summary {
-  display: flex; align-items: center; gap: 6px; min-height: 32px;
-  cursor: pointer; color: var(--dim); font-size: 13.5px;
-  padding: 4px 0; user-select: none;
+  display: flex; align-items: center; gap: 8px; min-height: 32px;
+  cursor: pointer; color: var(--dim); font-size: 13px;
+  padding: 0; list-style: none; user-select: none;
 }
+.attempt-flow-done > summary:hover { color: var(--text); }
 .attempt-flow-done > summary::before {
-  content: ''; flex: 0 0 auto; width: 0; height: 0;
-  border-left: 4px solid currentColor; border-top: 3.5px solid transparent; border-bottom: 3.5px solid transparent;
+  content: ''; flex: 0 0 auto; width: 6px; height: 6px; margin: 0 2px;
+  border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg); transition: transform var(--dur) var(--ease);
 }
-.attempt-flow-done[open] > summary::before { transform: rotate(90deg); }
+.attempt-flow-done[open] > summary::before { transform: rotate(45deg); }
 .attempt-flow-done > summary::-webkit-details-marker { display: none; }
-.attempt-flow-done > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.attempt-flow-done > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: var(--radius-xs); }
 .attempt-flow-done[hidden] { display: none; }
-.attempt-flow-done > .attempt-flow-list { margin-top: 10px; }
+.attempt-flow-done > .attempt-flow-list { margin-top: 8px; }
+
+/* 展开开关:原有的 ▸/▾ 字符只留给读屏之外的旧环境;这里画成与 summary 一致的细箭头。 */
 .attempt-toggle {
-  background: transparent; border: 1px solid transparent; color: var(--dim);
-  padding: 0 5px; min-width: 24px; font-size: 15px; line-height: 1.4; cursor: pointer;
+  display: inline-grid; place-items: center; flex: 0 0 auto;
+  width: 24px; height: 24px; min-width: 24px; min-height: 24px; padding: 0;
+  background: transparent; border: 1px solid transparent; border-radius: var(--radius-sm);
+  color: var(--dim); font-size: 0; line-height: 0; cursor: pointer;
 }
-.attempt-toggle:hover { color: var(--text); border-color: var(--border); background: var(--surface-2); }
+.attempt-toggle::before {
+  content: ''; width: 6px; height: 6px; margin-left: -2px;
+  border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg); transition: transform var(--dur) var(--ease);
+}
+.attempt-toggle[aria-expanded="true"]::before { transform: rotate(45deg); margin: -3px 0 0; }
+button.attempt-toggle:hover:not(:disabled) { color: var(--text); border-color: var(--border); background: var(--surface-2); }
 .attempt-toggle:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
-.attempt-truncated { margin: 6px 0 0; font-size: 12.5px; }
 
-.attempt-detail { margin-top: 10px; border-top: 1px solid var(--border-soft); padding-top: 10px; }
-.attempt-detail > .mono { display: block; font-size: 12.5px; color: var(--dim); overflow-wrap: anywhere; }
-
-.attempt-events {
-  list-style: none; margin: 8px 0 10px; padding: 0;
-  display: grid; gap: 4px; font-size: 13px;
-}
-/* 状态码单独做成一个标标:和后面的元信息混在同一段文字里时,"502" 与模型名分不开。 */
+/* 状态码单独做成一枚胶囊:和后面的元信息混在同一段文字里时,"502" 与模型名分不开。 */
 .attempt-card.done > header > .attempt-code {
-  font: 600 12px/1.5 var(--mono); padding: 0 6px; border-radius: 4px;
-  border: 1px solid var(--border-soft); background: var(--surface-2); color: var(--dim);
-  flex: 0 0 auto;
+  display: inline-flex; align-items: center; height: 20px; padding: 0 7px; flex: 0 0 auto;
+  border: 1px solid var(--border-soft); border-radius: var(--radius-xs); background: var(--surface-2);
+  color: var(--dim); font: 600 12px/1 var(--mono); font-variant-numeric: tabular-nums;
 }
 .attempt-card.done > header > .attempt-code.ok { color: var(--ok-text); border-color: var(--ok-line); background: var(--ok-soft); }
 .attempt-card.done > header > .attempt-code.err { color: var(--err-text); border-color: var(--err-line); background: var(--err-soft); }
 
-.attempt-events li { display: grid; grid-template-columns: 96px auto minmax(0, 1fr); gap: 8px; align-items: baseline; }
-.attempt-events li > b { white-space: nowrap; }
-.attempt-events li > .mono { overflow-wrap: anywhere; }
+.attempt-detail { margin-top: 9px; border-top: 1px solid var(--border-soft); padding-top: 9px; }
+.attempt-detail > .mono { display: block; font-size: 12px; color: var(--dim); overflow-wrap: anywhere; }
+.attempt-detail .attempt-truncated { margin: 4px 0 0; font-size: 12px; color: var(--dim); }
 
-@media (max-width: 720px) {
-  .attempt-events li { grid-template-columns: minmax(0, 1fr); gap: 1px; }
+/* 时间线:每一步一个圆点,圆点之间一条细线;失败红、等待黄、成功绿,其余中性。
+   线段画在每一行自己身上(从本行圆点下沿到下一行圆点),窄屏折行时也不会断开或错位。 */
+.attempt-events {
+  list-style: none; margin: 10px 0 4px; padding: 0 0 0 18px;
+  display: grid; gap: 6px; font-size: 12.5px;
 }
-
-.attempt-events time { font: 12.5px var(--mono); color: var(--dim); font-variant-numeric: tabular-nums; }
-.attempt-events b { font-weight: 600; color: var(--text); }
+.attempt-events li {
+  position: relative; display: grid; grid-template-columns: 92px auto minmax(0, 1fr);
+  gap: 8px; align-items: baseline; min-width: 0; line-height: 1.6;
+}
+.attempt-events li::before {
+  content: ''; position: absolute; left: -17px; top: 6px;
+  width: 9px; height: 9px; border-radius: 50%; box-sizing: border-box;
+  background: var(--border-strong); box-shadow: 0 0 0 2px var(--panel);
+}
+.attempt-events li::after {
+  content: ''; position: absolute; left: -13px; top: 17px; bottom: -8px;
+  width: 1px; background: var(--border-strong);
+}
+.attempt-events li:last-child::after { content: none; }
+.attempt-events li.is-ok::before { background: var(--ok); }
+.attempt-events li.is-wait::before { background: var(--warn); }
+.attempt-events li.is-err::before { background: var(--err); }
+.attempt-events li.is-err > b { color: var(--err-text); }
+.attempt-events li.is-wait > b { color: var(--warn-text); }
+.attempt-events time { font: 12px/1.6 var(--mono); color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.attempt-events b { font-weight: 600; color: var(--text); white-space: nowrap; }
 .attempt-events .mono {
-  font-family: var(--mono); font-size: 12.5px; color: var(--dim);
+  font-family: var(--mono); font-size: 12px; color: var(--dim);
   overflow-wrap: anywhere; min-width: 0;
 }
 
-.attempt-flow-guide {
-  border: 1px solid var(--border-soft); border-radius: var(--radius);
-  background: var(--surface); padding: 10px 12px;
+/* 失败解释:不再加框,用一条细线和上面的时间线分开。 */
+.attempt-detail .attempt-flow-guide {
+  margin: 10px 0 0; padding: 10px 0 0;
+  border: 0; border-top: 1px solid var(--border-soft); border-radius: 0; background: transparent;
+  font-size: 13px; color: var(--dim);
 }
-.attempt-flow-guide-title {
+.attempt-detail .attempt-flow-guide-title {
   font-size: 13.5px; font-weight: 600; color: var(--text);
-  display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px;
+  display: flex; gap: 6px 8px; align-items: center; flex-wrap: wrap; margin: 0 0 6px;
 }
-.attempt-flow-guide .hint { margin: 0 0 4px; font-size: 13px; }
-.attempt-flow-guide .hint:last-child { margin-bottom: 0; }
-.attempt-flow-guide .hint b { color: var(--text); font-weight: 600; margin-right: 6px; }
-.attempt-flow-guide a { color: var(--accent-text); margin-left: 6px; }
+.attempt-detail .attempt-flow-guide .hint { margin: 0 0 4px; font-size: 13px; line-height: 1.6; }
+.attempt-detail .attempt-flow-guide .hint:last-child { margin-bottom: 0; }
+.attempt-detail .attempt-flow-guide .hint b { color: var(--text); font-weight: 600; margin-right: 6px; }
+.attempt-detail .attempt-flow-guide a { color: var(--accent-text); margin-left: 6px; }
 
-@media (max-width: 720px) {
-  .attempt-card > header .mono { flex-basis: 100%; white-space: normal; }
-  .attempt-time { margin-left: 0; }
+@media (max-width: 860px) {
+  .attempt-card > header .mono { flex-basis: 100%; white-space: normal; order: 1; }
+  .attempt-time { margin-left: auto; }
+  .attempt-toggle { width: 32px; height: 32px; min-width: 32px; min-height: 32px; }
+  .attempt-flow-done > summary { min-height: 36px; }
+  .attempt-events li { grid-template-columns: auto minmax(0, 1fr); gap: 0 8px; }
+  .attempt-events li > .mono { grid-column: 1 / -1; }
 }
 
 @media print {

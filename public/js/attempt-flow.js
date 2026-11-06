@@ -89,7 +89,15 @@
   const ms = value => {
     const n = Number(value);
     if (!Number.isFinite(n) || n < 0) return '';
+    if (n >= 60000) { const s = Math.round(n / 1000); return `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`; }
     return n >= 1000 ? `${(n / 1000).toFixed(1)}s` : `${Math.round(n)}ms`;
+  };
+  // 事件时间是 UTC ISO 串;按本地时区显示到毫秒(同一秒内常有好几步),和诊断表的时间对得上。
+  const clock = ts => {
+    const d = new Date(ts);
+    if (!ts || Number.isNaN(d.getTime())) return '';
+    const p = (n, w = 2) => String(n).padStart(w, '0');
+    return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
   };
 
   function lastEvent(trace) {
@@ -107,6 +115,15 @@
     return base;
   }
 
+  // 时间线圆点的基调只从固定枚举推出(阶段名 + 状态码区间),不把任何服务端文本拼进 class。
+  function eventTone(ev) {
+    const status = Number(ev.status) || 0;
+    if (ev.phase === 'error' || (ev.phase === 'finished' && (status >= 400 || !!ev.code))) return ' class="is-err"';
+    if (ev.phase === 'retry_wait') return ' class="is-wait"';
+    if (ev.phase === 'response' || (ev.phase === 'finished' && status > 0 && status < 400)) return ' class="is-ok"';
+    return '';
+  }
+
   function eventLine(ev) {
     const parts = [];
     if (ev.attempt) parts.push(`#${ev.attempt}`);
@@ -115,8 +132,8 @@
     if (ev.status) parts.push(String(ev.status));
     if (ev.code) parts.push(ev.code);
     if (ev.wait_ms) parts.push(`等 ${ms(ev.wait_ms)}`);
-    const when = String(ev.ts || '').slice(11, 23);
-    return `<li><time>${esc(when)}</time><b>${esc(PHASE_TEXT[ev.phase] || ev.phase || '')}</b>
+    const when = clock(ev.ts);
+    return `<li${eventTone(ev)}><time>${esc(when)}</time><b>${esc(PHASE_TEXT[ev.phase] || ev.phase || '')}</b>
       <span class="mono">${esc(parts.join(' · '))}</span></li>`;
   }
 
@@ -165,6 +182,11 @@
     </article>`;
   }
 
+  // 失败分类的人话标签读诊断表的同一张对照表(logs.js 的 LOG_ERR_CLASS_LABEL);
+  // 单独加载本脚本(单测)时没有那张表,原样显示原始枚举。
+  const errLabel = code => (typeof LOG_ERR_CLASS_LABEL === 'object' && Object.hasOwn(LOG_ERR_CLASS_LABEL, code)
+    ? LOG_ERR_CLASS_LABEL[code] : code);
+
   function terminalCard(trace) {
     const open = state.open.has(trace.id);
     const events = Array.isArray(trace.events) ? trace.events : [];
@@ -182,10 +204,10 @@
         <button type="button" class="attempt-toggle" aria-expanded="${open ? 'true' : 'false'}"
           aria-label="${open ? '收起这条尝试过程' : '展开这条尝试过程'}"
           data-attempt-toggle="${esc(trace.id)}">${open ? '▾' : '▸'}</button>
-        <b class="attempt-code${codeCls}">${esc(trace.status || '-')}</b>
+        <b class="attempt-code${codeCls}">${esc(trace.status || '—')}</b>
         <span class="mono">${esc(metaLine(trace).join(' · '))}</span>
         <span class="attempt-time">${esc(ms(trace.duration_ms))}</span>
-        ${trace.code ? `<span class="cool">${esc(trace.code)}</span>` : ''}
+        ${trace.code ? `<span class="cool" title="失败分类 ${esc(trace.code)}">${esc(errLabel(trace.code))}</span>` : ''}
       </header>
       ${open ? `<div class="attempt-detail">
         <p class="mono">request_id ${esc(trace.id)}</p>
@@ -196,6 +218,7 @@
     </article>`;
   }
 
+  let lastLive = null, lastDone = null;
   function render() {
     const el = panel();
     if (!el) return;
@@ -216,14 +239,24 @@
     // 有进行中或有历史时才铺开提示文案。
     el.dataset.state = live.length ? 'live' : done.length ? 'history' : 'empty';
     const activeEl = el.querySelector('#attempt-flow-active');
-    activeEl.innerHTML = live.length
+    const liveHtml = live.length
       ? live.map(activeCard).join('')
       : '<p class="hint attempt-flow-empty">当前没有进行中的请求。</p>';
+    // 内容没变就不重写(每 2 秒一轮):整块重写会清掉用户正在选中复制的 request_id 与失败解释。
+    if (liveHtml !== lastLive) { activeEl.innerHTML = liveHtml; lastLive = liveHtml; }
 
     const wrap = el.querySelector('#attempt-flow-done-wrap');
     wrap.hidden = done.length === 0;
     el.querySelector('#attempt-flow-done-summary').textContent = `已结束的尝试过程（最近 ${done.length} 条）`;
-    el.querySelector('#attempt-flow-done').innerHTML = done.map(terminalCard).join('');
+    const doneEl = el.querySelector('#attempt-flow-done');
+    const doneHtml = done.map(terminalCard).join('');
+    if (doneHtml === lastDone) return;
+    // 展开/收起和轮询都会重写这块;焦点在某个展开按钮上时,写完把焦点放回同一条的新按钮,
+    // 键盘用户不会每次都被甩回页首。
+    const focused = document.activeElement;
+    const focusId = focused && doneEl.contains?.(focused) ? focused.getAttribute?.('data-attempt-toggle') : null;
+    doneEl.innerHTML = doneHtml; lastDone = doneHtml;
+    if (focusId) [...doneEl.querySelectorAll('[data-attempt-toggle]')].find(b => b.getAttribute('data-attempt-toggle') === focusId)?.focus();
   }
 
   // 展开/收起只改本地状态,不重新拉取:数据已在这一轮响应里。

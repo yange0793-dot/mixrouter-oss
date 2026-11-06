@@ -14,6 +14,19 @@ const vm = require('node:vm');
 
 const ROOT = path.join(__dirname, '..');
 const SOURCE = fs.readFileSync(path.join(ROOT, 'public/js/usage.js'), 'utf8');
+// 显示格式直接用 app.js 的全站格式函数(与概览、诊断、会话同一套)。这里只把用到的顶层定义
+// 抽进上下文,期望值也从它们算出来:不在测试里写死一种格式,app.js 改格式时本测试跟着走;
+// 改了名或多了依赖,这里会报「找不到」或 ReferenceError,而不是静默通过。
+const APP_SOURCE = fs.readFileSync(path.join(ROOT, 'public/js/app.js'), 'utf8');
+const appDefinition = name => {
+  const match = new RegExp(`^const ${name} = [\\s\\S]*?(?=^[^\\s}])`, 'm').exec(APP_SOURCE);
+  if (!match) throw new Error(`app.js 里找不到 ${name} 的顶层定义`);
+  return match;
+};
+// 按 app.js 里的先后顺序拼接:别名(const fmtDur = fmtTtfb 这类)必须排在被引用的定义之后。
+const APP_FORMATTERS = ['finiteOrNull', 'fmtTok', 'fmtCount', 'fmtPct', 'fmtDur', 'fmtTtfb', 'fmtRate',
+  'fmtFullTime', 'fmtWhen']
+  .map(appDefinition).sort((a, b) => a.index - b.index).map(match => match[0]).join('\n');
 
 const DAY_MS = 86400000;
 const pad = value => String(value).padStart(2, '0');
@@ -118,7 +131,8 @@ function harness(options = {}) {
     'usage-app', 'usage-provider', 'usage-model', 'usage-interval', 'usage-range-select',
     'usage-status-filter', 'usage-source', 'usage-source-toggle', 'usage-source-detail',
     'usage-calendar-expand', 'usage-prev', 'usage-next', 'usage-table-head', 'usage-rows',
-    'usage-daily-details', 'usage-daily-rows'];
+    'usage-daily-details', 'usage-daily-rows', 'usage-fail',
+    'usage-side-active', 'usage-side-daily-label', 'usage-side-daily', 'usage-side-peak'];
   for (const id of ids) elements.set(id, new Element(id));
   // 结构:.usage-chart > #usage-chart-holder > (#usage-heatmap, #usage-chart-empty, tooltip)
   const chart = new Element('usage-chart');
@@ -217,7 +231,7 @@ function harness(options = {}) {
       }
       return { ok: true, status: 200, json: async () => payload };
     },
-    // app.js 里的全局:`$` / `esc` / `toast` / `view`。usage.js 只能读,不能再声明。
+    // app.js 里的全局:`$` / `esc` / `toast` / `view`(fmt* 格式函数在下面单独载入)。usage.js 只能读,不能再声明。
     $: id => get(id),
     esc: value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])),
     view: 'usage',
@@ -225,7 +239,8 @@ function harness(options = {}) {
   });
   context.toast = message => context.toasts.push(message);
   // 顶层 function 声明会挂到 vm 的全局对象上,但 const 不会 —— 用脚本尾部导出这些名字。
-  vm.runInContext(SOURCE + '\n;globalThis.__t = { usageState, usageTok, usagePct, usageMs, usageHeatLevel, usageHeatThresholds, usageQuery, usageHeatModel, usageDayLabel, usageHeatCellText, getDaily: () => usageState.dailyRefs };', context, { filename: 'public/js/usage.js' });
+  vm.runInContext(APP_FORMATTERS, context, { filename: 'public/js/app.js (formatters)' });
+  vm.runInContext(SOURCE + '\n;globalThis.__t = { usageState, usageHeatLevel, usageHeatThresholds, usageQuery, usageHeatModel, usageDayLabel, usageHeatCellText, getDaily: () => usageState.dailyRefs };', context, { filename: 'public/js/usage.js' });
   for (const callback of documentHandlers.DOMContentLoaded || []) callback();
   return {
     run: code => vm.runInContext(code, context),
@@ -332,12 +347,22 @@ test('四张指标卡:请求/tokens/缓存/成功率,补充指标进更多指标
   await h.run('loadUsage()');
   assert.equal(h.get('usage-reqs').textContent, '42');
   assert.match(h.get('usage-request-hint').textContent, /\d{4}-\d{2}-\d{2} – \d{4}-\d{2}-\d{2}/);
-  assert.equal(h.get('usage-tokens').textContent, '20.0k');
-  assert.match(h.get('usage-token-split').textContent, /新增 8\.0k \/ 输出 4\.0k \/ 缓存 8\.0k/);
+  // 数字格式统一走 app.js 的 fmtTok / fmtPct / fmtRate / fmtTtfb,期望值也从它们算;完整数字放 title。
+  assert.equal(h.get('usage-tokens').textContent, h.run('fmtTok(20000)'));
+  assert.equal(h.get('usage-tokens').getAttribute('title'), '20,000 tokens = 新增输入 8,000 + 输出 4,000 + 缓存读取 8,000');
+  // 三段拆分各是一个不折行的小块(窄卡片整块换行),每块带完整数字。
+  const split = h.get('usage-token-split').innerHTML;
+  for (const [label, value] of [['新增', 8000], ['输出', 4000], ['缓存', 8000]]) {
+    assert.ok(split.includes(`<span class="usage-split" title="${value.toLocaleString('en-US')}"><span>${label}</span> ${h.run(`fmtTok(${value})`)}</span>`), `拆分里要有 ${label}`);
+  }
   assert.equal(h.get('usage-cache').textContent, '50.0%');
   assert.equal(h.get('usage-success').textContent, '97.6%');
-  assert.match(h.get('usage-ok-rate').textContent, /42 次请求/);
-  assert.match(h.get('usage-speed').textContent, /88 tok\/s/);
+  // 次数已在「总请求数」卡里;成功率副标题只说判定口径,失败次数由徽标直接给。
+  assert.match(h.get('usage-ok-rate').textContent, /断流与取消计为失败/);
+  assert.equal(h.get('usage-fail').textContent, '失败 1 次', '42 × 2.38% ≈ 1 次');
+  assert.equal(h.get('usage-speed').textContent, h.run('fmtRate({ out: 88.4, ms: 1000 })'), '聚合速度与诊断页同一套格式');
+  assert.match(h.get('usage-speed').textContent, /^88/);
+  assert.equal(h.get('usage-ttfb').textContent, h.run('fmtTtfb(1250)'));
   assert.match(h.get('usage-ttfb').textContent, /1\.3s/, '1250ms 应显示成 1.3s');
 
   h.setResponse({
@@ -352,6 +377,8 @@ test('四张指标卡:请求/tokens/缓存/成功率,补充指标进更多指标
   assert.equal(h.get('usage-success').textContent, '—');
   assert.equal(h.get('usage-speed').textContent, '—');
   assert.match(h.get('usage-ok-rate').textContent, /暂无成功率样本/);
+  assert.match(h.get('usage-token-split').innerHTML, /<span>新增<\/span> —/, '拆分缺失也是「—」,不是 0');
+  assert.equal(h.get('usage-fail').hidden, true);
 });
 
 test('查询:默认全部区间,带 dashboard=1 与 offset/limit;筛选值进同一个查询串', async () => {
@@ -440,11 +467,13 @@ test('热力图:按覆盖周裁剪、周一为首列,区间外/未覆盖/未来/
   assert.equal(future.length, remaining);
   for (const cell of future) assert.ok(cell['data-date'] > today);
 
-  // 图例要把「未覆盖」「不在区间」「未来」与 0 分开写出来
+  // 图例要把「未覆盖」「未来」与 0 分开写出来(「不在区间」见切换区间的用例)
   assert.match(html, /未覆盖/);
-  assert.match(html, /不在区间/);
   assert.match(html, /未来/);
   assert.match(html, /0 请求/);
+  assert.match(html, /title="未覆盖:数据源没有这一天的日志,不是 0"/, '未覆盖 ≠ 0 写在色块的 title 里');
+  // 7 月 20 日既没有日志也不在区间:格子读作「未覆盖」,图例不另给一个「不在区间」。
+  assert.doesNotMatch(html, /不在区间/);
 
   // 漫游 tabindex:只有一格是 Tab 停靠点
   assert.equal(cells.filter(cell => cell.tabindex === '0').length, 1);
@@ -454,8 +483,11 @@ test('热力图:按覆盖周裁剪、周一为首列,区间外/未覆盖/未来/
   const dailyRows = h.get('usage-daily-rows').innerHTML;
   assert.match(dailyRows, new RegExp(`<td>${keyAgo(5)}</td><td>0</td>`), '真实的 0 要出现在按日表里');
   assert.match(dailyRows, new RegExp(`<td>${today}</td>`));
-  assert.match(h.get('usage-calendar-summary').textContent, new RegExp(`最近 ${visibleWeeks} 周`));
-  assert.match(h.get('usage-calendar-summary').textContent, /共 42 次请求 · 20\.0k tokens/, '摘要要有区间总量');
+  // 标题下一行只说窗口(周数 + 起始日);区间总量只在指标卡里出现一次。
+  assert.equal(h.get('usage-range-label').textContent, `最近 ${visibleWeeks} 周 · 2026-07-20 起`);
+  // 窗口里有未覆盖的格子时,摘要补一句最早日志的(本地)日期。
+  assert.equal(h.get('usage-calendar-summary').textContent, `最早一条日志 ${keyAgo(90)},之前的日期未覆盖。`);
+  assert.equal(h.get('usage-calendar-summary').hidden, false);
   assert.doesNotMatch(html, /¥|cost|price/i, '热力图不带金额折算');
 });
 
@@ -521,7 +553,7 @@ test('展开更早的 53 周:只在统计区间伸到当前块之前时出现,�
   assert.equal(cellsOf(h.get('usage-heatmap').innerHTML).length, 371);
   h.run('expandUsageCalendar()');
   assert.equal(cellsOf(h.get('usage-heatmap').innerHTML).length, 742, '再往前一块 53 周');
-  assert.match(h.get('usage-calendar-summary').textContent, /已展开 106 周/);
+  assert.match(h.get('usage-range-label').textContent, /^已展开 106 周 · \d{4}-\d{2}-\d{2} 起$/);
   assert.equal(expand.hidden, true, '覆盖到最早记录后按钮收起');
 });
 
@@ -564,8 +596,11 @@ test('标签页:请求/供应商/模型同批筛选,表头与 aria 跟着切', a
   assert.match(h.get('usage-table-head').innerHTML, /时间/);
   assert.match(h.get('usage-rows').innerHTML, /主力渠道/);
   assert.match(h.get('usage-rows').innerHTML, /Anthropic/);
-  assert.match(h.get('usage-rows').innerHTML, /750 tok\/s/, '速度由 out / ms 算出');
-  assert.match(h.get('usage-rows').innerHTML, /失败 200 · upstream boom/, 'err 覆盖数值 200');
+  // 速度由 out / ms 算出,格式与诊断页一致(1500 / 2s = 750)。
+  assert.match(h.run('fmtRate({ out: 1500, ms: 2000 })'), /^750\D/);
+  assert.ok(h.get('usage-rows').innerHTML.includes(`<td>${h.run('fmtRate({ out: 1500, ms: 2000 })')}</td>`));
+  // err 覆盖数值 200:主文案是「失败」,HTTP 状态码是次级小字,原始错误进 title。
+  assert.ok(h.get('usage-rows').innerHTML.includes('<span class="usage-st" title="HTTP 200 · upstream boom"><span class="badge err badge-dot">失败</span><span class="usage-st-code">200</span></span>'));
 
   h.run("setUsageTab('providers')");
   assert.match(h.get('usage-table-head').innerHTML, /供应商/);
@@ -600,12 +635,55 @@ test('请求明细:model_out 为主、别名次要标注,缺失遥测显示「�
   assert.doesNotMatch(row, /<td>0<\/td>/, '缺失遥测不能显示成 0');
   h.run("setUsageTab('models')");
   h.run("setUsageTab('requests')");
+
+  // 0 与缺失独立判断,不能从一项已知用量补造其它项。
+  const zeros = usageFixture();
+  zeros.dashboard.records.rows = [
+    { ts: new Date().toISOString(), app: 'claude', provider: 'p', model_out: 'm', status: 200, err: '', in: 10, out: 0, cache_read: 0, ms: 100 },
+    { ts: new Date().toISOString(), app: 'claude', provider: 'p', model_out: 'm', status: 502, err: 'bad', in: 0, out: 0, cache_read: 0, ms: 100 },
+    { ts: new Date().toISOString(), app: 'claude', provider: 'p', model_out: 'm', status: 200, in: 10, out: null, ms: 100 },
+  ];
+  zeros.dashboard.records.total = 3;
+  h.setResponse(zeros);
+  await h.run('loadUsage()');
+  const [reported, zero, partial] = h.get('usage-rows').innerHTML.split('</tr>');
+  assert.match(reported, /<td>10<\/td><td>0<\/td><td>0<\/td>/, '记了用量的行里 0 照实显示');
+  assert.match(zero, /<td>0<\/td><td>0<\/td><td>0<\/td>/, '失败记录里的 0 也按服务端值显示');
+  assert.match(partial, /<td>10<\/td><td>—<\/td><td>—<\/td>/, '已知输入量不能让未知输出和缓存变成 0');
+});
+
+test('请求明细:状态给人话标签,状态码作次级小字,原始错误进 title;时间点按今天/今年/更早缩写', async () => {
+  const now = new Date(2026, 10, 6, 15, 30);
+  const fixture = usageFixture({ now });
+  fixture.dashboard.records.rows = [
+    { ts: new Date(2026, 10, 6, 9, 5, 7).toISOString(), app: 'claude', provider: 'p', model_out: 'm',
+      status: 200, err: '', err_class: 'stream_aborted', in: 10, out: 0, cache_read: 0, ms: 100, ttfb_ms: 40 },
+    { ts: new Date(2026, 2, 3, 8, 9, 10).toISOString(), app: 'codex', provider: 'p', model_out: 'm',
+      status: 429, err: 'slow down', err_class: 'rate_limit', in: 0, out: 0, cache_read: 0 },
+    { ts: new Date(2025, 11, 31, 23, 0, 0).toISOString(), app: 'claude', provider: 'p', model_out: 'm',
+      status: 0, err: 'socket hang up', in: 0, out: 0, cache_read: 0 },
+  ];
+  fixture.dashboard.records.total = 3;
+  const h = harness({ now, response: fixture });
+  await h.run('loadUsage()');
+  const [today, thisYear, older] = h.get('usage-rows').innerHTML.split('</tr>');
+  // 时间点:今天 HH:mm:ss,今年 MM-DD HH:mm,更早 YYYY-MM-DD;完整时间一律在 title。
+  assert.match(today, /^<tr><td title="2026-11-06 09:05:07">09:05:07<\/td>/);
+  assert.match(thisYear, /^<tr><td title="2026-03-03 08:09:10">03-03 08:09<\/td>/);
+  assert.match(older, /^<tr><td title="2025-12-31 23:00:00">2025-12-31<\/td>/);
+  // err_class 换成诊断页筛选里的同一套叫法;原始分类码只在 title 里,不当主文案。
+  assert.ok(today.includes('<span class="usage-st" title="HTTP 200 · stream_aborted"><span class="badge err badge-dot">断流</span><span class="usage-st-code">200</span></span>'));
+  assert.ok(thisYear.includes('<span class="usage-st" title="HTTP 429 · rate_limit · slow down"><span class="badge err badge-dot">限流</span><span class="usage-st-code">429</span></span>'));
+  assert.ok(older.includes('<span class="usage-st" title="没有拿到上游响应 · socket hang up"><span class="badge err badge-dot">失败</span></span>'), '没有状态码时不显示 0');
+  assert.doesNotMatch(h.get('usage-rows').innerHTML, />stream_aborted</, '内部枚举不进可见文字');
 });
 
 test('分页:请求页走服务端 offset,供应商页本地切片且不重新请求', async () => {
   const h = harness();
   await h.run('loadUsage()');
-  assert.match(h.get('usage-page-label').textContent, /第 1 \/ 3 页 · 共 120 条请求/);
+  // 总数只在表格上方的计数行出现一次,分页行只说第几页。
+  assert.equal(h.get('usage-page-label').textContent, '第 1 / 3 页');
+  assert.equal(h.get('usage-count').textContent, '共 120 条请求 · 按时间倒序');
   assert.equal(h.get('usage-prev').disabled, true);
   assert.equal(h.get('usage-next').disabled, false);
 
@@ -628,7 +706,8 @@ test('分页:请求页走服务端 offset,供应商页本地切片且不重新�
   await tick();
   h.run("usageState.offset = 0; setUsageTab('providers')");
   const fetches = h.requests.length;
-  assert.match(h.get('usage-page-label').textContent, /第 1 \/ 2 页 · 共 4 个供应商/);
+  assert.equal(h.get('usage-page-label').textContent, '第 1 / 2 页');
+  assert.equal(h.get('usage-count').textContent, '共 4 个供应商 · 按请求数降序');
   assert.equal((h.get('usage-rows').innerHTML.match(/<tr>/g) || []).length, 2, '每页两条');
   h.run('usagePage(1)');
   assert.equal(h.requests.length, fetches, '聚合表翻页不发请求');
@@ -643,7 +722,9 @@ test('切换指标只重画热力图、不重新请求,aria-pressed 跟着变', 
   const before = h.requests.length;
   h.run("setUsageMetric('reqs')");
   assert.equal(h.requests.length, before, '指标切换是纯前端重画');
-  assert.equal(h.get('usage-range-label').textContent, '按 请求 着色 · 全部');
+  // 指标只改色阶和跟指标走的读数:窗口概览的「日均」标签跟着切,标题下的窗口说明不变。
+  assert.equal(h.get('usage-side-daily-label').textContent, '日均请求');
+  assert.match(h.get('usage-range-label').textContent, /^最近 \d+ 周 · \d{4}-\d{2}-\d{2} 起$/);
   assert.equal(h.segs.metric.find(el => el.dataset.metric === 'reqs').getAttribute('aria-pressed'), 'true');
   assert.equal(h.segs.metric.find(el => el.dataset.metric === 'tokens').getAttribute('aria-pressed'), 'false');
   const today = cellFor(h, dateKey(new Date()));
@@ -698,6 +779,7 @@ test('读取失败:报错清楚、旧数据标 stale 且明说不是当前筛选
   await tick();
   assert.match(h.get('usage-status').textContent, /读取失败/);
   assert.match(h.get('usage-status').textContent, /上一次成功读取的数据/);
+  assert.match(h.get('usage-status').textContent, /点「立即同步」重试/, '失败要给下一步');
   assert.equal(h.get('usage-data-frame').dataset.stale, 'true', '旧数据要明确标成过期');
   assert.ok(h.get('usage-data-frame').classList.contains('is-stale'));
   assert.equal(h.get('usage-reqs').textContent, '42', '失败不清空上一份数据');
@@ -705,6 +787,24 @@ test('读取失败:报错清楚、旧数据标 stale 且明说不是当前筛选
   await h.run('loadUsage()');
   assert.equal(h.get('usage-data-frame').dataset.stale, 'false', '成功后摘掉 stale');
   assert.match(h.get('usage-last-sync').textContent, /最近同步/);
+  assert.match(h.get('usage-last-sync').getAttribute('title'), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/, '完整同步时间在 title');
+  assert.equal(h.get('usage-status').hidden, true, '恢复正常后状态行收起,不重复卡片和顶栏里已有的数');
+});
+
+test('状态行:只剩内存窗口时说清楚不是完整历史;连不上服务给可读原因', async () => {
+  const memory = usageFixture();
+  memory.scope.source = 'memory';
+  const h = harness({ response: memory });
+  await h.run('loadUsage()');
+  assert.equal(h.get('usage-status').hidden, false);
+  assert.equal(h.get('usage-status').textContent, '只读到内存窗口(还没有落盘日志),数字不是完整历史。');
+
+  // fetch 自己抛错(浏览器原文是 Failed to fetch 之类)= 连不上本机服务,不把原文当主文案。
+  h.failNext(new TypeError('Failed to fetch'));
+  await h.run('loadUsage()');
+  assert.match(h.get('usage-status').textContent, /^用量读取失败:连不上本机服务。/);
+  assert.doesNotMatch(h.get('usage-status').textContent, /Failed to fetch/);
+  assert.equal(h.get('usage-status').dataset.tone, 'err');
 });
 
 test('空区间:给出明确空态,热力图仍然如实画出覆盖与零,不伪造历史', async () => {
@@ -747,7 +847,7 @@ test('指针与键盘:同一格给出同样的读数,Esc 收起,读数进 aria-l
   root.events.pointerover({ target: { dataset: { date: today }, getBoundingClientRect: () => ({ left: 0, top: 0, width: 14, height: 14 }) } });
   assert.equal(tip.hidden, false);
   assert.match(tip.textContent, /7 次请求/);
-  assert.match(tip.textContent, /7\.5k tokens/);
+  assert.ok(tip.textContent.includes(`${h.run('fmtTok(7500)')} tokens`));
   assert.equal(tip.style.left, '8px', '窄屏/未知位置时夹在面板内');
   assert.doesNotMatch(tip._html, /</, '浮层只用 textContent');
 
@@ -781,7 +881,7 @@ test('有请求但没有 token 遥测的日子:按 Tokens 着色时仍然是活�
   await h.run('loadUsage()');
   const cell = cellFor(h, key);
   assert.equal(cell['data-level'], '1', '有请求就有色阶,哪怕 token 遥测缺失');
-  assert.match(h.get('usage-calendar-summary').textContent, /窗口内/);
+  assert.match(h.get('usage-side-active').textContent, /^5 \/ \d+ 天$/, '没有 token 遥测的那天仍算「有请求的天」');
 });
 
 test('图例:外壳已有 .heatmap-legend 时复用它,只补说明,不渲染第二份', async () => {
@@ -791,13 +891,18 @@ test('图例:外壳已有 .heatmap-legend 时复用它,只补说明,不渲染第
   swatch.dataset.level = '0';
   legend.appendChild(swatch);
   const now = new Date(2026, 9, 21, 12);
-  const h = harness({ now, response: usageFixture({ now }), legendEl: legend });
+  // 区间(30 天)比日志覆盖(90 天)短:更早的日子有日志但不在区间,才需要「不在区间」色块。
+  const h = harness({ now, response: usageFixture({ now, scopeDays: 30 }), legendEl: legend });
   await h.run('loadUsage()');
   assert.doesNotMatch(h.get('usage-heatmap').innerHTML, /class="heatmap-legend"/, '不能重复渲染图例');
   const extra = legend.children.find(child => child.id === 'usage-heatmap-legend-extra');
-  assert.ok(extra, '在既有图例后补上 0 / 区间外 / 未来的说明');
-  assert.match(extra.innerHTML, /0 = 区间内无请求/);
-  assert.match(extra.innerHTML, /区间外的日期不参与统计/);
+  assert.ok(extra, '在既有图例后补上当前窗口出现的状态色块');
+  assert.equal(extra.hidden, false);
+  // 含义写在色块/标签的 title 里,图例行不再铺说明句;0 的含义由外壳自己的 0 级色块承担。
+  assert.match(extra.innerHTML, /data-active="false" title="不在当前统计区间:不参与统计,也不是 0"/);
+  assert.match(extra.innerHTML, />不在区间</);
+  assert.match(extra.innerHTML, /data-future="true" title="未来日期,尚无数据"/);
+  assert.doesNotMatch(extra.innerHTML, /0 = 区间内无请求/, '0 已有自己的色块,不再重复写一遍');
   assert.equal(swatch.getAttribute('title'), '0:区间内确实没有请求');
 });
 
@@ -809,8 +914,8 @@ test('图例:周日窗口没有区间外格子时不补不存在的说明', asyn
   await h.run('loadUsage()');
   const extra = legend.children.find(child => child.id === 'usage-heatmap-legend-extra');
   assert.ok(extra);
-  assert.match(extra.innerHTML, /0 = 区间内无请求/);
-  assert.doesNotMatch(extra.innerHTML, /区间外的日期不参与统计/);
+  assert.equal(extra.innerHTML, '', '没有区间外/未来格子就不补色块');
+  assert.equal(extra.hidden, true, '空的补充区收起,不留一段空白间距');
 });
 
 test('日志内容进入表格前转义:供应商/错误文本不能当 HTML 插进来', async () => {

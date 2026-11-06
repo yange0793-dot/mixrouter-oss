@@ -1,23 +1,64 @@
-/* Bots 模型使用现有控制台 tokens；每行就是一个独立落点，不复用槽位表。 */
-.bots-panel { margin: 16px 0 20px; }
+/* Bots 模型(2026-11 视觉重做):卡片外观沿用通用 .panel;每行就是一个独立落点,不复用槽位表。
+   行按网格对齐:标签在上、控件在下;桌面宽度下第 2 行起的列标签只留给读屏。 */
+.bots-panel { margin: 16px 0; }
 .bots-panel[hidden] { display: none; }
-.bots-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.bots-head h2 { margin: 0 0 6px; }
-.bots-head .hint { margin: 0; }
-.bots-scope { margin: 10px 0 16px; max-width: 78ch; }
-.bots-row { display: grid; grid-template-columns: minmax(100px, .8fr) minmax(140px, 1fr) minmax(160px, 1.2fr) minmax(150px, 1fr) auto; gap: 12px; align-items: end; padding: 12px 0; border-top: 1px solid var(--border-soft); }
-.bots-row .field { min-width: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--dim); }
+.bots-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px 20px; }
+.bots-head > div { flex: 1 1 auto; min-width: 0; }
+.bots-head > button { flex-shrink: 0; }
+#bots-panel .bots-head h2 { margin: 0 0 3px; }
+#bots-panel .bots-head .hint { margin: 0; }
+#bots-panel .bots-scope { margin: 4px 0 0; max-width: 92ch; }
+
+#bots-rows { margin-top: 14px; }
+.bots-row {
+  display: grid;
+  grid-template-columns: minmax(110px, .8fr) minmax(140px, 1fr) minmax(160px, 1.2fr) minmax(150px, 1fr) auto;
+  gap: 12px; align-items: end; padding: 12px 0; border-top: 1px solid var(--border-soft);
+}
+.bots-row:first-child { border-top: 0; padding-top: 0; }
+.bots-row .field { position: relative; min-width: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--dim); }
 .bots-row input, .bots-row select { width: 100%; min-width: 0; color: var(--text); }
-.bots-remove { margin-bottom: 1px; }
-.bots-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
-.bots-actions .hint { flex: 1 1 260px; min-width: 0; overflow-wrap: anywhere; }
-.bots-actions .bots-error { color: var(--err-text); }
+#bots-rows .bots-empty { margin: 0 0 12px; }
+
+/* 删除是安静的危险按钮:平时透明,悬停或键盘焦点时才显出危险色。 */
+#bots-panel button.bots-remove {
+  min-height: var(--control-h); padding: 4px 10px;
+  background: transparent; border-color: transparent; color: var(--dim);
+}
+#bots-panel button.bots-remove:hover:not(:disabled),
+#bots-panel button.bots-remove:focus-visible {
+  background: var(--err-soft); border-color: var(--err-line); color: var(--err-text);
+}
+
+/* 新增 / 保存栏:和行之间隔一条细线;新增是普通小按钮,保存是主按钮,状态文字跟在后面。 */
+.bots-actions {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px;
+  margin-top: 0; padding-top: 12px; border-top: 1px solid var(--border-soft);
+}
+#bots-panel .bots-actions .hint { flex: 1 1 260px; min-width: 0; margin: 0; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+#bots-panel .bots-actions .bots-busy { color: var(--accent-text); }
+#bots-panel .bots-actions .bots-ok { color: var(--ok-text); }
+#bots-panel .bots-actions .bots-warn { color: var(--warn-text); }
+#bots-panel .bots-actions .bots-error { color: var(--err-text); }
+
+@media (min-width: 1101px) {
+  .bots-row + .bots-row .bots-label {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+  }
+}
 @media (max-width: 1100px) {
   .bots-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .bots-remove { justify-self: start; }
 }
+@media (max-width: 860px) {
+  #bots-panel button { min-height: 36px; }
+}
 @media (max-width: 540px) {
-  .bots-row { grid-template-columns: minmax(0, 1fr); gap: 10px; }
-  .bots-head { flex-wrap: wrap; }
-  .bots-actions .hint { flex-basis: 100%; }
+  /* 手机:删除跟在名字旁边,不单独占一行;渠道 / 模型 / Key 各占整行。 */
+  .bots-row { grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
+  .bots-row > .field { grid-column: 1 / -1; }
+  .bots-row > .field:first-child { grid-column: 1; }
+  .bots-row > .bots-remove { grid-column: 2; grid-row: 1; align-self: end; }
+  #bots-panel .bots-actions .hint { flex-basis: 100%; }
 }

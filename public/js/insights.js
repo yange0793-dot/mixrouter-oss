@@ -1,6 +1,6 @@
 'use strict';
 // 模型与上下文(#insights)。与 app.js 共用同一个 realm(classic script,不是 ESM):
-// 只声明本页自己的变量与函数,不重复声明 $ / esc / api / view / online。
+// 只声明本页自己的变量与函数,不重复声明 $ / esc / api / view / online 和 app.js 的 fmt* 格式函数。
 //
 // 只做三件事,都不改路由或客户端配置:
 //   1) 显示本机渠道库的模型能力声明(没有声明就是未知,不按名字推断);
@@ -57,35 +57,38 @@ function insightsOnline() {
   try { return typeof online === 'undefined' ? true : !!online; } catch { return true; }
 }
 
+// 与用量页、诊断页同一套叫法:按协议标注(Anthropic / OpenAI),不按客户端名。
 function insightsAppLabel(app) {
-  if (app === 'claude') return 'Claude';
-  if (app === 'codex') return 'Codex';
+  if (app === 'claude') return 'Anthropic';
+  if (app === 'codex') return 'OpenAI';
   return app ? String(app) : '—';
 }
 
-function insightsWhen(value) {
-  if (value === null || value === undefined || value === '') return '—';
-  const numeric = typeof value === 'number' || /^\d{10,}$/.test(String(value)) ? Number(value) : value;
-  const date = new Date(numeric);
-  if (Number.isNaN(date.getTime())) return String(value);
-  const pad = n => String(n).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} `
-    + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+// 数字与时间的显示格式全部用 app.js 的全站格式函数(fmtTok / fmtCount / fmtBytes / fmtWhen /
+// fmtFullTime):同一个数在用量、诊断和本页长得一样。本页只包一层 title。
+// 表格里的时间点缩写显示,完整时间进 title;详情面板直接写 fmtFullTime。
+function insightsWhenHtml(value) {
+  const full = fmtFullTime(value);
+  return `<span class="insights-time"${full === '—' ? '' : ` title="${full}"`}>${fmtWhen(value)}</span>`;
 }
 
-function insightsCount(value) {
-  if (value === null || value === undefined || value === '') return '—';
-  const n = Number(value);
-  return Number.isFinite(n) ? n.toLocaleString('en-US') : '—';
+// 表格里的 token 数:缩写显示,完整千分位进 title(小于 1000 本来就是完整数字,不加)。
+function insightsTokHtml(value) {
+  const n = finiteOrNull(value);
+  const title = n !== null && Math.abs(n) >= 1000 ? ` title="${fmtCount(n)}"` : '';
+  return `<span class="insights-value"${title}>${fmtTok(value)}</span>`;
 }
 
-function insightsBytes(value) {
-  if (value === null || value === undefined || value === '') return '—';
-  const n = Number(value);
-  if (!Number.isFinite(n)) return '—';
-  if (n < 1024) return Math.round(n) + ' B';
-  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
-  return (n / 1048576).toFixed(1) + ' MB';
+// 缺失值统一显示「—」,原因写进 title(未登记 / 没观察到 / 未采集),不和 0 混在一起。
+function insightsUnknown(title) {
+  return `<span class="insights-unknown" title="${insightsEsc(title)}">—</span>`;
+}
+
+// api() 直接抛浏览器原文(Failed to fetch / AbortError);换成能看懂的原因。
+function insightsErrorText(e) {
+  if (e && e.name === 'AbortError') return '请求超时';
+  if (e && e.name === 'TypeError') return '连不上本机服务';
+  return e && e.message ? e.message : '未知错误';
 }
 
 function insightsStatusClass(status) {
@@ -98,8 +101,18 @@ function insightsStatusClass(status) {
   return '';
 }
 
-function insightsStatusText(status) {
-  return status === null || status === undefined || status === '' ? '—' : String(status);
+// 状态给人话(成功 / 中断 / 失败),HTTP 状态码作次级信息。ok === false 而状态码是 2xx 时是
+// 「中断」:响应已经开始,后面失败或被掐断(日志带 err),不能按 200 显示成成功。
+function insightsStatus(request) {
+  const raw = request ? request.status : null;
+  if (raw === null || raw === undefined || raw === '') return null;
+  const n = Number(raw);
+  const code = Number.isFinite(n) && n > 0 ? String(n) : '';
+  if (request.ok === false && n >= 200 && n < 400) {
+    return { label: '中断', code, cls: 'st5', title: `HTTP ${n}，但请求失败或中断（日志记有错误）` };
+  }
+  if (n >= 200 && n < 400) return { label: '成功', code, cls: insightsStatusClass(n), title: `HTTP ${n}` };
+  return { label: '失败', code, cls: n === 0 ? 'st5' : insightsStatusClass(n) || 'st5', title: code ? `HTTP ${code}` : '没有拿到上游响应' };
 }
 
 // ---------------------------------------------------------------- 模型能力
@@ -116,39 +129,40 @@ function insightsCapability(entry, field) {
 }
 
 function insightsSourceBadge(source) {
-  return source === 'manual' ? ' <span class="badge info">手动</span>' : '';
+  return source === 'manual' ? ' <span class="badge info insights-src" title="手工登记的能力声明">手动</span>' : '';
 }
 
-function insightsCapCell(entry, field) {
+// full = 详情面板:数字写完整千分位;表格里缩写成 K/M,完整数字进 title。
+function insightsCapCell(entry, field, full = false) {
   const { value, source } = insightsCapability(entry, field);
   const badge = insightsSourceBadge(source);
+  const unknown = insightsUnknown('未知：没有登记，不按模型名推断');
   if (field === 'context_window' || field === 'max_output_tokens') {
-    if (value === null || value === undefined || value === '') return '<span class="insights-unknown">未知</span>';
+    if (value === null || value === undefined || value === '') return unknown;
     const n = Number(value);
-    if (!Number.isFinite(n)) return '<span class="insights-unknown">未知</span>';
-    return `<span class="insights-value">${insightsCount(n)}</span>${badge}`;
+    if (!Number.isFinite(n)) return unknown;
+    return `${full ? `<span class="insights-value">${fmtCount(n)}</span>` : insightsTokHtml(n)}${badge}`;
   }
   if (field === 'vision') {
-    if (value === true) return `支持${badge}`;
-    if (value === false) return `不支持${badge}`;
-    return '<span class="insights-unknown">未知</span>';
+    if (value === true) return `<span class="badge info insights-cap">支持</span>${badge}`;
+    if (value === false) return `<span class="badge off insights-cap">不支持</span>${badge}`;
+    return unknown;
   }
   const levels = Array.isArray(value) ? value.filter(level => typeof level === 'string' && level) : [];
-  if (!levels.length) return '<span class="insights-unknown">未知</span>';
-  return `${insightsEsc(levels.join(', '))}${badge}`;
+  if (!levels.length) return unknown;
+  return `<span class="insights-levels">${insightsEsc(levels.join(', '))}</span>${badge}`;
 }
 
+// 观察只来自成功请求,状态码一律 2xx,不再单列;只给「发出 → 自报」与时间。
 function insightsObservationHtml(observation) {
   if (!observation || typeof observation !== 'object') {
-    return '<span class="insights-unknown">暂无成功请求的观察</span>';
+    return insightsUnknown('暂无成功请求的观察');
   }
   const upstream = observation.upstream_model
     ? insightsEsc(observation.upstream_model)
-    : '<span class="insights-unknown">未知</span>';
+    : insightsUnknown('未知：响应里没有 model 字段');
   return `<span class="insights-obs-main">自报 ${upstream}</span>`
-    + `<span class="insights-sub">发出 ${insightsEsc(observation.requested_model || '—')}`
-    + ` · 状态 ${insightsEsc(insightsStatusText(observation.status))}`
-    + ` · ${insightsEsc(insightsWhen(observation.ts))}</span>`;
+    + `<span class="insights-sub">发出 ${insightsEsc(observation.requested_model || '—')} · ${insightsWhenHtml(observation.ts)}</span>`;
 }
 
 function insightsModelRow(entry, index) {
@@ -164,7 +178,7 @@ function insightsModelRow(entry, index) {
     <td>${insightsCapCell(entry, 'vision')}</td>
     <td>${insightsCapCell(entry, 'reasoning_levels')}</td>
     <td>${insightsObservationHtml(entry.observation)}</td>
-    <td><button class="small" type="button" onclick="insightsSelectModel(${index})">详情</button></td>
+    <td><button class="small quiet" type="button" onclick="insightsSelectModel(${index})">详情</button></td>
   </tr>`;
 }
 
@@ -175,23 +189,27 @@ function insightsSelectedModel() {
 
 function insightsModelDetail(entry) {
   const observation = entry.observation && typeof entry.observation === 'object' ? entry.observation : null;
-  const observationHtml = observation
-    ? `<p class="hint">最近一次成功请求的上游自报：发出 <span class="mono">${insightsEsc(observation.requested_model || '—')}</span>
-        → 自报 <span class="mono">${insightsEsc(observation.upstream_model || '未知')}</span>
-        （状态 ${insightsEsc(insightsStatusText(observation.status))}，${insightsEsc(insightsWhen(observation.ts))}）。
-        这是响应里的 model 字段，不是身份认证；名称不同也可能只是别名规范化。</p>`
+  const mono = value => (value ? `<span class="mono">${insightsEsc(value)}</span>` : '—');
+  const observed = observation ? [
+    ['最近发出', mono(observation.requested_model)],
+    ['上游自报', observation.upstream_model ? mono(observation.upstream_model) : insightsUnknown('未知：响应里没有 model 字段')],
+    ['观察时间', insightsEsc(fmtFullTime(observation.ts))],
+  ].map(([label, value]) => `<div><dt>${label}</dt><dd>${value}</dd></div>`).join('') : '';
+  const observationHint = observation
+    ? '<p class="hint">上游自报取自响应里的 model 字段，不是身份认证；与发出的名称不同也可能只是别名规范化。</p>'
     : '<p class="hint">还没有可用于观察的成功请求。失败请求不会成为成功模型的证据；旧日志缺少 upstream_model 时也不会用请求模型补造。</p>';
   return `<div class="insights-detail-head"><h3>${insightsEsc(entry.model || '—')}</h3>
       <button class="small" type="button" onclick="insightsCloseModel()">关闭</button></div>
     <dl class="config-facts">
       <div><dt>协议组</dt><dd>${insightsEsc(insightsAppLabel(entry.app))}</dd></div>
       <div><dt>渠道</dt><dd>${insightsEsc(entry.provider_name || entry.provider || '—')}</dd></div>
-      <div><dt>上下文窗口</dt><dd>${insightsCapCell(entry, 'context_window')}</dd></div>
-      <div><dt>最大输出 tokens</dt><dd>${insightsCapCell(entry, 'max_output_tokens')}</dd></div>
-      <div><dt>视觉</dt><dd>${insightsCapCell(entry, 'vision')}</dd></div>
-      <div><dt>推理档位</dt><dd>${insightsCapCell(entry, 'reasoning_levels')}</dd></div>
+      <div><dt>上下文窗口</dt><dd>${insightsCapCell(entry, 'context_window', true)}</dd></div>
+      <div><dt>最大输出 tokens</dt><dd>${insightsCapCell(entry, 'max_output_tokens', true)}</dd></div>
+      <div><dt>视觉</dt><dd>${insightsCapCell(entry, 'vision', true)}</dd></div>
+      <div><dt>推理档位</dt><dd>${insightsCapCell(entry, 'reasoning_levels', true)}</dd></div>
+      ${observed}
     </dl>
-    ${observationHtml}
+    ${observationHint}
     <div class="savebar"><button class="small" type="button" onclick="insightsEditModel()">编辑能力</button>
       <span class="hint">只保存本页的诊断元数据；不改变请求参数、路由、窗口或客户端配置。</span></div>`;
 }
@@ -351,11 +369,11 @@ async function insightsLoadModels(manual = false) {
     const next = await api('/api/insights/models');
     if (seq !== insightsState.modelsSeq) return;
     insightsAcceptModels(next);
-    insightsState.modelsMessage = `已读取 ${insightsState.models.length} 个登记模型；能力声明只用于显示。`;
+    insightsState.modelsMessage = `已读取 ${insightsState.models.length} 个登记模型。`;
     insightsState.modelsKind = '';
   } catch (e) {
     if (seq !== insightsState.modelsSeq) return;
-    insightsState.modelsMessage = `读取失败：${e.message}` + (insightsState.modelsLoaded ? '（保留上次结果）' : '');
+    insightsState.modelsMessage = `读取失败：${insightsErrorText(e)}` + (insightsState.modelsLoaded ? '（保留上次结果）' : '') + '。可点「刷新模型」重试。';
     insightsState.modelsKind = 'error';
   } finally {
     if (seq === insightsState.modelsSeq) {
@@ -425,14 +443,14 @@ async function insightsSaveModel() {
     }) });
     insightsAcceptModels(next);
     insightsState.editingModel = false;
-    insightsState.modelsMessage = '能力声明已保存；只影响本页显示，不改变真实路由、窗口或客户端配置。';
+    insightsState.modelsMessage = '能力声明已保存（只影响本页显示，不改路由与客户端配置）。';
     insightsState.modelsKind = 'ok';
     insightsRenderModels();
   } catch (e) {
     if (e.status === 409) {
       insightsSetCapStatus('保存冲突：模型声明已被其他改动更新。编辑内容仍在，请重新读取后再改。', 'error');
     } else {
-      insightsSetCapStatus(`保存失败：${e.message}`, 'error');
+      insightsSetCapStatus(`保存失败：${insightsErrorText(e)}`, 'error');
     }
   } finally {
     insightsState.savingModel = false;
@@ -456,24 +474,29 @@ function insightsAcceptRequests(next) {
 function insightsRequestRow(request, index) {
   const context = request.context && typeof request.context === 'object' ? request.context : null;
   const contextCell = context
-    ? `<span class="insights-value mono">${insightsBytes(context.serialized_bytes)}</span> <button class="small" type="button" onclick="insightsSelectRequest(${index})">查看</button>`
-    : '<span class="insights-unknown" title="旧记录或未进入转发阶段，没有上下文统计">未采集</span>';
+    ? `<span class="insights-value mono">${fmtBytes(context.serialized_bytes)}</span> <button class="small quiet" type="button" onclick="insightsSelectRequest(${index})">查看</button>`
+    : insightsUnknown('未采集：旧记录或未进入转发阶段，没有上下文统计（不是 0 字节）');
   const upstream = request.upstream_model
     ? `<span class="mono">${insightsEsc(request.upstream_model)}</span>`
-    : '<span class="insights-unknown" title="未观察到上游模型字段；也可能超出采样范围或无法解析">未知</span>';
+    : insightsUnknown('未知：未观察到上游模型字段；也可能超出采样范围或无法解析');
   const session = request.session
     ? `<span class="insights-sub insights-session" title="${insightsEsc(request.session)}">${insightsEsc(request.session)}</span>`
     : '<span class="insights-sub">—</span>';
+  const status = insightsStatus(request);
+  // 成功行的状态码不再单列(在 title 里);失败/中断才把状态码作为次级小字露出来。
+  const statusCell = status
+    ? `<span class="insights-code" title="${insightsEsc(status.title)}">${status.label}</span>${status.code && status.label !== '成功' ? `<span class="insights-sub mono">${status.code}</span>` : ''}`
+    : '—';
   return `<tr>
-    <td><span class="insights-time">${insightsEsc(insightsWhen(request.ts))}</span>${session}</td>
+    <td>${insightsWhenHtml(request.ts)}${session}</td>
     <td class="insights-app">${insightsEsc(insightsAppLabel(request.app))}</td>
     <td>${insightsEsc(request.provider || '—')}</td>
     <td><span class="mono">${insightsEsc(request.model_in || '—')}</span></td>
     <td><span class="mono">${insightsEsc(request.model_out || '—')}</span></td>
     <td>${upstream}</td>
-    <td class="num ${request.ok === false ? 'st5' : insightsStatusClass(request.status)}">${insightsEsc(insightsStatusText(request.status))}${request.ok === false ? '<span class="insights-sub">失败 / 中断</span>' : ''}</td>
-    <td class="num"><span class="insights-tok-main">${insightsCount(request.in)} / ${insightsCount(request.out)}</span><span class="insights-sub">缓存读 ${insightsCount(request.cache_read)}</span></td>
-    <td class="num">${contextCell}<span class="insights-sub">请求体 ${insightsBytes(request.bytes_in)}</span></td>
+    <td class="num ${status ? status.cls : ''}">${statusCell}</td>
+    <td class="num"><span class="insights-tok-main">${insightsTokHtml(request.in)} / ${insightsTokHtml(request.out)}</span><span class="insights-sub">缓存读 ${insightsTokHtml(request.cache_read)}</span></td>
+    <td class="num">${contextCell}<span class="insights-sub">请求体 ${fmtBytes(request.bytes_in)}</span></td>
   </tr>`;
 }
 
@@ -491,7 +514,7 @@ function insightsSelectedRequest() {
 function insightsContextRows(context, withNotes) {
   return INSIGHTS_CONTEXT_FIELDS.map(([field, label, note]) => `<tr>
       <td>${label}${withNotes ? `<span class="insights-sub">${note}</span>` : ''}</td>
-      <td class="num">${insightsBytes(context[field])}</td>
+      <td class="num">${fmtBytes(context[field])}</td>
     </tr>`).join('');
 }
 
@@ -506,7 +529,7 @@ function insightsRenderRequestDetail() {
   }
   box.hidden = false;
   const context = request.context && typeof request.context === 'object' ? request.context : null;
-  const actual = `实际用量来自上游回报：输入 ${insightsCount(request.in)} / 输出 ${insightsCount(request.out)} / 缓存读 ${insightsCount(request.cache_read)}；与下面的字节和估算无关。`;
+  const actual = `实际用量来自上游回报：输入 ${fmtCount(request.in)} / 输出 ${fmtCount(request.out)} / 缓存读 ${fmtCount(request.cache_read)}；与下面的字节和估算无关。`;
   let body;
   if (!context) {
     body = '<p class="hint">该记录没有上下文统计（旧记录、未采集，或请求未进入转发阶段）。这不是 0 字节。</p>';
@@ -515,20 +538,21 @@ function insightsRenderRequestDetail() {
         <caption class="sr-only">请求上下文分类字节</caption>
         <thead><tr><th scope="col">分类</th><th scope="col" class="num">字节</th></tr></thead>
         <tbody>${insightsContextRows(context, true)}
-          <tr class="insights-total"><td>合计（序列化请求体）</td><td class="num">${insightsBytes(context.serialized_bytes)}</td></tr>
+          <tr class="insights-total"><td>合计（序列化请求体）</td><td class="num">${fmtBytes(context.serialized_bytes)}</td></tr>
         </tbody></table></div>
-      <p class="hint">估算文本 tokens：<b>${insightsCount(context.estimated_text_tokens)}</b>。
+      <p class="hint">估算文本 tokens：<b>${fmtCount(context.estimated_text_tokens)}</b>。
         这是按非媒体字节 ÷ 4 的粗略估算，不是官方 tokenizer，也不是实际用量；媒体载荷不计入。
         分类只按请求结构统计，无法识别具体 skill、文件或工具名；六类字节相加等于序列化请求体，但不等于原始 HTTP 的 bytes_in。</p>`;
   }
+  const status = insightsStatus(request);
   const facts = [
-    ['请求 id', request.request_id || '—'],
-    ['时间', insightsWhen(request.ts)],
-    ['协议组', insightsAppLabel(request.app)],
-    ['渠道', request.provider || '—'],
-    ['会话', request.session || '—'],
-    ['状态', insightsStatusText(request.status)],
-  ].map(([label, value]) => `<div><dt>${label}</dt><dd>${insightsEsc(value)}</dd></div>`).join('');
+    ['请求 id', insightsEsc(request.request_id || '—')],
+    ['时间', insightsEsc(fmtFullTime(request.ts))],
+    ['协议组', insightsEsc(insightsAppLabel(request.app))],
+    ['渠道', insightsEsc(request.provider || '—')],
+    ['会话', insightsEsc(request.session || '—')],
+    ['状态', status ? `${status.label}${status.code ? `<span class="mono insights-code-raw">HTTP ${status.code}</span>` : ''}` : '—'],
+  ].map(([label, value]) => `<div><dt>${label}</dt><dd>${value}</dd></div>`).join('');
   box.innerHTML = `<div class="insights-detail-head"><h3>请求上下文</h3>
       <button class="small" type="button" onclick="insightsCloseRequest()">关闭</button></div>
     <dl class="config-facts">${facts}</dl>
@@ -555,14 +579,14 @@ function insightsRenderContextSummary() {
     return total + (Number.isFinite(n) ? n : 0);
   }, 0);
   box.hidden = false;
-  box.innerHTML = `<p class="hint">本页已加载 ${requests.length} 条请求，其中 ${covered.length} 条带上下文统计。以下是这些记录的字节合计，只覆盖当前内存窗口，不是完整历史，也不是计费。</p>
-    <div class="table-wrap insights-ctx-wrap"><table>
-      <caption class="sr-only">本页已加载请求的上下文分类合计</caption>
-      <thead><tr><th scope="col">分类</th><th scope="col" class="num">字节合计</th></tr></thead>
-      <tbody>${INSIGHTS_CONTEXT_FIELDS.map(([field, label]) => `<tr><td>${label}</td><td class="num">${insightsBytes(sum(field))}</td></tr>`).join('')}
-        <tr class="insights-total"><td>序列化请求体合计</td><td class="num">${insightsBytes(sum('serialized_bytes'))}</td></tr>
-        <tr class="insights-total"><td>估算文本 tokens（非媒体字节 ÷ 4）</td><td class="num"><b>${insightsCount(tokens)}</b></td></tr>
-      </tbody></table></div>`;
+  // 分类合计排成一排紧凑小指标:六个分类在前,两个合计在后。说明放进 title,不占版面。
+  const tile = (label, value, extra = '', note = '') => `<div${extra}><dt>${label}</dt><dd>${value}</dd>${note ? `<dd class="insights-sub">${note}</dd>` : ''}</div>`;
+  box.innerHTML = `<p class="hint">已加载 ${requests.length} 条请求，其中 ${covered.length} 条带上下文统计；下面是这 ${covered.length} 条的字节合计，不是完整历史，也不是计费。</p>
+    <dl class="insights-ctx-tiles">
+      ${INSIGHTS_CONTEXT_FIELDS.map(([field, label, note]) => tile(label, fmtBytes(sum(field)), ` title="${insightsEsc(note)}"`)).join('')}
+      ${tile('序列化请求体合计', fmtBytes(sum('serialized_bytes')), ' class="is-total"')}
+      ${tile('估算文本 tokens', insightsTokHtml(tokens), ' class="is-total"', '非媒体字节 ÷ 4，不是实际用量')}
+    </dl>`;
 }
 
 function insightsRenderRequests() {
@@ -576,8 +600,8 @@ function insightsRenderRequests() {
   if (scopeNode) {
     const source = scope && scope.source === 'memory' ? '当前进程内存' : (scope && scope.source ? String(scope.source) : '当前进程内存');
     const capacity = scope && Number.isFinite(Number(scope.capacity)) ? `（容量 ${Number(scope.capacity)} 条）` : '';
-    scopeNode.textContent = `来源：${source}${capacity}，默认读取最近 100 条，不是完整历史，也不读取上游账单。`
-      + '三列模型名分别表示：客户端请求的模型、本次发给上游的模型、上游响应自报的模型；缺失一律显示未知。';
+    // 三列模型名各自的含义写在表头 title 里;这里只说范围。
+    scopeNode.textContent = `来源：${source}${capacity}，读取最近 100 条；不是完整历史，也不读取上游账单。`;
   }
   const requests = Array.isArray(insightsState.requests) ? insightsState.requests : [];
   const rows = insightsEl('insights-requests-rows');
@@ -613,7 +637,7 @@ async function insightsLoadRequests(manual = false) {
     insightsState.requestsKind = '';
   } catch (e) {
     if (seq !== insightsState.requestsSeq) return;
-    insightsState.requestsMessage = `读取失败：${e.message}` + (insightsState.requestsLoaded ? '（保留上次结果）' : '');
+    insightsState.requestsMessage = `读取失败：${insightsErrorText(e)}` + (insightsState.requestsLoaded ? '（保留上次结果）' : '') + '。可点「刷新请求」重试。';
     insightsState.requestsKind = 'error';
   } finally {
     if (seq === insightsState.requestsSeq) {

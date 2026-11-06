@@ -196,14 +196,12 @@ async function harness(data = fixture(), opts = {}) {
   let timerId = 0;
   // 设置页三条只读端点的失败注入开关:验"概览/设置页 fetch 失败不影响其它页草稿"时用它。
   let failHealth = false, failBackups = false, failPreview = false, failMetrics = false;
-  // URL 本体照用(相对 URL 解析、searchParams 都靠它),只把 createObjectURL 换成假 DOM 版本:
-  // Node 的 URL.createObjectURL 只收它自己的 Blob,喂我们那个最小 Blob 会抛,导出路径就断了。
+  // 保留 URL 解析,只替换下载地址,避免测试生成需要浏览器回收的对象 URL。
   const fakeObjectUrl = 'blob:http://localhost/fake-object-url';
   const URLShim = new Proxy(URL, { get: (target, prop) => prop === 'createObjectURL' ? () => fakeObjectUrl : (prop === 'revokeObjectURL' ? () => {} : Reflect.get(target, prop)) });
   const context = vm.createContext({
     document, window: { addEventListener(name, callback) { (windowListeners.get(name) || windowListeners.set(name, []).get(name)).push(callback); }, localStorage: opts.storage }, console, URL: URLShim, URLSearchParams, AbortController, structuredClone,
-    // 导出用的最小实现:只要能把 Blob 存成对象 URL、并能造个 <a> 就够断言(不真的下载)。
-    Blob: class Blob { constructor(parts, opts = {}) { this.parts = parts; this.type = opts.type || ''; } },
+    Blob,
     setTimeout() { return 1; }, clearTimeout() {},
     setInterval(fn) { const id = ++timerId; intervals.set(id, fn); return id; }, clearInterval(id) { intervals.delete(id); },
     fetch: async (url, options = {}) => {
@@ -566,8 +564,9 @@ test('压缩窗口显示各层来源与覆盖警告，不自动写配置', async
   const h = await harness(data);
   h.run("document.getElementById('window-project').value='/project'");
   await h.run('loadCompactWindow()');
-  assert.match(h.get('window-current').textContent, /1000000/);
-  assert.match(h.get('window-layers').innerHTML, /256000/);
+  assert.match(h.get('window-current').textContent, /1\.00M/);
+  assert.match(h.get('window-current').title, /autoCompactWindow = 1000000/);
+  assert.match(h.get('window-layers').innerHTML, /title="autoCompactWindow = 256000">256K/);
   assert.match(h.get('window-warnings').textContent, /project 层覆盖/);
   assert.match(h.get('window-restart').textContent, /不会热改.*新开会话.*\/autocompact/);
   assert.equal(h.requests.some(r => r.url.startsWith('/api/compact/window') && r.method === 'POST'), false);
@@ -580,14 +579,14 @@ test('被项目覆盖的全局保存显著告知无效，可只读取覆盖层�
   const h = await harness(data);
   h.run("document.getElementById('window-project').value='/project'");
   await h.run('loadCompactWindow()');
-  assert.match(h.get('window-coverage-text').textContent, /被项目层覆盖.*256000.*不会改变/);
+  assert.match(h.get('window-coverage-text').textContent, /被项目层覆盖.*256K.*不会改变/);
   assert.equal(h.get('window-edit-override').hidden, false);
   assert.equal(h.get('window-coverage').classList.contains('offline'), true);
   h.run("setWindowValue('500k')");
   const saving = h.run('saveCompactWindow()');
   assert.match(h.get('confirm-text').textContent, /全局只改全局.*被项目层覆盖.*不会改变/);
   h.run('finishConfirm(true)'); await saving;
-  assert.match(h.get('window-msg').textContent, /仍被项目层覆盖.*256000/);
+  assert.match(h.get('window-msg').textContent, /仍被项目层覆盖.*256K/);
   assert.match(h.get('toast').textContent, /仍被项目层覆盖.*不会改变/);
   assert.equal(data.window.layers[1].value, 256000);
   const postCount = h.requests.filter(r => r.method === 'POST').length;
@@ -814,7 +813,8 @@ test('请求日志页分槽表使用真实 stats.by_slot，不从日志、模型
   h.get('f-app').value = 'codex'; h.get('f-model').value = 'mixr-main';
   await h.run('loadLogs(); loadStats()');
   const rows = h.get('slot-stats-body').innerHTML;
-  assert.match(rows, /subagent<\/th><td>23<\/td><td>12345<\/td><td>678<\/td><td>91<\/td>/);
+  // tokens 与统计条同一套缩写;完整值在 title 里,照样证明读的是 by_slot 原值而不是重推。
+  assert.match(rows, /subagent<\/th><td>23<\/td><td title="12,345">12\.3K<\/td><td>678<\/td><td>91<\/td>/);
   assert.match(rows, /未命中槽（none）/);
   assert.match(rows, /旧日志未知（unknown）/);
   assert.match(rows, /<th scope="row">constructor<\/th><td>5<\/td>/);
@@ -908,6 +908,7 @@ test('会话短 ID 相同时标签仍关联本行选择器,重绘与筛选不改
   data.sessions[1].short = data.sessions[0].short;
   const h = await harness(data);
   h.run("view = 'sessions'; renderSessions()");
+  assert.doesNotMatch(h.get('sess-body').innerHTML, /1970-01-01/, '没有活动记录不显示 Unix 起点');
   const selectors = () => [...h.get('sess-body').innerHTML.matchAll(/<select id="([^"]+)" class="pin-sel"/g)].map(m => m[1]);
   const ids = selectors();
   assert.equal(ids.length, 3);
@@ -1013,8 +1014,13 @@ test('搜索框有焦点时五秒轮询不重渲染,用户敲了一半的词不�
   h.element('outside-sessions').focus();
   h.run("setSessQuery('bbb')");
   const after = h.get('sess-body').htmlWrites;
+  // 内容没变的轮询不重写(整表重写会清掉用户选中的文字);服务端数据一变,没有焦点时照常刷新。
+  await h.run('refresh()');
+  assert.equal(h.get('sess-body').htmlWrites, after, '内容没变的轮询不重写会话表');
+  h.data.sessions.find(s => s.short === 'bbb22222').reqs = 9;
   await h.run('refresh()');
   assert.ok(h.get('sess-body').htmlWrites > after, '没有焦点时轮询照常刷新');
+  assert.match(h.get('sess-body').innerHTML, /<b>9<\/b>/);
 });
 
 test('五个固定槽无 fable，模型编辑保持备池的部分更新语义', async () => {
@@ -2359,11 +2365,13 @@ test('概览:版本/修订/进程/运行时长/客户端接入三行/接入地�
   assert.equal(h.get('ov-version').textContent, 'test');
   assert.match(h.get('ov-revision').textContent, /abcdef012345/, '修订号截短显示');
   assert.equal(h.get('ov-revision').getAttribute('title'), 'abcdef0123456789', 'title 给全长');
-  assert.equal(h.get('ov-uptime').textContent, '2m5s');
+  assert.equal(h.get('ov-uptime').textContent, '2m 5s');
   assert.match(h.get('ov-pid').textContent, /4242/);
   assert.equal(h.get('ov-reqs').textContent, '12');
   assert.match(h.get('ov-tokens').textContent, /输入 100 \/ 输出 40/);
-  assert.equal(h.get('ov-cooldowns').textContent, '按协议归组 · 失败后仍可重试');
+  // 原静态文案「失败后仍可重试」是冷却功能删除后的遗留;现在按协议组给出从 state 读到的会话数,归组口径留在 title。
+  assert.equal(h.get('ov-cooldowns').textContent, 'Anthropic 2 · OpenAI 1');
+  assert.match(h.get('ov-cooldowns').getAttribute('title'), /按协议组归组/);
   // 三行客户端状态:复用 liveFacts 的口径(claude 夹具是已写入直连)
   const clients = h.get('overview-clients').innerHTML;
   for (const label of ['Claude Code', 'Codex']) assert.match(clients, new RegExp(label));
@@ -2418,8 +2426,7 @@ test('渠道页:冷却状态从 /api/health 与 /api/state 读出,健康端点�
   assert.doesNotMatch(healthBody, /冷却至/, '健康表不再展示冷却列');
   assert.doesNotMatch(healthBody, /熔断/, '健康表不再有熔断列');
   assert.doesNotMatch(healthBody, /阈值/, '健康事实里不再有熔断阈值/恢复阈值');
-  assert.match(healthBody, /重试间隔\(ms\)/, '重试间隔要跟着 /api/health 的 retry_delay_ms 显示');
-  assert.match(healthBody, /<dd>500<\/dd>/, 'retry_delay_ms 的值要渲染出来');
+  assert.match(healthBody, /title="retry_delay_ms = 500"><dt>重试间隔<\/dt><dd>500ms<\/dd>/, '显示带单位的时延,并保留服务端原值');
   // 健康端点挂掉:卡片照常渲染,只有那一句提示,且设置页/渠道页的草稿都不受影响
   const h2 = await harness(data);
   h2.fail({ health: true });
@@ -2585,7 +2592,8 @@ test('设置页:指标导出走 Blob 下载,不引入依赖,失败不冒充成�
   await h.run('exportMetrics()');
   assert.equal(h.downloads.length, 1, '要真的触发一次下载');
   assert.match(h.downloads[0].download, /^mixrouter-metrics-.*\.txt$/, '文件名要能看出来是什么');
-  assert.match(h.get('metrics-msg').textContent, /已导出 .* 字节.*不含任何密钥/);
+  const text = '# HELP mixrouter_window_requests 窗口内请求数\nmixrouter_window_requests{app="claude"} 12\n';
+  assert.equal(h.get('metrics-msg').textContent, `已导出 ${Buffer.byteLength(text)}B 的指标文本；不含任何密钥。`);
   // 失败:要说失败,不清空也不假装成功
   const h2 = await harness(); h2.fail({ metrics: true });
   await h2.run('exportMetrics()');
@@ -2658,4 +2666,75 @@ test('视图切换:九个视图各切一次,视图节显隐与面包屑都对得
   const current = h.run('view');
   h.run("showView('nope')");
   assert.equal(h.run('view'), current, '未知视图名被忽略');
+});
+
+// ---- 显示逻辑:全站共用的格式函数(app.js 顶层)。同一个数字在每一页都长一样,边界值一次锁死。
+test('公共格式函数:tokens/计数/百分比/字节/时长/运行时长/速率/时间点的边界口径', async () => {
+  const h = await harness();
+  const call = (fn, v) => h.run(`${fn}(${JSON.stringify(v)})`);
+  const table = {
+    fmtTok: [[null, '—'], [0, '0'], [999, '999'], [1000, '1.00K'], [1234, '1.23K'], [20000, '20.0K'], [123456, '123K'],
+      [999950, '1.00M'], [886030000, '886M'], [9590000000, '9.59B']],
+    fmtCount: [[null, '—'], [0, '0'], [71353, '71,353'], [1234567, '1,234,567']],
+    fmtPct: [[null, '—'], [0, '0%'], [0.04, '<0.1%'], [12.345, '12.3%'], [99.94, '99.9%'], [99.96, '>99.9%'], [100, '100%']],
+    fmtBytes: [[null, '—'], [0, '0B'], [512, '512B'], [1023, '1023B'], [1024, '1.0KB'], [12600, '12.3KB'], [1048064, '1.0MB']],
+    fmtDur: [[null, '—'], [0, '—'], [840, '840ms'], [1200, '1.2s'], [65000, '1m05s'], [3600000, '1h 00m']],
+    fmtUp: [[null, '—'], [45, '45s'], [1314, '21m 54s'], [11520, '3h 12m'], [187200, '2d 4h']],
+  };
+  for (const [fn, rows] of Object.entries(table)) {
+    for (const [input, expected] of rows) assert.equal(call(fn, input), expected, `${fn}(${input})`);
+  }
+  assert.equal(h.run('fmtTtfb(65000)'), h.run('fmtDur(65000)'), '首字节耗时与请求耗时同一口径');
+  assert.equal(h.run('fmtRate({ out: 423, ms: 10000 })'), '42.3tok/s', '数字与单位之间不加空格');
+  assert.equal(h.run('fmtRate({ out: 0, ms: 10 })'), '—', '没有输出不冒充「极快」');
+  // 时间点用本地时区构造,不随运行环境的时区漂移;今天/今年两档依赖当前时间,这里只锁更早一档与完整时间。
+  assert.equal(h.run('fmtWhen(new Date(2020, 0, 5, 12, 0, 0).getTime())'), '2020-01-05');
+  assert.equal(h.run('fmtFullTime(new Date(2020, 0, 5, 12, 0, 0).getTime())'), '2020-01-05 12:00:00');
+  assert.equal(h.run('fmtWhen(null)'), '—');
+});
+
+test('今日请求达到内存窗口容量时写「N+」、tokens 加「≥」;容量读不到时照常显示', async () => {
+  const data = fixture();
+  data.stats = { reqs: 10, inTok: 1234567, outTok: 890 };
+  const h = await harness(data);
+  // 默认 /api/stats 夹具不带 scope:容量未知,数字照常显示,不加任何标记。
+  assert.equal(h.get('ov-reqs').textContent, '10');
+  assert.doesNotMatch(h.get('ov-tokens').textContent, /≥/);
+  h.run(`globalThis.__uiStatsFetch = fetch;
+    fetch = async (url, o) => url === '/api/stats' ? { ok: true, json: async () => ({ scope: { capacity: 10 } }) } : __uiStatsFetch(url, o);
+    statsCapacityTask = null;`);
+  await h.run('loadStatsCapacity()');
+  for (const id of ['ov-reqs', 'st-req', 'metric-requests']) {
+    assert.equal(h.get(id).textContent, '10+', `${id} 窗口已满时不冒充完整计数`);
+    assert.match(h.get(id).getAttribute('title'), /内存窗口只保留最近 10 条.*可能更多/);
+  }
+  assert.match(h.get('ov-tokens').textContent, /输入 ≥1\.23M \/ 输出 ≥890/);
+});
+
+test('离线时会话表的改绑、配置与解绑一并禁用;改绑失败后下拉回到服务端绑定', async () => {
+  const h = await harness();
+  h.run("view = 'sessions'; renderSessions()");
+  h.element('outside-sessions').focus();
+  assert.doesNotMatch(h.get('sess-body').innerHTML, /\bdisabled\b/, '在线时会话表控件可用');
+  h.disconnect();
+  await h.run('refresh()');
+  const offline = h.get('sess-body').innerHTML;
+  for (const control of [/class="pin-sel"[^>]*\bdisabled\b/, /class="small sess-config"[^>]*\bdisabled\b/, /onclick="unbindSession\([^"]*\)"\s+disabled/]) {
+    assert.match(offline, control, '离线后轮询失败也要把会话表重画成禁用');
+  }
+  h.disconnect(false);
+  await h.run('refresh()');
+  assert.doesNotMatch(h.get('sess-body').innerHTML, /\bdisabled\b/, '恢复连接后控件重新可用');
+  // 改绑失败:下拉的值不在 HTML 字符串里,缓存必须作废,下一次渲染才会把下拉复位到服务端的绑定。
+  h.run(`globalThis.__uiPinFetch = fetch;
+    fetch = async (url, o) => /\\/api\\/sessions\\/.+\\/pin$/.test(url) ? { ok: false, status: 500, json: async () => ({ error: 'pin failed' }) } : __uiPinFetch(url, o);`);
+  const select = h.get(h.run("domIdOf('sess-ui-alpha-0000000000000001')"));
+  select.value = 'a2'; select.focus();
+  await h.run("pinSession('sess-ui-alpha-0000000000000001', 'a2')");
+  assert.equal(select.value, 'a1', '失败后立即恢复已保存的渠道,不等待焦点离开后的轮询');
+  assert.equal(h.document.activeElement, select, '恢复选择时保留焦点');
+  assert.equal(h.run('lastSessHtml'), null, '改绑失败后会话表缓存作废');
+  const writes = h.get('sess-body').htmlWrites;
+  h.run('renderSessions()');
+  assert.ok(h.get('sess-body').htmlWrites > writes, '缓存作废后下一次渲染一定重写,下拉回到服务端绑定');
 });

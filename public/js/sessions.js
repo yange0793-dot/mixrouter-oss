@@ -1,7 +1,7 @@
 'use strict';
 // ---------------- 会话 ----------------
 const KIND_LABEL = { header: '会话头', metadata: 'metadata', fingerprint: '内容指纹', anon: '无身份' };
-let sessApp = '', sessQuery = '';
+let sessApp = '', sessQuery = '', lastSessHtml = null;
 // 会话页要同时读出三层,不能混成一个"已绑定":
 //   required(用户要求) —— 本会话的渠道级 Key / 槽位覆盖,见 routingCell()
 //   bound(当前绑定)    —— 现在会落到哪个渠道,以及这个落点是手动钉的还是自动分的
@@ -100,9 +100,13 @@ function renderSessions() {
     ['手动钉定', pinned, false],
     ['实际 ≠ 绑定', mismatched, mismatched > 0],
     ['会话级 Key / 槽位', withRouting, false],
-  ].map(([k, v, alert]) => `<div class="chip${alert ? ' chip-alert' : ''}">${k}<b>${esc(String(v))}</b></div>`).join('');
+  ].map(([k, v, alert]) => `<div class="chip${alert ? ' chip-alert' : ''}">${k}<b>${esc(typeof v === 'number' ? fmtCount(v) : String(v))}</b></div>`).join('');
 
-  $('sess-body').innerHTML = list.map(s => {
+  // 重渲染前记下用户展开着的绑定行:焦点守卫只挡住"焦点还在表里"的轮询,
+  // 展开后点到别处(或 Safari 点 summary 不给焦点)时,下一次 5 秒轮询会把它收起来。
+  const openPins = new Set([...($('sess-body').querySelectorAll?.('details.session-pin[open]') || [])]
+    .map(d => d.closest('tr').getAttribute('data-session-key')));
+  const html = list.map(s => {
     const app = s.app || 'claude';
     const b = boundOf(s), src = boundSourceOf(b);
     const [srcText, srcCls] = BOUND_SOURCE[src];
@@ -111,40 +115,35 @@ function renderSessions() {
     // 绑定列的摘要行:来源标标 + 渠道名。未绑定时只剩一个「未绑定」标标——
     // 每行都喊一遍"普通请求渠道 · 未绑定"是噪音;那句说明留在展开后的字段名里。
     const bindName = b.provider_name || b.provider || '';
-    return `<tr data-session="${esc(s.short)}"${src === 'none' ? ' class="sess-unbound"' : ''}>
+    return `<tr data-session="${esc(s.short)}" data-session-key="${esc(s.key)}"${src === 'none' ? ' class="sess-unbound"' : ''}>
       <td class="c-sess"><span class="sess-tag" title="${esc(s.key)}">${esc(s.short)}</span>
         <span class="sess-kind">${esc(KIND_LABEL[s.kind] || s.kind || '')}</span></td>
       <td class="c-app"><span class="badge ${app === 'codex' ? 'info' : 'on'}">${app === 'codex' ? 'OpenAI' : 'Anthropic'}</span></td>
-      <td class="c-label"><span class="lbl" title="${esc(s.label || '')}">${esc(s.label || '-')}</span></td>
+      <td class="c-label"><span class="lbl" title="${esc(s.label || '')}">${esc(s.label || '—')}</span></td>
       <td class="session-binding">
-          <div class="bind-row">
-          <button class="small sess-config" onclick="openRouting(${handlerArg(s.key)})" ${online ? '' : 'disabled'} aria-label="配置会话 ${esc(s.short)} 的 Key 与槽位">配置 Key / 槽位</button>
           <details class="session-pin"><summary><span class="badge ${srcCls}">${srcText}</span>${bindName ? `<span class="bind-line" title="${esc(bindName)}">${esc(bindName)}</span>` : ''}</summary>
             <label class="field" for="${esc(domIdOf(s.key))}">普通请求渠道（非槽位、非分流请求）<select id="${esc(domIdOf(s.key))}" class="pin-sel" onchange="pinSession(${handlerArg(s.key)}, this.value)" ${!online ? 'disabled' : ''}>
               <option value="" ${b.provider ? '' : 'selected'}>(未绑定)</option>${opts}</select></label>
             <div class="bind-src"><span class="badge ${srcCls}">${srcText}</span></div>
           </details>
-          </div>
-          ${bindName ? `<div class="bind-meta" title="${esc([b.model, b.rule].filter(Boolean).join(' · '))}">${esc(b.model || '-')}${b.rule ? ` · ${esc(b.rule)}` : ''}</div>` : ''}</td>
+          ${bindName ? `<div class="bind-meta" title="${esc([b.model, b.rule].filter(Boolean).join(' · '))}">${esc(b.model || '—')}${b.rule ? ` · ${esc(b.rule)}` : ''}</div>` : ''}</td>
       <td>${actualCell(s, b)}</td>
       <td>${routingCell(s)}</td>
-      <td class="c-usage"><b>${s.reqs || 0}</b><span>${fmtTok(s.inTok || 0)} / ${fmtTok(s.outTok || 0)}</span></td>
-      <td class="c-active">${sessTimeText(s.lastUsed)}</td>
+      <td class="c-usage"><b>${fmtCount(s.reqs || 0)}</b><span title="输入 ${fmtCount(s.inTok || 0)} / 输出 ${fmtCount(s.outTok || 0)} tokens">${fmtTok(s.inTok || 0)} / ${fmtTok(s.outTok || 0)}</span></td>
+      <td class="c-active"${s.lastUsed ? ` title="${fmtFullTime(s.lastUsed)}"` : ''}>${fmtWhen(s.lastUsed || null)}</td>
       <td><div class="sess-acts">
+        <button class="small sess-config" onclick="openRouting(${handlerArg(s.key)})" ${online ? '' : 'disabled'} aria-label="配置会话 ${esc(s.short)} 的 Key 与槽位">配置 Key / 槽位</button>
         <button class="small" onclick="gotoLogs(${handlerArg(s.short)})">日志</button>
         <button class="small danger" onclick="unbindSession(${handlerArg(s.key)})" ${online ? '' : 'disabled'}>解绑</button>
       </div></td></tr>`;
   }).join('');
-}
-// 会话列表的时间:当天只给时分,跨天补上月-日,免得三天前的会话看起来像刚发生。
-function sessTimeText(ts) {
-  if (!ts) return '-';
-  const d = new Date(ts);
-  if (Number.isNaN(d.getTime())) return '-';
-  const now = new Date();
-  const hm = d.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
-  const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
-  return sameDay ? hm : `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${hm}`;
+  // 内容没变就不重写:5 秒轮询每次整表重写会清掉用户正在选中的文字(比如在复制会话 id)。
+  // 下拉的当前值不在 HTML 字符串里,所以改绑失败时要把 lastSessHtml 清空,下一次渲染才会把下拉复位。
+  if (html === lastSessHtml) return;
+  $('sess-body').innerHTML = html; lastSessHtml = html;
+  $('sess-body').querySelectorAll('details.session-pin').forEach(detail => {
+    detail.open = openPins.has(detail.closest('tr').getAttribute('data-session-key'));
+  });
 }
 // 「最近实际请求」这一格。没有记录就是明明白白的「暂无」——
 // 绝不拿绑定值或路由预览顶上来充数:用户看到渠道名就会当成真实落点,而 actual 只认真的发出去过的那次。
@@ -161,11 +160,11 @@ function actualCell(s, bound) {
   const meta = [
     a.slot ? `槽位 ${esc(a.slot)}` : '',
     a.sticky ? '粘性' : '',
-    a.ts ? esc(sessTimeText(a.ts)) : '',
+    a.ts ? esc(fmtWhen(a.ts)) : '',
   ].filter(Boolean);
   return `<span class="actual-cell${diff ? ' diff' : ''}">
-    <span class="sum">${esc(name)}${a.status ? `<span class="ac-status ${statusCls}">${esc(String(a.status))}</span>` : ''}</span>
-    <span class="sub">${esc(a.model || '-')}</span>
+    <span class="sum"><span class="ac-name" title="${esc(name)}">${esc(name)}</span>${a.status ? `<span class="ac-status ${statusCls}">${esc(String(a.status))}</span>` : ''}</span>
+    <span class="sub">${esc(a.model || '—')}</span>
     ${meta.length ? `<span class="meta">${meta.join(' · ')}</span>` : ''}
     ${diff ? '<span class="sub why">与当前绑定不同</span>' : ''}</span>`;
 }
@@ -186,7 +185,12 @@ async function pinSession(key, provider) {
     await api('/api/sessions/' + encodeURIComponent(key) + '/pin', { method: 'POST', body: JSON.stringify({ provider }) });
     toast(provider ? '已改绑该对话' : '已解除钉定,下次请求重新分配', 'ok');
     refresh();
-  } catch (e) { toast('改绑失败:' + e.message, 'err'); }
+  } catch (e) {
+    lastSessHtml = null;
+    const select = $(domIdOf(key)), session = sessionByIdentity(key);
+    if (select && session) select.value = boundOf(session).provider;
+    toast('改绑失败:' + e.message, 'err');
+  }
 }
 // 会话页的确认框要过这一层:确认框是独占的,而会话配置弹窗可能正开着。
 // 直接调 askConfirm 在那种情况下会静默返回 false —— 用户点了「解绑」却什么都不发生、也没有提示。

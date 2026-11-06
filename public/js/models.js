@@ -113,7 +113,7 @@ function claudeSlotRow(s) {
   return slotLine(s,
     `<select aria-label="${esc(s.name)} 槽渠道" onchange="setSlot('claude','${s.name}','provider',this.value)" ${locked ? 'disabled' : ''}>${slotChannelOptions(s.provider, 'claude')}</select>`,
     slotModelCell(s, 'claude'), slotBadge(s, !!state.live?.claude?.router),
-    s.provider ? `<button class="iconbtn" aria-label="清空 ${esc(s.name)} 槽" onclick="clearSlot('claude','${s.name}')" ${locked ? 'disabled' : ''}>×</button>` : '');
+    s.provider ? `<button class="iconbtn danger" title="清空 ${esc(s.name)} 槽" aria-label="清空 ${esc(s.name)} 槽" onclick="clearSlot('claude','${s.name}')" ${locked ? 'disabled' : ''}>×</button>` : '');
 }
 // 全局与会话槽位共用原有行布局;差异只在控件的读写范围。
 function slotLine(s, providerCell, modelCell, badge, clear, attributes = '') {
@@ -121,7 +121,7 @@ function slotLine(s, providerCell, modelCell, badge, clear, attributes = '') {
     <label class="field slot-ident">${SLOT_LABELS[s.name] || esc(s.name)}<span class="mono">${esc(s.alias)} · ${esc(s.env || '')}</span></label>
     <label class="field" style="flex:2">渠道${providerCell}</label>
     <label class="field" style="flex:2">落点模型${modelCell}</label>
-    <span style="align-self:center">${badge}</span>
+    <span class="slot-state">${badge}</span>
     ${clear}
   </div>`;
 }
@@ -133,7 +133,7 @@ function codexSlotRow(s) {
     <label class="field">渠道<select id="codex-model-${esc(s.name)}" aria-label="${esc(s.name)} 渠道" onchange="setSlot('codex','${s.name}','provider',this.value)" ${locked ? 'disabled' : ''}>${slotChannelOptions(s.provider, 'codex')}</select></label>
     <label class="field">落点模型${slotModelCell(s, 'codex')}</label>
     <span class="slot-state">${slotBadge(s, false)}</span>
-    ${s.provider ? `<button class="iconbtn" aria-label="删除 ${esc(s.name)} 槽" onclick="clearSlot('codex','${s.name}')" ${locked ? 'disabled' : ''}>×</button>` : ''}
+    ${s.provider ? `<button class="iconbtn danger" title="删除 ${esc(s.name)} 槽" aria-label="删除 ${esc(s.name)} 槽" onclick="clearSlot('codex','${s.name}')" ${locked ? 'disabled' : ''}>×</button>` : ''}
   </div>`;
 }
 function renderCodexConfig() {
@@ -197,6 +197,7 @@ function renderCodexCompact() {
       : codexCompactMessage || (codexCompactDraft.dirty ? '阈值草稿未保存；自动刷新不会覆盖。' : '磁盘阈值已读取；尚未改动配置。')));
   status.classList.toggle('err', !!gate || !!codexCompactError);
   status.classList.toggle('warn', !gate && !codexCompactError && conflict);
+  status.classList.toggle('busy', !gate && busy);
 }
 function setCodexCompactValue(value) {
   if (!codexCompactDraft) return;
@@ -281,21 +282,21 @@ async function saveCodexCompact(forcedValue) {
 // #codex-model-status 唯一写入口:直连写模型保存/热切换结果,路由写槽位生效状态。
 function renderCodexModelStatus() {
   const status = $('codex-model-status'), live = state.live?.codex || {}, name = codexSlotStatus.name;
-  if (codexConnectionMode() === 'direct') {
-    status.textContent = !online ? '控制台离线，模型不可保存'
-      : live.error ? '配置读取失败，模型不可保存' : live.profile ? '当前启用了 profile，全局模型编辑已禁用'
-      : savingCodexDirect ? '正在保存…'
-      : codexDirectMessage && codexDirectSave.revision === live.revision ? codexDirectMessage
-      : '当前直连 · 模型配置已读取';
-    return;
-  }
-  status.textContent = !online ? '控制台离线，生效状态待确认'
-    : codexSlotStatus.error ? `${name} 保存失败，已恢复原选择`
-    : [...slotSaving].some(key => key.startsWith('codex:')) ? '保存中…'
-    : live.error ? 'Codex 配置读取失败，生效状态待确认'
-    : live.router && live.hot_routing?.enabled === false ? 'Codex 路由配置未受管，未同步客户端默认模型与列表'
-    : live.router ? `${name ? name + ' 已更新；' : ''}下一次槽位请求即时使用当前落点`
-    : live.base_url ? 'Codex 当前直连，不使用槽位' : 'Codex 尚未接入路由';
+  const [text, tone] = codexConnectionMode() === 'direct'
+    ? (!online ? ['控制台离线，模型不可保存', 'warn']
+      : live.error ? ['配置读取失败，模型不可保存', 'err'] : live.profile ? ['当前启用了 profile，全局模型编辑已禁用', 'warn']
+      : savingCodexDirect ? ['正在保存…', 'busy']
+      : codexDirectMessage && codexDirectSave.revision === live.revision ? [codexDirectMessage, codexDirectMessage.startsWith('保存失败') ? 'err' : 'ok']
+      : ['当前直连 · 模型配置已读取', 'ok'])
+    : !online ? ['控制台离线，生效状态待确认', 'warn']
+    : codexSlotStatus.error ? [`${name} 保存失败，已恢复原选择`, 'err']
+    : [...slotSaving].some(key => key.startsWith('codex:')) ? ['保存中…', 'busy']
+    : live.error ? ['Codex 配置读取失败，生效状态待确认', 'err']
+    : live.router && live.hot_routing?.enabled === false ? ['Codex 路由配置未受管，未同步客户端默认模型与列表', 'warn']
+    : live.router ? [`${name ? name + ' 已更新；' : ''}下一次槽位请求即时使用当前落点`, 'ok']
+    : live.base_url ? ['Codex 当前直连，不使用槽位', ''] : ['Codex 尚未接入路由', ''];
+  status.textContent = text;
+  for (const t of ['ok', 'warn', 'err', 'busy']) status.classList.toggle(t, t === tone);
 }
 function renderCodexDirectModels(force) {
   const fields = $('codex-direct-fields'), live = state.live.codex;
@@ -416,7 +417,7 @@ function renderSlots(force) {
         <label class="field slot-ident">新槽位<span class="mono">别名 mixr-&lt;槽名&gt;</span></label>
         <label class="field" style="flex:1">槽位名<input id="slot-new-name" value="${esc(codexSlotDraft.name)}" oninput="codexSlotDraft.name=this.value" placeholder="如 worker" autocomplete="off" spellcheck="false" ${online ? '' : 'disabled'}></label>
         <label class="field" style="flex:2">渠道<select id="slot-new-provider" onchange="codexSlotDraft.provider=this.value" ${online ? '' : 'disabled'}>${slotChannelOptions(codexSlotDraft.provider, 'codex')}</select></label>
-        <button class="small" style="align-self:center" onclick="addCodexSlot()" ${online ? '' : 'disabled'}>＋ 添加槽位</button>
+        <button class="small slot-add" onclick="addCodexSlot()" ${online ? '' : 'disabled'}>＋ 添加槽位</button>
       </div>`;
   // 轮询不重绘正在操作的槽位表:内容没变跳过;焦点在表内时不打扰。force=用户刚提交槽位改动,
   // 此时焦点多半还停在刚操作的 select 上,必须重绘否则落点模型下拉一直停留在旧渠道的选项,并把焦点放回原控件

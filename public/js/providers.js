@@ -61,6 +61,7 @@ function liveLine() {
   const isCodex = curApp === 'codex';
   const modeBadge = enabled => enabled ? '<span class="badge on">已写入配置</span>' : `<span class="badge off">${!healthy ? '待确认' : '未接入'}</span>`;
   const modeLabel = !healthy ? '待确认' : isCodex ? (codexMode === 'router' ? 'Mixrouter 路由' : codexMode === 'direct' ? 'Codex 直连' : '未接入') : inRouter ? '本地路由' : direct ? '直连' : '未接入';
+  const modeTone = healthy && (inRouter || direct) ? 'on' : 'off';
   const directName = isCodex ? codexDirectProviderName(lv) : (lv?.match === true ? selected?.name || lv?.provider || '自定义上游' : lv?.provider || '自定义上游（配置未匹配）');
   const model = slot?.model || lv?.model || '未配置';
   const reasoning = isCodex ? String(lv?.model_reasoning_effort || '').trim() : '';
@@ -71,7 +72,7 @@ function liveLine() {
   return `<dl class="current-config">
     <div><dt>配置供应商</dt><dd>${esc(configuredName)}</dd><small>${esc(stateLabel)}</small></div>
     <div><dt>默认模型</dt><dd class="mono">${esc(model)}</dd>${slot ? `<small>槽位 ${esc(lv.model)}</small>` : ''}</div>
-    <div><dt>接入方式</dt><dd>${modeLabel}</dd><small>${esc(lv?.wire_api || '')}</small></div>
+    <div><dt>接入方式</dt><dd><span class="mode-pill ${modeTone}">${modeLabel}</span></dd><small>${esc(lv?.wire_api || '')}</small></div>
     ${isCodex ? `<div><dt>推理强度</dt><dd>${esc(reasoning || '客户端默认')}</dd>${fast ? `<small><span class="badge on">${esc(fast)}</span></small>` : ''}</div>` : ''}
     </dl><details class="connection-details"${connectionExpanded[curApp] ? ' open' : ''} ontoggle="connectionExpanded['${curApp}']=this.open"><summary>连接配置</summary><div class="mode-grid">
     <article class="mode-card ${direct ? 'selected' : ''}"><div class="top"><h2>${isCodex ? 'Codex 直连' : '直连渠道'}</h2>${modeBadge(direct)}</div><p>${direct ? esc(directName) : '客户端直接请求上游，不经过本地路由'}</p><p class="mono">${esc(direct && lv?.base_url ? lv.base_url : '从下方渠道卡片选择接入')}</p></article>
@@ -111,6 +112,13 @@ function setProviderLayout(layout) {
   applyProviderLayout();
 }
 applyProviderLayout();   // 首帧就把记住的布局落到 #prov-grid,别等第一次进渠道页
+// 头像色相按渠道 id 定死(改名不变色):FNV-1a 再混一次位,相邻 id 也能落到相隔较远的色相上。
+function providerHue(id) {
+  let h = 2166136261;
+  for (const ch of String(id || '')) h = Math.imul(h ^ ch.codePointAt(0), 16777619);
+  h = Math.imul(h ^ (h >>> 15), 2246822507);
+  return ((h ^ (h >>> 13)) >>> 0) % 36 * 10;
+}
 function renderProviders() {
   document.body.dataset.client = curApp;
   if (typeof renderBotsModels === 'function') renderBotsModels();
@@ -206,7 +214,7 @@ function renderProviders() {
     const healthBits = [];
     // 直连请求不经过本机路由,路由侧健康快照说“不可用”不能拿来否定客户端直连。
     if (hp && hp.eligible === false && p.enabled && !(isCodexGroup && (isCur ? actualCodexMode : codexMode) === 'direct'))
-      healthBits.push('<span class="badge off" title="按路由侧健康状态不可用">暂不可用</span>');
+      healthBits.push('<span class="badge off provider-health" title="按路由侧健康状态不可用">暂不可用</span>');
     // 卡片分四块:身份(头像 + 名称 + 状态徽标)、内容(地址/协议/模型/告警)、账号与测试结果、
     // 动作。旧类名 .card/.top/.foot/.tags 保留,新增的 provider-* 只负责分区;动作按钮与 data-*
     // 原样不动,样式层按这套区块做 grid/list 两种排布。
@@ -216,7 +224,7 @@ function renderProviders() {
     const statusBadges = [
       isCur ? `<span class="badge ${verified || activeRouter ? 'on' : 'off sel'}">${verified ? '已写入配置' : activeRouter ? '路由在用' : isCodexGroup ? '最后快照 · 待确认' : '库内选中'}</span>` : '',
       drift && online ? '<span class="badge drift">配置不一致</span>' : '',
-      `<span class="badge ${p.enabled ? 'info' : 'off'}">${p.enabled ? '启用' : '停用'}</span>`,
+      `<span class="badge provider-state ${p.enabled ? 'info' : 'off'}">${p.enabled ? '启用' : '停用'}</span>`,
       deadKeys.length ? `<span class="badge off" title="有停用的 Key">${deadKeys.length} 把 Key 已停用</span>` : '',
       ...healthBits,
     ].join('');
@@ -224,20 +232,20 @@ function renderProviders() {
     // 账号数紧跟在同一个下拉后面,不让它自己换行成第二处信息。
     const account = keys.length
       ? `<select class="keypick" data-provider="${esc(p.id)}" data-action="key" aria-label="${esc(p.name)} 当前账号" onchange="setActiveKey(${arg},this.value)">${keys.map(k => `<option value="${esc(k.id)}" ${k.id === p.active_key ? 'selected' : ''}>${esc(k.label)} · ${esc(k.key_masked)}${k.enabled === false ? ' · 已停用' : ''}</option>`).join('')}</select><span class="muted keycount">${keys.length} 个账号${deadKeys.length ? ' · ' + deadKeys.length + ' 把已停用' : ''}</span>`
-      : esc(p.key_masked || '未配置');
+      : `<span class="key-masked">${esc(p.key_masked || '未配置')}</span>`;
     const switchLabel = isCodexGroup
       ? (isCur && actualCodexMode === codexMode ? '重新应用' : codexMode === 'router' ? '应用路由' : '应用直连')
       : (isCur ? '重新写入' : '切换');
     const switchTitle = convOnly ? '该渠道只挂 Codex 型通道，直连不可用：请用上方「路由模式」'
       : codexDirectOff ? 'Chat 渠道不能写入 Codex 直连；请用「应用路由」' : '';
-    return `<article class="card ${p.enabled ? '' : 'off'} ${verified || activeRouter ? 'cur' : ''} ${isCur && !verified && !activeRouter ? 'sel' : ''}" data-provider="${esc(p.id)}">
+    return `<article class="card ${p.enabled ? '' : 'off'} ${verified || activeRouter ? 'cur' : ''} ${isCur && !verified && !activeRouter ? 'sel' : ''}" data-provider="${esc(p.id)}" style="--avatar-h:${providerHue(p.id)}">
       <header class="top provider-identity">
         <span class="provider-avatar" aria-hidden="true">${esc(avatar)}</span>
         <div class="provider-info"><h3 class="name">${esc(p.name)}</h3><div class="provider-status">${statusBadges}</div></div>
       </header>
       <div class="provider-content">
         <div class="mono endpoint" title="${esc(p.base_url)}">${esc(p.base_url)}</div>
-        <div class="provider-models tags">${isCodexGroup ? `<span class="tag codex-mode-tag">${codexMode === 'router' ? 'Mixrouter 路由' : 'Codex 直连'}</span>` : ''}<span class="tag">${esc(wire)}</span>${models.map(m => `<span class="tag">${esc(m)}</span>`).join('')}${p.drop_images ? '<span class="tag">纯文本</span>' : ''}${p.direct ? '<span class="tag">绕过出站代理</span>' : ''}${p.proxy_url ? '<span class="tag">经代理</span>' : ''}</div>
+        <div class="provider-models tags">${isCodexGroup ? `<span class="tag codex-mode-tag">${codexMode === 'router' ? 'Mixrouter 路由' : 'Codex 直连'}</span>` : ''}<span class="tag wire-tag">${esc(wire)}</span>${models.map(m => `<span class="tag">${esc(m)}</span>`).join('')}${p.drop_images ? '<span class="tag">纯文本</span>' : ''}${p.direct ? '<span class="tag">绕过出站代理</span>' : ''}${p.proxy_url ? '<span class="tag">经代理</span>' : ''}</div>
         ${deadKeys.length ? `<p class="note">已停用的 Key：${deadKeys.map(k => `${esc(k.label || k.id)}（${esc(k.id)}）`).join('、')}。停用只影响固定选它的会话与压缩规则，不会自动改选其他 Key。</p>` : ''}${p.note ? `<p class="note" title="${esc(p.note)}">${esc(p.note)}</p>` : ''}
 
       </div>
@@ -318,7 +326,7 @@ function renderKeyDraft() {
   $('m-keys').innerHTML = keyDraft.length ? keyDraft.map((k, i) => `<div class="rc-line">
     <label class="field" style="flex:1">名称<input type="text" value="${esc(k.label)}" oninput="keyDraft[${i}].label=this.value" placeholder="账号${i + 1}" autocomplete="off"></label>
     <label class="field" style="flex:2">API Key<input type="password" value="${esc(k.key)}" oninput="keyDraft[${i}].key=this.value;invalidateDiscovery('Key 已改动，请重新获取模型列表');renderFetchKeySelect()" placeholder="${k.id ? '留空=不改（' + esc(k.masked || '') + '）' : 'sk-…'}" autocomplete="new-password" spellcheck="false"></label>
-    <button type="button" class="iconbtn" aria-label="删除这个 Key" onclick="removeKeyDraft(${i})">×</button></div>`).join('')
+    <button type="button" class="iconbtn danger" title="删除这个 Key" aria-label="删除这个 Key" onclick="removeKeyDraft(${i})">×</button></div>`).join('')
     : '<p class="muted">还没有多 Key。点「＋ 添加账号」加第二把；只留一把时用上面的 API Key 就行。</p>';
   renderFetchKeySelect();
 }
@@ -531,7 +539,7 @@ function renderModelDraft() {
     <label class="field" style="flex:1">模型${i === 0 && !isCodex ? '（主）' : ''}${r.editing
       ? `<input type="text" aria-label="模型${i + 1}" value="${esc(r.value)}" placeholder="模型名，可带 [1M] 后缀" spellcheck="false" autocomplete="off" oninput="modelDraft[${i}].value=this.value" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}" onblur="endModelEdit(${i},this.value)">`
       : `<select aria-label="模型${i + 1}" onchange="pickModelDraft(${i},this.value)">${modelSelectOptions(r)}</select>`}</label>
-    <button type="button" class="iconbtn" aria-label="删除这个模型" onclick="removeModelDraft(${i})">×</button></div>`).join('')
+    <button type="button" class="iconbtn danger" title="删除这个模型" aria-label="删除这个模型" onclick="removeModelDraft(${i})">×</button></div>`).join('')
     + `<datalist id="model-candidates">${[...new Set(modelCandidates)].map(m => `<option value="${esc(m)}"></option>`).join('')}</datalist>`
     : `<p class="muted">${isCodex ? '候选列表可留空；槽位仍可使用默认模型或手写模型名。' : '还没有模型。点「＋ 添加模型」加一个；第一项会当主模型用。'}</p>`;
 }

@@ -61,6 +61,31 @@
     invalid: 'invalid', corrupt: 'invalid', parse_error: 'invalid', parseerror: 'invalid', malformed: 'invalid',
     error: 'error', read_error: 'error', unreadable: 'error', eacces: 'error', permission_denied: 'error',
   };
+  // 调度策略的人话标签;原始枚举值仍放在次级 mono 小字或 title 里,不丢信息。
+  const R_STRATEGY_LABEL = { priority: '主备顺序', round_robin: '轮询', weighted: '按权重', least_used: '最少使用', random: '随机' };
+  const readinessStrategyLabel = value => R_STRATEGY_LABEL[value] || String(value || '');
+
+  // 全站统一格式:时延 840ms / 1.2s / 1m05s;时间点今天 HH:mm:ss、今年 MM-DD HH:mm、更早 YYYY-MM-DD,
+  // 完整时间放 title。未知一律显示「—」。
+  function readinessDuration(ms) {
+    const n = Number(ms);
+    if (ms == null || ms === '' || !Number.isFinite(n) || n < 0) return '—';
+    if (n < 1000) return Math.round(n) + 'ms';
+    if (n < 59950) return (n / 1000).toFixed(1) + 's';
+    const s = Math.round(n / 1000);
+    return Math.floor(s / 60) + 'm' + String(s % 60).padStart(2, '0') + 's';
+  }
+  function readinessWhen(value) {
+    const d = value == null || value === '' ? null : new Date(value);
+    if (!d || Number.isNaN(d.getTime())) return { text: value == null || value === '' ? '—' : String(value), title: '' };
+    const p = n => String(n).padStart(2, '0');
+    const date = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    const time = `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+    const now = new Date();
+    const text = date === `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}` ? time
+      : d.getFullYear() === now.getFullYear() ? `${p(d.getMonth() + 1)}-${p(d.getDate())} ${time.slice(0, 5)}` : date;
+    return { text, title: `${date} ${time}` };
+  }
 
   const rEl = id => { try { return document.getElementById(id); } catch { return null; } };
   const rEsc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -290,10 +315,13 @@
     const offPath = info.binary?.source === 'known-dir'
       ? `<p class="hint readiness-path">这个客户端不在服务进程的 PATH 里，是从固定安装目录找到的（${rEsc(info.binary.path || '')}）。写入配置不受影响；只是别把它当成"没装"。</p>`
       : '';
-    return `<div class="readiness-badges">${bits}${retry}</div>
+    return `<section class="readiness-step" aria-labelledby="readiness-step-inspect">
+      <h3 id="readiness-step-inspect"><span class="readiness-step-no" aria-hidden="true">1</span>检查客户端</h3>
+      <div class="readiness-badges">${bits}${retry}</div>
       ${pathLine ? `<p class="hint mono readiness-path">${pathLine}</p>` : ''}
       ${pending}${denied}${offPath}
-      ${banner}${fallback}`;
+      ${banner}${fallback}
+    </section>`;
   }
 
   function readinessConnectionParams() {
@@ -323,7 +351,7 @@
     const text = readinessConnectionParams();
     const done = ok => {
       const el = rEl('readiness-copy-status');
-      if (el) el.textContent = ok ? '参数已复制。令牌明文未包含在内。' : '复制不可用，请手动选择上面的参数。';
+      if (el) { el.textContent = ok ? '参数已复制。令牌明文未包含在内。' : '复制不可用，请手动选择上面的参数。'; el.className = 'msg ' + (ok ? 'ok' : 'warn'); }
     };
     try {
       if (typeof navigator !== 'undefined' && navigator?.clipboard?.writeText) {
@@ -373,9 +401,9 @@
       <p class="hint">先在本地解析再发预览；预览只返回脱敏的渠道摘要，不显示 Key 明文。看到摘要后才会出现「确认导入」。</p>
       <div class="savebar">
         <button class="small" type="button" id="readiness-import-preview" onclick="readinessImportPreview()" ${!rOnline() || readinessState.busy === 'import' ? 'disabled' : ''}>${readinessState.busy === 'import' ? '解析中…' : '解析并预览'}</button>
-        <button class="primary" type="button" id="readiness-import-apply" onclick="readinessImportApply()" disabled>确认导入</button>
+        <button class="small primary" type="button" id="readiness-import-apply" onclick="readinessImportApply()" disabled>确认导入</button>
         <label class="chk readiness-inline-check" for="readiness-import-confirm"><input type="checkbox" id="readiness-import-confirm" onchange="readinessSyncButtons()">我确认把这些渠道合并进渠道库</label>
-        <span class="msg" id="readiness-import-status" role="status" tabindex="-1">${rEsc(readinessState.importError || '')}</span>
+        <span class="msg${readinessState.importError ? ' err' : ''}" id="readiness-import-status" role="status" tabindex="-1">${rEsc(readinessState.importError || '')}</span>
       </div>
       ${readinessImportResultHtml()}
     </div>`;
@@ -490,7 +518,7 @@
       <p class="readiness-section-label">槽位（${app === 'codex' ? 'main / reviewer，接入时补缺项' : 'main 必需'}）</p>
       <ul class="readiness-slot-list">${rows}</ul>
       <p class="hint">${rEsc(explain)}</p>
-      <div class="savebar">${actions}<span class="msg" id="readiness-main-status" role="status">${rEsc(status?.text || '')}</span></div>
+      <div class="savebar">${actions}<span class="msg${status?.kind ? ' ' + status.kind : ''}" id="readiness-main-status" role="status">${rEsc(status?.text || '')}</span></div>
     </div>`;
   }
 
@@ -526,27 +554,24 @@
     const rows = checks.map(check => {
       if (!rIsObj(check)) return `<li class="readiness-check"><span class="badge off">结果</span><span>${rEsc(rText(check))}</span></li>`;
       const status = String(check.status || '').toLowerCase();
-      const cls = ['ok', 'pass', 'green'].includes(status) ? 'on' : ['fail', 'error', 'red'].includes(status) ? 'drift' : 'off';
+      const cls = ['ok', 'pass', 'green'].includes(status) ? 'on' : ['fail', 'error', 'red'].includes(status) ? 'err' : ['warn', 'warning'].includes(status) ? 'drift' : 'off';
       const label = R_STATUS_LABEL[status] || check.status || '未标注';
-      return `<li class="readiness-check"><span class="badge ${cls}">${rEsc(label)}</span><span class="readiness-check-id mono">${rEsc(check.id || check.code || '检查')}</span><span class="readiness-check-msg">${rEsc(check.message || check.code || '')}</span><span class="readiness-check-ms mono">${check.ms == null ? '' : rEsc(String(check.ms) + 'ms')}</span></li>`;
+      return `<li class="readiness-check"><span class="badge ${cls}">${rEsc(label)}</span><span class="readiness-check-id mono">${rEsc(check.id || check.code || '检查')}</span><span class="readiness-check-msg">${rEsc(check.message || check.code || '')}</span><span class="readiness-check-ms mono">${rEsc(readinessDuration(check.ms))}</span></li>`;
     }).join('');
     const verified = result ? (result.ok === true ? '<span class="badge on">本次通过</span>' : result.ok === false ? '<span class="badge drift">本次未通过</span>' : '<span class="badge off">服务端未标注总体结果</span>') : '';
-    const checkedAt = result?.checked_at ? new Date(result.checked_at) : null;
-    const checkedText = result?.checked_at
-      ? (checkedAt && !Number.isNaN(checkedAt.getTime()) ? checkedAt.toLocaleString('zh-CN', { hour12: false }) : String(result.checked_at))
-      : '未提供';
+    const checked = readinessWhen(result?.checked_at);
     // scope 是对象:{app, client_wire, wire_api, model, key_id}。逐项拼成一行,别把 JSON 怼给用户。
     const scopeBits = rIsObj(result?.scope)
       ? [result.scope.client_wire && `协议 ${result.scope.client_wire}`, result.scope.wire_api && `上游 ${result.scope.wire_api}`,
         result.scope.model && `模型 ${result.scope.model}`, result.scope.key_id && `Key ${result.scope.key_id}`].filter(Boolean)
       : [];
-    const scopeText = result ? (rIsObj(result.scope) ? (scopeBits.join(' · ') || '未提供') : (result.scope == null ? '未提供' : rText(result.scope))) : '未提供';
-    const msText = result?.ms == null ? '未提供' : `${result.ms}ms`;
+    const scopeText = result ? (rIsObj(result.scope) ? (scopeBits.join(' · ') || '—') : (result.scope == null ? '—' : rText(result.scope))) : '—';
+    const msText = readinessDuration(result?.ms);
     const resultBlock = readinessState.testError
       ? `<div class="banner offline show" role="alert" id="readiness-test-error" tabindex="-1">兼容测试未运行或失败：${rEsc(readinessState.testError)}</div>`
       : result
         ? `<div class="readiness-result" id="readiness-test-result">
-            <p class="readiness-result-title">${verified} <span class="hint">检查时间 ${rEsc(checkedText)} · 范围 ${rEsc(scopeText)} · 总耗时 ${rEsc(msText)}</span></p>
+            <p class="readiness-result-title">${verified} <span class="hint"${checked.title ? ` title="${rEsc(checked.title)}"` : ''}>检查时间 ${rEsc(checked.text)} · 范围 ${rEsc(scopeText)} · 总耗时 ${rEsc(msText)}</span></p>
             ${rows ? `<ul class="readiness-checks">${rows}</ul>` : '<p class="hint">服务端没有返回检查项；这不等于通过。</p>'}
             ${readinessWarningList(result.warnings).length ? `<ul class="readiness-warnings">${readinessWarningList(result.warnings).map(w => `<li>${rEsc(w)}</li>`).join('')}</ul>` : ''}
             <p class="hint">这是 ${rEsc(readinessState.model || '所选模型')} 在 ${rEsc(p?.name || '所选渠道')} 上的一次测试（最多 3 次上游请求：生成 / 流式 / 工具调用），只代表这一时刻；不是持续健康，也不代表其他模型、Key、图片或工具能力。</p>
@@ -556,7 +581,7 @@
       <h3 id="readiness-step-test"><span class="readiness-step-no" aria-hidden="true">4</span>兼容测试</h3>
       <p class="hint">最多会向所选渠道发 3 次真实请求（生成、流式、工具调用各一次），会消耗额度。只测所选的模型、Key 与客户端协议。三项检查按顺序都跑；只有总时限用尽时才跳过剩下的检查，超时或出错的项会单独标出来。</p>
       <label class="chk readiness-inline-check" for="readiness-test-ack"><input type="checkbox" id="readiness-test-ack" onchange="readinessSyncButtons()" ${p ? '' : 'disabled'}>我知道这会消耗额度，并同意运行兼容测试（最多 3 次上游请求）</label>
-      <div class="savebar"><button class="small" type="button" id="readiness-test-btn" onclick="readinessRunTest()" disabled>${readinessState.busy === 'test' ? '测试中…' : '运行兼容测试'}</button><span class="msg" id="readiness-test-status" role="status">${readinessState.busy === 'test' ? '正在向上游发请求（最多 3 次）…' : ''}</span></div>
+      <div class="savebar"><button class="small" type="button" id="readiness-test-btn" onclick="readinessRunTest()" disabled>${readinessState.busy === 'test' ? '测试中…' : '运行兼容测试'}</button><span class="msg${readinessState.busy === 'test' ? ' busy' : ''}" id="readiness-test-status" role="status">${readinessState.busy === 'test' ? '正在向上游发请求（最多 3 次）…' : ''}</span></div>
       ${resultBlock}
     </section>`;
   }
@@ -599,10 +624,10 @@
       <h3 id="readiness-step-write"><span class="readiness-step-no" aria-hidden="true">5</span>写入客户端</h3>
       <p class="hint">${blocked ? rEsc(blocked) : '先预览将要改动的字段，再显式确认。向导不会把「读不到配置」当作「未配置」，也不会在没有预览令牌时写入。'}</p>
       <p class="hint" id="readiness-write-mode"><b>这次会写：</b>${rEsc(readinessWriteMode().note)}</p>
-      <div class="savebar"><button class="small" type="button" id="readiness-preview-btn" onclick="readinessPreviewWrite()" disabled>${readinessState.busy === 'preview' ? '读取预览…' : '预览将写入的字段'}</button><span class="msg" id="readiness-preview-status" role="status">${rEsc(readinessState.previewError || '')}</span></div>
+      <div class="savebar"><button class="small" type="button" id="readiness-preview-btn" onclick="readinessPreviewWrite()" disabled>${readinessState.busy === 'preview' ? '读取预览…' : '预览将写入的字段'}</button><span class="msg" id="readiness-preview-status" role="status"></span></div>
       ${previewBlock}
       <label class="chk readiness-inline-check" for="readiness-write-confirm"><input type="checkbox" id="readiness-write-confirm" onchange="readinessSyncButtons()" ${token ? '' : 'disabled'}>我确认按上面的预览写入客户端配置</label>
-      <div class="savebar"><button class="primary" type="button" id="readiness-apply-btn" onclick="readinessApplyWrite()" disabled>${readinessState.busy === 'apply' ? '写入中…' : '确认写入客户端'}</button><span class="msg" id="readiness-apply-status" role="status">${readinessState.busy === 'apply' ? '正在写入，等待服务端返回…' : (p ? '' : '先选择渠道。')}</span></div>
+      <div class="savebar"><button class="primary" type="button" id="readiness-apply-btn" onclick="readinessApplyWrite()" disabled>${readinessState.busy === 'apply' ? '写入中…' : '确认写入客户端'}</button><span class="msg${readinessState.busy === 'apply' ? ' busy' : ''}" id="readiness-apply-status" role="status">${readinessState.busy === 'apply' ? '正在写入，等待服务端返回…' : (p ? '' : '先选择渠道。')}</span></div>
       ${applied}
     </section>`;
   }
@@ -624,7 +649,7 @@
             <p class="readiness-result-title">${canUndo ? '<span class="badge info">可以撤销</span>' : '<span class="badge drift">撤销已阻断</span>'} <span class="hint">预览：尚未改动任何文件</span></p>
             <p class="readiness-section-label">受管字段（${managed.length}）：撤销只把这些字段还原成写入前的值</p>
             ${readinessChangesHtml(rows.map(row => ({ field: row.field, current: row.before, restore: row.after, secret: row.secret })), '账本里没有受管字段，撤销不会改动任何内容。')}
-            ${conflicts.length ? `<div><p class="readiness-section-label">冲突（受管字段已不是写入后的值）</p>${readinessConflictsHtml(u.conflicts)}<p class="hint">${canUndo ? '这些字段不在本次还原范围内，或者需要你先核对。' : '冲突时服务端不签发撤销令牌：撤销不会覆盖这些字段。先手动核对，或用完整备份恢复（那是另一条独立路径）。'}</p></div>` : ''}
+            ${conflicts.length ? `<div class="readiness-conflicts-block"><p class="readiness-section-label">冲突（受管字段已不是写入后的值）</p>${readinessConflictsHtml(u.conflicts)}<p class="hint">${canUndo ? '这些字段不在本次还原范围内，或者需要你先核对。' : '冲突时服务端不签发撤销令牌：撤销不会覆盖这些字段。先手动核对，或用完整备份恢复（那是另一条独立路径）。'}</p></div>` : ''}
             ${readinessWarningList(u.warnings).length ? `<ul class="readiness-warnings">${readinessWarningList(u.warnings).map(w => `<li>${rEsc(w)}</li>`).join('')}</ul>` : ''}
             <p class="hint">撤销只还原这次接入管理的字段，不做整文件覆盖；其他字段与其他客户端的配置保持不动。完整备份恢复不在本向导里。</p>
           </div>`
@@ -635,10 +660,10 @@
     return `<section class="readiness-step readiness-undo" aria-labelledby="readiness-step-undo">
       <h3 id="readiness-step-undo"><span class="readiness-step-no" aria-hidden="true">6</span>撤销上次写入</h3>
       <p class="hint">适用于本向导写入过的客户端配置。先预览受管字段与冲突，再显式确认；不会还原完整备份，也不碰其他工具改过的字段。</p>
-      <div class="savebar"><button class="small" type="button" id="readiness-undo-preview" onclick="readinessUndoPreview()" ${!readinessCanWrite() ? 'disabled' : ''}>${readinessState.busy === 'undo-preview' ? '读取撤销预览…' : '检查撤销影响'}</button><span class="msg" id="readiness-undo-status" role="status">${rEsc(readinessState.undoError || '')}</span></div>
+      <div class="savebar"><button class="small" type="button" id="readiness-undo-preview" onclick="readinessUndoPreview()" ${!readinessCanWrite() ? 'disabled' : ''}>${readinessState.busy === 'undo-preview' ? '读取撤销预览…' : '检查撤销影响'}</button><span class="msg" id="readiness-undo-status" role="status"></span></div>
       ${preview}
       <label class="chk readiness-inline-check" for="readiness-undo-confirm"><input type="checkbox" id="readiness-undo-confirm" onchange="readinessSyncButtons()" ${canUndo ? '' : 'disabled'}>我确认只还原本向导管理的字段</label>
-      <div class="savebar"><button class="danger" type="button" id="readiness-undo-btn" onclick="readinessUndoApply()" disabled>${readinessState.busy === 'undo' ? '撤销中…' : '确认撤销'}</button><span class="msg" id="readiness-undo-apply-status" role="status">${readinessState.busy === 'undo' ? '正在还原受管字段…' : ''}</span></div>
+      <div class="savebar"><button class="danger" type="button" id="readiness-undo-btn" onclick="readinessUndoApply()" disabled>${readinessState.busy === 'undo' ? '撤销中…' : '确认撤销'}</button><span class="msg${readinessState.busy === 'undo' ? ' busy' : ''}" id="readiness-undo-apply-status" role="status">${readinessState.busy === 'undo' ? '正在还原受管字段…' : ''}</span></div>
       ${done}
     </section>`;
   }
@@ -697,8 +722,8 @@
     if (!rows.length) return '';
     return `<ul class="readiness-changes readiness-conflicts">${rows.map(row => `<li>
       <span class="readiness-change-field">${rEsc(row.field)}</span>
-      <span class="hint">当前</span><span class="readiness-change-before mono">${rEsc(row.current)}</span>
-      <span class="hint">账本期望</span><span class="readiness-change-after mono">${rEsc(row.expected)}</span>
+      <span class="readiness-change-diff"><span class="hint">当前</span><span class="readiness-change-before mono">${rEsc(row.current)}</span>
+      <span class="hint">账本期望</span><span class="readiness-change-after mono">${rEsc(row.expected)}</span></span>
     </li>`).join('')}</ul>`;
   }
 
@@ -708,11 +733,11 @@
     if (!rows.length) return `<p class="hint">${rEsc(Array.isArray(value) && emptyListedText ? emptyListedText : emptyText)}</p>`;
     return `<ul class="readiness-changes">${rows.map(row => `<li>
       <span class="readiness-change-field">${rEsc(row.field)}</span>
-      <span class="readiness-change-before mono">${rEsc(row.before || '（空）')}</span>
+      <span class="readiness-change-diff"><span class="readiness-change-before mono">${rEsc(row.before || '（空）')}</span>
       <span class="readiness-change-arrow" aria-hidden="true">→</span>
       <span class="readiness-change-after mono">${rEsc(row.after || '（空）')}</span>
       ${row.secret ? '<span class="badge off" title="服务端只回传掩码，预览里看不到完整密钥">已脱敏</span>' : ''}
-      ${row.note ? `<span class="hint">${rEsc(row.note)}</span>` : ''}
+      ${row.note ? `<span class="hint">${rEsc(row.note)}</span>` : ''}</span>
     </li>`).join('')}</ul>`;
   }
 
@@ -930,7 +955,7 @@
       ? (R_SLOT_NAMES[app] || ['main'])
       : ['main'];
     readinessState.busy = 'main';
-    readinessState.slotSetup = { text: all ? `正在把 ${names.join(' / ')} 设为该渠道…` : '正在保存主槽…' };
+    readinessState.slotSetup = { text: all ? `正在把 ${names.join(' / ')} 设为该渠道…` : '正在保存主槽…', kind: 'busy' };
     readinessRender();
     const model = readinessState.model || '';
     const failed = [];
@@ -943,9 +968,10 @@
     readinessState.busy = '';
     if (failed.length) {
       const reason = rEl('toast')?.textContent || '服务端拒绝';
-      readinessState.slotSetup = { text: `槽位保存失败（${failed.join(' / ')}）：${reason}` };
+      readinessState.slotSetup = { text: `槽位保存失败（${failed.join(' / ')}）：${reason}`, kind: 'err' };
     } else {
       readinessState.slotSetup = {
+        kind: 'ok',
         text: all
           ? `已把 ${names.join(' / ')} 设为 ${p.name}${app === 'claude' && model ? ' @ ' + model : ''}。`
           : `已设为主槽 main：${p.name}${model ? ' @ ' + model : ''}。`,
@@ -1226,7 +1252,7 @@
     if (!slot?.provider) return '<span class="badge off">未绑定主渠道</span>';
     if (!pool.length) return '<span class="badge off">单一渠道</span>';
     const strategy = slot.strategy || 'priority';
-    return `<span class="badge info">后备池 ${pool.length} 个 · ${rEsc(strategy)}</span>`;
+    return `<span class="badge info" title="${rEsc('调度策略 strategy=' + strategy)}">后备池 ${pool.length} 个 · ${rEsc(readinessStrategyLabel(strategy))}</span>`;
   }
 
   function readinessPoolEditorHtml(name, slot) {
@@ -1238,8 +1264,8 @@
       ? candidates.map(p => `<option value="${rEsc(p.id)}">${rEsc(p.name)}${p.enabled === false ? '（停用）' : ''}</option>`).join('')
       : '<option value="">（没有其他 Claude 渠道）</option>';
     const strategyNote = draft.strategy && draft.strategy !== 'priority' && draft.preserveStrategy
-      ? `<p class="hint readiness-pool-strategy">现有策略是 <b>${rEsc(draft.strategy)}</b>：本编辑器只调整后备成员与顺序，保存时原样保留该策略，不会偷偷改成 priority。</p>`
-      : '<p class="hint readiness-pool-strategy">仅按 priority（主渠道优先，失败后依次尝试后备）解释这里的顺序；主渠道始终由服务端排在第一位。</p>';
+      ? `<p class="hint readiness-pool-strategy">现有策略是 <b>${rEsc(readinessStrategyLabel(draft.strategy))}</b> <span class="mono">${rEsc(draft.strategy)}</span>：本编辑器只调整后备成员与顺序，保存时原样保留该策略，不会偷偷改成主备顺序（priority）。</p>`
+      : '<p class="hint readiness-pool-strategy">按主备顺序（priority）解释这里的顺序：主渠道优先，失败后依次尝试后备；主渠道始终由服务端排在第一位。</p>';
     const rows = draft.members.map((member, index) => {
       const provider = readinessProviders().find(p => p.id === member.provider);
       const models = provider ? (provider.models || [provider.model].filter(Boolean)) : [];
@@ -1250,9 +1276,9 @@
         <label class="field readiness-pool-provider">渠道<select id="readiness-pool-provider-${name}-${index}" onchange="readinessPoolSetProvider('${rEsc(name)}',${index},this.value)">${options}</select></label>
         <label class="field readiness-pool-model">模型<input type="text" id="readiness-pool-model-${name}-${index}" list="readiness-pool-models-${name}-${index}" value="${rEsc(member.model)}" placeholder="${rEsc(slot?.model ? '跟随主槽模型 ' + slot.model : '跟随主槽模型')}" spellcheck="false" autocomplete="off" oninput="readinessPoolSetModel('${rEsc(name)}',${index},this.value)"><datalist id="readiness-pool-models-${name}-${index}">${datalist}</datalist></label>
         <div class="readiness-pool-buttons">
-          <button class="iconbtn" type="button" id="readiness-pool-up-${name}-${index}" aria-label="后备渠道上移" onclick="readinessPoolMove('${rEsc(name)}',${index},-1)" ${index === 0 ? 'disabled' : ''}>↑</button>
-          <button class="iconbtn" type="button" id="readiness-pool-down-${name}-${index}" aria-label="后备渠道下移" onclick="readinessPoolMove('${rEsc(name)}',${index},1)" ${index === draft.members.length - 1 ? 'disabled' : ''}>↓</button>
-          <button class="iconbtn" type="button" id="readiness-pool-remove-${name}-${index}" aria-label="移除这个后备渠道" onclick="readinessPoolRemove('${rEsc(name)}',${index})">×</button>
+          <button class="iconbtn readiness-pool-move" type="button" id="readiness-pool-up-${name}-${index}" aria-label="后备渠道上移" onclick="readinessPoolMove('${rEsc(name)}',${index},-1)" ${index === 0 ? 'disabled' : ''}>↑</button>
+          <button class="iconbtn readiness-pool-move" type="button" id="readiness-pool-down-${name}-${index}" aria-label="后备渠道下移" onclick="readinessPoolMove('${rEsc(name)}',${index},1)" ${index === draft.members.length - 1 ? 'disabled' : ''}>↓</button>
+          <button class="iconbtn danger" type="button" id="readiness-pool-remove-${name}-${index}" title="移除这个后备渠道" aria-label="移除这个后备渠道" onclick="readinessPoolRemove('${rEsc(name)}',${index})">×</button>
         </div>
       </li>`;
     }).join('');
@@ -1272,7 +1298,7 @@
       ${strategyNote}
       <p class="hint">后备渠道只在这个槽位的请求上按顺序重试；真实降级取决于上游错误与重试预算，不能保证图片、工具调用等能力和主渠道一致。停用的渠道会被服务端直接跳过。</p>
       <div class="savebar">
-        <button class="primary" type="button" id="readiness-pool-save-${name}" onclick="readinessPoolSave('${rEsc(name)}')" ${readinessState.busy === 'pool' ? 'disabled' : ''}>${readinessState.busy === 'pool' ? '保存中…' : '保存后备池'}</button>
+        <button class="small primary" type="button" id="readiness-pool-save-${name}" onclick="readinessPoolSave('${rEsc(name)}')" ${readinessState.busy === 'pool' ? 'disabled' : ''}>${readinessState.busy === 'pool' ? '保存中…' : '保存后备池'}</button>
         <button class="small" type="button" id="readiness-pool-cancel-${name}" onclick="readinessPoolCancel()">取消</button>
       </div>
     </div>`;
@@ -1294,12 +1320,12 @@
           <div class="readiness-pool-summary">${readinessPoolBadge(slot)}${slot.dropTools?.length ? `<span class="badge off">剥离 ${slot.dropTools.length} 个工具规则</span>` : ''}</div>
           <button class="small" type="button" id="readiness-pool-edit-${slot.name}" onclick="readinessPoolToggle('${rEsc(slot.name)}')" aria-expanded="${open ? 'true' : 'false'}" ${slot.provider ? '' : 'disabled'}>${open ? '收起后备池' : '编辑后备池'}</button>
         </div>
-        ${status ? `<p class="msg ${status.kind === 'err' ? 'err' : 'ok'}" id="readiness-pool-note-${slot.name}" role="status">${rEsc(status.text)}</p>` : ''}
+        ${status ? `<p class="msg ${status.kind === 'err' ? 'err' : status.kind === 'ok' ? 'ok' : 'busy'}" id="readiness-pool-note-${slot.name}" role="status">${rEsc(status.text)}</p>` : ''}
         ${open ? readinessPoolEditorHtml(slot.name, slot) : ''}
       </div>`;
     }).join('');
     return `<h3>槽位后备池</h3>
-      <p class="hint">主渠道由上面的槽位表决定，固定排第一；这里只维护后备成员、它们的模型与顺序。保存仍走 PUT /api/slots，未列出的 dropTools 与已有非 priority 策略会原样保留。</p>
+      <p class="hint">主渠道由上面的槽位表决定，固定排第一；这里只维护后备渠道、它们的模型与顺序。保存时原样保留该槽位的工具剥离规则和已有的调度策略。</p>
       ${rows}`;
   }
 
@@ -1405,7 +1431,7 @@
     const slot = readinessClaudeSlot(name);
     const draft = readinessState.slot?.name === name ? readinessState.slot : null;
     if (!slot || !slot.provider || !draft) return;
-    if (typeof putSlot !== 'function') { readinessState.slotStatus = { name, text: '槽位接口未就绪，未保存。' }; readinessRenderPools(true); return; }
+    if (typeof putSlot !== 'function') { readinessState.slotStatus = { name, text: '槽位接口未就绪，未保存。', kind: 'err' }; readinessRenderPools(true); return; }
     const seen = new Set();
     const members = [];
     for (const member of draft.members) {
@@ -1434,7 +1460,7 @@
     readinessState.busy = '';
     if (ok) {
       readinessState.slot = null;
-      readinessState.slotStatus = { name, text: members.length ? `已保存 ${members.length} 个后备渠道（策略 ${strategy}）。` : '已清空后备池；主渠道保持不变。', kind: 'ok' };
+      readinessState.slotStatus = { name, text: members.length ? `已保存 ${members.length} 个后备渠道（策略：${readinessStrategyLabel(strategy)}）。` : '已清空后备池；主渠道保持不变。', kind: 'ok' };
       rToast(members.length ? `槽位 ${name} 的后备池已保存` : `槽位 ${name} 的后备池已清空`, 'ok');
     } else {
       const reason = failure || rEl('toast')?.textContent || '服务端拒绝';
@@ -1586,6 +1612,7 @@
     entry.setAttribute('aria-labelledby', 'readiness-entry-title');
     // 入口只是一条提示条:渠道列表才是这一页的主角,步骤说明留在向导弹窗里。
     entry.innerHTML = `<div class="readiness-entry-row">
+        <span class="readiness-entry-icon" aria-hidden="true"></span>
         <div class="readiness-entry-copy">
           <h2 id="readiness-entry-title">接入向导</h2>
           <p class="hint" id="readiness-entry-status" role="status">读取客户端安装与配置状态后再开始。</p>

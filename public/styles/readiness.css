@@ -1,306 +1,340 @@
-/* Mixrouter 接入向导 / 槽位后备池 / 诊断报告预览。
+/* Mixrouter 接入向导 / 槽位后备池 / 诊断报告预览(2026-11 视觉重做)。
  *
- * 只使用 base.css 的主题变量,不新增颜色体系;所有选择器都以 readiness- 开头或限定在
- * #readiness-dialog 内,避免和已有的 .panel / .rc-line / .card 规则互相抵消。
+ * 只用 base.css 的 token,不写颜色字面量。选择器都以 readiness- 开头,或限定在
+ * #readiness-entry / #readiness-dialog 内,不改通用的 .panel / .seg / .badge / button。
+ * 层级只有三层:卡片(入口条、弹窗)→ 内嵌块(--panel)→ 细分隔线行;不再框里套框再套框。
  */
 
-/* ---- 渠道页 / 概览页入口 --------------------------------------------------- */
-/* 一条紧凑提示条:标题、状态、入口在同一行,不抢渠道列表的首屏位置。 */
-.readiness-overview-jump { margin-top: 0; padding: 12px 14px; }
-.readiness-entry { border-color: var(--border-soft); padding: 9px 14px; margin-bottom: 12px; }
+/* ---- 渠道页入口条 ---------------------------------------------------------- */
+/* 安静的一条:图标方块、标题与状态同一行,按钮靠右;不加阴影,不抢渠道库的首屏。 */
 .readiness-entry-row {
   display: flex; align-items: center; justify-content: space-between;
   gap: 8px 16px; flex-wrap: wrap;
 }
-.readiness-entry-copy {
-  min-width: 0; flex: 1 1 420px;
-  display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 10px;
-}
-.readiness-entry-copy h2 { font-size: 13px; font-weight: 650; margin: 0; letter-spacing: 0; }
-.readiness-entry-copy h2::before {
-  content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
-  margin-right: 7px; vertical-align: 1px; background: var(--accent);
-}
-.readiness-entry-copy .hint { margin: 0; max-width: 100%; font-size: 13px; line-height: 1.55; }
-.readiness-entry-actions { display: flex; gap: 8px; flex-wrap: wrap; flex-shrink: 0; margin-left: auto; }
+.readiness-entry-copy { min-width: 0; flex: 1 1 360px; }
+.readiness-entry-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex-shrink: 0; margin-left: auto; }
 #readiness-entry-status { margin: 0; overflow-wrap: anywhere; }
-/* 已接入的客户端:入口不再抢注意力,主按钮降成普通按钮。 */
-.readiness-entry[data-connected="true"] { background: var(--panel); border-color: var(--border-soft); }
-.readiness-entry[data-connected="true"] .readiness-entry-copy h2::before { background: var(--border-strong); }
-.readiness-entry[data-connected="true"] #readiness-open:not(:hover) {
-  background: transparent; color: var(--text); border-color: var(--border);
-}
-.readiness-entry[data-connected="true"] #readiness-open:hover:not(:disabled) {
-  background: var(--surface-2); border-color: var(--border-strong);
-}
-/* 手机上状态文字占两行时,入口按钮紧随其后,不额外占一行标题。 */
-@media (max-width: 640px) {
-  .readiness-entry-copy { flex-basis: 100%; display: block; }
-  .readiness-entry-copy h2 { margin-bottom: 2px; }
-  #readiness-entry-status { font-size: 12.5px; }
-  .readiness-entry-actions { margin-left: 0; width: 100%; }
-  .readiness-entry-actions .primary { flex: 1 1 auto; }
-}
 
-/* ---- 向导弹窗 -------------------------------------------------------------- */
+.panel.readiness-entry {
+  margin-bottom: 12px; padding: 10px 14px;
+  background: var(--surface); border-color: var(--border-soft);
+  border-radius: var(--radius-lg); box-shadow: none;
+}
+#readiness-entry .readiness-entry-row { gap: 8px 12px; }
+.readiness-entry-icon {
+  --readiness-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='currentColor' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 1.75v3M10 1.75v3M4 4.75h8v2.5a4 4 0 0 1-8 0zM8 11.25v3'/%3E%3C/svg%3E");
+  display: grid; place-items: center; flex: 0 0 28px; width: 28px; height: 28px;
+  border-radius: var(--radius); background: var(--accent-soft); color: var(--accent-text);
+}
+.readiness-entry-icon::before {
+  content: ""; width: 16px; height: 16px; background: currentColor;
+  -webkit-mask: var(--readiness-icon) center / 16px 16px no-repeat;
+  mask: var(--readiness-icon) center / 16px 16px no-repeat;
+}
+#readiness-entry .readiness-entry-copy { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 10px; }
+#readiness-entry .readiness-entry-copy h2 { margin: 0; font-size: 13.5px; font-weight: 600; letter-spacing: 0; line-height: 1.4; }
+#readiness-entry .readiness-entry-copy .hint { margin: 0; max-width: 100%; font-size: 13px; line-height: 1.55; color: var(--dim); }
+/* 已接入的客户端:图标转中性,主按钮降成普通按钮,入口整体再退一档。 */
+#readiness-entry[data-connected="true"] .readiness-entry-icon { background: var(--surface-2); color: var(--dim); }
+#readiness-entry[data-connected="true"] #readiness-open {
+  background: var(--surface-2); border-color: var(--border); color: var(--text);
+  font-weight: 500; box-shadow: none;
+}
+#readiness-entry[data-connected="true"] #readiness-open:hover:not(:disabled) {
+  background: var(--surface-3); border-color: var(--border-strong);
+}
+/* 概览页的跳转卡沿用概览卡片(.panel)本身的样式,这里只排版:标题在上、说明在下。 */
+.readiness-overview-jump .readiness-entry-copy .hint { margin: 0; }
+
+/* ---- 向导弹窗(原生 <dialog>,外观对齐通用 .modal) ----------------------- */
 .readiness-dialog {
-  width: min(940px, calc(100vw - 32px));
-  max-height: min(90vh, 980px);
-  margin: auto;
-  padding: 22px 24px 20px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
-  color: var(--text);
-  box-shadow: var(--shadow-overlay);
-  overflow: auto;
-  overscroll-behavior: contain;
+  width: min(940px, calc(100vw - 32px)); max-width: calc(100vw - 32px);
+  max-height: min(90vh, 980px); max-height: min(90dvh, 980px);
+  margin: auto; padding: 0 24px 24px;
+  border: 1px solid var(--border); border-radius: var(--radius-xl);
+  background: var(--surface); color: var(--text);
+  box-shadow: var(--highlight), var(--shadow-overlay);
+  overflow: auto; overscroll-behavior: contain;
 }
-.readiness-dialog::backdrop { background: var(--overlay); }
-.readiness-dialog[open] { display: block; }
-.readiness-dialog-head {
-  display: flex; align-items: flex-start; justify-content: space-between; gap: 18px;
-  position: sticky; top: -22px; z-index: 2;
-  margin: -22px -24px 14px; padding: 16px 24px 12px;
-  background: var(--surface); border-bottom: 1px solid var(--border-soft);
+.readiness-dialog[open] { display: block; animation: readiness-dialog-in var(--dur-slow) var(--ease); }
+.readiness-dialog::backdrop {
+  background: var(--overlay);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
 }
-.readiness-dialog-head h2 { font-size: 18px; margin-bottom: 4px; }
-.readiness-dialog-head .hint { margin: 0; max-width: 680px; }
-.readiness-clients { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 16px; }
+.readiness-dialog[open]::backdrop { animation: readiness-fade-in var(--dur-slow) var(--ease); }
+@keyframes readiness-dialog-in {
+  from { opacity: 0; transform: translateY(8px) scale(.98); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes readiness-fade-in { from { opacity: 0; } to { opacity: 1; } }
 
-/* 步骤是一条真实顺序流程,所以用序号;序号只做结构提示,不参与朗读。 */
-.readiness-step {
-  border-top: 1px solid var(--border-soft);
-  padding: 16px 0 18px;
-  margin: 0;
+/* 标题区吸顶:贴着弹窗边缘铺满,滚动时正文从它下面经过。 */
+.readiness-dialog-head {
+  position: sticky; top: 0; z-index: 2;
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 18px;
+  margin: 0 -24px 16px; padding: 22px 24px 14px;
+  background: inherit; border-bottom: 1px solid var(--border-soft);
 }
-.readiness-step:first-of-type { border-top: 0; padding-top: 4px; }
+.readiness-dialog-head > div { min-width: 0; }
+.readiness-dialog-head > button { flex-shrink: 0; }
+.readiness-dialog-head h2 { margin: 0 0 4px; font-size: 18px; font-weight: 650; letter-spacing: 0; line-height: 1.3; }
+.readiness-dialog-head .hint { margin: 0; max-width: 680px; font-size: 13px; line-height: 1.6; }
+
+/* 客户端切换:通用分段控件的轨道;滑块(激活项)沿用 .seg 本身的规则。 */
+.readiness-clients {
+  display: inline-flex; flex-wrap: wrap; gap: 2px; max-width: 100%;
+  margin: 0 0 4px; padding: 3px;
+  background: var(--track); border: 1px solid var(--border); border-radius: var(--radius);
+}
+
+/* 步骤是一条真实顺序流程:序号圆 + 标题;序号只做结构提示,不参与朗读。 */
+.readiness-body { min-width: 0; }
+.readiness-step { margin: 0; padding: 18px 0 20px; border-top: 1px solid var(--border-soft); }
+.readiness-step:first-child { border-top: 0; padding-top: 14px; }
+.readiness-step:last-child { padding-bottom: 4px; }
 .readiness-step h3 {
-  display: flex; align-items: center; gap: 9px;
-  font-size: 15px; font-weight: 650; margin: 0 0 8px;
+  display: flex; align-items: center; gap: 10px; margin: 0;
+  font-size: 15px; font-weight: 600; letter-spacing: 0; line-height: 1.35;
 }
 .readiness-step-no {
-  display: inline-grid; place-items: center;
+  display: inline-grid; place-items: center; flex-shrink: 0;
   width: 22px; height: 22px; border-radius: 50%;
   border: 1px solid var(--accent-line); background: var(--accent-soft); color: var(--accent-text);
-  font: 600 12.5px/1 var(--sans); flex-shrink: 0;
+  font: 600 12px/1 var(--sans); font-variant-numeric: tabular-nums;
 }
-.readiness-step > .hint { margin: 0 0 10px; }
-.readiness-body { min-width: 0; }
-.readiness-status { margin: 6px 0 0; font-size: 13.5px; color: var(--dim); min-height: 1.4em; }
+/* 步骤内统一节奏:直接子元素之间 10px,标题下 12px。 */
+.readiness-step > * { margin-top: 10px; margin-bottom: 0; }
+.readiness-step > :first-child { margin-top: 0; }
+.readiness-step > h3 + * { margin-top: 12px; }
+.readiness-dialog .hint { font-size: 13px; line-height: 1.6; }
+.readiness-dialog .readiness-path { font-size: 12.5px; line-height: 1.7; }
+.readiness-step > .banner { margin-bottom: 0; }
+.readiness-status { margin: 0; font-size: 13px; color: var(--dim); }
+.readiness-status:not(:empty) { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-soft); }
 
-.readiness-badges { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.readiness-badges { display: flex; align-items: center; gap: 6px 8px; flex-wrap: wrap; }
 .readiness-badges > button { margin-left: auto; }
-.readiness-path { margin: 10px 0 0; font-size: 12.5px; line-height: 1.7; }
-.readiness-dialog .banner { margin: 12px 0; }
-.readiness-dialog .banner.offline { border-color: var(--err-line); background: var(--err-soft); color: var(--err-text); }
 
-.readiness-row {
-  display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap;
-  margin: 8px 0 0;
-}
+.readiness-row { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
 .readiness-row > .field { flex: 0 1 220px; min-width: 150px; }
 .readiness-row > .readiness-grow { flex: 1 1 260px; }
+.readiness-dialog .field { gap: 6px; font-size: 12.5px; color: var(--dim); }
+/* 客户端协议是只读值:和输入框同高同底,但没有可编辑的边框暗示。 */
+.readiness-fixed {
+  display: flex; align-items: center; min-height: var(--control-h);
+  padding: 6px 10px; border: 1px solid var(--border-soft); border-radius: var(--radius);
+  background: var(--surface-2); color: var(--text); font-size: 13.5px; font-weight: 600;
+}
 .readiness-inline-check {
-  display: flex; align-items: center; gap: 8px;
-  font-size: 13.5px; color: var(--dim); margin: 10px 0;
+  display: flex; align-items: flex-start; gap: 8px; margin: 0;
+  font-size: 13px; line-height: 1.55; color: var(--dim); cursor: pointer;
 }
-.readiness-inline-check input { flex-shrink: 0; }
-.readiness-dialog .savebar { margin-top: 10px; }
-.readiness-dialog .msg.err { color: var(--err-text); }
-.readiness-dialog .msg.ok { color: var(--ok-text); }
+.readiness-inline-check input { margin-top: 2px; flex-shrink: 0; }
+.readiness-dialog .savebar { gap: 8px 10px; }
+.readiness-dialog .msg,
+.readiness-slot-pools .msg { font-size: 13px; line-height: 1.5; color: var(--dim); overflow-wrap: anywhere; }
+.readiness-dialog .msg.ok, .readiness-slot-pools .msg.ok { color: var(--ok-text); }
+.readiness-dialog .msg.warn, .readiness-slot-pools .msg.warn { color: var(--warn-text); }
+.readiness-dialog .msg.err, .readiness-slot-pools .msg.err { color: var(--err-text); }
+.readiness-dialog .msg.busy, .readiness-slot-pools .msg.busy { color: var(--accent-text); }
 
-/* ---- 导入 ------------------------------------------------------------------ */
-.readiness-import {
-  margin-top: 14px; padding: 14px 16px;
+/* ---- 内嵌块:结果 / 导入 / 手动参数 / 槽位 -------------------------------- */
+.readiness-result, .readiness-import, .readiness-fallback, .readiness-slots {
+  padding: 12px 14px; background: var(--panel);
   border: 1px solid var(--border-soft); border-radius: var(--radius);
-  background: var(--panel);
 }
-.readiness-import textarea {
-  width: 100%; min-height: 120px; resize: vertical;
-  color: var(--text); background: var(--input);
-  border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 8px 10px; font: 13px/1.6 var(--mono);
-  overflow-wrap: anywhere;
-}
-.readiness-import textarea:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; border-color: var(--accent); }
-.readiness-import-list { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 8px; }
-.readiness-import-item {
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  padding: 9px 11px; border: 1px solid var(--border-soft); border-radius: var(--radius);
-  background: var(--surface);
-}
-.readiness-import-item .hint { margin: 0; }
-
-/* ---- 预览结果 / 差异 / 检查项 --------------------------------------------- */
-.readiness-result {
-  margin: 12px 0 0; padding: 12px 14px;
-  border: 1px solid var(--border-soft); border-radius: var(--radius);
-  background: var(--panel);
+.readiness-result > *, .readiness-import > *, .readiness-slots > * { margin-top: 10px; margin-bottom: 0; }
+.readiness-result > :first-child, .readiness-import > :first-child, .readiness-slots > :first-child { margin-top: 0; }
+/* 导入块里的预览结果只用一条细线分组,不再套第三层框。 */
+.readiness-import > .readiness-result {
+  margin-top: 14px; padding: 12px 0 0; background: transparent;
+  border: 0; border-top: 1px solid var(--border-soft); border-radius: 0;
 }
 .readiness-result-title {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  margin: 0 0 8px; font-size: 13.5px; font-weight: 600; color: var(--text);
+  display: flex; align-items: center; gap: 6px 10px; flex-wrap: wrap;
+  font-size: 13.5px; font-weight: 600; color: var(--text);
 }
 .readiness-result-title .hint { margin: 0; font-weight: 400; }
-.readiness-facts {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
-  gap: 8px 18px; margin: 8px 0 0;
-}
-.readiness-facts dt { color: var(--dim); font-size: 12.5px; }
-.readiness-facts dd { margin: 2px 0 0; font-size: 13.5px; overflow-wrap: anywhere; }
+.readiness-section-label { font-size: 12.5px; font-weight: 600; color: var(--dim); }
+.readiness-conflicts-block > * { margin: 6px 0 0; }
+.readiness-conflicts-block > :first-child { margin-top: 0; }
 
-.readiness-changes { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
-.readiness-changes li {
-  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
-  padding: 6px 9px; border-radius: 6px; background: var(--surface-2);
-  font-size: 13px;
+/* 块里的检查项、差异行、槽位行、导入项:细分隔线行,不是填色小盒子。 */
+.readiness-checks, .readiness-changes, .readiness-slot-list, .readiness-import-list { list-style: none; padding: 0; }
+.readiness-check, .readiness-changes > li, .readiness-slot-row, .readiness-import-item {
+  display: flex; align-items: baseline; gap: 4px 10px; flex-wrap: wrap;
+  padding: 8px 0; border-top: 1px solid var(--border-soft);
+  font-size: 13px; line-height: 1.55; min-width: 0;
 }
-.readiness-change-field { font-weight: 600; min-width: 120px; overflow-wrap: anywhere; }
+.readiness-check:first-child, .readiness-changes > li:first-child,
+.readiness-slot-row:first-child, .readiness-import-item:first-child { border-top: 0; padding-top: 2px; }
+.readiness-check:last-child, .readiness-changes > li:last-child,
+.readiness-slot-row:last-child, .readiness-import-item:last-child { padding-bottom: 0; }
+.readiness-check-id { color: var(--dim); font-size: 12.5px; }
+.readiness-check-msg { flex: 1 1 240px; min-width: 0; overflow-wrap: anywhere; }
+.readiness-check-ms { margin-left: auto; color: var(--dim); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.readiness-change-field { min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+/* 差异行按两列对齐:字段名一列(同一清单取最宽者,封顶 45%),值一列。 */
+.readiness-changes { display: grid; grid-template-columns: fit-content(45%) minmax(0, 1fr); column-gap: 16px; }
+.readiness-changes > li { grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; gap: 4px 16px; }
+.readiness-change-diff { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; min-width: 0; overflow-wrap: anywhere; }
 .readiness-change-before { color: var(--dim); text-decoration: line-through; text-decoration-color: var(--border-strong); }
-.readiness-change-arrow { color: var(--dim); }
+.readiness-change-arrow { color: var(--faint); }
 .readiness-change-after { color: var(--text); font-weight: 600; }
+.readiness-changes .mono { font-size: 12.5px; }
+.readiness-slot-name { flex: 0 0 120px; font-weight: 600; color: var(--text); }
+.readiness-slot-target { min-width: 0; font-size: 12.5px; overflow-wrap: anywhere; }
+.readiness-import-item b { font-weight: 600; color: var(--text); }
+.readiness-import-item .mono { font-size: 12.5px; }
+.readiness-import-item .hint { margin: 0; }
 
-.readiness-warnings { margin: 8px 0 0; padding-left: 18px; color: var(--warn-text); font-size: 13px; line-height: 1.7; }
+.readiness-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 8px 18px; }
+.readiness-facts dt { color: var(--dim); font-size: 12.5px; }
+.readiness-facts dd { margin: 2px 0 0; font-size: 13.5px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.readiness-warnings { padding-left: 18px; color: var(--warn-text); font-size: 13px; line-height: 1.65; }
 .readiness-warnings.err { color: var(--err-text); }
 .readiness-warnings li { overflow-wrap: anywhere; }
-.readiness-section-label { margin: 10px 0 0; font-size: 12.5px; color: var(--dim); font-weight: 600; }
 
-.readiness-checks { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
-.readiness-check {
-  display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
-  padding: 6px 9px; border-radius: 6px; background: var(--surface-2); font-size: 13px;
+/* ---- 导入文本框 / 手动接入参数 / 槽位块 ------------------------------------ */
+.readiness-import > textarea { margin-top: 6px; }
+/* 底色、边框、悬停与聚焦光圈来自 base.css 的通用 textarea;这里只定尺寸与等宽字。 */
+.readiness-import textarea {
+  display: block; width: 100%; min-height: 120px; padding: 8px 10px;
+  font: 13px/1.6 var(--mono); overflow-wrap: anywhere;
 }
-.readiness-check-id { color: var(--dim); }
-.readiness-check-msg { flex: 1 1 240px; overflow-wrap: anywhere; }
-.readiness-check-ms { margin-left: auto; color: var(--dim); }
-
-/* ---- 无客户端时的接入参数 -------------------------------------------------- */
-.readiness-fallback {
-  margin-top: 12px; padding: 11px 14px;
-  border: 1px dashed var(--border-strong); border-radius: var(--radius);
-  background: var(--panel);
-}
-.readiness-fallback summary { cursor: pointer; font-size: 13.5px; color: var(--text); }
+/* 小折叠的 summary 沿用通用样式,不另造箭头;块本身只管留白。 */
+.readiness-fallback { padding-top: 2px; padding-bottom: 2px; }
+.readiness-fallback[open] { padding-bottom: 12px; }
+.readiness-fallback > :not(summary) { margin: 10px 0 0; }
+.readiness-fallback > summary + * { margin-top: 2px; }
 .readiness-copy {
-  margin: 10px 0 0; padding: 10px 12px;
-  border: 1px solid var(--border-soft); border-radius: var(--radius);
-  background: var(--surface-2); color: var(--text);
+  padding: 10px 12px; background: var(--input); color: var(--text);
+  border: 1px solid var(--border-soft); border-radius: var(--radius-sm);
   font: 12.5px/1.65 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere;
 }
+.readiness-slots > .savebar { margin-top: 12px; }
 
-/* ---- 客户端协议固定值 / 槽位设置 ------------------------------------------- */
-.readiness-fixed {
-  display: flex; align-items: center; min-height: 34px;
-  font-size: 13.5px; font-weight: 600; color: var(--text);
-  border: 1px dashed var(--border-strong); border-radius: var(--radius);
-  padding: 6px 10px; background: var(--surface-2);
-}
-.readiness-slots { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border-soft); }
-.readiness-slots > .hint { margin: 0 0 4px; }
-.readiness-slot-list { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 6px; }
-.readiness-slot-row {
-  display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
-  padding: 6px 9px; border-radius: 6px; background: var(--surface-2); font-size: 13px;
-}
-.readiness-slot-name { font-weight: 600; min-width: 120px; }
-.readiness-slot-target { color: var(--dim); overflow-wrap: anywhere; }
-
-/* ---- 槽位后备池 ------------------------------------------------------------ */
-.readiness-slot-pools { margin-top: 18px; border-top: 1px solid var(--border-soft); padding-top: 14px; }
-.readiness-slot-pools h3 { font-size: 14px; font-weight: 650; margin: 0 0 6px; }
-.readiness-slot-pools > .hint { margin: 0 0 12px; }
-.readiness-pool-row {
-  border: 1px solid var(--border-soft); border-radius: var(--radius);
-  background: var(--panel); padding: 10px 12px; margin-bottom: 8px;
-}
-.readiness-pool-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.readiness-pool-ident { flex: 0 0 200px; min-width: 0; font-size: 13.5px; }
-.readiness-pool-ident .mono { display: block; font-size: 12px; margin-top: 2px; overflow-wrap: anywhere; }
-.readiness-pool-summary { display: flex; gap: 6px; flex-wrap: wrap; flex: 1 1 auto; }
+/* ---- 槽位后备池(P 的 #slots-panel 内,和槽位行同一套无框分隔行) ----------- */
+.readiness-slot-pools { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border-soft); }
+.readiness-slot-pools > h3 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: 0; }
+.readiness-slot-pools > .hint { margin: 4px 0 6px; font-size: 13px; line-height: 1.6; }
+.readiness-pool-row { padding: 12px 0; border-top: 1px solid var(--border-soft); }
+.readiness-pool-row:first-of-type { border-top: 0; }
+.readiness-pool-row:last-child { padding-bottom: 0; }
+.readiness-pool-head { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; }
+/* 身份列固定 216px,和上面槽位行的 .slot-ident 对齐。 */
+.readiness-pool-ident { flex: 0 0 216px; min-width: 0; display: flex; flex-direction: column; gap: 2px; font-size: 13.5px; }
+.readiness-pool-ident b { font-weight: 600; color: var(--text); }
+.readiness-pool-ident .mono { font-size: 12.5px; overflow-wrap: anywhere; }
+.readiness-pool-summary { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex: 1 1 auto; min-width: 0; }
 .readiness-pool-head > button { margin-left: auto; }
-.readiness-pool-row > .msg { margin: 8px 0 0; }
+.readiness-pool-row > .msg { margin: 8px 0 0 226px; }
 
-.readiness-pool-editor { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border-soft); }
-.readiness-pool-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+/* 展开的编辑器:一个内嵌块,成员行是细分隔线行,主渠道那一行用淡强调底标出。 */
+.readiness-pool-editor {
+  margin-top: 12px; padding: 12px 14px; background: var(--panel);
+  border: 1px solid var(--border-soft); border-radius: var(--radius);
+}
+.readiness-pool-list { list-style: none; margin: 0; padding: 0; }
 .readiness-pool-member {
   display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap;
-  padding: 8px 10px; border: 1px solid var(--border-soft); border-radius: var(--radius);
-  background: var(--surface);
+  padding: 10px 0; border-top: 1px solid var(--border-soft); min-width: 0;
 }
-.readiness-pool-primary { align-items: center; border-color: var(--accent-line); background: var(--accent-soft); }
+.readiness-pool-member:first-child { border-top: 0; }
+.readiness-pool-primary {
+  align-items: center; margin: 0 -8px; padding: 8px;
+  background: var(--accent-soft); border-radius: var(--radius-sm); border-top: 0;
+}
+.readiness-pool-primary + .readiness-pool-member { border-top: 0; }
 .readiness-pool-order {
-  display: inline-grid; place-items: center; width: 20px; height: 20px;
-  border-radius: 50%; background: var(--surface-2); color: var(--dim);
-  font: 600 12px/1 var(--sans); align-self: center; flex-shrink: 0;
+  display: inline-grid; place-items: center; flex-shrink: 0; align-self: flex-end;
+  width: 22px; height: 22px; margin-bottom: 6px; border-radius: 50%;
+  background: var(--surface-2); border: 1px solid var(--border); color: var(--dim);
+  font: 600 12px/1 var(--sans); font-variant-numeric: tabular-nums;
 }
-.readiness-pool-provider { flex: 0 1 210px; min-width: 150px; }
-.readiness-pool-model { flex: 1 1 220px; }
-.readiness-pool-primary .readiness-pool-provider,
-.readiness-pool-primary .readiness-pool-model { font-size: 13.5px; }
-.readiness-pool-buttons { display: flex; gap: 4px; align-self: center; }
-.readiness-pool-buttons .iconbtn { min-width: 34px; }
-.readiness-pool-add-row { margin-top: 10px; align-items: flex-end; }
+.readiness-pool-primary .readiness-pool-order {
+  align-self: center; margin-bottom: 0;
+  background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent-text);
+}
+.readiness-pool-provider { flex: 0 1 220px; min-width: 150px; }
+.readiness-pool-model { flex: 1 1 220px; min-width: 0; }
+.readiness-pool-primary .readiness-pool-provider { font-size: 13.5px; color: var(--text); }
+.readiness-pool-primary .readiness-pool-model { font-size: 12.5px; overflow-wrap: anywhere; }
+.readiness-slot-pools .field { gap: 6px; font-size: 12.5px; color: var(--dim); }
+.readiness-pool-buttons { display: flex; gap: 4px; align-self: flex-end; }
+.readiness-pool-buttons .iconbtn { min-width: var(--control-h); min-height: var(--control-h); padding: 0; }
+/* 上移 / 下移不是危险动作:悬停只出中性底色;移除仍用通用 .iconbtn 的危险悬停。 */
+.readiness-pool-buttons .readiness-pool-move:hover:not(:disabled) {
+  background: var(--surface-3); border-color: var(--border-strong); color: var(--text);
+}
+.readiness-pool-editor > .hint { margin: 10px 0 0; font-size: 13px; line-height: 1.6; }
+.readiness-pool-add-row { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-soft); }
 .readiness-pool-add-row > button { flex-shrink: 0; }
-.readiness-pool-strategy { margin: 10px 0 0; }
-.readiness-pool-editor > .hint { margin: 10px 0 0; }
 .readiness-pool-editor > .savebar { margin-top: 12px; }
 
-/* ---- 诊断报告 -------------------------------------------------------------- */
+/* ---- 诊断报告(诊断页) ------------------------------------------------------ */
 .readiness-report-panel .hint { margin-bottom: 10px; }
 .readiness-report-output {
   margin: 12px 0 0; padding: 12px 14px; max-height: 420px; overflow: auto;
+  background: var(--panel); color: var(--text);
   border: 1px solid var(--border-soft); border-radius: var(--radius);
-  background: var(--surface-2); color: var(--text);
   font: 12.5px/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere;
 }
 
-/* ---- 窄屏 ------------------------------------------------------------------ */
+/* ---- 宽度档 ---------------------------------------------------------------- */
+/* 宽屏:编辑器和后备池的内容列对齐,身份列留给槽位名。 */
+@media (min-width: 1181px) {
+  .readiness-pool-editor { margin-left: 226px; }
+}
+@media (max-width: 860px) {
+  .readiness-pool-ident { flex-basis: 100%; }
+  .readiness-pool-row > .msg { margin-left: 0; }
+  .readiness-pool-buttons .iconbtn { min-width: 36px; min-height: 36px; }
+}
 @media (max-width: 720px) {
-  .readiness-dialog {
-    width: calc(100vw - 16px);
-    max-height: 94vh;
-    padding: 16px 14px 16px;
-  }
-  /* 窄屏标题区不换行:关闭按钮始终在右上角,副标题自己折行。 */
-  .readiness-dialog-head {
-    top: -16px; margin: -16px -14px 12px; padding: 13px 14px 10px;
-    flex-wrap: nowrap; align-items: flex-start; gap: 12px;
-  }
-  .readiness-dialog-head > div { flex: 1 1 auto; min-width: 0; }
-  .readiness-dialog-head > button { flex-shrink: 0; }
-  .readiness-entry-row { gap: 12px; }
-  .readiness-entry-actions { width: 100%; }
-  .readiness-entry-actions > button { flex: 1 1 auto; }
+  .readiness-dialog { width: calc(100vw - 32px); max-height: 92vh; max-height: 92dvh; padding: 0 16px 16px; border-radius: var(--radius-lg); }
+  .readiness-dialog-head { margin: 0 -16px 14px; padding: 16px 16px 12px; gap: 12px; }
+  .readiness-dialog-head > div { flex: 1 1 auto; }
+  .readiness-clients { display: flex; width: 100%; }
+  .readiness-clients .seg { flex: 1 1 0; min-height: 36px; }
+  .readiness-dialog button, .readiness-slot-pools button, #readiness-entry button { min-height: 36px; }
   .readiness-row { align-items: stretch; }
-  .readiness-row > .field,
-  .readiness-row > .readiness-grow { flex: 1 1 100%; }
-  .readiness-pool-head { align-items: flex-start; }
-  .readiness-pool-ident { flex: 1 1 100%; }
-  .readiness-pool-head > button { margin-left: 0; }
-  .readiness-pool-provider,
-  .readiness-pool-model { flex: 1 1 100%; }
-  .readiness-pool-buttons { width: 100%; justify-content: flex-end; }
-  .readiness-pool-add-row > button { width: 100%; }
-  .readiness-change-field { min-width: 0; }
+  .readiness-row > .field, .readiness-row > .readiness-grow { flex: 1 1 100%; min-width: 0; }
+  .readiness-row > button { flex: 1 1 auto; }
+  .readiness-result, .readiness-import, .readiness-slots { padding: 12px; }
+  .readiness-import > .readiness-result { padding: 12px 0 0; }
+  .readiness-changes { display: block; }
+  .readiness-changes > li { display: flex; flex-wrap: wrap; gap: 4px 10px; }
+  .readiness-change-field { flex-basis: 100%; }
+  .readiness-slot-name { flex-basis: auto; }
   .readiness-check-ms { margin-left: 0; }
+  .readiness-pool-editor { padding: 12px; }
+  .readiness-pool-member { display: grid; grid-template-columns: 22px minmax(0, 1fr); align-items: end; gap: 8px 10px; }
+  .readiness-pool-member > :not(.readiness-pool-order) { grid-column: 2; min-width: 0; }
+  .readiness-pool-primary > .badge { justify-self: start; }
+  .readiness-pool-buttons { justify-content: flex-end; }
+  .readiness-pool-add-row > button { width: 100%; }
+}
+@media (max-width: 640px) {
+  #readiness-entry .readiness-entry-row { align-items: flex-start; }
+  #readiness-entry .readiness-entry-copy { flex: 1 1 calc(100% - 40px); display: block; }
+  #readiness-entry .readiness-entry-copy h2 { margin-bottom: 2px; }
+  #readiness-entry-status { font-size: 12.5px; }
+  .readiness-entry-actions { margin-left: 0; width: 100%; }
+  .readiness-entry-actions > button { flex: 1 1 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .readiness-dialog { scroll-behavior: auto; }
+  .readiness-dialog[open] { animation-name: readiness-fade-in; }
 }
-
 @media (forced-colors: active) {
-  .readiness-dialog,
-  .readiness-pool-row,
-  .readiness-pool-member,
-  .readiness-result,
-  .readiness-fallback,
-  .readiness-import { border: 1px solid CanvasText; }
-  .readiness-step-no { border: 1px solid CanvasText; forced-color-adjust: none; }
+  .readiness-dialog, .readiness-pool-editor, .readiness-result, .readiness-fallback,
+  .readiness-import, .readiness-slots { border: 1px solid CanvasText; }
+  .readiness-step-no, .readiness-pool-order { border: 1px solid CanvasText; forced-color-adjust: none; }
+  .readiness-entry-icon::before { forced-color-adjust: none; background: CanvasText; }
 }
-
 @media print {
   .readiness-dialog, .readiness-entry, .readiness-slot-pools, .readiness-report-panel { break-inside: avoid; }
-  .readiness-dialog { position: static; max-height: none; box-shadow: none; }
+  .readiness-dialog { position: static; max-height: none; box-shadow: none; animation: none; }
 }

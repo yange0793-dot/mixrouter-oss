@@ -35,7 +35,9 @@ function renderBotsModels(rebuild = false) {
   }
   $('bots-save').disabled = locked || !online || botsLoading || !botsDirty;
   $('bots-status').textContent = !online ? '控制台离线：草稿保留，恢复连接后才能保存。' : botsMessage;
-  $('bots-status').className = 'hint' + (botsMessageKind ? ' bots-' + botsMessageKind : '');
+  // 状态色:进行中 busy、成功 ok、失败 error、离线 warn;其余保持中性。
+  const kind = !online ? 'warn' : botsMessageKind;
+  $('bots-status').className = 'hint' + (kind ? ' bots-' + kind : '');
   if (!rebuild) return;
   $('bots-rows').innerHTML = botsDraft.map((b, i) => {
     const p = botsModelProvider(b.provider);
@@ -43,14 +45,15 @@ function renderBotsModels(rebuild = false) {
     const modelOptions = botsModelOptions(botsModelModels(p).map(m => ({ value: m, label: m })), b.model, '选择模型', '模型已失效');
     const keyOptions = botsModelOptions((p?.keys || []).map(k => ({ value: k.id, label: (k.label || k.id) + (k.enabled === false ? '（已停用）' : ''), disabled: k.enabled === false })), b.key_id || '', '跟随渠道当前 Key', 'Key 已失效');
     const disabled = locked ? ' disabled' : '';
+    // 标签文字包一层 span:桌面宽度下第 2 行起只给读屏(列已对齐,不必每行重复),窄屏照常显示。
     return `<div class="bots-row">
-      <label class="field" for="bots-name-${i}">Bot 名字<input id="bots-name-${i}" type="text" value="${esc(b.name)}" autocomplete="off" spellcheck="false" oninput="setBotModel(${i},'name',this.value)"${disabled}></label>
-      <label class="field" for="bots-provider-${i}">渠道<select id="bots-provider-${i}" onchange="setBotModel(${i},'provider',this.value)"${disabled}>${providerOptions}</select></label>
-      <label class="field" for="bots-model-${i}">模型<select id="bots-model-${i}" onchange="setBotModel(${i},'model',this.value)"${!b.provider || locked ? ' disabled' : ''}>${modelOptions}</select></label>
-      <label class="field" for="bots-key-${i}">Key（可选）<select id="bots-key-${i}" onchange="setBotModel(${i},'key_id',this.value)"${!b.provider || locked ? ' disabled' : ''}>${keyOptions}</select></label>
+      <label class="field" for="bots-name-${i}"><span class="bots-label">Bot 名字</span><input id="bots-name-${i}" type="text" value="${esc(b.name)}" autocomplete="off" spellcheck="false" oninput="setBotModel(${i},'name',this.value)"${disabled}></label>
+      <label class="field" for="bots-provider-${i}"><span class="bots-label">渠道</span><select id="bots-provider-${i}" onchange="setBotModel(${i},'provider',this.value)"${disabled}>${providerOptions}</select></label>
+      <label class="field" for="bots-model-${i}"><span class="bots-label">模型</span><select id="bots-model-${i}" onchange="setBotModel(${i},'model',this.value)"${!b.provider || locked ? ' disabled' : ''}>${modelOptions}</select></label>
+      <label class="field" for="bots-key-${i}"><span class="bots-label">Key（可选）</span><select id="bots-key-${i}" onchange="setBotModel(${i},'key_id',this.value)"${!b.provider || locked ? ' disabled' : ''}>${keyOptions}</select></label>
       <button class="small danger bots-remove" id="bots-remove-${i}" type="button" aria-label="${esc('删除 Bot ' + b.name)}" onclick="removeBotModel(${i})"${disabled}>删除</button>
     </div>`;
-  }).join('') || '<p class="hint">还没有 Bot。新增名字后选择渠道与模型。</p>';
+  }).join('') || '<p class="hint bots-empty">还没有 Bot。新增名字后选择渠道与模型。</p>';
 }
 function botsModelPayload(value) {
   if (!value || !Array.isArray(value.bots) || !Array.isArray(value.providers) || value.revision == null) throw new Error('Bots 配置数据不完整');
@@ -73,7 +76,7 @@ async function loadBotsModels(manual = true) {
   }
   botsAttempted = true; botsLoading = true;
   const sequence = ++botsSequence, edit = botsEditRevision;
-  botsModelStatus('正在读取 Bots 配置…');
+  botsModelStatus('正在读取 Bots 配置…', 'busy');
   try {
     const next = botsModelPayload(await api('/api/bots'));
     if (sequence !== botsSequence || edit !== botsEditRevision) {
@@ -142,13 +145,13 @@ async function saveBotsModels() {
   try { bots = botsModelValidate(); } catch (e) { botsModelStatus(e.message, 'error'); return; }
   botsSaving = true;
   const sequence = ++botsSequence, edit = botsEditRevision;
-  botsModelStatus('正在保存 Bots 模型…'); renderBotsModels(true);
+  botsModelStatus('正在保存 Bots 模型…', 'busy'); renderBotsModels(true);
   try {
     const next = botsModelPayload(await api('/api/bots', { method: 'PUT', body: JSON.stringify({ bots, expected_revision: botsSnapshot.revision }) }));
     if (sequence !== botsSequence || edit !== botsEditRevision) return;
     if (JSON.stringify(next.bots) !== JSON.stringify(bots)) throw new Error('服务端返回的配置与提交内容不一致，请重新读取核对');
     botsModelAccept(next);
-    botsModelStatus('Bots 模型已保存；从下一次 Bot 发言生效。');
+    botsModelStatus('Bots 模型已保存；从下一次 Bot 发言生效。', 'ok');
   } catch (e) {
     if (sequence === botsSequence) botsModelStatus(e.status === 409
       ? '保存冲突：服务端 Bots 配置已更新，草稿未提交。请重新读取最新版本后再修改。'
