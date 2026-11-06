@@ -69,6 +69,7 @@ function renderSessions() {
   const list = q ? inApp.filter(s => sessionMatches(s, q)) : inApp;
 
   $('sess-empty').style.display = list.length ? 'none' : '';
+  if (list.length) delete $('view-sessions').dataset.empty; else $('view-sessions').dataset.empty = '';
   const noSess = $('sess-empty-title'), hint = $('sess-empty-hint'), action = $('sess-empty-action');
   // 空表要说清是"筛没了"还是"真没有"。会话本身就一条都没有时,任何筛选条件都无关,
   // 文案就不能再劝"清空搜索"——那时给的是发起对话的指引,按钮也不摆。

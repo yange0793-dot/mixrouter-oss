@@ -106,6 +106,7 @@ async function loadLogs() {
     if (query !== logsQuery) { logsQuery = query; logsShown = LOGS_PAGE; }
     logsRows = sortLogs(logs);
     $('logs-empty').style.display = logs.length ? 'none' : '';
+    if (logs.length) delete $('view-diagnostics').dataset.empty; else $('view-diagnostics').dataset.empty = '';
     $('logs-empty').innerHTML = '<b>没有匹配的请求</b>调整筛选条件，或通过本地路由发起调用。';
     renderLogRows();
     setLogError('logs', '');

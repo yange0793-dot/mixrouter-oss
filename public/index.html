@@ -370,7 +370,7 @@
         </div>
       </section>
 
-      <section id="view-sessions" style="display:none" aria-labelledby="sessions-title">
+      <section id="view-sessions" style="display:none" data-empty aria-labelledby="sessions-title">
         <div class="head"><div><h1 id="sessions-title">会话绑定</h1><div class="sub" title="在会话行点「配置 Key / 槽位」设置；没配的槽位继承全局。">单个会话可配独立的渠道与模型，没配的槽位继承全局。</div></div><div class="actions"><label for="f-sess-app" class="sr-only">会话协议组</label><select id="f-sess-app" onchange="sessApp=this.value;renderSessions()" style="width:auto"><option value="">全部协议组</option><option value="claude">Claude / Anthropic</option><option value="codex">Codex / OpenAI</option></select><button class="danger" onclick="clearSessions()">清空全部绑定</button></div></div>
         <div class="logbar sessbar">
           <label>搜索会话<input type="search" id="sess-search" placeholder="会话短 id / 完整 id / 对话名 / 渠道名" oninput="setSessQuery(this.value)"></label>
@@ -386,7 +386,7 @@
         <div class="empty" id="sess-empty" style="display:none"><b id="sess-empty-title">还没有匹配的会话</b><span id="sess-empty-hint">通过本地路由发起对话后，会话绑定会出现在所属协议组；也可以调整分组筛选。</span><code id="sess-empty-why" hidden></code><button id="sess-empty-action" class="primary" hidden onclick="clearSessionFilters()">显示全部协议组</button></div>
       </section>
 
-      <section id="view-diagnostics" style="display:none" aria-labelledby="logs-title">
+      <section id="view-diagnostics" style="display:none" data-empty aria-labelledby="logs-title">
         <div class="head"><div><h1 id="logs-title">诊断</h1><div class="sub" title="请求日志与分槽用量都来自内存里最近 500 条请求，不是全量历史；统计是内存窗口聚合，不是费用。">内存里最近 500 条请求，按协议组归组；只是内存窗口统计，不是费用。</div></div><div class="actions"><label class="rc-mini"><input type="checkbox" id="logs-auto" checked>自动刷新（5 秒）</label></div></div>
         <div class="banner" id="logs-error" role="status"></div>
         <div class="chips" id="stat-chips"></div>
