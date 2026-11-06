@@ -24,7 +24,7 @@ function renderSlotStats(s) {
   const windowText = scope.source === 'memory'
     ? `当前内存窗口，最近最多 ${count(scope.capacity)} 条`
     : scope.source === 'history' ? '磁盘保留历史窗口（非无限历史）' : '统计来源与窗口容量未提供';
-  // 范围与分槽归属都来自统计接口，不用最多 200 条的日志列表或当前槽位配置反推。
+  // 分槽统计使用服务端窗口，不从当前日志页或槽位配置反推。
   $('slot-stats-scope').textContent = `${windowText}；不是全天用量，也不是费用。与下方日志筛选独立。时间戳范围：${range.from ?? '未提供'} → ${range.to ?? '未提供'}（${scope.timezone || '时区未提供'}）。`;
   const names = Object.keys(bySlot).sort();
   const label = name => name === 'none' ? '未命中槽（none）' : name === 'unknown' ? '旧日志未知（unknown）' : name;
@@ -75,24 +75,37 @@ function reqStatusHtml({ status, err_class: errClass, err } = {}) {
   return `<span class="req-st" title="${esc(title)}"><span class="badge ${failed ? 'err' : 'ok'} badge-dot">${failed ? '失败' : '成功'}</span>`
     + `${code ? `<span class="req-st-code">${code}</span>` : ''}</span>`;
 }
-// 日志列表:ring 按**完成**顺序追加,而 ts 是请求**开始**时间(lib/http/proxy.js 的 started),
-// 长请求会晚于后发的短请求入列 —— 直接用返回顺序,时间列就不是单调的。这里按 ts 降序重排(同 ts 保持原序),
-// 解析不了的 ts 沉底。默认只渲染最近 50 行,「显示更多」每次多 50 行;展开数随筛选条件重置,轮询不重置。
+// 最近窗口按开始时间降序;历史游标按写入顺序向前翻,不能再重排已加载的行,否则下一页会插到上方。
+// 默认只渲染 50 行,「显示更多」每次多 50 行;展开数随筛选条件重置,轮询不重置。
 const LOGS_PAGE = 50;
+const LOGS_RECENT_LIMIT = 1000;
 let logsSequence = 0, lastLogsHtml = null, logsShown = LOGS_PAGE, logsQuery = null, logsRows = [];
+let logsNextCursor = null, logsLoading = false, logsScope = 'recent';
 const logTsOf = l => { const n = typeof l.ts === 'number' ? l.ts : Date.parse(l.ts); return Number.isFinite(n) ? n : -Infinity; };
 function sortLogs(logs) {
   return logs.map((l, i) => [logTsOf(l), i, l]).sort((a, b) => b[0] - a[0] || a[1] - b[1]).map(x => x[2]);
 }
-function showMoreLogs() { logsShown += LOGS_PAGE; renderLogRows(); }
+function showMoreLogs() {
+  if (logsLoading) return;
+  if (logsShown < logsRows.length) { logsShown += LOGS_PAGE; renderLogRows(); return; }
+  if (logsNextCursor) return loadLogs(true);
+}
+function changeLogsScope() {
+  const history = $('f-scope').value === 'history';
+  $('logs-history-range').hidden = !history;
+  $('logs-auto').disabled = history;
+  return loadLogs();
+}
 const logErrors = {};
 function setLogError(source, message) {
   logErrors[source] = message; const messages = Object.values(logErrors).filter(Boolean);
   $('logs-error').textContent = messages.join('；') + (messages.length ? '。已有数据为上次读取的快照。' : '');
   $('logs-error').classList.toggle('show', messages.length > 0);
 }
-async function loadLogs() {
+async function loadLogs(more = false) {
   const sequence = ++logsSequence;
+  logsLoading = true;
+  if (more) renderLogRows();
   try {
     const q = new URLSearchParams();
     if ($('f-app').value) q.set('app', $('f-app').value);
@@ -101,18 +114,44 @@ async function loadLogs() {
     if ($('f-session').value.trim()) q.set('session', $('f-session').value.trim());
     if ($('f-status').value) q.set('status', $('f-status').value);
     if ($('f-errclass').value) q.set('err_class', $('f-errclass').value);
-    q.set('limit', '200');
+    const history = $('f-scope').value === 'history';
+    if (history) {
+      q.set('history', '1');
+      const since = $('f-since').value, until = $('f-until').value;
+      if (since && !Number.isFinite(Date.parse(since)) || until && !Number.isFinite(Date.parse(until)))
+        throw new Error('请输入有效的开始和结束时间');
+      if (since && until && Date.parse(since) > Date.parse(until)) throw new Error('开始时间不能晚于结束时间');
+      if (since) q.set('since', new Date(since).toISOString());
+      if (until) q.set('until', new Date(until).toISOString());
+    }
+    q.set('limit', String(history ? LOGS_PAGE : LOGS_RECENT_LIMIT));
     const query = q.toString();
-    const { logs } = await api('/api/logs?' + query);
+    const append = more && query === logsQuery && !!logsNextCursor;
+    if (append) q.set('cursor', logsNextCursor);
+    const { logs, next_cursor } = await api('/api/logs?' + q);
     if (sequence !== logsSequence) return;
-    if (query !== logsQuery) { logsQuery = query; logsShown = LOGS_PAGE; }
-    logsRows = sortLogs(logs);
-    $('logs-empty').style.display = logs.length ? 'none' : '';
-    if (logs.length) delete $('view-diagnostics').dataset.empty; else $('view-diagnostics').dataset.empty = '';
+    if (query !== logsQuery || (history && !append)) logsShown = LOGS_PAGE;
+    logsQuery = query;
+    logsScope = history ? 'history' : 'recent';
+    if (append) logsShown += LOGS_PAGE;
+    logsRows = history ? (append ? logsRows.concat(logs) : logs) : sortLogs(logs);
+    logsNextCursor = history ? next_cursor || null : null;
+    $('logs-order-hint').textContent = history
+      ? '历史按写入顺序倒序，每次读取 50 条；开始时间可能不连续。上方统计仍为最近内存窗口。'
+      : '最近内存窗口按开始时间倒序，每次显示 50 条。';
+    $('logs-empty').style.display = logsRows.length ? 'none' : '';
+    if (logsRows.length) delete $('view-diagnostics').dataset.empty; else $('view-diagnostics').dataset.empty = '';
     $('logs-empty').innerHTML = '<b>没有匹配的请求</b>调整筛选条件，或通过本地路由发起调用。';
-    renderLogRows();
     setLogError('logs', '');
-  } catch (e) { if (sequence === logsSequence) setLogError('logs', '日志读取失败：' + e.message); }
+  } catch (e) {
+    if (sequence === logsSequence) {
+      if (e.status === 410) logsNextCursor = null;
+      setLogError('logs', e.status === 410
+        ? '历史快照已过期，请点击应用重新查询' : '日志读取失败：' + e.message);
+    }
+  } finally {
+    if (sequence === logsSequence) { logsLoading = false; renderLogRows(); }
+  }
 }
 function renderLogRows() {
   const logs = logsRows, shown = logs.slice(0, logsShown), rest = logs.length - shown.length;
@@ -144,13 +183,14 @@ function renderLogRows() {
       <td class="num c-bytes"><span>${fmtTtfb(l.ms)}</span><span class="sub">${fmtBytes(l.bytes_in)}</span></td>
       <td class="num c-status">${reqStatusHtml(l)}</td>
       <td class="c-err">${errLabel}${errMsg}</td></tr>`;
-  }).join('') + (rest > 0 ? `<tr class="logs-more"><td colspan="10"><button type="button" class="small quiet" onclick="showMoreLogs()">显示更多（还剩 ${fmtCount(rest)} 条）</button>`
-    + `<span class="dim">已显示最近 ${fmtCount(shown.length)} / ${fmtCount(logs.length)} 条</span></td></tr>` : '');
+  }).join('') + (rest > 0 || logsNextCursor ? `<tr class="logs-more"><td colspan="10"><button type="button" class="small quiet" onclick="showMoreLogs()"${logsLoading ? ' disabled' : ''}>${logsLoading ? '正在读取' : rest > 0 ? `显示更多（还剩 ${fmtCount(rest)} 条）` : '更早记录'}</button>`
+    + `<span class="dim">${logsScope === 'history' ? `已显示 ${fmtCount(shown.length)} 条历史记录` : `已显示最近 ${fmtCount(shown.length)} / ${fmtCount(logs.length)} 条`}</span></td></tr>` : '');
   // 5 秒自动刷新内容没变就不重写:整表重写会清掉用户正在选中复制的文字(错误文本、模型名)。
   if (html !== lastLogsHtml) { $('logs-body').innerHTML = html; lastLogsHtml = html; }
 }
 function clearFilters() {
   $('f-app').value = ''; $('f-provider').value = ''; $('f-model').value = ''; $('f-session').value = ''; $('f-status').value = ''; $('f-errclass').value = '';
-  loadLogs();
+  $('f-since').value = ''; $('f-until').value = '';
+  return loadLogs();
 }
-function restartLogsTimer() { clearInterval(logsTimer); logsTimer = setInterval(() => { if ($('logs-auto').checked) { loadLogs(); loadStats(); } }, 5000); }
+function restartLogsTimer() { clearInterval(logsTimer); logsTimer = setInterval(() => { if ($('logs-auto').checked && $('f-scope').value !== 'history') { loadLogs(); loadStats(); } }, 5000); }

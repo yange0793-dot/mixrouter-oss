@@ -172,7 +172,7 @@ function renderProviders() {
   if (lv?.error) warning = `客户端配置读取失败：${lv.error}。无法确认集成状态，请检查配置后重试。`;
   // Codex 的实际直连渠道由 base URL + Key 判定;current 还停在 @router 不是漂移。
   else if (online && lv && (isCodexGroup ? (!codexDirectProviderId(lv) && lv.match === false) : (curId && lv.match === false)))
-    warning = `${APPS[curApp].label} 配置与库内选择不一致。可通过渠道「重新应用」或重新启用路由模式恢复，写入前自动备份。`;
+    warning = `${APPS[curApp].label} 配置与库内选择不一致。可通过渠道${isCodexGroup ? '「应用路由」或「应用直连」' : '「重新应用」或重新启用路由模式'}恢复，写入前自动备份。`;
   $('drift-banner').classList.toggle('show', !!warning); $('drift-text').textContent = warning;
   // 健康端点挂了不能把整页拖垮:读不到就只显示一句"健康状态未读取",其余卡片照常渲染。
   $('prov-health').hidden = !!liveHealth;
@@ -257,19 +257,17 @@ function renderProviders() {
     // Claude 的这个按钮只做一件事:把该渠道的地址/Key/模型写进 Claude 配置(switchClaude),
     // 路由模式下等于退出路由,mixr- 槽位别名一并清掉。文案按这个真实效果写。
     const claudeInRouter = !isCodexGroup && !!lv?.router;
-    const switchLabel = isCodexGroup
-      ? (isCur && actualCodexMode === codexMode ? '重新应用' : codexMode === 'router' ? '应用路由' : '应用直连')
-      : claudeInRouter ? '改为直连' : isCur ? '重新写入' : '直连此渠道';
+    const switchLabel = claudeInRouter ? '改为直连' : isCur ? '重新写入' : '直连此渠道';
     const switchTitle = convOnly ? '该渠道只挂 Codex 型通道，直连不可用：请用上方「路由模式」'
-      : codexDirectOff ? 'Chat 渠道不能写入 Codex 直连；请用「应用路由」'
-      : isCodexGroup ? ''
       : claudeInRouter ? '把此渠道写入 Claude 配置并退出路由模式（清掉 mixr- 槽位别名），原文件自动备份'
       : isCur ? '把此渠道重新写入 Claude 配置，原文件自动备份'
       : '把此渠道写入 Claude 配置（直连），原文件自动备份';
-    // 只能走路由的 Claude 渠道没有可点的写入动作:不摆一个禁用的主按钮,换成一枚说明标签。
-    const switchControl = convOnly
-      ? `<span class="tag route-only-tag" title="${switchTitle}">仅路由可用</span>`
-      : `<button class="small ${verified || activeRouter ? 'cur' : claudeInRouter || actualCodexMode === 'router' ? '' : 'primary'}" data-action="switch" data-provider="${esc(p.id)}" onclick="switchProvider(${arg})" ${locked ? 'disabled' : ''} title="${switchTitle}">${switchLabel}</button>`;
+    // Codex 两种接入动作始终可见,不受保存偏好影响;当前状态只改变样式与说明。
+    // 只能走路由的 Claude 渠道仍用说明标签,不摆一个禁用的主按钮。
+    const switchControl = isCodexGroup
+      ? `<span class="provider-connect-actions"><button class="small ${activeRouter ? 'cur' : actualCodexMode === 'router' ? '' : 'primary'}" data-action="switch-router" data-provider="${esc(p.id)}" onclick="switchProvider(${arg},'router')" ${!online ? 'disabled' : ''} title="${activeRouter ? '当前通过此渠道使用路由；再次写入路由配置，原文件自动备份' : '经 Mixrouter 路由使用此渠道，原文件自动备份'}">应用路由</button><button class="small ${verified ? 'cur' : actualCodexMode === 'router' ? '' : 'primary'}" data-action="switch-direct" data-provider="${esc(p.id)}" onclick="switchProvider(${arg},'direct')" ${!online || codexDirectOff ? 'disabled' : ''} title="${codexDirectOff ? 'Chat 渠道不能写入 Codex 直连；请用「应用路由」' : verified ? '当前直连此渠道；再次写入直连配置，原文件自动备份' : 'Codex 直接连接此渠道，不经过 Mixrouter，原文件自动备份'}">应用直连</button></span>`
+      : convOnly ? `<span class="tag route-only-tag" title="${switchTitle}">仅路由可用</span>`
+      : `<button class="small ${verified ? 'cur' : claudeInRouter ? '' : 'primary'}" data-action="switch" data-provider="${esc(p.id)}" onclick="switchProvider(${arg})" ${locked ? 'disabled' : ''} title="${switchTitle}">${switchLabel}</button>`;
     return `<article class="card ${p.enabled ? '' : 'off'} ${verified || activeRouter || routedMain ? 'cur' : ''} ${isCur && !verified && !activeRouter ? 'sel' : ''}" data-provider="${esc(p.id)}" style="--avatar-h:${providerHue(p.id)}">
       <header class="top provider-identity">
         <span class="provider-avatar" aria-hidden="true">${esc(avatar)}</span>
@@ -656,10 +654,10 @@ function canConnect(app) {
   if (!online) { toast('控制台离线，请重新连接后操作', 'err'); return false; }
   return true;
 }
-async function switchProvider(id) {
+async function switchProvider(id, requestedMode) {
   const app = curApp, p = providers().find(x => x.id === id);
   if (!p || !canConnect(app)) return;
-  const mode = app === 'codex' ? codexProviderMode(p) : 'direct';
+  const mode = app === 'codex' ? requestedMode || codexProviderMode(p) : 'direct';
   const label = mode === 'router' ? '路由' : '直连';
   const leavingRouter = app === 'claude' && !!state.live?.claude?.router;
   const message = `将 ${APPS[app].label} 配置写入为「${p.name}」${label}。${mode === 'router' ? '\n主模型使用该渠道，审查槽位保持原有选择。' : ''}${leavingRouter ? '\n这会退出路由模式：Claude Code 不再经本机路由，mixr- 槽位别名一并清掉。' : ''}\n文件：${APPS[app].cfg}（原文件自动备份）。\n${app === 'claude' ? 'Claude Code 需重启会话生效。' : '重新打开 Codex 读取新连接配置。'}`;

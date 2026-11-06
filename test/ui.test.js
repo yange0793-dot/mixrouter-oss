@@ -787,6 +787,73 @@ test('失败分类筛选独立于状态，清空时同时移除 err_class', asyn
   assert.equal(h.get('f-status').value, '');
 });
 
+test('日志默认取最近 1000 条，历史查询带日期且按游标读取更早记录', async () => {
+  const h = await harness();
+  await h.run('loadLogs()');
+  let query = new URL(h.requests.findLast(r => r.url.startsWith('/api/logs?')).url, 'http://localhost').searchParams;
+  assert.equal(query.get('limit'), '1000');
+  assert.equal(query.has('history'), false);
+  h.run(`globalThis.logUrls = [];
+    fetch = async url => {
+      logUrls.push(url);
+      const q = new URLSearchParams(url.split('?')[1]);
+      return { ok: true, json: async () => ({
+        logs: [{ ts: q.has('cursor') ? '2026-11-06T01:00:00Z' : '2026-11-06T02:00:00Z',
+          session: q.has('cursor') ? 'older' : 'newer', status: 200 }],
+        next_cursor: q.has('cursor') ? null : 'test-cursor'
+      }) };
+    };`);
+  h.get('f-scope').value = 'history';
+  h.get('f-since').value = '2026-11-05T00:00:00';
+  h.get('f-until').value = '2026-11-07T00:00:00';
+  h.get('f-status').value = 'err';
+  await h.run('changeLogsScope()');
+  query = new URL(h.run('logUrls.at(-1)'), 'http://localhost').searchParams;
+  assert.equal(query.get('history'), '1');
+  assert.equal(query.get('limit'), '50');
+  assert.equal(query.get('status'), 'err');
+  assert.equal(query.get('since'), new Date('2026-11-05T00:00:00').toISOString());
+  assert.equal(query.get('until'), new Date('2026-11-07T00:00:00').toISOString());
+  assert.equal(h.get('logs-history-range').hidden, false);
+  assert.equal(h.get('logs-auto').disabled, true);
+  await h.run('showMoreLogs()');
+  query = new URL(h.run('logUrls.at(-1)'), 'http://localhost').searchParams;
+  assert.equal(query.get('cursor'), 'test-cursor');
+  assert.equal(h.run('logsRows.length'), 2);
+  assert.match(h.get('logs-body').innerHTML, /older/);
+  assert.match(h.get('logs-body').innerHTML, /newer/);
+  await h.run('clearFilters()');
+  assert.equal(h.get('f-since').value, '');
+  assert.equal(h.get('f-until').value, '');
+  assert.equal(h.get('f-scope').value, 'history');
+  h.get('f-scope').value = 'recent';
+  await h.run('changeLogsScope()');
+  assert.equal(h.get('logs-history-range').hidden, true);
+  assert.equal(h.get('logs-auto').disabled, false);
+});
+
+test('历史日期倒置不请求接口，游标过期保留已有行', async () => {
+  const h = await harness();
+  h.get('f-scope').value = 'history';
+  h.get('f-since').value = '2026-11-07T00:00:00';
+  h.get('f-until').value = '2026-11-05T00:00:00';
+  const before = h.requests.length;
+  await h.run('loadLogs()');
+  assert.equal(h.requests.length, before);
+  assert.match(h.get('logs-error').textContent, /开始时间不能晚于结束时间/);
+  h.get('f-since').value = '';
+  h.get('f-until').value = '';
+  h.run(`fetch = async () => ({ ok: true, json: async () => ({
+    logs: [{ ts: '2026-11-06T02:00:00Z', session: 'keep-row', status: 200 }], next_cursor: 'expired'
+  }) });`);
+  await h.run('loadLogs()');
+  h.run(`fetch = async () => ({ ok: false, status: 410, json: async () => ({ error: 'expired' }) });`);
+  await h.run('showMoreLogs()');
+  assert.match(h.get('logs-error').textContent, /快照已过期/);
+  assert.match(h.get('logs-body').innerHTML, /keep-row/);
+  assert.equal(h.run('logsLoading'), false);
+});
+
 function slotStatsFixture() {
   return { reqs: 28, ok_rate: 100, inTok: 900, outTok: 90, cache: 7,
     by_slot: {
@@ -1374,6 +1441,48 @@ test('Codex applies the saved connection mode to the selected provider', async (
   const h = await harness();
   await h.confirm("switchProvider('a1')");
   assert.equal(h.requests.findLast(r => r.url === '/api/switch/a1').body, undefined, 'Claude keeps its existing request');
+});
+
+test('Codex cards keep explicit route and direct actions regardless of saved or active mode', async () => {
+  for (const savedMode of ['direct', 'router']) {
+    for (const activeMode of ['direct', 'router']) {
+      const data = codexDirectFixture();
+      data.providers.codex[0].codex_mode = savedMode;
+      data.live.codex.connection_mode = activeMode;
+      const h = await harness(data);
+      h.run("setApp('codex')");
+      const card = h.get('prov-grid').innerHTML.match(/<article\b[^>]*data-provider="o1"[^>]*>[\s\S]*?<\/article>/)[0];
+      for (const [mode, label] of [['router', '应用路由'], ['direct', '应用直连']]) {
+        const button = card.match(new RegExp(`<button\\b[^>]*data-action="switch-${mode}"[^>]*>[\\s\\S]*?<\\/button>`))?.[0];
+        assert.ok(button, `${savedMode}/${activeMode}: missing ${mode} action`);
+        assert.match(button, new RegExp(`>${label}<`));
+        assert.doesNotMatch(button, /\sdisabled(?:\s|>)/);
+        const applying = h.run(`switchProvider('o1', '${mode}')`);
+        assert.match(h.get('confirm-title').textContent, new RegExp(mode === 'router' ? '路由' : '直连'));
+        h.run('finishConfirm(true)');
+        await applying;
+        assert.deepEqual(h.requests.findLast(r => r.url === '/api/switch/o1').body, { mode });
+        assert.equal(h.data.providers.codex[0].codex_mode, savedMode, 'explicit action must not rewrite the saved preference');
+      }
+      assert.equal(h.requests.some(r => r.url === '/api/providers/o1' && r.method === 'PUT'), false);
+    }
+  }
+});
+
+test('Codex keeps unavailable direct actions visible and disables both actions offline', async () => {
+  const h = await harness();
+  h.run("view = 'providers'; setApp('codex')");
+  const chat = h.get('prov-grid').innerHTML.match(/<article\b[^>]*data-provider="o2"[^>]*>[\s\S]*?<\/article>/)[0];
+  const direct = chat.match(/<button\b[^>]*data-action="switch-direct"[^>]*>[\s\S]*?<\/button>/)[0];
+  const router = chat.match(/<button\b[^>]*data-action="switch-router"[^>]*>[\s\S]*?<\/button>/)[0];
+  assert.match(direct, />应用直连</);
+  assert.match(direct, /\sdisabled(?:\s|>)/);
+  assert.match(direct, /title="[^"]*Chat/);
+  assert.doesNotMatch(router, /\sdisabled(?:\s|>)/);
+  h.disconnect(); await h.run('refresh()');
+  const buttons = [...h.get('prov-grid').innerHTML.matchAll(/<button\b[^>]*data-action="switch-(?:direct|router)"[^>]*>/g)];
+  assert.equal(buttons.length, 4);
+  for (const [button] of buttons) assert.match(button, /\sdisabled(?:\s|>)/);
 });
 
 test('Codex Chat channels can be applied through routing', async () => {

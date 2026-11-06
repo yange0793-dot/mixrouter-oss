@@ -4,8 +4,8 @@
 // (重复声明会当场报错,这是安全网)。
 //
 // 数据来自 GET /api/usage?dashboard=1:磁盘 logs/requests.jsonl + 内存环,按本地时区分桶。
-// dashboard 扩展给出 daily / records / facets / coverage;四张卡片、热力图、三张明细表
-// 全部来自**同一次**查询的同一批行 —— 筛选只改查询参数,前端不做二次过滤,避免各块对不上。
+// dashboard 扩展给出 daily / records / facets / coverage;所有统计共用同一次查询与筛选。
+// 请求明细默认只分页展示最新 1000 条,可切换保留历史;统计仍覆盖全部命中行,不被明细窗口截断。
 //
 // 几条容易做错的边界,这里都写死:
 //   1) 日期字符串是本地日期('YYYY-MM-DD')。**不**走 new Date('YYYY-MM-DD')(那是 UTC
@@ -17,7 +17,7 @@
 //      只有最后一种才是 0,其余三种不许画成 0,也不许悄悄留白让人误读。
 
 const USAGE_PREF_KEY = 'mixr.usage.prefs';
-const USAGE_RANGE_LABELS = { today: '今天', '24h': '近 24 小时', '7d': '近 7 天', '30d': '近 30 天', all: '全部' };
+const USAGE_RANGE_LABELS = { today: '今天', '24h': '近 24 小时', '7d': '近 7 天', '30d': '近 30 天', all: '全部', custom: '自定义日期' };
 const USAGE_METRIC_LABELS = { tokens: 'Tokens', reqs: '请求' };
 const USAGE_TABS = ['requests', 'providers', 'models'];
 const USAGE_APP_LABELS = { claude: 'Anthropic', codex: 'OpenAI' };
@@ -27,6 +27,8 @@ const USAGE_DETAIL_HEAD = {
   providers: ['供应商', '请求', '新增输入', '输出', '缓存读取', '缓存命中率'],
   models: ['模型', '请求', '新增输入', '输出', '缓存读取', '缓存命中率'],
 };
+const USAGE_REQUEST_KEYS = ['ts', 'app', 'provider', 'model', 'in', 'out', 'cache_read', 'status', 'speed_tps', 'ttfb_ms'];
+const USAGE_SORT_LABELS = { ts: '时间', in: '新增输入', out: '输出', cache_read: '缓存读取', speed_tps: '速度', ttfb_ms: '首响应' };
 const USAGE_WEEK_COUNT = 53;
 const USAGE_MAX_EXPAND = 8;
 // 格子与 usage.css 的 --usage-cell-max / --usage-gap / 星期列宽同值。
@@ -39,8 +41,9 @@ const USAGE_HEAT_SPARSE_CELL = 13;
 
 // 页面状态只在这里一处。`data` 是上次成功读取的响应;失败时保留旧数据并标 stale。
 const usageState = {
-  range: 'all', app: '', provider: '', model: '', status: '',
-  metric: 'tokens', interval: 60, tab: 'requests', limit: 50, offset: 0, pageAgg: 0,
+  range: 'today', app: '', provider: '', model: '', status: '', statusCode: '', search: '',
+  from: '', to: '', sort: 'ts', order: 'desc', density: 'compact', hiddenColumns: [], analyticsOpen: false, searchTimer: null,
+  metric: 'tokens', interval: 60, tab: 'requests', recordsScope: 'recent', limit: 50, offset: 0, pageAgg: 0,
   data: null, shownQuery: '', pendingQuery: '',
   inited: false, visible: false, timer: null, controller: null, seq: 0, lastSync: 0, busy: false,
   heatExpanded: 0, heatDate: null, heatFocus: false, heatKeyMode: false,
@@ -109,6 +112,16 @@ function usageLoadPrefs() {
     if ([0, 30, 60, 300].includes(Number(raw.interval))) usageState.interval = Number(raw.interval);
     if (['', 'claude', 'codex'].includes(raw.app)) usageState.app = raw.app;
     if (typeof raw.source === 'boolean') usageState.sourceOpen = raw.source;
+    if ([25, 50, 100, 200].includes(raw.limit)) usageState.limit = raw.limit;
+    if (['compact', 'comfortable'].includes(raw.density)) usageState.density = raw.density;
+    if (Array.isArray(raw.hiddenColumns)) usageState.hiddenColumns = raw.hiddenColumns.filter(key => USAGE_REQUEST_KEYS.includes(key) && !['ts', 'model'].includes(key));
+    if (Object.hasOwn(USAGE_SORT_LABELS, raw.sort)) usageState.sort = raw.sort;
+    if (['asc', 'desc'].includes(raw.order)) usageState.order = raw.order;
+    if (typeof raw.analytics === 'boolean') usageState.analyticsOpen = raw.analytics;
+    if (usageParseDayKey(raw.from) && usageParseDayKey(raw.to) && raw.from <= raw.to) {
+      usageState.from = raw.from;
+      usageState.to = raw.to;
+    } else if (usageState.range === 'custom') usageState.range = 'today';
   } catch { /* 隐私模式/配额满:偏好读不到就用默认值,页面照常工作 */ }
 }
 function usageSavePrefs() {
@@ -116,23 +129,37 @@ function usageSavePrefs() {
     localStorage.setItem(USAGE_PREF_KEY, JSON.stringify({
       range: usageState.range, metric: usageState.metric,
       interval: usageState.interval, app: usageState.app, source: usageState.sourceOpen,
+      limit: usageState.limit, density: usageState.density, hiddenColumns: usageState.hiddenColumns,
+      sort: usageState.sort, order: usageState.order, analytics: usageState.analyticsOpen,
+      from: usageState.from, to: usageState.to,
     }));
   } catch { /* 同上:存不下不影响本页 */ }
 }
 
 // ---- 查询 -----------------------------------------------------------------
 // 所有控件(时间区间 / 协议组 / 供应商 / 模型 / 状态)都进同一个查询串,服务端按同一批行
-// 计算卡片、daily、records 与聚合表。offset/limit 只决定 records 取哪一页。
+// 计算卡片、daily、records 与聚合表。records_scope 与 offset/limit 只决定请求明细窗口及分页。
 function usageQuery() {
   const q = new URLSearchParams();
   q.set('dashboard', '1');
   q.set('range', usageState.range);
+  if (usageState.range === 'custom') {
+    const end = usageDayDate(usageState.to);
+    end.setDate(end.getDate() + 1);
+    q.set('from', usageDayDate(usageState.from).toISOString());
+    q.set('to', new Date(end.getTime() - 1).toISOString());
+  }
   if (usageState.app) q.set('app', usageState.app);
   // 供应商下拉的值是渠道键(by_channel[].channel),不是显示名:显示名不唯一,
   // 后端按 channel 精确匹配。状态名沿用 provider,index.html 的 onchange 是按这个名字调的。
   if (usageState.provider) q.set('channel', usageState.provider);
   if (usageState.model) q.set('model', usageState.model);
   if (usageState.status) q.set('status', usageState.status);
+  if (usageState.statusCode) q.set('status_code', usageState.statusCode);
+  if (usageState.search) q.set('search', usageState.search);
+  q.set('sort', usageState.sort);
+  q.set('order', usageState.order);
+  q.set('records_scope', usageState.recordsScope);
   q.set('offset', String(usageState.offset));
   q.set('limit', String(usageState.limit));
   return q.toString();
@@ -172,6 +199,8 @@ function usageMarkStale(force) {
     if (frame.dataset) frame.dataset.stale = stale ? 'true' : 'false';
     frame.classList.toggle('is-stale', stale);
   }
+  const exportButton = $('usage-export');
+  if (exportButton) exportButton.disabled = stale || !usageState.data || !usageDetailSlice(usageState.data).rows.length;
   return stale;
 }
 function usageChartState(state) {
@@ -224,6 +253,7 @@ async function loadUsage() {
     if (!response.ok) throw new Error((body && body.error) || `HTTP ${response.status}`);
     if (!body || typeof body !== 'object') throw new Error('接口返回的不是 JSON 对象');
     if (seq !== usageState.seq) return; // 已被更新的请求取代
+    const queryChanged = usageState.shownQuery !== query;
     usageState.data = body;
     usageState.shownQuery = query;
     const records = body && body.dashboard && body.dashboard.records;
@@ -231,6 +261,7 @@ async function loadUsage() {
     if (servedOffset !== null) usageState.offset = servedOffset;
     usageState.lastSync = Date.now();
     usageRender(body);
+    if (queryChanged && $('usage-detail-panel')) $('usage-detail-panel').scrollTop = 0;
     usageChartState('ready');
     usageMarkStale();
     // 只剩内存窗口时要说出来:这时的数字只是还没落盘的那一段,不是完整历史。
@@ -289,13 +320,17 @@ function usageSyncChrome() {
     ['usage-app', usageState.app],
     ['usage-status-filter', usageState.status],
     ['usage-interval', String(usageState.interval)],
+    ['usage-status-code', usageState.statusCode], ['usage-search', usageState.search],
+    ['usage-page-size', String(usageState.limit)], ['usage-density', usageState.density],
+    ['usage-from', usageState.from], ['usage-to', usageState.to],
+    ['usage-records-scope', usageState.recordsScope],
   ];
   for (const [id, value] of pairs) {
     const el = $(id);
     // 用户正打开着下拉时不要动它的值,否则列表会跳。
     if (el && document.activeElement !== el) el.value = value;
   }
-  for (const [id, value] of [['usage-provider', usageState.provider], ['usage-model', usageState.model], ['usage-status-filter', usageState.status]]) {
+  for (const [id, value] of [['usage-provider', usageState.provider], ['usage-model', usageState.model], ['usage-status-filter', usageState.status], ['usage-status-code', usageState.statusCode]]) {
     const el = $(id);
     const filter = el && el.closest ? el.closest('.usage-filter') : null;
     if (filter) filter.setAttribute('data-active', value ? 'true' : 'false');
@@ -303,17 +338,26 @@ function usageSyncChrome() {
   // 「清除筛选」平时只是个安静的次要动作,有筛选时才有边框和强调色:它不该和筛选控件抢注意力。
   const clear = $('usage-clear-filters');
   if (clear) {
-    const active = !!(usageState.app || usageState.provider || usageState.model || usageState.status);
+    const active = !!(usageState.app || usageState.provider || usageState.model || usageState.status || usageState.statusCode || usageState.search);
     clear.classList.toggle('is-active', active);
     // data-empty 只驱动样式:按钮仍然可点、可聚焦,点空筛选本来就是无操作。
     if (clear.dataset) clear.dataset.empty = active ? 'false' : 'true';
   }
+  const dates = $('usage-custom-range');
+  if (dates) dates.hidden = usageState.range !== 'custom';
+  const recordsWindow = $('usage-records-window');
+  if (recordsWindow) recordsWindow.hidden = usageState.tab !== 'requests';
 }
 
 function usageInitControls() {
   usageState.inited = true;
   usageLoadPrefs();
   usageApplySourceOpen();
+  const analytics = $('usage-analytics');
+  if (analytics) analytics.open = usageState.analyticsOpen;
+  const columns = $('usage-column-options');
+  if (columns) columns.innerHTML = '<legend>请求日志显示列</legend>' + USAGE_REQUEST_KEYS.map((key, index) =>
+    `<label><input type="checkbox" data-usage-column="${key}" onchange="setUsageColumn('${key}', this.checked)"${usageState.hiddenColumns.includes(key) ? '' : ' checked'}${['ts', 'model'].includes(key) ? ' disabled' : ''}>${USAGE_DETAIL_HEAD.requests[index]}</label>`).join('');
   usageSyncChrome();
   usageBindFilterSelect();
   usageSchedule();
@@ -322,7 +366,7 @@ function usageInitControls() {
 // 轮询把下拉重填成同样的选项会把它收起、滚回顶部。选项串没变就不写 DOM;选项真的变了
 // 而用户正开着这个下拉,先记下来,失焦后再应用。
 function usageBindFilterSelect() {
-  for (const [id, key] of [['usage-provider', 'provider'], ['usage-model', 'model']]) {
+  for (const [id, key] of [['usage-provider', 'provider'], ['usage-model', 'model'], ['usage-status-code', 'statusCode']]) {
     const el = $(id);
     if (!el || el._mixrBound) continue;
     el._mixrBound = true;
@@ -349,6 +393,7 @@ function usageSchedule() {
 function usageSetVisible(on) {
   usageState.visible = !!on;
   if (!on) {
+    clearTimeout(usageState.searchTimer);
     if (usageState.timer) { clearInterval(usageState.timer); usageState.timer = null; }
     if (usageState.controller) {
       usageState.seq += 1; // 离开页面后返回的响应一律丢弃
@@ -371,6 +416,12 @@ function renderUsage() {
 // ---- 控件动作 -------------------------------------------------------------
 function setUsageRange(range) {
   if (!USAGE_RANGE_LABELS[range] || usageState.range === range) return;
+  if (range === 'custom' && !usageState.from) {
+    const end = new Date();
+    const start = new Date(end.getFullYear(), end.getMonth(), end.getDate() - 6);
+    usageState.from = usageDayKey(start);
+    usageState.to = usageDayKey(end);
+  }
   usageState.range = range;
   usageState.offset = 0;
   usageState.pageAgg = 0;
@@ -380,7 +431,7 @@ function setUsageRange(range) {
   loadUsage();
 }
 function setUsageFilter(key, value) {
-  if (!['app', 'provider', 'model'].includes(key)) return;
+  if (!['app', 'provider', 'model', 'statusCode', 'search'].includes(key)) return;
   if (key === 'app' && !['', 'claude', 'codex'].includes(value)) return;
   const next = value == null ? '' : String(value);
   if (usageState[key] === next) return;
@@ -401,11 +452,15 @@ function setUsageStatus(value) {
   loadUsage();
 }
 function clearUsageFilters() {
-  if (!usageState.app && !usageState.provider && !usageState.model && !usageState.status) return;
+  if (!usageState.app && !usageState.provider && !usageState.model && !usageState.status && !usageState.statusCode && !usageState.search) return;
+  clearTimeout(usageState.searchTimer);
   usageState.app = '';
   usageState.provider = '';
   usageState.model = '';
   usageState.status = '';
+  usageState.statusCode = '';
+  usageState.search = '';
+  if ($('usage-search')) $('usage-search').value = '';
   usageState.offset = 0;
   usageState.pageAgg = 0;
   usageSavePrefs();
@@ -422,6 +477,120 @@ function setUsageMetric(metric) {
     usageRenderTrend(usageState.data); // 同一批 series,纯前端重画,不发请求
   }
 }
+function applyUsageDates(event) {
+  event.preventDefault();
+  const from = $('usage-from').value, to = $('usage-to').value;
+  const message = $('usage-date-error');
+  if (!from || !to || from > to) {
+    message.textContent = '请选择完整的日期区间，开始日期不能晚于结束日期。';
+    return;
+  }
+  message.textContent = '按本地日期统计，包含结束当天。';
+  usageState.from = from;
+  usageState.to = to;
+  usageState.offset = 0;
+  usageState.pageAgg = 0;
+  usageState.heatExpanded = 0;
+  usageSavePrefs();
+  loadUsage();
+}
+function scheduleUsageSearch() {
+  clearTimeout(usageState.searchTimer);
+  usageState.searchTimer = setTimeout(() => setUsageSearch(), 350);
+}
+function setUsageSearch(event) {
+  if (event) event.preventDefault();
+  clearTimeout(usageState.searchTimer);
+  setUsageFilter('search', $('usage-search').value.trim());
+}
+function setUsageSort(key) {
+  if (!Object.hasOwn(USAGE_SORT_LABELS, key)) return;
+  usageState.order = usageState.sort === key && usageState.order === 'desc' ? 'asc' : 'desc';
+  usageState.sort = key;
+  usageState.offset = 0;
+  usageSavePrefs();
+  loadUsage();
+}
+function setUsageRecordsScope(scope) {
+  if (!['recent', 'history'].includes(scope) || scope === usageState.recordsScope) return;
+  usageState.recordsScope = scope;
+  usageState.offset = 0;
+  usageSyncChrome();
+  return loadUsage();
+}
+function setUsagePageSize(value) {
+  const limit = Number(value);
+  if (![25, 50, 100, 200].includes(limit) || limit === usageState.limit) return;
+  usageState.limit = limit;
+  usageState.offset = 0;
+  usageState.pageAgg = 0;
+  usageSavePrefs();
+  loadUsage();
+}
+function setUsageDensity(value) {
+  if (!['compact', 'comfortable'].includes(value)) return;
+  usageState.density = value;
+  usageApplyTableSettings();
+  usageSavePrefs();
+}
+function setUsageColumn(key, visible) {
+  if (!USAGE_REQUEST_KEYS.includes(key) || ['ts', 'model'].includes(key)) return;
+  usageState.hiddenColumns = usageState.hiddenColumns.filter(column => column !== key);
+  if (!visible) usageState.hiddenColumns.push(key);
+  usageApplyTableSettings();
+  usageSavePrefs();
+}
+function usageApplyTableSettings() {
+  const panel = $('usage-detail-panel');
+  if (panel) panel.setAttribute('data-density', usageState.density);
+  document.querySelectorAll('#usage-detail-table [data-column]').forEach(cell => {
+    cell.hidden = usageState.hiddenColumns.includes(cell.getAttribute('data-column'));
+  });
+  const options = $('usage-column-options');
+  if (options) options.disabled = usageState.tab !== 'requests';
+}
+function setUsageAnalytics(open) {
+  if (usageState.analyticsOpen === open) return;
+  usageState.analyticsOpen = open;
+  usageSavePrefs();
+  if (open && usageState.data) {
+    usageRenderHeat(usageState.data);
+    usageRenderTrend(usageState.data);
+  }
+}
+function usageDrillDown(key, value) {
+  usageState.tab = 'requests';
+  usageState[key] = value;
+  usageState.offset = 0;
+  usageState.pageAgg = 0;
+  usageSyncChrome();
+  loadUsage();
+}
+function usageCsv(data) {
+  const slice = usageDetailSlice(data);
+  const headers = slice.tab === 'requests'
+    ? ['时间', '协议组', '供应商', '模型', '原始模型', '新增输入', '输出', '缓存读取', 'HTTP 状态码', '结果', '耗时 ms', '首响应 ms', '请求 ID', '会话', '错误']
+    : slice.columns;
+  const rows = slice.rows.map(row => slice.tab === 'requests'
+    ? [fmtFullTime(row.ts), USAGE_APP_LABELS[row.app] || row.app, row.provider, row.model_out || row.model_in, row.model_in,
+      row.in, row.out, row.cache_read, row.status, !row.err && !row.err_class && row.status >= 200 && row.status < 400 ? '成功' : '失败',
+      row.ms, row.ttfb_ms, row.request_id, row.session, row.err || row.err_class]
+    : [slice.tab === 'providers' ? row.name : row.model, row.reqs, row.tokens_in, row.tokens_out, row.cache_read,
+      row.tokens_in + row.cache_read > 0 ? row.cache_read / (row.tokens_in + row.cache_read) : '']);
+  return '\ufeff' + [headers, ...rows].map(row => row.map(value => {
+    const text = String(value ?? '');
+    return '"' + (/^[\s]*[=+\-@]/.test(text) ? "'" : '') + text.replace(/"/g, '""') + '"';
+  }).join(',')).join('\r\n');
+}
+function exportUsagePage() {
+  if (!usageState.data) return;
+  const url = URL.createObjectURL(new Blob([usageCsv(usageState.data)], { type: 'text/csv;charset=utf-8' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `mixrouter-${usageState.tab}-${usageDayKey(new Date())}-page-${usageState.tab === 'requests' ? Math.floor(usageState.offset / usageState.limit) + 1 : usageState.pageAgg + 1}.csv`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 function setUsageInterval(value) {
   const seconds = Number(value);
   if (![0, 30, 60, 300].includes(seconds)) return;
@@ -432,6 +601,7 @@ function setUsageInterval(value) {
 function setUsageTab(tab) {
   if (!USAGE_TABS.includes(tab) || usageState.tab === tab) return;
   usageState.tab = tab;
+  if ($('usage-detail-panel')) $('usage-detail-panel').scrollTop = 0;
   usageSyncChrome();
   if (usageState.data) {
     usageRenderDetail(usageState.data);
@@ -477,8 +647,11 @@ function usageApplySourceOpen() {
 function usageRender(data) {
   usageRenderCards(data);
   usageRenderFilters(data);
-  usageRenderHeat(data);
-  usageRenderTrend(data);
+  const analytics = $('usage-analytics');
+  if (!analytics || analytics.open) {
+    usageRenderHeat(data);
+    usageRenderTrend(data);
+  }
   usageRenderDetail(data);
   usageRenderPagination(data);
   usageRenderSource(data);
@@ -513,8 +686,8 @@ function usageRenderCards(data) {
     `缓存命中率 = 缓存读取 / (新增输入 + 缓存读取);读取 ${fmtCount(totals.cache_read)} tokens`);
   const rate = usageNum(totals.ok_rate);
   set('usage-success', fmtPct(rate));
-  const failed = (reqs !== null && rate !== null) ? Math.max(0, Math.round(reqs * (100 - rate) / 100)) : null;
-  set('usage-ok-rate', failed === null ? '暂无成功率样本' : `${fmtCount(reqs)} 次请求样本`,
+  const failed = usageNum(data && data.dashboard && data.dashboard.outcomes && data.dashboard.outcomes.failed);
+  set('usage-ok-rate', reqs === null || rate === null ? '暂无成功率样本' : `${fmtCount(reqs)} 次请求样本`,
     '成功率 = 成功请求 / 总请求;按最终状态判定,断流与取消计为失败');
   // 成功率低于 95% 时把数字本身染成告警色:失败是这页唯一需要人动手看的数字。
   const success = $('usage-success');
@@ -607,6 +780,7 @@ function usageRenderFilters(data) {
     : (Array.isArray(data.by_model) ? data.by_model.map(m => ({ value: m.model || '', label: m.model || '' })) : []);
   usageFillSelect('usage-provider', providerOptions, usageState.provider, '全部供应商');
   usageFillSelect('usage-model', modelFacets, usageState.model, '全部模型');
+  usageFillSelect('usage-status-code', facets.status_codes, usageState.statusCode, '全部状态码');
 }
 
 // ---- 区间趋势:只用本次响应的 series -----------------------------------------
@@ -1482,15 +1656,17 @@ function usageRecordRow(row) {
       ? ` <span class="muted model-alias" title="日志里的原始模型名 ${esc(modelIn)}">别名 ${esc(modelIn)}</span>` : '')
     : '—';
   // 每项单独显示:缺失是「—」,记录为 0 就是 0,不从其它字段推断是否回报。
-  const usage = [row.in, row.out, row.cache_read].map(usageNum);
-  const tok = n => `<td${usageTokTitle(n)}>${fmtTok(n)}</td>`;
   const when = fmtFullTime(row.ts);
-  return `<tr><td${when === '—' ? '' : ` title="${when}"`}>${fmtWhen(row.ts)}</td>`
-    + `<td>${esc(USAGE_APP_LABELS[row.app] || row.app || '—')}</td>`
-    + `<td>${esc(row.provider || '—')}</td><td>${modelCell}</td>`
-    + usage.map(tok).join('')
-    + `<td>${usageRecordStatus(row)}</td><td>${fmtRate(row)}</td>`
-    + `<td title="上游响应头到达时间;不是模型首个输出 token 的时间">${fmtTtfb(usageNum(row.ttfb_ms))}</td></tr>`;
+  const cells = [
+    [fmtWhen(row.ts), when],
+    [`<span class="usage-app-label" data-app="${esc(row.app || '')}">${esc(USAGE_APP_LABELS[row.app] || row.app || '—')}</span>`],
+    [esc(row.provider || '—'), row.provider],
+    [modelCell, [primary, modelIn && modelIn !== primary ? `原始模型 ${modelIn}` : '', row.request_id ? `请求 ID ${row.request_id}` : ''].filter(Boolean).join(' · ')],
+    ...[row.in, row.out, row.cache_read].map(value => [fmtTok(usageNum(value)), usageNum(value) === null ? '' : fmtCount(value)]),
+    [usageRecordStatus(row)], [fmtRate(row), '输出 Tokens / 请求总耗时（含等待）'],
+    [fmtTtfb(usageNum(row.ttfb_ms)), '上游响应头到达时间;不是模型首个输出 token 的时间'],
+  ];
+  return '<tr>' + cells.map(([content, title], index) => `<td data-column="${USAGE_REQUEST_KEYS[index]}"${title ? ` title="${esc(title)}"` : ''}>${content}</td>`).join('') + '</tr>';
 }
 // 供应商按渠道分组(后端 dashboard.by_channel):新日志带渠道 id 与渠道所在的协议组;
 // 旧日志只有显示名,后端按同协议组同名并进唯一的渠道,并不进去的单独一行、provider_id 为空。
@@ -1541,8 +1717,10 @@ function usageAggregateRow(kind, row, label) {
   const denom = (usageNum(row.tokens_in) || 0) + cacheRead;
   const hit = denom ? fmtPct(cacheRead * 100 / denom) : '—';
   const name = kind === 'providers' ? usageChannelCell(label(row)) : esc(row.model || '—');
+  const value = kind === 'providers' ? row.channel : row.model;
+  const link = value ? `<button class="usage-drilldown" type="button" onclick="usageDrillDown('${kind === 'providers' ? 'provider' : 'model'}', ${esc(JSON.stringify(value))})" title="筛选此${kind === 'providers' ? '供应商' : '模型'}的请求日志">${name}</button>` : name;
   const tok = value => `<td${usageTokTitle(value)}>${fmtTok(value)}</td>`;
-  return `<tr><td>${name}</td><td>${fmtCount(row.reqs)}</td>`
+  return `<tr><td>${link}</td><td>${fmtCount(row.reqs)}</td>`
     + tok(row.tokens_in) + tok(row.tokens_out) + tok(row.cache_read) + `<td>${hit}</td></tr>`;
 }
 function usageDetailSlice(data) {
@@ -1565,12 +1743,40 @@ function usageRenderDetail(data) {
   const body = $('usage-rows');
   const count = $('usage-count');
   const slice = usageDetailSlice(data);
-  if (head) head.innerHTML = `<tr>${slice.columns.map(text => `<th scope="col">${text}</th>`).join('')}</tr>`;
+  const records = data && data.dashboard && data.dashboard.records;
+  const sort = records && records.sort || 'ts';
+  const order = records && records.order || 'desc';
+  const focusedSort = document.activeElement && document.activeElement.getAttribute('data-usage-sort');
+  if (head) head.innerHTML = `<tr>${slice.columns.map((text, index) => {
+    const key = slice.tab === 'requests' ? USAGE_REQUEST_KEYS[index] : '';
+    const sortable = key && Object.hasOwn(USAGE_SORT_LABELS, key);
+    const direction = key === sort ? (order === 'asc' ? 'ascending' : 'descending') : 'none';
+    return `<th scope="col"${key ? ` data-column="${key}"` : ''}${sortable ? ` aria-sort="${direction}"` : ''}>`
+      + (sortable ? `<button class="usage-sort" data-usage-sort="${key}" type="button" onclick="setUsageSort('${key}')" title="按${text}排序">${text}<svg viewBox="0 0 12 14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4"><path class="usage-sort-up" d="m3 5 3-3 3 3"/><path class="usage-sort-down" d="m3 9 3 3 3-3"/></svg></button>` : text) + '</th>';
+  }).join('')}</tr>`;
+  if (head && focusedSort) head.querySelector(`[data-usage-sort="${focusedSort}"]`)?.focus();
+  for (const [id, value] of [
+    ['usage-requests-count', records ? records.total : data && data.totals && data.totals.reqs],
+    ['usage-providers-count', usageChannelRows(data).length],
+    ['usage-models-count', Array.isArray(data && data.by_model) ? data.by_model.length : 0],
+  ]) {
+    const element = $(id);
+    if (element) element.textContent = fmtCount(value);
+  }
+  const exportButton = $('usage-export');
+  if (exportButton) exportButton.disabled = !slice.rows.length || $('usage-data-frame')?.dataset.stale === 'true';
+  const windowHint = $('usage-records-hint');
+  if (windowHint) windowHint.textContent = records && records.scope === 'history'
+    ? '保留历史：使用上方日期、渠道与结果筛选。统计仍按全部匹配记录计算。'
+    : '仅展示筛选内最新 1000 条；统计仍按全部匹配记录计算。更早记录请切换保留历史。';
   const unit = slice.tab === 'requests' ? '条请求' : slice.tab === 'providers' ? '个供应商' : '个模型';
   if (count) {
+    const prefix = slice.tab === 'requests' && records?.scope === 'recent' ? '最近' : '共';
     count.textContent = slice.available
-      ? `共 ${fmtCount(slice.total)} ${unit} · ${slice.tab === 'requests' ? '按时间倒序' : '按请求数降序'}`
+      ? `${prefix} ${fmtCount(slice.total)} ${unit} · ${slice.tab === 'requests' ? `按${USAGE_SORT_LABELS[sort] || '时间'}${order === 'asc' ? '升序' : '降序'}` : '按请求数降序'}`
       : '服务端没有返回明细数据。';
+    count.title = slice.tab === 'requests' && usageNum(records?.matched_total) !== null
+      ? `当前筛选共匹配 ${fmtCount(records.matched_total)} 条；请求明细${records.scope === 'recent' ? '展示最近 1000 条以内' : '展示全部保留历史'}。` : '';
   }
   if (!body) return;
   if (!slice.available) {
@@ -1578,7 +1784,8 @@ function usageRenderDetail(data) {
     return;
   }
   if (!slice.rows.length) {
-    body.innerHTML = `<tr><td colspan="${slice.columns.length}">当前筛选下没有记录。调整区间或筛选条件再试。</td></tr>`;
+    body.innerHTML = `<tr><td class="usage-empty" colspan="${slice.columns.length}"><strong>没有匹配的请求</strong><span>当前筛选下没有记录。调整区间或筛选条件再试。</span><button class="small" type="button" onclick="clearUsageFilters()">清除筛选</button></td></tr>`;
+    usageApplyTableSettings();
     return;
   }
   // 撞名按下拉同一份清单(facets.channels:区间/协议组/状态内的全部渠道)算,不按当前页:
@@ -1590,6 +1797,7 @@ function usageRenderDetail(data) {
   body.innerHTML = slice.rows.map(row => (slice.tab === 'requests'
     ? usageRecordRow(row)
     : usageAggregateRow(slice.tab, row, label))).join('');
+  usageApplyTableSettings();
 }
 function usageRenderPagination(data) {
   const prev = $('usage-prev');
@@ -1628,7 +1836,9 @@ function usageRenderSource(data) {
     first && last
       ? `当前可用日志:最早一条记录 ${first},最新一条 ${last}。这是日志里实际观察到的最早/最晚记录,既不是完整保留期,也不保证中间没有断档;每天读取都会扫到当前时刻,所以 ${last} 之后到今天(${today})没有记录的日子按「没有请求」计算,而 ${first} 之前的日期显示为「未覆盖」,不会算成 0。`
       : '当前可用日志:数据源里暂时没有任何请求日志;热力图所有日期显示为「未覆盖」,而不是零用量。',
-    '协议组筛选按日志的 app 字段(请求来自哪个客户端);供应商按渠道分组,小标写的是渠道所在的协议组,Codex 共用压缩落在 Claude 渠道上时两者不同。旧日志没有渠道 id,按同名渠道归并,归不了的单独一行。模型为精确匹配。状态按日志的成功判定:err / err_class 优先于状态码。',
+    '协议组按请求协议归类，不冒充客户端识别。供应商按渠道分组，旧日志没有渠道 id 时按同名渠道归并，归不了的单独一行。模型为精确匹配。搜索匹配模型、供应商、渠道 ID、请求 ID 或会话，作用于全部统计；HTTP 状态码与最终结果可独立筛选，err / err_class 优先于状态码。',
+    '请求明细默认在当前筛选内取最新 1000 条，再按表头排序分页；切换「保留历史」可查询更早记录。卡片、趋势、供应商与模型统计始终使用全部匹配记录，不受明细窗口限制。历史保留 30 天、最多 10 万条。',
+    '失败次数按实际记录计数，不从四舍五入的成功率倒推。导出本页包含完整数值、请求 ID 与错误信息。',
     'Tokens 合计 = 新增输入 + 输出 + 缓存读取;缓存命中率 = 缓存读取 / (新增输入 + 缓存读取)。页面不折算金额。',
     '首响应 = 上游响应头到达的时间(ttfb_ms),不是模型首个输出 token 的时间;两者不能互相替代。',
   ];
@@ -1641,6 +1851,17 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && usageState.visible && usageState.inited) loadUsage();
 });
 document.addEventListener('DOMContentLoaded', () => {
+  const menu = $('usage-column-menu');
+  if (menu) {
+    document.addEventListener('click', event => {
+      if (menu.open && !menu.contains(event.target)) menu.open = false;
+    });
+    menu.addEventListener('keydown', event => {
+      if (event.key !== 'Escape') return;
+      menu.open = false;
+      menu.querySelector('summary').focus();
+    });
+  }
   const root = $('usage-heatmap') || $('usage-chart-holder');
   if (!root || !root.addEventListener) return;
   // 指针 / 触摸 / 键盘三种输入共用同一套读数。

@@ -497,9 +497,10 @@ test('Codex 直连按实际渠道置顶,路由按 main 与其它槽引用置顶'
   await h.run('refresh()');
   assert.deepEqual(cardOrder(h), ['o1', 'review-only', 'enabled-extra', 'o2']);
   for (const id of ['o1', 'review-only', 'enabled-extra', 'o2']) {
-    const button = cardOf(h, id).match(/<button\b[^>]*data-action="switch"[^>]*>/)?.[0];
-    assert.ok(button);
-    assert.doesNotMatch(button, /class="[^"]*\bprimary\b/, '路由模式不突出切换接入方式');
+    const buttons = [...cardOf(h, id).matchAll(/<button\b[^>]*data-action="switch-(?:router|direct)"[^>]*>/g)];
+    assert.equal(buttons.length, 2, '路由与直连入口同时保留');
+    for (const [button] of buttons)
+      assert.doesNotMatch(button, /class="[^"]*\bprimary\b/, '路由模式不突出切换接入方式');
   }
 });
 

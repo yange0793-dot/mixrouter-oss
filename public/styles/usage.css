@@ -10,10 +10,6 @@
   --usage-icon-sync: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.6 8.2A5.5 5.5 0 0 1 13.9 6.4M14.3 3.4v3.3H11M14.4 9.8A5.5 5.5 0 0 1 4.1 11.6M3.7 14.6v-3.3H7'/%3E%3C/svg%3E");
   --usage-icon-next: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 4.5 4.5 4.5L7 13.5'/%3E%3C/svg%3E");
   --usage-icon-prev: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M11 4.5 6.5 9l4.5 4.5'/%3E%3C/svg%3E");
-  --usage-icon-reqs: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 6.5h11.5M11.5 3.5l3 3-3 3M15 11.5H3.5M6.5 8.5l-3 3 3 3'/%3E%3C/svg%3E");
-  --usage-icon-tokens: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4.75' y='4.75' width='8.5' height='8.5' rx='1.6'/%3E%3Cpath d='M7.2 2.2v2.5M10.8 2.2v2.5M7.2 13.3v2.5M10.8 13.3v2.5M2.2 7.2h2.5M2.2 10.8h2.5M13.3 7.2h2.5M13.3 10.8h2.5'/%3E%3C/svg%3E");
-  --usage-icon-cache: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cellipse cx='9' cy='4.6' rx='5.5' ry='2.1'/%3E%3Cpath d='M3.5 4.6v8.8c0 1.16 2.46 2.1 5.5 2.1s5.5-.94 5.5-2.1V4.6M3.5 9c0 1.16 2.46 2.1 5.5 2.1s5.5-.94 5.5-2.1'/%3E%3C/svg%3E");
-  --usage-icon-ok: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='9' cy='9' r='6.6'/%3E%3Cpath d='m6.1 9.2 2 2 3.8-4'/%3E%3C/svg%3E");
 }
 
 /* ---- Top bar: one sync cluster ---------------------------------------------- */
@@ -89,7 +85,9 @@
 /* 页名与同步控件都搬进了顶栏,.head 只剩一个读屏标题,高度为 0:不再留它的 18px 下边距,
    intro 与其他页的 .sub 落在同一高度。 */
 #view-usage > .head { margin-bottom: 0; }
-#view-usage .usage-intro { margin: 0 0 16px; max-width: 92ch; font-size: var(--fs-sm); line-height: 1.6; color: var(--dim); }
+body[data-view="usage"] main { max-width: none; padding: 16px 24px 32px; }
+body[data-view="usage"] { --bg: var(--surface); }
+#view-usage .usage-intro { margin: 0 0 14px; max-width: 75ch; font-size: 12px; line-height: 1.6; color: var(--dim); }
 #view-usage .usage-source { margin-bottom: 16px; }
 #view-usage .usage-source h2 { font-size: 15px; font-weight: 600; letter-spacing: 0; margin-bottom: 8px; }
 #view-usage #usage-source-detail { margin: 0; font-size: var(--fs-sm); line-height: 1.6; color: var(--dim); }
@@ -99,30 +97,25 @@
 /* 协议组是分段控件;区间/供应商/模型/状态是「标签 + 值」一体的紧凑下拉,与分段控件同高。
    1440 下整条一行:左边协议组,右边四个下拉 + 清除筛选。 */
 #view-usage .usage-bar {
-  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
-  gap: 10px 16px; margin: 0 0 16px;
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start;
+  gap: 8px 12px; margin: 0 0 18px;
 }
 /* 分段控件(协议组、明细页签共用):轨道 + 激活滑块。 */
-#view-usage .usage-apps,
-#view-usage .usage-detail-tabs {
+#view-usage .usage-apps {
   display: inline-flex; flex-wrap: nowrap; align-items: stretch; gap: 2px;
   height: var(--control-h); padding: 3px; margin: 0;
   background: var(--track); border: 1px solid var(--border); border-radius: var(--radius);
 }
 #view-usage .usage-apps button,
-#view-usage .usage-apps .seg,
-#view-usage .usage-detail-tabs button {
+#view-usage .usage-apps .seg {
   display: inline-flex; align-items: center; justify-content: center;
   min-height: 0; height: auto; margin: 0; padding: 0 12px;
   background: transparent; border: 0; border-radius: var(--radius-sm); box-shadow: none;
   color: var(--dim); font-size: 13px; font-weight: 500; white-space: nowrap;
 }
-#view-usage .usage-apps button:hover:not(:disabled),
-#view-usage .usage-detail-tabs button:hover:not(:disabled) { background: transparent; color: var(--text); }
+#view-usage .usage-apps button:hover:not(:disabled) { background: transparent; color: var(--text); }
 #view-usage .usage-apps button.active,
-#view-usage .usage-apps button[aria-pressed="true"],
-#view-usage .usage-detail-tabs button.active,
-#view-usage .usage-detail-tabs button[aria-selected="true"] {
+#view-usage .usage-apps button[aria-pressed="true"] {
   background: var(--thumb); color: var(--text); font-weight: 600; border: 0;
 }
 /* 协议组用轻阴影区分选中态,明细页签只用底色。 */
@@ -132,8 +125,8 @@
 #view-usage .usage-detail-tabs button:focus-visible { outline-offset: -2px; }
 
 #view-usage .usage-filters {
-  display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end;
-  gap: 8px; margin: 0 0 0 auto; min-width: 0;
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start;
+  gap: 8px; margin: 0; min-width: 0;
 }
 #view-usage .usage-filter {
   display: inline-flex; flex-direction: row; align-items: center; gap: 0; flex: 0 0 auto; min-width: 0;
@@ -157,6 +150,14 @@
 #view-usage #usage-provider { width: 136px; }
 #view-usage #usage-model { width: 172px; }
 #view-usage #usage-status-filter { width: 104px; min-width: 0; }
+#view-usage #usage-status-code { width: 112px; min-width: 0; }
+#view-usage .usage-date-filter .ic { width: 16px; height: 16px; margin-right: 2px; }
+#view-usage .usage-custom-range { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; margin: -6px 0 16px; }
+#view-usage .usage-custom-range[hidden] { display: none; }
+#view-usage .usage-custom-range label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--dim); }
+#view-usage .usage-custom-range input { width: 150px; min-height: 34px; font-size: 13px; }
+#view-usage .usage-custom-range .usage-date-separator { align-self: center; padding-top: 16px; color: var(--dim); }
+#view-usage #usage-date-error { align-self: center; padding-top: 16px; margin: 0; font-size: 12px; }
 /* 选了具体值的筛选带一圈淡强调色:一眼看出哪些筛选正在生效。区间总有值,不参与。 */
 #view-usage .usage-filter[data-active="true"] {
   border-color: var(--accent-line);
@@ -174,51 +175,51 @@
 #view-usage #usage-clear-filters[data-empty="false"]:hover:not(:disabled) { background: var(--accent-soft); }
 
 /* ---- Metric cards ----------------------------------------------------------- */
-/* 四张同款卡,与概览页指标卡同一套语言:右上角图标方块(30px,--accent-soft 底 + 线性图标),
-   标签行里失败徽标紧跟在「成功率」后面。卡片底色/边框/阴影/数字字号沿用通用 .metric;
-   图标用伪元素画(卡片标记在 index.html,本页不改)。 */
 #view-usage .usage-grid {
-  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin: 0 0 8px;
+  display: grid; grid-template-columns: 1fr 1.5fr 1fr 1fr; gap: 0; margin: 0 0 22px;
 }
-#view-usage .usage-grid .metric::before {
-  content: ""; position: absolute; top: 16px; right: 16px; width: 30px; height: 30px;
-  border-radius: var(--radius); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent-soft);
+#view-usage .usage-grid .metric {
+  min-width: 0; padding: 0 20px; background: transparent; border: 0; border-right: 1px solid var(--border);
+  border-radius: 0; box-shadow: none;
 }
-#view-usage .usage-grid .metric::after {
-  content: ""; position: absolute; top: 23px; right: 23px; width: 16px; height: 16px;
-  background: var(--accent-text); -webkit-mask: var(--usage-icon-reqs) center / contain no-repeat;
-  mask: var(--usage-icon-reqs) center / contain no-repeat;
-}
-#view-usage .usage-grid .metric:nth-child(2)::after { -webkit-mask-image: var(--usage-icon-tokens); mask-image: var(--usage-icon-tokens); }
-#view-usage .usage-grid .metric:nth-child(3)::after { -webkit-mask-image: var(--usage-icon-cache); mask-image: var(--usage-icon-cache); }
-#view-usage .usage-grid .metric:nth-child(4)::after { -webkit-mask-image: var(--usage-icon-ok); mask-image: var(--usage-icon-ok); }
+#view-usage .usage-grid .metric:first-child { padding-left: 0; }
+#view-usage .usage-grid .metric:last-child { border-right: 0; }
+#view-usage .usage-grid .metric::before,
+#view-usage .usage-grid .metric::after { display: none; }
 #view-usage .usage-grid .metric-label {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; min-height: 30px; padding-right: 40px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; min-height: 20px; padding: 0;
+  font-size: 12px; color: var(--dim);
 }
 #view-usage .usage-grid .metric > b { white-space: nowrap; }
-/* base.css 冻结段给用量卡片写了 36px;这里回到全站指标卡的 --fs-metric,与概览同屏同规格。 */
-#view-usage .usage-grid .metric > b { font-size: var(--fs-metric); line-height: 1.2; margin-top: 10px; }
+#view-usage .usage-grid .metric > b { font-size: 24px; line-height: 1.25; margin-top: 4px; letter-spacing: -.3px; }
 /* 副标题只在空格和标点处换行:窄卡片里不把「缓存读取」「取消」从词中间拆开。 */
-#view-usage .usage-grid .metric small { word-break: keep-all; }
+#view-usage .usage-grid .metric small { word-break: keep-all; margin-top: 5px; font-size: 12px; }
 /* 成功率保留语义色:<95% 告警色,<85% 错误色(由 usage.js 切 is-low / is-bad)。 */
 #view-usage .usage-grid .metric > b.is-low { color: var(--warn-text); }
 #view-usage .usage-grid .metric > b.is-bad { color: var(--err-text); }
 /* 区间「2026-10-23 – 2026-10-27」整段折在破折号上,不从日期中间的连字符断开。 */
 #view-usage #usage-request-hint { overflow-wrap: normal; text-wrap: balance; }
 /* 新增 / 输出 / 缓存三段各自不折行,窄卡片里整段换到下一行,不会从数字中间拆开。 */
-#view-usage #usage-token-split { display: flex; flex-wrap: wrap; gap: 0 10px; font-size: 12.5px; }
+#view-usage #usage-token-split { display: flex; flex-wrap: wrap; gap: 0 10px; font-size: 12px; }
 #view-usage #usage-token-split .usage-split { white-space: nowrap; font-variant-numeric: tabular-nums; }
 /* 失败次数胶囊:`.metric b` 会命中卡里所有 b,这里连父级一起压回徽标尺寸。 */
 #view-usage .usage-grid .metric-label > b.metric-fail {
   display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; margin: 0;
-  height: 20px; padding: 0 8px; border-radius: var(--radius-pill);
-  background: var(--err-soft); color: var(--err-text); border: 1px solid var(--err-line);
-  font: 500 12px/1 var(--sans); letter-spacing: 0; font-variant-numeric: tabular-nums; white-space: nowrap;
+  height: 18px; padding: 0; border-radius: 0;
+  background: transparent; color: var(--err-text); border: 0;
+  font: 500 11px/1 var(--sans); letter-spacing: 0; font-variant-numeric: tabular-nums; white-space: nowrap;
 }
 #view-usage .usage-grid .metric-label > b.metric-fail::before {
-  content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex-shrink: 0;
+  display: none;
 }
 #view-usage .usage-grid .metric-label > b.metric-fail[hidden] { display: none; }
+#view-usage .usage-analytics { border-top: 1px solid var(--border); margin-top: 20px; }
+#view-usage .usage-analytics > summary { display: flex; align-items: center; gap: 8px; padding: 14px 0; list-style: none; font-size: 13px; font-weight: 600; color: var(--text); }
+#view-usage .usage-analytics > summary::-webkit-details-marker { display: none; }
+#view-usage .usage-analytics > summary::before { content: ""; width: 14px; height: 14px; background: currentColor; mask: var(--usage-icon-next) center / contain no-repeat; }
+#view-usage .usage-analytics[open] > summary::before { transform: rotate(90deg); }
+#view-usage .usage-analytics > summary:hover { color: var(--accent-text); }
+#view-usage .usage-analytics-hint { margin-left: auto; color: var(--dim); font-size: 12px; font-weight: 400; }
 
 /* ---- More metrics ----------------------------------------------------------- */
 #view-usage .usage-more-metrics { margin: 0 0 16px; font-size: var(--fs-sm); color: var(--dim); }
@@ -428,26 +429,76 @@
 
 /* ---- Detail tabs, tables, pagination ---------------------------------------- */
 #view-usage .usage-detail-head {
-  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; margin: 0 0 10px;
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin: 0;
+  border-bottom: 1px solid var(--border);
 }
+#view-usage .usage-detail-tabs { display: inline-flex; align-items: stretch; gap: 20px; height: 46px; padding: 0; border: 0; border-radius: 0; background: transparent; }
+#view-usage .usage-detail-tabs button { display: inline-flex; align-items: center; gap: 6px; height: 100%; min-height: 0; padding: 0 2px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--dim); font-size: 13px; box-shadow: none; }
+#view-usage .usage-detail-tabs button[aria-selected="true"] { border-bottom-color: var(--text); color: var(--text); font-weight: 600; }
+#view-usage .usage-detail-tabs button:hover { color: var(--text); }
+#view-usage .usage-tab-count { padding: 2px 5px; border-radius: 4px; background: var(--surface-2); font-size: 11px; font-weight: 500; color: var(--dim); font-variant-numeric: tabular-nums; line-height: 1.2; }
+#view-usage .usage-table-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 4px 0; }
+#view-usage .usage-table-tools .usage-filter { padding-left: 2px; height: 30px; border-color: transparent; background: transparent; }
+#view-usage .usage-table-tools .usage-filter:hover { border-color: var(--border); }
+#view-usage .usage-table-tools .usage-filter[data-active="true"] { background: var(--accent-soft); border-color: var(--accent-line); }
+#view-usage .usage-table-tools .usage-filter select { font-size: 12px; }
+#view-usage .usage-search { display: flex; align-items: center; gap: 6px; width: 202px; height: 30px; padding: 0 8px; background: var(--input); border: 1px solid var(--border); border-radius: var(--radius); }
+#view-usage .usage-search:focus-within { border-color: var(--accent); outline: 2px solid var(--accent-line); outline-offset: 1px; }
+#view-usage .usage-search .ic { flex-shrink: 0; width: 14px; height: 14px; color: var(--dim); }
+#view-usage .usage-search input { width: 100%; min-width: 0; min-height: 0; height: 100%; border: 0; padding: 0; background: transparent; box-shadow: none; outline: 0; font-size: 12px; caret-color: var(--accent); }
+#view-usage .usage-search input::placeholder { color: var(--dim); opacity: 1; }
+#view-usage .usage-columns { position: relative; }
+#view-usage .usage-columns > summary { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: var(--radius-sm); list-style: none; color: var(--dim); }
+#view-usage .usage-columns > summary::-webkit-details-marker { display: none; }
+#view-usage .usage-columns > summary:hover, #view-usage .usage-columns[open] > summary { background: var(--surface-2); color: var(--text); }
+#view-usage .usage-columns-panel { position: absolute; right: 0; top: 36px; z-index: 8; width: 208px; max-height: 65vh; overflow-y: auto; padding: 12px; background: var(--raised); border: 1px solid var(--border-strong); border-radius: var(--radius); }
+#view-usage .usage-columns-panel .usage-density-label { display: flex; align-items: center; justify-content: space-between; padding-bottom: 10px; margin-bottom: 10px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text); }
+#view-usage .usage-columns-panel select { min-height: 30px; padding: 2px 26px 2px 8px; font-size: 12px; }
+#view-usage .usage-columns-panel fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
+#view-usage .usage-columns-panel legend { padding: 0 0 6px; color: var(--dim); font-size: 12px; }
+#view-usage .usage-columns-panel fieldset label { display: flex; align-items: center; gap: 8px; min-height: 30px; font-size: 13px; color: var(--text); cursor: pointer; }
+#view-usage .usage-columns-panel input { width: 14px; height: 14px; min-height: 0; margin: 0; accent-color: var(--accent); }
+#view-usage .usage-columns-panel fieldset:disabled { opacity: .55; }
+#view-usage .usage-records-window { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 0; }
+#view-usage .usage-records-window[hidden] { display: none; }
+#view-usage .usage-records-window .usage-filter { padding-left: 2px; }
+#view-usage .usage-records-window .hint { flex: 1 1 260px; margin: 0; font-size: 12px; }
 #view-usage #usage-count { margin: 0; font-size: 12.5px; color: var(--dim); font-variant-numeric: tabular-nums; }
 #view-usage .usage-table {
-  margin: 0 0 10px; overflow-x: auto; overscroll-behavior-x: contain;
-  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
-  box-shadow: var(--highlight), var(--shadow-sm);
+  margin: 0; max-height: 62vh; overflow: auto; overscroll-behavior-x: contain;
+  background: var(--surface); border: 0; border-bottom: 1px solid var(--border); border-radius: 0;
+  box-shadow: none; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent;
 }
 #view-usage .usage-table:focus-visible { outline-offset: 2px; }
-#view-usage .usage-table table { min-width: 860px; }
+#view-usage .usage-table table { min-width: 100%; border-collapse: separate; border-spacing: 0; }
+#view-usage .usage-table thead th { position: sticky; top: 0; z-index: 2; }
 #view-usage .usage-table th,
 #view-usage .usage-trend-table th {
   padding: 9px 12px; background: var(--panel); border-bottom: 1px solid var(--border);
-  font-size: 12px; font-weight: 600; line-height: 1.4; letter-spacing: 0; color: var(--dim); white-space: nowrap;
+  font-size: 12px; font-weight: 500; line-height: 1.4; letter-spacing: 0; color: var(--dim); white-space: nowrap;
 }
 #view-usage .usage-table td,
 #view-usage .usage-trend-table td {
   padding: 10px 12px; border-top: 1px solid var(--border-soft);
-  font-size: var(--fs-sm); line-height: 1.45; white-space: nowrap; font-variant-numeric: tabular-nums;
+  font-size: 13px; line-height: 1.45; white-space: nowrap; font-variant-numeric: tabular-nums;
 }
+#view-usage .usage-table[data-density="comfortable"] td { padding-top: 17px; padding-bottom: 17px; }
+#view-usage .usage-sort { display: inline-flex; align-items: center; justify-content: flex-end; gap: 4px; width: 100%; min-height: 20px; margin: 0; padding: 0; border: 0; border-radius: 2px; background: transparent; color: inherit; font: inherit; box-shadow: none; }
+#view-usage th:first-child .usage-sort { justify-content: flex-start; }
+#view-usage .usage-sort svg { width: 10px; height: 14px; flex-shrink: 0; color: var(--faint); }
+#view-usage .usage-sort:hover, #view-usage th[aria-sort="ascending"] .usage-sort, #view-usage th[aria-sort="descending"] .usage-sort { color: var(--text); }
+#view-usage th[aria-sort="ascending"] svg, #view-usage th[aria-sort="descending"] svg { color: var(--accent-text); }
+#view-usage th[aria-sort="ascending"] .usage-sort-down, #view-usage th[aria-sort="descending"] .usage-sort-up { opacity: .25; }
+#view-usage .usage-table [data-column="provider"] { max-width: 185px; overflow: hidden; text-overflow: ellipsis; }
+#view-usage .usage-app-label { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; }
+#view-usage .usage-app-label::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--dim); }
+#view-usage .usage-app-label[data-app="codex"]::before { background: var(--accent); }
+#view-usage .usage-app-label[data-app="claude"]::before { background: var(--warn); }
+#view-usage .usage-drilldown { min-height: 0; padding: 0; border: 0; border-radius: 2px; background: transparent; color: var(--text); font: inherit; text-align: left; }
+#view-usage .usage-drilldown:hover { color: var(--accent-text); text-decoration: underline; text-underline-offset: 3px; }
+#view-usage #usage-rows td.usage-empty { height: 200px; text-align: center; white-space: normal; }
+#view-usage .usage-empty strong { display: block; margin-bottom: 6px; color: var(--text); font-size: 15px; }
+#view-usage .usage-empty span { display: block; color: var(--dim); margin-bottom: 14px; }
 #view-usage .usage-table th:first-child, #view-usage .usage-table td:first-child,
 #view-usage .usage-trend-table th:first-child, #view-usage .usage-trend-table td:first-child { padding-left: 16px; }
 #view-usage .usage-table th:last-child, #view-usage .usage-table td:last-child,
@@ -466,9 +517,9 @@
 #view-usage .usage-table[aria-labelledby="usage-tab-requests"] td:first-child,
 #view-usage .usage-trend-table td:first-child { color: var(--dim); }
 #view-usage .usage-table[aria-labelledby="usage-tab-requests"] td:nth-child(4) {
-  min-width: 180px; max-width: 260px; white-space: normal; color: var(--tag-text); font: 12.5px/1.45 var(--mono);
+  min-width: 145px; max-width: 230px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); font: 12px/1.45 var(--mono);
 }
-#view-usage .usage-table td .model-alias { display: inline-block; margin-left: 6px; font: 12px var(--sans); color: var(--dim); white-space: nowrap; }
+#view-usage .usage-table td .model-alias { display: none; }
 /* 供应商页签:撞名的行补一个协议组小标;缺 provider 字段的那一行写人话,不显示后端的「(未知)」。 */
 #view-usage .usage-table td .usage-prov-app {
   display: inline-block; margin-left: 8px; padding: 0 6px; border: 1px solid var(--border-soft); border-radius: var(--radius-sm);
@@ -482,9 +533,12 @@
 #view-usage .usage-table td .usage-st-code { font: 12px/1 var(--mono); color: var(--dim); }
 
 #view-usage .usage-pagination {
-  display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin: 0 0 20px;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 0 0;
   font-size: 12.5px; color: var(--dim);
 }
+#view-usage .usage-page-controls, #view-usage .usage-page-size { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+#view-usage .usage-page-size select { min-height: 28px; width: 64px; padding: 2px 22px 2px 8px; font-size: 12px; }
+#view-usage .usage-pagination #usage-count { margin-right: auto; font-size: 12px; }
 #view-usage #usage-page-label { padding: 0 6px; color: var(--dim); font-variant-numeric: tabular-nums; }
 #view-usage .usage-pagination button {
   display: inline-flex; align-items: center; gap: 4px; min-height: var(--control-h-sm); padding: 0 10px; font-size: 12.5px;
@@ -503,9 +557,11 @@
   #view-usage .usage-bar { justify-content: flex-start; }
   #view-usage .usage-filters { margin-left: 0; justify-content: flex-start; }
 }
-@media (max-width: 1180px) {
+@media (max-width: 700px) {
   /* 四张卡挤一排时「成功率 + 失败徽标」会互相顶:改两列。 */
-  #view-usage .usage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  #view-usage .usage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 0; }
+  #view-usage .usage-grid .metric:nth-child(2) { border-right: 0; }
+  #view-usage .usage-grid .metric:nth-child(3) { padding-left: 0; }
 }
 @media (max-width: 860px) {
   #view-usage .usage-sync-group, #topbar-page-actions .usage-sync-group { height: 34px; }
@@ -514,24 +570,22 @@
   #view-usage .usage-sync-group .usage-last-sync,
   #topbar-page-actions .usage-sync-group .usage-last-sync { display: none; }
   /* 手机:协议组整行三等分;四个下拉两列并排;「清除筛选」只在有筛选时出现,靠右。 */
-  #view-usage .usage-bar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-  #view-usage .usage-apps { grid-column: 1 / -1; width: 100%; height: 40px; }
+  body[data-view="usage"] main { padding: 16px 16px 28px; }
+  #view-usage .usage-bar { display: flex; flex-wrap: wrap; gap: 8px; }
+  #view-usage .usage-apps { flex: 1 1 auto; width: auto; height: 36px; }
   #view-usage .usage-apps button, #view-usage .usage-apps .seg { flex: 1 1 0; padding: 0 8px; }
-  #view-usage .usage-filters { display: contents; }
-  #view-usage .usage-filter { width: 100%; }
+  #view-usage .usage-filters { display: flex; flex-wrap: wrap; width: 100%; }
+  #view-usage .usage-filters .usage-filter { flex: 1 1 140px; }
+  #view-usage .usage-date-filter { flex: 0 0 140px; }
   #view-usage .usage-filter select,
   #view-usage #usage-range-select, #view-usage #usage-provider,
   #view-usage #usage-model, #view-usage #usage-status-filter { flex: 1 1 auto; width: 100%; min-width: 0; }
   #view-usage #usage-clear-filters { grid-column: 1 / -1; justify-self: end; }
   #view-usage #usage-clear-filters[data-empty="true"] { display: none; }
-  #view-usage .usage-grid { gap: 10px; }
-  #view-usage .usage-grid .metric { padding: 14px 14px 12px; }
-  #view-usage .usage-grid .metric::before { top: 14px; right: 14px; width: 26px; height: 26px; }
-  #view-usage .usage-grid .metric::after { top: 20px; right: 20px; width: 14px; height: 14px; }
-  #view-usage .usage-grid .metric-label { min-height: 26px; padding-right: 32px; font-size: 12.5px; }
-  #view-usage .usage-grid .metric > b { margin-top: 8px; font-size: 24px; letter-spacing: 0; }
+  #view-usage .usage-grid .metric-label { min-height: 20px; padding-right: 0; font-size: 12px; }
+  #view-usage .usage-grid .metric > b { margin-top: 4px; font-size: 22px; letter-spacing: 0; }
   #view-usage .usage-grid .metric > small { font-size: 12px; }
-  #view-usage .usage-grid .metric-label > b.metric-fail { height: 18px; padding: 0 6px; font-size: 11px; }
+  #view-usage .usage-grid .metric-label > b.metric-fail { height: 18px; padding: 0; font-size: 11px; }
   #view-usage .usage-grid .metric-label > b.metric-fail::before { display: none; }
   #view-usage .usage-chart { padding: 14px 14px 12px; }
   #view-usage .usage-chart-side { max-width: none; }
@@ -543,15 +597,25 @@
   /* 日历放不下时在自己的滚动区里横向滚动(锚在最近一周),星期标签黏在左边不跟着滚走。 */
   #view-usage .heatmap-weekdays { position: sticky; left: 0; z-index: 1; background: var(--surface); }
   #view-usage #usage-calendar-expand { margin-left: 0; }
-  #view-usage .usage-detail-head { flex-direction: column; align-items: stretch; }
-  #view-usage .usage-detail-tabs { width: 100%; height: 40px; }
-  #view-usage .usage-detail-tabs button { flex: 1 1 0; padding: 0 8px; }
+  #view-usage .usage-detail-head { flex-direction: column; align-items: stretch; gap: 0; }
+  #view-usage .usage-detail-tabs { width: 100%; height: 42px; gap: 20px; }
+  #view-usage .usage-detail-tabs button { flex: 0 1 auto; padding: 0 2px; }
+  #view-usage .usage-table-tools { padding: 8px 0; }
+  #view-usage .usage-search { flex: 1 1 100%; height: 34px; }
+  #view-usage .usage-table-tools .usage-filter { width: auto; }
+  #view-usage .usage-table-tools #usage-export { margin-left: auto; }
   #view-usage .usage-table td, #view-usage .usage-table th { padding-left: 12px; padding-right: 12px; }
-  #view-usage .usage-pagination { justify-content: space-between; }
+  #view-usage .usage-pagination { flex-wrap: wrap; justify-content: space-between; }
+  #view-usage .usage-pagination #usage-count { margin-right: 0; }
+  #view-usage .usage-page-controls { margin-left: auto; }
+  #view-usage .usage-analytics-hint { display: none; }
+  #view-usage .usage-custom-range .usage-date-separator { display: none; }
+  #view-usage .usage-table { max-height: 60vh; }
   #view-usage .usage-pagination button { min-height: 34px; }
 }
 @media (max-width: 560px) {
-  #view-usage .usage-grid .metric > b { margin-top: 8px; font-size: 22px; }
+  #view-usage .usage-grid .metric > b { margin-top: 4px; font-size: 22px; }
+  #view-usage .usage-page-controls { width: 100%; justify-content: flex-end; }
 }
 
 /* ---- Motion / forced colors -------------------------------------------------- */

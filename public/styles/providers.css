@@ -130,12 +130,14 @@ body[data-connection=offline] #prov-grid .card.sel { border-color: var(--border)
 #prov-grid .provider-meta .probelines,
 #prov-grid .provider-meta > .probeline { grid-column: 1 / -1; white-space: normal; text-align: left; }
 
-/* One named action plus a quiet, accessible tool group. Destructive tools get their
+/* Connection actions plus a quiet, accessible tool group. Destructive tools get their
    status color only on hover; icons do not compete with the current channel. */
 #prov-grid .provider-actions { display: flex; flex-wrap: wrap; gap: 3px; align-items: center; }
 #prov-grid .provider-actions button { min-height: 32px; padding: 4px 11px; font-size: 12.5px; }
 #prov-grid .provider-actions [data-action="switch"],
 #prov-grid .provider-actions .route-only-tag { margin-right: 6px; }
+#prov-grid .provider-connect-actions { display: inline-flex; flex: 0 0 auto; gap: 4px; margin-right: 6px; }
+#prov-grid .provider-connect-actions button { white-space: nowrap; }
 #prov-grid .provider-actions button.provider-icon-action {
   display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
   width: 32px; height: 32px; padding: 0;
@@ -199,6 +201,11 @@ body[data-connection=offline] #prov-grid .card.sel { border-color: var(--border)
 }
 #prov-grid:not([data-layout="grid"]) > .card .foot { border-top: 0; padding-top: 0; margin-top: 0; }
 #prov-grid:not([data-layout="grid"]) > .card.cur { box-shadow: inset 3px 0 0 var(--accent); }
+@media (min-width: 1101px) {
+  body[data-client="codex"] #prov-grid:not([data-layout="grid"]) > .card:has(.provider-identity) {
+    grid-template-columns: minmax(0, 1fr) minmax(340px, 352px);
+  }
+}
 
 /* ---- 4. Grid layout: cards ------------------------------------------------ */
 #prov-grid[data-layout="grid"] { grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr)); gap: 12px; }
@@ -206,6 +213,7 @@ body[data-connection=offline] #prov-grid .card.sel { border-color: var(--border)
 #prov-grid[data-layout="grid"] .provider-meta { margin-top: 2px; }
 #prov-grid[data-layout="grid"] .provider-meta .testline { text-align: left; }
 #prov-grid[data-layout="grid"] .provider-actions { margin-top: auto; padding-top: 12px; border-top: 1px solid var(--border-soft); }
+#prov-grid[data-layout="grid"] .provider-connect-actions { flex-basis: 100%; margin: 0 0 4px; }
 #prov-grid[data-layout="grid"] .provider-actions button.provider-icon-action[data-action="delete"] { margin-left: auto; border-left-color: transparent; }
 
 /* ---- 5. Narrow screens ---------------------------------------------------- */
@@ -281,6 +289,8 @@ body[data-connection=offline] #prov-grid .card.sel { border-color: var(--border)
   #prov-grid .provider-meta .keypick { width: 100%; min-width: 0; max-width: 100%; }
   #prov-grid .provider-meta .testline { grid-column: 1 / -1; }
 
+  #prov-grid .provider-connect-actions { flex-basis: 100%; margin: 0 0 4px; }
+  #prov-grid .provider-connect-actions button { flex: 1; }
   #prov-grid .provider-actions button.provider-icon-action { width: 34px; height: 34px; }
   #prov-grid .provider-actions button.provider-icon-action[data-action="delete"] { margin-left: auto; }
 }
