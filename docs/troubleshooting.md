@@ -415,6 +415,7 @@ lsof -nP -iTCP:8788 -sTCP:LISTEN
 | `slot` | 命中的槽位;空槽记 `none`,缺字段的旧日志记 `unknown` |
 | `sticky` / `strategy` / `rule` | 是否走了会话粘性 / 用的策略 / 命中的标识。通用规则删除后,`rule` 只在槽位与压缩这类内置目标上有值;旧日志里的历史值照读 |
 | `key_id` / `key_source` | 用的是哪把 Key(**非明文**的来源标记);多 Key 自动备用换号记为 `key_fallback` |
+| `provider` / `provider_id` / `provider_app` | 渠道显示名 / 渠道 id / 渠道所在的渠道库。显示名可以重名,按渠道查用 id;`provider_app` 与 `app` 不同说明是 Codex 共用压缩落到了 Claude 渠道。旧日志没有后两个字段 |
 | `request_id` | 本进程内尝试过程的 id,对应诊断页「实时尝试过程」与 `GET /api/attempts` |
 | `effort` | **真的发上去的那一档**思考强度(原生 Responses 读取出站 reasoning.effort,转换线读取转换结果),不是客户端想要的那档 |
 | `model_in` / `model_out` | 客户端说的模型 / 实际发给上游的模型 |

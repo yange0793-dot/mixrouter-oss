@@ -241,8 +241,6 @@ function harness(options = {}) {
     toasts: [],
   });
   context.toast = message => context.toasts.push(message);
-  // app.js 的 state(渠道库):供应商页签按它判断撞名的渠道属于哪个协议组。
-  if (options.appState) context.state = options.appState;
   // 顶层 function 声明会挂到 vm 的全局对象上,但 const 不会 —— 用脚本尾部导出这些名字。
   vm.runInContext(APP_FORMATTERS, context, { filename: 'public/js/app.js (formatters)' });
   vm.runInContext(SOURCE + '\n;globalThis.__t = { usageState, usageHeatLevel, usageHeatThresholds, usageQuery, usageHeatModel, usageDayLabel, usageHeatCellText, getDaily: () => usageState.dailyRefs };', context, { filename: 'public/js/usage.js' });
@@ -326,10 +324,17 @@ function usageFixture(options = {}) {
     ],
     dashboard: {
       daily,
+      by_channel: [
+        { channel: 'id:p-main', provider_id: 'p-main', app: 'claude', name: '主力渠道', reqs: 25, tokens_in: 5000, tokens_out: 2500, cache_read: 5000 },
+        { channel: 'id:p-backup', provider_id: 'p-backup', app: 'claude', name: '备用渠道', reqs: 12, tokens_in: 2000, tokens_out: 1000, cache_read: 2000 },
+        { channel: 'id:c-third', provider_id: 'c-third', app: 'codex', name: '第三方渠道', reqs: 5, tokens_in: 1000, tokens_out: 500, cache_read: 1000 },
+      ],
       records: { rows: records, total: options.total ?? 120, offset: 0, limit: 50, has_more: true },
       facets: {
         providers: ['主力渠道', '备用渠道', '第三方渠道'].map(value => ({ value, label: value })),
         models: ['claude-opus-4-8', 'mystery-model'].map(value => ({ value, label: value })),
+        channels: [['id:p-main', '主力渠道', 'claude', 'p-main'], ['id:p-backup', '备用渠道', 'claude', 'p-backup'],
+          ['id:c-third', '第三方渠道', 'codex', 'c-third']].map(([value, label, app, provider_id]) => ({ value, label, app, provider_id })),
       },
       coverage: {
         first_ts: noonIso(coverageFirst),
@@ -400,8 +405,10 @@ test('查询:默认全部区间,带 dashboard=1 与 offset/limit;筛选值进同
 
   h.run("setUsageFilter('app', 'codex')");
   assert.match(h.requests.at(-1).url, /app=codex/);
-  h.run("setUsageFilter('provider', '主力渠道')");
-  assert.match(decodeURIComponent(h.requests.at(-1).url), /provider=主力渠道/);
+  // 供应商下拉的值是渠道键,按 channel 参数发出去(显示名不唯一,不再按 provider 名筛)
+  h.run("setUsageFilter('provider', 'id:p-main')");
+  assert.match(decodeURIComponent(h.requests.at(-1).url), /channel=id:p-main/);
+  assert.doesNotMatch(h.requests.at(-1).url, /provider=/);
   h.run("setUsageFilter('model', 'claude-opus-4-8')");
   assert.match(decodeURIComponent(h.requests.at(-1).url), /model=claude-opus-4-8/);
 
@@ -419,7 +426,7 @@ test('查询:默认全部区间,带 dashboard=1 与 offset/limit;筛选值进同
 
   h.run('clearUsageFilters()');
   const cleared = decodeURIComponent(h.requests.at(-1).url);
-  assert.doesNotMatch(cleared, /app=|provider=|model=|status=/);
+  assert.doesNotMatch(cleared, /app=|provider=|channel=|model=|status=/);
   assert.equal(h.state.provider, '');
   assert.equal(h.get('usage-provider').value, '');
 });
@@ -570,9 +577,9 @@ test('筛选下拉:facets 提供兄弟项、选中项保留、未知值不静默
   assert.match(h.get('usage-provider').innerHTML, /备用渠道/, '选了 A 之后 B 仍在清单里');
   assert.match(h.get('usage-model').innerHTML, /claude-opus-4-8/);
 
-  h.run("setUsageFilter('provider', '主力渠道')");
+  h.run("setUsageFilter('provider', 'id:p-main')");
   await tick();
-  assert.equal(h.get('usage-provider').value, '主力渠道');
+  assert.equal(h.get('usage-provider').value, 'id:p-main');
   assert.match(h.get('usage-provider').innerHTML, /备用渠道/);
 
   // 选中值不在 facets 里:必须继续显示为选中并给「无匹配」,不能退回全部
@@ -587,7 +594,7 @@ test('筛选下拉:facets 提供兄弟项、选中项保留、未知值不静默
   h.document.activeElement = provider;
   const before = provider._html;
   const changed = usageFixture();
-  changed.dashboard.facets.providers.push({ value: '新渠道', label: '新渠道' });
+  changed.dashboard.facets.channels.push({ value: 'id:p-new', label: '新渠道', app: 'claude', provider_id: 'p-new' });
   h.setResponse(changed);
   await h.run('loadUsage()');
   assert.equal(provider._html, before, '打开着的下拉不能被重填');
@@ -704,8 +711,8 @@ test('分页:请求页走服务端 offset,供应商页本地切片且不重新�
 
   // 供应商/模型是在同一批匹配行上的聚合:本地切片,不再请求
   const next = usageFixture();
-  next.by_provider = next.by_provider.concat([
-    { provider: '第四渠道', name: '第四渠道', reqs: 1, tokens_in: 1, tokens_out: 1, cache_read: 0 },
+  next.dashboard.by_channel = next.dashboard.by_channel.concat([
+    { channel: 'id:p-4', provider_id: 'p-4', app: 'claude', name: '第四渠道', reqs: 1, tokens_in: 1, tokens_out: 1, cache_read: 0 },
   ]);
   h.setResponse(next);
   h.run('usageState.limit = 2; usagePage(1)'); // 先把请求页归位
@@ -1096,40 +1103,53 @@ test('热力图铺满宽度:覆盖本来就比卡片长时按覆盖画;空白不
   assert.equal(long.get('usage-heatmap').attributes['data-density'], 'dense', '格子被压到最小时星期只标一半');
 });
 
-// #21:后端把缺 provider 字段的行归到「(未知)」;两个协议组各有一个同名渠道时聚合表里是两行同样的名字。
-test('供应商页签:「(未知)」写成人话,撞名的渠道按渠道库补协议组小标', async () => {
+// #21:显示名不唯一。后端按渠道分组(dashboard.by_channel),每行带渠道 id 与渠道所在的协议组;
+// 前端只按这些字段补小标,不再拿名字去渠道库反查。
+test('供应商页签:按后端渠道分组,「(未知)」写成人话,撞名按协议组、再按渠道 id 区分', async () => {
   const fixture = usageFixture();
-  fixture.by_provider = [
-    { provider: 'Happy coding', name: 'Happy coding', reqs: 770, tokens_in: 1, tokens_out: 1, cache_read: 0 },
-    { provider: 'happy coding', name: 'happy coding', reqs: 75, tokens_in: 1, tokens_out: 1, cache_read: 0 },
-    { provider: 'AgentRouter', name: 'AgentRouter', reqs: 785, tokens_in: 1, tokens_out: 1, cache_read: 0 },
-    { provider: '(未知)', name: '(未知)', reqs: 16, tokens_in: 0, tokens_out: 0, cache_read: 0 },
-    { provider: '主力渠道', name: '主力渠道', reqs: 5, tokens_in: 1, tokens_out: 1, cache_read: 0 },
+  const row = (provider_id, app, name, reqs) => ({
+    channel: provider_id ? `id:${provider_id}` : `name:${app}:${name}`, provider_id, app, name, reqs,
+    tokens_in: 1, tokens_out: 1, cache_read: 0,
+  });
+  fixture.dashboard.by_channel = [
+    row('p-ar', 'claude', 'AgentRouter', 785),
+    row('c-ar', 'codex', 'AgentRouter', 700),
+    row('p-hc', 'claude', 'Happy coding', 770),
+    row('c-hc', 'codex', 'happy coding', 75),
+    row('p-s1', 'claude', '同名', 9),
+    row('p-s2', 'claude', '同名', 8),
+    row('', 'claude', '同名', 7),
+    { channel: 'none', provider_id: '', app: '', name: '(未知)', reqs: 16, tokens_in: 0, tokens_out: 0, cache_read: 0 },
+    row('p-main', 'claude', '主力渠道', 5),
   ];
-  fixture.dashboard.facets.providers = fixture.by_provider.map(p => ({ value: p.name, label: p.name }));
-  const appState = { providers: {
-    claude: [{ name: 'Happy coding' }, { name: 'AgentRouter' }, { name: '主力渠道' }],
-    codex: [{ name: 'happy coding' }, { name: 'AgentRouter' }],
-  } };
-  const h = harness({ response: fixture, appState });
+  fixture.dashboard.facets.channels = fixture.dashboard.by_channel.map(c => ({
+    value: c.channel, label: c.name, app: c.app, provider_id: c.provider_id,
+  }));
+  const h = harness({ response: fixture });
   await h.run('loadUsage()');
   h.run("setUsageTab('providers')");
   const rows = h.get('usage-rows').innerHTML;
   assert.match(rows, /<td><span class="usage-prov-unknown" title="请求失败于选渠道之前,或日志缺 provider 字段">未记录渠道<\/span><\/td>/);
   assert.doesNotMatch(rows, /\(未知\)/, '不显示后端的占位名');
-  assert.match(rows, /Happy coding<span class="usage-prov-app" title="Anthropic 协议组的渠道">Anthropic<\/span>/);
-  assert.match(rows, /happy coding<span class="usage-prov-app" title="OpenAI 协议组的渠道">OpenAI<\/span>/);
-  // 两个协议组里都叫 AgentRouter:日志只记显示名,这一行是合计,要说清楚。
-  assert.match(rows, /AgentRouter<span class="usage-prov-app" title="两个协议组里都有这个名字的渠道;日志只记显示名,这一行是两者合计">Anthropic \+ OpenAI<\/span>/);
+  // 两个协议组里都叫 AgentRouter:两行,各自写协议组;不分大小写撞名的 Happy coding 同理。
+  assert.match(rows, /AgentRouter<span class="usage-prov-app" title="Anthropic 协议组的渠道 · id p-ar">Anthropic<\/span>/);
+  assert.match(rows, /AgentRouter<span class="usage-prov-app" title="OpenAI 协议组的渠道 · id c-ar">OpenAI<\/span>/);
+  assert.match(rows, /Happy coding<span class="usage-prov-app" title="Anthropic 协议组的渠道 · id p-hc">Anthropic<\/span>/);
+  assert.match(rows, /happy coding<span class="usage-prov-app" title="OpenAI 协议组的渠道 · id c-hc">OpenAI<\/span>/);
+  assert.doesNotMatch(rows, /两者合计|Anthropic \+ OpenAI/, '同名渠道不再合成一行');
+  // 同一协议组里还撞名:再补渠道 id;旧日志没有 id,写「旧日志」。
+  assert.match(rows, /同名<span class="usage-prov-app" title="Anthropic 协议组的渠道 · id p-s1">Anthropic · p-s1<\/span>/);
+  assert.match(rows, /同名<span class="usage-prov-app" title="Anthropic 协议组的渠道 · id p-s2">Anthropic · p-s2<\/span>/);
+  assert.match(rows, /同名<span class="usage-prov-app" title="Anthropic 协议组 · 旧日志没有渠道 id,只记了显示名">Anthropic · 旧日志<\/span>/);
   assert.match(rows, /<td>主力渠道<\/td>/, '不撞名的行不加小标');
-  // 筛选下拉:值仍是「(未知)」(与后端分组键一致),只换显示文字。
-  assert.match(h.get('usage-provider').innerHTML, /<option value="\(未知\)">未记录渠道<\/option>/);
-
-  // 拿不到渠道库(旧外壳 / 测试桩)时不瞎猜协议组,只保留原名。
-  const bare = harness({ response: fixture });
-  await bare.run('loadUsage()');
-  bare.run("setUsageTab('providers')");
-  assert.doesNotMatch(bare.get('usage-rows').innerHTML, /usage-prov-app/);
+  assert.match(h.get('usage-count').textContent, /共 9 个供应商/);
+  // 筛选下拉:值是渠道键,文字与表格同一套区分规则。
+  const options = h.get('usage-provider').innerHTML;
+  assert.match(options, /<option value="none">未记录渠道<\/option>/);
+  assert.match(options, /<option value="id:p-ar">AgentRouter · Anthropic<\/option>/);
+  assert.match(options, /<option value="id:c-ar">AgentRouter · OpenAI<\/option>/);
+  assert.match(options, /<option value="name:claude:同名">同名 · Anthropic · 旧日志<\/option>/);
+  assert.match(options, /<option value="id:p-main">主力渠道<\/option>/);
 });
 
 test('分页标签:页数用千分位', async () => {

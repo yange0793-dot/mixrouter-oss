@@ -109,6 +109,17 @@ for (const wire of ['responses', 'chat']) test(`${wire}: Codex summary uses shar
   assert.equal(p.selection.predicted.wire, wire);
 });
 
+// 用量页按渠道分组:共用压缩落在 Claude 库的渠道上,日志要记下渠道所在的库,而不只是请求的 app。
+test('request log records the channel id and its store for shared compaction and normal Codex requests', async () => {
+  assert.equal((await send('normal request')).status, 200);
+  assert.equal((await send()).status, 200);
+  const { logs } = JSON.parse((await request(ui, '/api/logs?limit=2', undefined, 'GET')).text);
+  assert.deepEqual(logs.map(l => [l.app, l.provider, l.provider_id, l.provider_app]), [
+    ['codex', 'Shared', 'shared', 'claude'],
+    ['codex', 'Main', 'main', 'codex'],
+  ]);
+});
+
 test('one compact setting hot-updates Codex model and fixed key without changing slots or client config', async () => {
   const config = 'model = "mixr-main"\nmodel_auto_compact_token_limit = 400000\n';
   fs.writeFileSync(process.env.MIXR_CODEX_CONFIG, config);

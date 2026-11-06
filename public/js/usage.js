@@ -133,7 +133,9 @@ function usageQuery() {
   q.set('dashboard', '1');
   q.set('range', usageState.range);
   if (usageState.app) q.set('app', usageState.app);
-  if (usageState.provider) q.set('provider', usageState.provider);
+  // 供应商下拉的值是渠道键(by_channel[].channel),不是显示名:显示名不唯一,
+  // 后端按 channel 精确匹配。状态名沿用 provider,index.html 的 onchange 是按这个名字调的。
+  if (usageState.provider) q.set('channel', usageState.provider);
   if (usageState.model) q.set('model', usageState.model);
   if (usageState.status) q.set('status', usageState.status);
   q.set('offset', String(usageState.offset));
@@ -447,7 +449,7 @@ function usagePage(delta) {
     loadUsage();
     return;
   }
-  const list = usageState.tab === 'providers' ? usageState.data.by_provider : usageState.data.by_model;
+  const list = usageState.tab === 'providers' ? usageChannelRows(usageState.data) : usageState.data.by_model;
   const pages = Math.max(1, Math.ceil((Array.isArray(list) ? list.length : 0) / usageState.limit));
   const next = Math.min(pages - 1, Math.max(0, usageState.pageAgg + direction));
   if (next === usageState.pageAgg) return;
@@ -588,14 +590,13 @@ function usageFillSelect(id, items, current, allLabel) {
 function usageRenderFilters(data) {
   const dashboard = (data && data.dashboard) || {};
   const facets = dashboard.facets || {};
-  const providerFacets = Array.isArray(facets.providers) && facets.providers.length
-    ? facets.providers
-    : (Array.isArray(data.by_provider) ? data.by_provider.map(p => ({
-      value: p.name || p.provider || '', label: p.name || p.provider || '',
-    })) : []);
-  // 「(未知)」仍是筛选值(与后端分组键一致),只把显示文字换成人话。
-  const providerOptions = providerFacets.map(item => (item && (item.value ?? item.label) === USAGE_UNKNOWN_PROVIDER
-    ? { value: USAGE_UNKNOWN_PROVIDER, label: '未记录渠道' } : item));
+  // 供应商下拉:值是渠道键,文字与供应商页签同一套撞名规则(下拉里放不下小标,写成「名字 · 协议组」)。
+  const channels = (Array.isArray(facets.channels) ? facets.channels : []).map(usageFacetChannel);
+  const label = usageChannelNamer(channels);
+  const providerOptions = channels.map(row => {
+    const shown = label(row);
+    return { value: row.channel, label: shown.tag ? `${shown.name} · ${shown.tag}` : shown.name };
+  });
   const modelFacets = Array.isArray(facets.models) && facets.models.length
     ? facets.models
     : (Array.isArray(data.by_model) ? data.by_model.map(m => ({ value: m.model || '', label: m.model || '' })) : []);
@@ -1310,54 +1311,58 @@ function usageRecordRow(row) {
     + `<td>${usageRecordStatus(row)}</td><td>${fmtRate(row)}</td>`
     + `<td title="上游响应头到达时间;不是模型首个输出 token 的时间">${fmtTtfb(usageNum(row.ttfb_ms))}</td></tr>`;
 }
-// 供应商名来自日志的 provider 字段(渠道显示名),后端把缺这个字段的行归到「(未知)」。
-// 显示名不唯一:两个协议组各有一个同名(或只差大小写)的渠道时,聚合表里是两行一模一样的名字。
-// 这里按渠道库(/api/state 的 providers)反查名字属于哪个协议组,只给撞名的行补一个协议组小标。
-const USAGE_UNKNOWN_PROVIDER = '(未知)';
-function usageProviderApps(name) {
-  const pools = typeof state !== 'undefined' && state && state.providers ? state.providers : null;
-  if (!pools) return null;
-  return ['claude', 'codex'].filter(app => Array.isArray(pools[app]) && pools[app].some(p => p && p.name === name));
-}
-function usageProviderCell(name, collides) {
-  if (name === USAGE_UNKNOWN_PROVIDER || name === '—') {
-    return '<span class="usage-prov-unknown" title="请求失败于选渠道之前,或日志缺 provider 字段">未记录渠道</span>';
+// 供应商按渠道分组(后端 dashboard.by_channel):新日志带渠道 id 与渠道所在的协议组;
+// 旧日志只有显示名,后端按同协议组同名并进唯一的渠道,并不进去的单独一行、provider_id 为空。
+// 名字不撞(不分大小写)只写名字;撞名补协议组小标;同一协议组里还撞,再补渠道 id(旧日志写「旧日志」)。
+// 旧后端(没有 by_channel)退回按显示名合计的 by_provider:没有协议组信息,不补小标。
+const usageChannelRows = data => {
+  const list = data && data.dashboard && data.dashboard.by_channel;
+  if (Array.isArray(list)) return list;
+  return (Array.isArray(data && data.by_provider) ? data.by_provider : []).map(p => ({
+    ...p, channel: p.name === '(未知)' ? 'none' : p.name, provider_id: '', app: '', name: p.name,
+  }));
+};
+// facets.channels 是 {value,label,app,provider_id},转成与 by_channel 同样的形状再交给 usageChannelNamer。
+const usageFacetChannel = item => ({
+  channel: String(item.value), name: String(item.label), app: item.app || '', provider_id: item.provider_id || '',
+});
+function usageChannelNamer(rows) {
+  const names = new Map(), groups = new Map();
+  for (const row of rows) {
+    if (row.channel === 'none') continue;
+    const name = String(row.name).toLowerCase();
+    names.set(name, (names.get(name) || 0) + 1);
+    groups.set(`${row.app}\n${name}`, (groups.get(`${row.app}\n${name}`) || 0) + 1);
   }
-  if (!collides) return esc(name);
-  const apps = usageProviderApps(name);
-  if (!apps) return esc(name);
-  const tag = apps.length
-    ? apps.map(app => USAGE_APP_LABELS[app]).join(' + ')
-    : '已删除';
-  const title = apps.length === 2
-    ? '两个协议组里都有这个名字的渠道;日志只记显示名,这一行是两者合计'
-    : apps.length ? `${USAGE_APP_LABELS[apps[0]]} 协议组的渠道` : '渠道库里已没有这个名字的渠道';
-  return `${esc(name)}<span class="usage-prov-app" title="${esc(title)}">${esc(tag)}</span>`;
+  return row => {
+    if (row.channel === 'none') {
+      return { name: '未记录渠道', tag: '', title: '请求失败于选渠道之前,或日志缺 provider 字段', unknown: true };
+    }
+    const name = String(row.name);
+    const lower = name.toLowerCase();
+    if ((names.get(lower) || 0) < 2 || !row.app) return { name, tag: '', title: '' };
+    const group = USAGE_APP_LABELS[row.app] || row.app || '未知协议组';
+    const id = row.provider_id;
+    const title = id
+      ? `${group} 协议组的渠道 · id ${id}`
+      : `${group} 协议组 · 旧日志没有渠道 id,只记了显示名`;
+    if ((groups.get(`${row.app}\n${lower}`) || 0) < 2) return { name, tag: group, title };
+    return { name, tag: `${group} · ${id || '旧日志'}`, title };
+  };
 }
-function usageAggregateRow(kind, row, collides) {
+function usageChannelCell(shown) {
+  if (shown.unknown) return `<span class="usage-prov-unknown" title="${esc(shown.title)}">${esc(shown.name)}</span>`;
+  if (!shown.tag) return esc(shown.name);
+  return `${esc(shown.name)}<span class="usage-prov-app" title="${esc(shown.title)}">${esc(shown.tag)}</span>`;
+}
+function usageAggregateRow(kind, row, label) {
   const cacheRead = usageNum(row.cache_read) || 0;
   const denom = (usageNum(row.tokens_in) || 0) + cacheRead;
   const hit = denom ? fmtPct(cacheRead * 100 / denom) : '—';
-  const name = kind === 'providers'
-    ? usageProviderCell(row.name || row.provider || '—', collides)
-    : esc(row.model || '—');
+  const name = kind === 'providers' ? usageChannelCell(label(row)) : esc(row.model || '—');
   const tok = value => `<td${usageTokTitle(value)}>${fmtTok(value)}</td>`;
   return `<tr><td>${name}</td><td>${fmtCount(row.reqs)}</td>`
     + tok(row.tokens_in) + tok(row.tokens_out) + tok(row.cache_read) + `<td>${hit}</td></tr>`;
-}
-// 不区分大小写撞名的供应商名(「Happy coding」与「happy coding」):每个名字一个布尔。
-function usageProviderCollisions(list) {
-  const counts = new Map();
-  for (const row of list) {
-    const key = String(row.name || row.provider || '').toLowerCase();
-    counts.set(key, (counts.get(key) || 0) + 1);
-  }
-  return row => {
-    const name = String(row.name || row.provider || '');
-    if (counts.get(name.toLowerCase()) > 1) return true;
-    const apps = usageProviderApps(name);
-    return !!(apps && apps.length === 2);
-  };
 }
 function usageDetailSlice(data) {
   const tab = usageState.tab;
@@ -1367,7 +1372,7 @@ function usageDetailSlice(data) {
     const rows = records && Array.isArray(records.rows) ? records.rows : [];
     return { tab, columns, rows, total: records ? (usageNum(records.total) || 0) : null, available: !!records };
   }
-  const list = tab === 'providers' ? data.by_provider : data.by_model;
+  const list = tab === 'providers' ? usageChannelRows(data) : data.by_model;
   const all = Array.isArray(list) ? list : [];
   const pages = Math.max(1, Math.ceil(all.length / usageState.limit));
   usageState.pageAgg = Math.min(usageState.pageAgg, pages - 1);
@@ -1395,11 +1400,15 @@ function usageRenderDetail(data) {
     body.innerHTML = `<tr><td colspan="${slice.columns.length}">当前筛选下没有记录。调整区间或筛选条件再试。</td></tr>`;
     return;
   }
-  // 撞名按整张供应商表算(不是当前页),翻页后同一个名字的标注不变。
-  const collides = slice.tab === 'providers' ? usageProviderCollisions(Array.isArray(data.by_provider) ? data.by_provider : []) : null;
+  // 撞名按下拉同一份清单(facets.channels:区间/协议组/状态内的全部渠道)算,不按当前页:
+  // 翻页、选中某个渠道之后,同一个渠道的写法与下拉里一致。
+  const facets = data && data.dashboard && data.dashboard.facets;
+  const label = slice.tab === 'providers'
+    ? usageChannelNamer(facets && Array.isArray(facets.channels) ? facets.channels.map(usageFacetChannel) : slice.rows)
+    : null;
   body.innerHTML = slice.rows.map(row => (slice.tab === 'requests'
     ? usageRecordRow(row)
-    : usageAggregateRow(slice.tab, row, collides && collides(row)))).join('');
+    : usageAggregateRow(slice.tab, row, label))).join('');
 }
 function usageRenderPagination(data) {
   const prev = $('usage-prev');
@@ -1438,7 +1447,7 @@ function usageRenderSource(data) {
     first && last
       ? `当前可用日志:最早一条记录 ${first},最新一条 ${last}。这是日志里实际观察到的最早/最晚记录,既不是完整保留期,也不保证中间没有断档;每天读取都会扫到当前时刻,所以 ${last} 之后到今天(${today})没有记录的日子按「没有请求」计算,而 ${first} 之前的日期显示为「未覆盖」,不会算成 0。`
       : '当前可用日志:数据源里暂时没有任何请求日志;热力图所有日期显示为「未覆盖」,而不是零用量。',
-    '协议组按日志的 app 字段(Anthropic / OpenAI);供应商与模型为精确匹配。状态按日志的成功判定:err / err_class 优先于状态码。',
+    '协议组筛选按日志的 app 字段(请求来自哪个客户端);供应商按渠道分组,小标写的是渠道所在的协议组,Codex 共用压缩落在 Claude 渠道上时两者不同。旧日志没有渠道 id,按同名渠道归并,归不了的单独一行。模型为精确匹配。状态按日志的成功判定:err / err_class 优先于状态码。',
     'Tokens 合计 = 新增输入 + 输出 + 缓存读取;缓存命中率 = 缓存读取 / (新增输入 + 缓存读取)。页面不折算金额。',
     '首响应 = 上游响应头到达的时间(ttfb_ms),不是模型首个输出 token 的时间;两者不能互相替代。',
   ];
