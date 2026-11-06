@@ -165,21 +165,64 @@ function insightsObservationHtml(observation) {
     + `<span class="insights-sub">发出 ${insightsEsc(observation.requested_model || '—')} · ${insightsWhenHtml(observation.ts)}</span>`;
 }
 
-function insightsModelRow(entry, index) {
-  const provider = entry.provider_name || entry.provider || '—';
-  const providerTitle = entry.provider && entry.provider_name && entry.provider_name !== entry.provider
-    ? ` title="渠道 ID：${insightsEsc(entry.provider)}"` : '';
-  return `<tr>
-    <td>${insightsEsc(insightsAppLabel(entry.app))}</td>
-    <td${providerTitle}>${insightsEsc(provider)}</td>
-    <td><span class="insights-model-name">${insightsEsc(entry.model || '—')}</span></td>
-    <td>${insightsCapCell(entry, 'context_window')}</td>
-    <td>${insightsCapCell(entry, 'max_output_tokens')}</td>
+const INSIGHTS_CAP_FIELDS = ['context_window', 'max_output_tokens', 'vision', 'reasoning_levels'];
+// 表头随布局变:full = 四个能力列 + 上游自报;compact = 一个也没登记时,四列全是「—」没有信息量,
+// 折成一列「能力」。协议组与渠道不再每行重复,改成分组行(见 insightsRenderModels)。
+const INSIGHTS_MODEL_HEAD = {
+  full: ['<th scope="col" class="ins-model">模型</th>', '<th scope="col" class="num">上下文窗口</th>',
+    '<th scope="col" class="num">最大输出</th>', '<th scope="col">视觉</th>', '<th scope="col">推理档位</th>',
+    '<th scope="col">最近上游自报</th>', '<th scope="col" class="ins-act"><span class="sr-only">操作</span></th>'],
+  compact: ['<th scope="col" class="ins-model">模型</th>',
+    '<th scope="col" title="上下文窗口、最大输出、视觉、推理档位;没有登记就是未知,不按模型名推断">能力</th>',
+    '<th scope="col" class="ins-act"><span class="sr-only">操作</span></th>'],
+};
+
+function insightsHasCapability(entry) {
+  return INSIGHTS_CAP_FIELDS.some(field => {
+    const { value } = insightsCapability(entry, field);
+    return value !== null && value !== undefined && value !== '' && !(Array.isArray(value) && !value.length);
+  });
+}
+
+function insightsModelRow(entry, index, layout) {
+  const name = `<td class="ins-model"><span class="insights-model-name">${insightsEsc(entry.model || '—')}</span></td>`;
+  if (layout === 'compact') {
+    // 没登记时操作直接是「登记」,打开编辑表单;有上游自报就跟在「未登记」下面,没有就只在 title 里说。
+    const obs = entry.observation && typeof entry.observation === 'object' ? insightsObservationHtml(entry.observation) : '';
+    const title = obs ? '没有登记上下文窗口、最大输出、视觉与推理档位' : '没有登记上下文窗口、最大输出、视觉与推理档位;也还没有成功请求的上游自报';
+    return `<tr>${name}
+    <td><span class="insights-unknown insights-unreg" title="${title}">未登记</span>${obs}</td>
+    <td class="ins-act"><button class="small quiet" type="button" onclick="insightsSelectModel(${index});insightsEditModel()">登记</button></td>
+  </tr>`;
+  }
+  return `<tr>${name}
+    <td class="num">${insightsCapCell(entry, 'context_window')}</td>
+    <td class="num">${insightsCapCell(entry, 'max_output_tokens')}</td>
     <td>${insightsCapCell(entry, 'vision')}</td>
     <td>${insightsCapCell(entry, 'reasoning_levels')}</td>
     <td>${insightsObservationHtml(entry.observation)}</td>
-    <td><button class="small quiet" type="button" onclick="insightsSelectModel(${index})">详情</button></td>
+    <td class="ins-act"><button class="small quiet" type="button" onclick="insightsSelectModel(${index})">详情</button></td>
   </tr>`;
+}
+
+// 按渠道分组(协议组 + 渠道 id),组内保持后端给的顺序;组头写渠道名、协议组与模型数。
+function insightsModelGroups(models) {
+  const groups = new Map();
+  models.forEach((entry, index) => {
+    const key = `${entry.app ?? ''}\u0000${entry.provider ?? ''}`;
+    if (!groups.has(key)) groups.set(key, { entry, rows: [] });
+    groups.get(key).rows.push(index);
+  });
+  return [...groups.values()];
+}
+
+function insightsGroupRow(entry, count, span) {
+  const name = entry.provider_name || entry.provider || '—';
+  const title = entry.provider && entry.provider_name && entry.provider_name !== entry.provider
+    ? ` title="渠道 ID：${insightsEsc(entry.provider)}"` : '';
+  return `<tr class="insights-group"><th scope="colgroup" colspan="${span}"><span class="insights-group-label">`
+    + `<span class="insights-group-name"${title}>${insightsEsc(name)}</span>`
+    + `<span class="insights-group-meta">${insightsEsc(insightsAppLabel(entry.app))} · ${count} 个模型</span></span></th></tr>`;
 }
 
 function insightsSelectedModel() {
@@ -276,10 +319,20 @@ function insightsRenderModels() {
     status.className = 'cfg-panel-hint' + (insightsState.modelsKind ? ' insights-' + insightsState.modelsKind : '');
   }
   const models = Array.isArray(insightsState.models) ? insightsState.models : [];
+  const layout = models.some(insightsHasCapability) ? 'full' : 'compact';
+  const head = INSIGHTS_MODEL_HEAD[layout];
   const rows = insightsEl('insights-models-rows');
-  if (rows) rows.innerHTML = models.map((entry, index) => insightsModelRow(entry, index)).join('');
+  if (rows) {
+    rows.innerHTML = insightsModelGroups(models).map(group => insightsGroupRow(group.entry, group.rows.length, head.length)
+      + group.rows.map(index => insightsModelRow(models[index], index, layout)).join('')).join('');
+  }
   const table = insightsEl('insights-models-table');
-  if (table) table.hidden = !models.length;
+  if (table) {
+    table.hidden = !models.length;
+    if (table.setAttribute) table.setAttribute('data-layout', layout);
+    const thead = table.querySelector ? table.querySelector('thead') : null;
+    if (thead) thead.innerHTML = `<tr>${head.join('')}</tr>`;
+  }
   const empty = insightsEl('insights-models-empty');
   if (empty) empty.hidden = !(insightsState.modelsLoaded && !models.length);
   insightsRenderModelDetail();
@@ -490,7 +543,7 @@ function insightsRequestRow(request, index) {
   return `<tr>
     <td>${insightsWhenHtml(request.ts)}${session}</td>
     <td class="insights-app">${insightsEsc(insightsAppLabel(request.app))}</td>
-    <td>${insightsEsc(request.provider || '—')}</td>
+    <td>${insightsEsc(request.provider || '—')}<span class="insights-sub insights-app-sub">${insightsEsc(insightsAppLabel(request.app))}</span></td>
     <td><span class="mono">${insightsEsc(request.model_in || '—')}</span></td>
     <td><span class="mono">${insightsEsc(request.model_out || '—')}</span></td>
     <td>${upstream}</td>

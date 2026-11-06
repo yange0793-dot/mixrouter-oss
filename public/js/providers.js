@@ -151,6 +151,15 @@ function renderProviders() {
   // 可用性按渠道 id 索引一次,卡片里按 id 取。只读,来自 /api/health
   // (liveHealth 可能还没回来或读失败;冷却已移除,/api/state 的 cooldowns 恒为空表)。
   const healthById = new Map((liveHealth?.providers || []).map(h => [h.provider, h]));
+  // Claude 路由模式下"在用"按槽位判:客户端 env 里确实写着该槽别名(main 看 ANTHROPIC_MODEL)的槽,
+  // 才算把请求交给了它的渠道。库内 current 此时是 @router,不能拿来标卡片。
+  const claudeRouted = new Map();
+  if (!isCodexGroup && online && lv?.router && !lv.error) {
+    for (const s of state.slots?.claude || []) {
+      const written = s.name === 'main' ? lv.model : lv.slots?.[s.name];
+      if (s.provider && s.enabled !== false && written === s.alias) claudeRouted.set(s.provider, [...(claudeRouted.get(s.provider) || []), s.name]);
+    }
+  }
   let warning = '';
   if (lv?.error) warning = `客户端配置读取失败：${lv.error}。无法确认集成状态，请检查配置后重试。`;
   // Codex 的实际直连渠道由 base URL + Key 判定;current 还停在 @router 不是漂移。
@@ -171,6 +180,8 @@ function renderProviders() {
     const verified = isCodexGroup
       ? online && !lv?.error && actualCodexMode === 'direct' && isCur
       : online && !lv?.error && isCur && lv?.match === true && !lv.router;
+    const routedSlots = claudeRouted.get(p.id) || [];
+    const routedMain = routedSlots.includes('main'), routedOthers = routedSlots.filter(n => n !== 'main');
     const t = testResults[p.id];
     // Codex 的测试请求由 Mixrouter 自己发出,不是 Codex 客户端,所以标题必须说明来源。
     const testLabel = isCodexGroup ? '路由器检测' : '测试';
@@ -223,6 +234,8 @@ function renderProviders() {
     const avatar = (/^[\x20-\x7e]+$/.test(nameText) ? nameText.slice(0, 2) : nameText.slice(0, 1)).toUpperCase() || '?';
     const statusBadges = [
       isCur ? `<span class="badge ${verified || activeRouter ? 'on' : 'off sel'}">${verified ? '已写入配置' : activeRouter ? '路由在用' : isCodexGroup ? '最后快照 · 待确认' : '库内选中'}</span>` : '',
+      // 同一句「路由在用」:主模型槽所在渠道用 on 色,只被其它槽引用的用次一级的 route 色并写明槽名。
+      routedSlots.length ? `<span class="badge ${routedMain ? 'on' : 'route'}" title="客户端 env 已写入这些槽位别名，请求经本机路由落到此渠道">路由在用${routedMain ? ' · 主模型' : ''}${routedOthers.length ? ' · 槽位 ' + routedOthers.map(esc).join(' / ') : ''}</span>` : '',
       drift && online ? '<span class="badge drift">配置不一致</span>' : '',
       `<span class="badge provider-state ${p.enabled ? 'info' : 'off'}">${p.enabled ? '启用' : '停用'}</span>`,
       deadKeys.length ? `<span class="badge off" title="有停用的 Key">${deadKeys.length} 把 Key 已停用</span>` : '',
@@ -233,12 +246,23 @@ function renderProviders() {
     const account = keys.length
       ? `<select class="keypick" data-provider="${esc(p.id)}" data-action="key" aria-label="${esc(p.name)} 当前账号" onchange="setActiveKey(${arg},this.value)">${keys.map(k => `<option value="${esc(k.id)}" ${k.id === p.active_key ? 'selected' : ''}>${esc(k.label)} · ${esc(k.key_masked)}${k.enabled === false ? ' · 已停用' : ''}</option>`).join('')}</select><span class="muted keycount">${keys.length} 个账号${deadKeys.length ? ' · ' + deadKeys.length + ' 把已停用' : ''}</span>`
       : `<span class="key-masked">${esc(p.key_masked || '未配置')}</span>`;
+    // Claude 的这个按钮只做一件事:把该渠道的地址/Key/模型写进 Claude 配置(switchClaude),
+    // 路由模式下等于退出路由,mixr- 槽位别名一并清掉。文案按这个真实效果写。
+    const claudeInRouter = !isCodexGroup && !!lv?.router;
     const switchLabel = isCodexGroup
       ? (isCur && actualCodexMode === codexMode ? '重新应用' : codexMode === 'router' ? '应用路由' : '应用直连')
-      : (isCur ? '重新写入' : '切换');
+      : claudeInRouter ? '改为直连' : isCur ? '重新写入' : '直连此渠道';
     const switchTitle = convOnly ? '该渠道只挂 Codex 型通道，直连不可用：请用上方「路由模式」'
-      : codexDirectOff ? 'Chat 渠道不能写入 Codex 直连；请用「应用路由」' : '';
-    return `<article class="card ${p.enabled ? '' : 'off'} ${verified || activeRouter ? 'cur' : ''} ${isCur && !verified && !activeRouter ? 'sel' : ''}" data-provider="${esc(p.id)}" style="--avatar-h:${providerHue(p.id)}">
+      : codexDirectOff ? 'Chat 渠道不能写入 Codex 直连；请用「应用路由」'
+      : isCodexGroup ? ''
+      : claudeInRouter ? '把此渠道写入 Claude 配置并退出路由模式（清掉 mixr- 槽位别名），原文件自动备份'
+      : isCur ? '把此渠道重新写入 Claude 配置，原文件自动备份'
+      : '把此渠道写入 Claude 配置（直连），原文件自动备份';
+    // 只能走路由的 Claude 渠道没有可点的写入动作:不摆一个禁用的主按钮,换成一枚说明标签。
+    const switchControl = convOnly
+      ? `<span class="tag route-only-tag" title="${switchTitle}">仅路由可用</span>`
+      : `<button class="small ${verified || activeRouter ? 'cur' : 'primary'}" data-action="switch" data-provider="${esc(p.id)}" onclick="switchProvider(${arg})" ${locked ? 'disabled' : ''} title="${switchTitle}">${switchLabel}</button>`;
+    return `<article class="card ${p.enabled ? '' : 'off'} ${verified || activeRouter || routedMain ? 'cur' : ''} ${isCur && !verified && !activeRouter ? 'sel' : ''}" data-provider="${esc(p.id)}" style="--avatar-h:${providerHue(p.id)}">
       <header class="top provider-identity">
         <span class="provider-avatar" aria-hidden="true">${esc(avatar)}</span>
         <div class="provider-info"><h3 class="name">${esc(p.name)}</h3><div class="provider-status">${statusBadges}</div></div>
@@ -246,11 +270,11 @@ function renderProviders() {
       <div class="provider-content">
         <div class="mono endpoint" title="${esc(p.base_url)}">${esc(p.base_url)}</div>
         <div class="provider-models tags">${isCodexGroup ? `<span class="tag codex-mode-tag">${codexMode === 'router' ? 'Mixrouter 路由' : 'Codex 直连'}</span>` : ''}<span class="tag wire-tag">${esc(wire)}</span>${models.map(m => `<span class="tag">${esc(m)}</span>`).join('')}${p.drop_images ? '<span class="tag">纯文本</span>' : ''}${p.direct ? '<span class="tag">绕过出站代理</span>' : ''}${p.proxy_url ? '<span class="tag">经代理</span>' : ''}</div>
-        ${deadKeys.length ? `<p class="note">已停用的 Key：${deadKeys.map(k => `${esc(k.label || k.id)}（${esc(k.id)}）`).join('、')}。停用只影响固定选它的会话与压缩规则，不会自动改选其他 Key。</p>` : ''}${p.note ? `<p class="note" title="${esc(p.note)}">${esc(p.note)}</p>` : ''}
+        ${deadKeys.length ? `<p class="note dead-keys">已停用的 Key：${deadKeys.map(k => `${esc(k.label || k.id)}（${esc(k.id)}）`).join('、')}。停用只影响固定选它的会话与压缩规则，不会自动改选其他 Key。</p>` : ''}${p.note ? `<p class="note dev-note" title="${esc(p.note)}">${esc(p.note)}</p>` : ''}
 
       </div>
-      <div class="provider-meta mono keyrow">API key · ${account}${tline}${pline}</div>
-      <div class="foot provider-actions"><button class="small ${verified || activeRouter ? 'cur' : 'primary'}" data-action="switch" data-provider="${esc(p.id)}" onclick="switchProvider(${arg})" ${locked ? 'disabled' : ''} title="${switchTitle}">${switchLabel}</button><button class="small" data-action="test" data-provider="${esc(p.id)}" onclick="testProvider(${arg})" ${!online || t?.wait ? 'disabled' : ''}>${testLabel}</button><button class="small" data-action="probe" data-provider="${esc(p.id)}" onclick="probeModels(${arg})" ${!online || mp?.wait ? 'disabled' : ''} title="对每个模型各发一次真实请求，会消耗额度">${isCodexGroup ? '路由器测活' : '测活'}</button><button class="small" data-action="edit" data-provider="${esc(p.id)}" onclick="openProvider(${arg})">编辑</button><button class="small" data-action="toggle" data-provider="${esc(p.id)}" onclick="toggleProvider(${arg})" ${!online ? 'disabled' : ''}>${p.enabled ? '停用' : '启用'}</button><button class="small danger" data-action="delete" data-provider="${esc(p.id)}" onclick="delProvider(${arg})" ${!online ? 'disabled' : ''}>删除</button></div></article>`;
+      <div class="provider-meta mono keyrow"><span class="key-label">Key</span>${account}${tline}${pline}</div>
+      <div class="foot provider-actions">${switchControl}<button class="small" data-action="test" data-provider="${esc(p.id)}" onclick="testProvider(${arg})" ${!online || t?.wait ? 'disabled' : ''}>${testLabel}</button><button class="small" data-action="probe" data-provider="${esc(p.id)}" onclick="probeModels(${arg})" ${!online || mp?.wait ? 'disabled' : ''} title="对每个模型各发一次真实请求，会消耗额度">${isCodexGroup ? '路由器测活' : '测活'}</button><button class="small" data-action="edit" data-provider="${esc(p.id)}" onclick="openProvider(${arg})">编辑</button><button class="small" data-action="toggle" data-provider="${esc(p.id)}" onclick="toggleProvider(${arg})" ${!online ? 'disabled' : ''}>${p.enabled ? '停用' : '启用'}</button><button class="small danger" data-action="delete" data-provider="${esc(p.id)}" onclick="delProvider(${arg})" ${!online ? 'disabled' : ''}>删除</button></div></article>`;
   }).join('');
   // 轮询只更新状态,但不能在用户正操作卡片时拆 DOM:下拉展开时重建会把菜单关掉,焦点恢复也救不回来。
   // 焦点在卡片内的输入/下拉上就等失焦后的下一次刷新再重绘;按钮没有展开态,照旧重建并恢复焦点。
@@ -282,9 +306,6 @@ function openProvider(id) {
   // 清单是唯一真相:渠道一旦有清单(老式单 Key 渠道也会合成一条「账号1」),顶栏那个单行
   // API Key 就不参与保存了——否则服务端会把它当成"改当前生效那把",悄悄覆盖掉账号1
   keyDraft = (editing?.keys || []).map(k => ({ id: k.id, label: k.label, key: '', masked: k.key_masked }));
-  $('m-key-hint').textContent = !editing ? ''
-    : keyDraft.length ? '（多 Key 渠道请在下方清单里改，这里不参与保存）'
-    : '（留空保持不变，当前 ' + (editing.key_masked || '未配置') + '）';
   $('m-keys-wrap').style.display = editing ? '' : 'none';
   renderKeyDraft();
   $('m-claude-fields').style.display = isCodex ? 'none' : ''; $('m-codex-fields').style.display = isCodex ? '' : 'none';
@@ -323,6 +344,15 @@ function closeModal() { if (savingProvider) return toast('正在保存，请稍�
 
 // 多 Key(同渠道多账号):弹窗里维护清单,卡片下拉里切当前生效那把
 function renderKeyDraft() {
+  // 有多 Key 清单时单行 API Key 不参与保存(见 saveProvider),整行藏起来,免得摆一个无效字段;
+  // 清单删空后退回单 Key,这一行再出来。
+  const multi = keyDraft.length > 0, keyInput = $('m-key');
+  keyInput.hidden = multi;
+  const keyLabel = keyInput.labels?.[0] || document.querySelector?.('label[for="m-key"]');
+  if (keyLabel) keyLabel.hidden = multi;
+  $('m-key-hint').textContent = !editing ? ''
+    : multi ? '（多 Key 渠道请在下方清单里改，这里不参与保存）'
+    : '（留空保持不变，当前 ' + (editing.key_masked || '未配置') + '）';
   $('m-keys').innerHTML = keyDraft.length ? keyDraft.map((k, i) => `<div class="rc-line">
     <label class="field" style="flex:1">名称<input type="text" value="${esc(k.label)}" oninput="keyDraft[${i}].label=this.value" placeholder="账号${i + 1}" autocomplete="off"></label>
     <label class="field" style="flex:2">API Key<input type="password" value="${esc(k.key)}" oninput="keyDraft[${i}].key=this.value;invalidateDiscovery('Key 已改动，请重新获取模型列表');renderFetchKeySelect()" placeholder="${k.id ? '留空=不改（' + esc(k.masked || '') + '）' : 'sk-…'}" autocomplete="new-password" spellcheck="false"></label>
@@ -609,7 +639,8 @@ async function switchProvider(id) {
   if (!p || !canConnect(app)) return;
   const mode = app === 'codex' ? codexProviderMode(p) : 'direct';
   const label = mode === 'router' ? '路由' : '直连';
-  const message = `将 ${APPS[app].label} 配置写入为「${p.name}」${label}。${mode === 'router' ? '\n主模型使用该渠道，审查槽位保持原有选择。' : ''}\n文件：${APPS[app].cfg}（原文件自动备份）。\n${app === 'claude' ? 'Claude Code 需重启会话生效。' : '重新打开 Codex 读取新连接配置。'}`;
+  const leavingRouter = app === 'claude' && !!state.live?.claude?.router;
+  const message = `将 ${APPS[app].label} 配置写入为「${p.name}」${label}。${mode === 'router' ? '\n主模型使用该渠道，审查槽位保持原有选择。' : ''}${leavingRouter ? '\n这会退出路由模式：Claude Code 不再经本机路由，mixr- 槽位别名一并清掉。' : ''}\n文件：${APPS[app].cfg}（原文件自动备份）。\n${app === 'claude' ? 'Claude Code 需重启会话生效。' : '重新打开 Codex 读取新连接配置。'}`;
   if (!await askConfirm(`写入${label}配置`, message, '写入配置') || !canConnect(app)) return;
   try {
     const res = await api('/api/switch/' + encodeURIComponent(id), { method: 'POST', ...(app === 'codex' ? { body: JSON.stringify({ mode }) } : {}) });

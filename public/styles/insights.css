@@ -7,24 +7,41 @@
 /* 表格在面板里是第二层:保留细边框,去掉阴影,圆角收一档。 */
 #view-insights .insights-table,
 #view-insights .insights-req-table { margin: 0 0 12px; border-radius: var(--radius); box-shadow: none; }
-#view-insights .insights-table table { min-width: 1060px; }
 #view-insights .insights-req-table table { min-width: 1120px; }
 #view-insights .insights-table td, #view-insights .insights-req-table td { vertical-align: top; padding: 10px 12px; }
 #view-insights .insights-table th, #view-insights .insights-req-table th { padding-left: 12px; padding-right: 12px; }
-#view-insights .insights-table :is(th, td).num, #view-insights .insights-req-table :is(th, td).num,
-#view-insights .insights-table :is(th, td):nth-child(4), #view-insights .insights-table :is(th, td):nth-child(5) {
+#view-insights .insights-table :is(th, td).num, #view-insights .insights-req-table :is(th, td).num {
   text-align: right; font-variant-numeric: tabular-nums;
 }
 #view-insights .th-note { display: block; margin-top: 1px; font-size: 11.5px; font-weight: 400; line-height: 1.4; color: var(--dim); }
-/* 模型名、协议组与操作列不折行:换行会把一行拆成三四行,读表时反而找不到行。 */
-#view-insights .insights-table td:nth-child(1), #view-insights .insights-table td:nth-child(2),
-#view-insights .insights-table td:nth-child(3) .insights-model-name,
+
+/* 模型表:列由 insights.js 按布局给 class(full = 四个能力列 + 上游自报;compact = 全都没登记,
+   折成一列「能力」)。compact 不需要最小宽度,手机上不用横向拖。 */
+#view-insights .insights-table table { width: 100%; min-width: 0; }
+#view-insights .insights-table[data-layout="full"] table { min-width: 900px; }
+#view-insights .insights-table[data-layout="compact"] .ins-model { width: 42%; }
+#view-insights .insights-table .ins-act { width: 1%; text-align: right; white-space: nowrap; }
+#view-insights .insights-table td.ins-model .insights-model-name { white-space: nowrap; }
+#view-insights .insights-unreg { font-size: var(--fs-sm); }
+/* 分组行:渠道名 + 「协议组 · N 个模型」,代替每行重复的协议组 / 渠道两列。 */
+#view-insights .insights-table tr.insights-group > th {
+  padding: 14px 12px 6px; background: transparent; border-top: 1px solid var(--border); border-bottom: 0;
+  text-align: left; font-size: var(--fs-sm); font-weight: 600; color: var(--text); white-space: nowrap;
+}
+#view-insights .insights-table tbody tr.insights-group:first-child > th { border-top: 0; padding-top: 10px; }
+#view-insights .insights-table tbody tr.insights-group:hover { background: transparent; }
+#view-insights .insights-table tr.insights-group + tr > td { border-top: 0; }
+#view-insights .insights-group-label { display: inline-flex; align-items: baseline; gap: 8px; }
+#view-insights .insights-group-meta { font-size: 12px; font-weight: 400; color: var(--dim); }
+
+/* 请求表:模型名、协议组与时间不折行:换行会把一行拆成三四行,读表时反而找不到行。 */
 #view-insights .insights-req-table td:nth-child(1), #view-insights .insights-req-table td:nth-child(2),
 #view-insights .insights-req-table td:nth-child(3),
 #view-insights .insights-req-table td:nth-child(4) .mono, #view-insights .insights-req-table td:nth-child(5) .mono,
-#view-insights .insights-req-table td.num .insights-sub,
-#view-insights .insights-table td:last-child { white-space: nowrap; }
+#view-insights .insights-req-table td.num .insights-sub { white-space: nowrap; }
 #view-insights .insights-req-table td:nth-child(3), #view-insights .insights-req-table td:nth-child(6) { min-width: 96px; }
+/* 协议组在桌面有自己的列;手机上那一列隐藏,改成渠道下面的一行小字。 */
+#view-insights .insights-app-sub { display: none; }
 #view-insights .insights-model-name { font: 12.5px/1.5 var(--mono); color: var(--text); overflow-wrap: anywhere; }
 #view-insights .insights-req-table td .mono { font: 12.5px/1.5 var(--mono); color: var(--tag-text); }
 #view-insights .insights-time { display: block; color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -54,7 +71,7 @@
 }
 /* 表格里「手动」固定放在值下面一行(数字列靠右),不随列宽时而同行时而换行。 */
 #view-insights .insights-table td .badge.insights-src { display: flex; width: fit-content; margin: 4px 0 0; }
-#view-insights .insights-table td:is(:nth-child(4), :nth-child(5)) .badge.insights-src { margin-left: auto; }
+#view-insights .insights-table td.num .badge.insights-src { margin-left: auto; }
 #view-insights .insights-levels {
   display: inline-block; padding: 1px 6px; border: 1px solid var(--border-soft); border-radius: var(--radius-sm);
   background: var(--surface-2); color: var(--tag-text); font: 12px/1.5 var(--mono); white-space: nowrap;
@@ -144,4 +161,17 @@
   #view-insights .insights-detail { padding: 12px; }
   #view-insights .insights-detail-head { flex-wrap: wrap; }
   #view-insights .insights-ctx-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* 模型表:模型名在第一屏。compact 本来就不横滚,模型名允许折行;full 横滚时模型列与组头黏在左边。 */
+  #view-insights .insights-table[data-layout="compact"] .ins-model { width: auto; }
+  #view-insights .insights-table[data-layout="compact"] td.ins-model .insights-model-name { white-space: normal; overflow-wrap: anywhere; word-break: normal; }
+  #view-insights .insights-table[data-layout="compact"] td:not(.ins-model) { white-space: nowrap; }
+  #view-insights .insights-table[data-layout="full"] :is(th, td).ins-model {
+    position: sticky; left: 0; z-index: 1; background: var(--surface); box-shadow: 1px 0 0 var(--border-soft);
+  }
+  #view-insights .insights-table[data-layout="full"] thead th.ins-model { background: var(--panel); }
+  #view-insights .insights-group-label { position: sticky; left: 12px; }
+  /* 请求表:协议组列让位,模型列提前进第一屏;协议组改成渠道下面一行小字。 */
+  #view-insights .insights-req-table :is(th, td):nth-child(2) { display: none; }
+  #view-insights .insights-req-table table { min-width: 940px; }
+  #view-insights .insights-app-sub { display: block; }
 }

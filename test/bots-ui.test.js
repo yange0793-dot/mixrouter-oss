@@ -50,7 +50,9 @@ function bind(h, index, provider, model, key) {
 
 test('Claude 页面显式面板、Codex 隐藏；classic 入口与应用切换接线', async () => {
   assert.match(html, /id="bots-title">Bots 模型/);
-  assert.ok(html.indexOf('id="bots-panel"') < html.indexOf('id="slots-details"'));
+  // 第 2 轮 #16:槽位折叠区在客户端状态之后、渠道库之前(与 Codex 页同序),Bots 面板留在渠道库之后。
+  const at = id => html.indexOf(`id="${id}"`);
+  assert.ok(at('liveinfo') < at('slots-details') && at('slots-details') < at('prov-grid') && at('prov-grid') < at('bots-panel'));
   assert.match(html, /<script src="\/js\/bots.js"><\/script>/);
   assert.match(html, /href="\/styles\/bots.css"/);
   assert.match(appSource, /function renderProviders\(\) \{[\s\S]*?typeof renderBotsModels === 'function'/);

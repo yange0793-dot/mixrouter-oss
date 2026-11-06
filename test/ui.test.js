@@ -500,7 +500,8 @@ test('压缩 Key 仅显示标签与 ID，固定选择不改 active_key 或通用
 test('压缩草稿缺模型名时保存按钮禁用，补上模型名后恢复', async () => {
   const data = fixture(); data.compact = { key_selection_supported: true, revision: 'rev-one', mode: 'single', selection: { provider: 'a1', model: 'claude-special', key_id: '' }, providers: [data.providers.claude[0]], rules: [] };
   const h = await harness(data);
-  assert.equal(h.get('save-compact').disabled, false);
+  // 刚载入、草稿未改:和 #save-window 一样没有可保存的,按钮禁用(compactUnchanged 由 compact.js 提供)。
+  assert.equal(h.get('save-compact').disabled, true, '压缩选择与上次载入一致时不亮保存');
   h.run("pickCompactModel('')");
   assert.equal(h.get('save-compact').disabled, true, '模型名为空时不能点保存');
   h.run("pickCompactModel('__custom__'); setCompactCustom('   ')");
@@ -738,6 +739,7 @@ test('窗口面板事件不污染压缩草稿，未保存窗口值阻止离页',
   h.run("setWindowValue('300k')");
   assert.equal(h.run('compactDirty'), false, '窗口草稿不能把压缩模型标成未保存');
   assert.equal(h.requests.some(r => r.url === '/api/routes'), false, '窗口输入不该产生 /api/routes 请求');
+  h.run("pickCompactModel('__custom__'); setCompactCustom('other-compact-model')");
   assert.equal(h.get('save-compact').disabled, false, '窗口草稿不得锁定独立压缩模型控件');
   const beforeUnload = h.windowListeners.get('beforeunload');
   assert.ok(beforeUnload?.length);
@@ -1109,19 +1111,19 @@ test('disconnect leaves a labelled stale snapshot, not a green online state, the
   h.run("view = 'providers'; renderProviders()");
   assert.equal(h.document.body.dataset.connection, 'online');
   assert.equal(h.run('online'), true);
-  const before = h.get('metric-requests').textContent;
+  const before = h.get('ov-reqs').textContent;
   h.disconnect(); await h.run('refresh()');
   assert.equal(h.document.body.dataset.connection, 'offline');
   assert.equal(h.run('online'), false);
   assert.equal(h.get('connection-banner').classList.contains('show'), true);
   assert.equal(h.get('btn-router').disabled, true);
-  assert.equal(h.get('metric-requests').textContent, before);
+  assert.equal(h.get('ov-reqs').textContent, before);
   assert.equal(h.get('liveinfo').innerHTML.includes('mode-card selected'), false);
   const writes = h.requests.filter(r => r.method !== 'GET').length;
   await h.run("switchProvider('a1')");
   assert.equal(h.requests.filter(r => r.method !== 'GET').length, writes);
   h.disconnect(false); h.data.stats.reqs = 20; await h.run('refresh()');
-  assert.equal(h.get('metric-requests').textContent, '20');
+  assert.equal(h.get('ov-reqs').textContent, '20');
   assert.equal(h.document.body.dataset.connection, 'online');
   assert.equal(h.get('connection-banner').classList.contains('show'), false);
 });
@@ -1264,7 +1266,10 @@ test('Codex reports runtime confirmation independently from a successful config 
     [{ status: 'applied', updated: 2 }, /已热切换.*2 个会话.*gpt-review/],
     [{ status: 'partial', updated: 1, failed: 1 }, /1 个会话已切换.*1 个会话待同步/],
     [{ status: 'not_running', updated: 0 }, /已保存.*未检测到运行中的 Codex/],
-    [{ status: 'unavailable', updated: 0 }, /已保存.*运行时同步未完成/],
+    [{ status: 'unavailable', updated: 0 }, /已保存.*连不上 Codex 后台.*未热切换/],
+    [{ status: 'home_mismatch', updated: 0 }, /已保存.*另一份配置目录.*未热切换/],
+    [{ status: 'restart_required', updated: 0 }, /已保存.*重启 Codex 后生效/],
+    [{ status: 'something_new', updated: 0 }, /已保存.*运行时同步未完成/],
   ]) {
     const h = await harness(codexDirectFixture(), { codexRuntime: runtime });
     h.run("setApp('codex')");
@@ -1578,15 +1583,17 @@ test('Codex clean threshold follows new disk revision but focused unfinished inp
   assert.equal(h.get('codex-compact-save').disabled, true, 'input event marks a draft before save');
 });
 
-test('Codex threshold panel follows main in DOM order and survives forced slot renders', async () => {
+// 第 2 轮 #15:main 与 reviewer 两行连排,阈值卡排在两行之后的独立块里,不再夹在槽位中间。
+test('Codex threshold panel sits after main and reviewer and survives forced slot renders', async () => {
   const h = await harness(codexCompactFixture(), { persistSlots: true }); h.run("setApp('codex'); setCodexCompactValue('212k')");
   const panel = h.get('codex-compact-panel'), input = h.get('codex-compact-input'); input.focus();
   assert.deepEqual(h.get('codex-model-fields').children.map(el => el.id).filter(id => ['codex-slot-main', 'codex-compact-panel', 'codex-slot-reviewer'].includes(id)),
-    ['codex-slot-main', 'codex-compact-panel', 'codex-slot-reviewer']);
+    ['codex-slot-main', 'codex-slot-reviewer']);
+  assert.ok(html.indexOf('id="codex-model-fields"') < html.indexOf('id="codex-compact-panel"'), '阈值卡在槽位行之后');
   await h.run("setSlot('codex','reviewer','model','gpt-review')");
   assert.equal(h.get('codex-compact-panel'), panel); assert.equal(h.get('codex-compact-input'), input);
   assert.equal(h.document.activeElement, input); assert.equal(input.value, '212k');
-  assert.equal(panel.parentElement, h.get('codex-model-fields'));
+  assert.notEqual(panel.parentElement, h.get('codex-model-fields'), '重绘槽位不把阈值卡塞回两行之间');
 });
 
 test('Concurrent Codex slot and threshold saves preserve newest threshold and hot routing in either response order', async () => {
@@ -2066,7 +2073,7 @@ test('渠道卡片分区:身份/状态/内容/动作语义清晰,账号与动作
   assert.match(grid, /<div class="provider-info"><h3 class="name">Alpha<\/h3><div class="provider-status">/);
   assert.match(grid, /<div class="foot provider-actions">/);
   assert.match(grid, /<div class="provider-models tags">/);
-  assert.match(grid, /<div class="provider-meta mono keyrow">API key · /);
+  assert.match(grid, /<div class="provider-meta mono keyrow"><span class="key-label">Key<\/span>/);
   // 账号下拉、动作按钮与 data-* 契约不变;说明与告警不因重排被吞掉
   assert.match(grid, /data-provider="a1" data-action="key"/);
   assert.match(grid, /<option value="k1" selected>Account One · /);
@@ -2693,22 +2700,37 @@ test('公共格式函数:tokens/计数/百分比/字节/时长/运行时长/速�
   assert.equal(h.run('fmtWhen(null)'), '—');
 });
 
-test('今日请求达到内存窗口容量时写「N+」、tokens 加「≥」;容量读不到时照常显示', async () => {
+test('今日请求:exact 才是全天数;否则注明计数起点,title 写清不是全天', async () => {
   const data = fixture();
-  data.stats = { reqs: 10, inTok: 1234567, outTok: 890 };
+  data.stats = { reqs: 1234, inTok: 1234567, outTok: 890, exact: true };
   const h = await harness(data);
-  // 默认 /api/stats 夹具不带 scope:容量未知,数字照常显示,不加任何标记。
-  assert.equal(h.get('ov-reqs').textContent, '10');
-  assert.doesNotMatch(h.get('ov-tokens').textContent, /≥/);
-  h.run(`globalThis.__uiStatsFetch = fetch;
-    fetch = async (url, o) => url === '/api/stats' ? { ok: true, json: async () => ({ scope: { capacity: 10 } }) } : __uiStatsFetch(url, o);
-    statsCapacityTask = null;`);
-  await h.run('loadStatsCapacity()');
-  for (const id of ['ov-reqs', 'st-req', 'metric-requests']) {
-    assert.equal(h.get(id).textContent, '10+', `${id} 窗口已满时不冒充完整计数`);
-    assert.match(h.get(id).getAttribute('title'), /内存窗口只保留最近 10 条.*可能更多/);
+  assert.equal(h.run('typeof loadStatsCapacity'), 'undefined', '不再按内存窗口容量猜「500+」');
+  for (const id of ['ov-reqs', 'st-req']) {
+    assert.equal(h.get(id).textContent, '1,234', `${id} 全天精确数照常显示`);
+    assert.match(h.get(id).getAttribute('title'), /全天/);
   }
-  assert.match(h.get('ov-tokens').textContent, /输入 ≥1\.23M \/ 输出 ≥890/);
+  assert.equal(h.get('ov-reqs-scope').textContent, '');
+  assert.equal(h.get('st-req-scope').textContent, '');
+  assert.equal(h.get('ov-tokens').textContent, '输入 1.23M / 输出 890', '不再出现「≥」');
+
+  // 不是全天:计数从 since 开始。用本地时区构造今天 09:05,不随运行环境漂移。
+  const since = new Date(); since.setHours(9, 5, 0, 0);
+  h.data.stats = { reqs: 20, inTok: 10, outTok: 5, exact: false, since: since.toISOString() };
+  await h.run('refresh()');
+  for (const id of ['ov-reqs', 'st-req']) {
+    assert.equal(h.get(id).textContent, '20', `${id} 数字照常显示,不加「+」`);
+    assert.match(h.get(id).getAttribute('title'), /不是全天计数.*09:05:00 之后.*用量统计/);
+  }
+  assert.equal(h.get('ov-reqs-scope').textContent, '自 09:05 起');
+  assert.equal(h.get('st-req-scope').textContent, '自 09:05 起');
+  assert.match(h.get('ov-tokens').getAttribute('title'), /自 09:05 起，不是全天/);
+
+  // 没有 since(或 exact 缺省):只能说是本次运行。
+  h.data.stats = { reqs: 3, inTok: 1, outTok: 1 };
+  await h.run('refresh()');
+  assert.equal(h.get('ov-reqs-scope').textContent, '本次运行');
+  assert.match(h.get('ov-reqs').getAttribute('title'), /本次运行以来/);
+  assert.doesNotMatch(html, /只统计内存里最近 500 条/, '静态说明不再写死内存窗口容量');
 });
 
 test('离线时会话表的改绑、配置与解绑一并禁用;改绑失败后下拉回到服务端绑定', async () => {

@@ -28,6 +28,14 @@ function boundSourceOf(b) {
   return b.pinned ? 'manual' : 'auto';
 }
 const BOUND_SOURCE = { manual: ['手动钉定', 'pin'], auto: ['自动分配', 'auto'], none: ['未绑定', 'off'] };
+// 旧会话的对话名可能是从 system / developer 块里抽出来的(AGENTS.md、<INSTRUCTIONS>、<environment_context> …),
+// 不是用户起的标题。显示成一句人话,原文留在 title 和搜索里;后端已改抽取逻辑,这里只兜旧数据。
+const SYSTEM_LABEL_RE = /^\s*(?:#|<|(?:AGENTS|CLAUDE)\.md\b)/i;
+function sessionLabelHtml(label) {
+  if (!label) return '<span class="lbl" title="">—</span>';
+  if (SYSTEM_LABEL_RE.test(label)) return `<span class="lbl lbl-system" title="${esc(label)}">系统指令，无标题</span>`;
+  return `<span class="lbl" title="${esc(label)}">${esc(label)}</span>`;
+}
 // 搜索框里没有筛东西、也没选协议组 —— 空表的文案要按它决定该劝"换关键词"还是"换分组"。
 const sessionFiltered = () => !!sessQuery.trim() || !!sessApp;
 // 搜索命中面:短 id / 完整 id / 对话名 / 绑定渠道(名字与 id 都算)。
@@ -119,7 +127,7 @@ function renderSessions() {
       <td class="c-sess"><span class="sess-tag" title="${esc(s.key)}">${esc(s.short)}</span>
         <span class="sess-kind">${esc(KIND_LABEL[s.kind] || s.kind || '')}</span></td>
       <td class="c-app"><span class="badge ${app === 'codex' ? 'info' : 'on'}">${app === 'codex' ? 'OpenAI' : 'Anthropic'}</span></td>
-      <td class="c-label"><span class="lbl" title="${esc(s.label || '')}">${esc(s.label || '—')}</span></td>
+      <td class="c-label">${sessionLabelHtml(s.label)}</td>
       <td class="session-binding">
           <details class="session-pin"><summary><span class="badge ${srcCls}">${srcText}</span>${bindName ? `<span class="bind-line" title="${esc(bindName)}">${esc(bindName)}</span>` : ''}</summary>
             <label class="field" for="${esc(domIdOf(s.key))}">普通请求渠道（非槽位、非分流请求）<select id="${esc(domIdOf(s.key))}" class="pin-sel" onchange="pinSession(${handlerArg(s.key)}, this.value)" ${!online ? 'disabled' : ''}>
@@ -127,11 +135,11 @@ function renderSessions() {
             <div class="bind-src"><span class="badge ${srcCls}">${srcText}</span></div>
           </details>
           ${bindName ? `<div class="bind-meta" title="${esc([b.model, b.rule].filter(Boolean).join(' · '))}">${esc(b.model || '—')}${b.rule ? ` · ${esc(b.rule)}` : ''}</div>` : ''}</td>
-      <td>${actualCell(s, b)}</td>
-      <td>${routingCell(s)}</td>
+      <td class="c-actual">${actualCell(s, b)}</td>
+      <td class="c-routing">${routingCell(s)}</td>
       <td class="c-usage"><b>${fmtCount(s.reqs || 0)}</b><span title="输入 ${fmtCount(s.inTok || 0)} / 输出 ${fmtCount(s.outTok || 0)} tokens">${fmtTok(s.inTok || 0)} / ${fmtTok(s.outTok || 0)}</span></td>
       <td class="c-active"${s.lastUsed ? ` title="${fmtFullTime(s.lastUsed)}"` : ''}>${fmtWhen(s.lastUsed || null)}</td>
-      <td><div class="sess-acts">
+      <td class="c-ops"><div class="sess-acts">
         <button class="small sess-config" onclick="openRouting(${handlerArg(s.key)})" ${online ? '' : 'disabled'} aria-label="配置会话 ${esc(s.short)} 的 Key 与槽位">配置 Key / 槽位</button>
         <button class="small" onclick="gotoLogs(${handlerArg(s.short)})">日志</button>
         <button class="small danger" onclick="unbindSession(${handlerArg(s.key)})" ${online ? '' : 'disabled'}>解绑</button>
@@ -154,7 +162,10 @@ function actualCell(s, bound) {
   // 普通请求对照渠道绑定,槽位请求对照该槽配置。没有配置渠道时无从比较,不报差异。
   const expected = actualExpectedProvider(s, bound);
   const diff = !!a.provider && !!expected && a.provider !== expected;
-  const statusCls = !a.status ? '' : a.status >= 400 ? 'st4' : 'st2';
+  // 差异提示写清比的是谁:槽位请求比该槽配置(会话覆盖或全局槽位),普通请求比当前绑定。
+  const nameOf = id => (state?.providers?.[s.app || 'claude'] || []).find(p => p.id === id)?.name || id;
+  const why = a.slot ? ['与槽位配置不同', `槽位 ${a.slot} 配置的渠道是 ${nameOf(expected)}，实际落在 ${name}`]
+    : ['与当前绑定不同', `当前绑定的渠道是 ${nameOf(expected)}，实际落在 ${name}`];
   // 三行各自不换行:渠道 + 状态 → 模型 → 槽位/粘性/时间。信息一条不少,但不再把渠道、
   // 模型、状态、槽位、时间挤成同一段可换行文字(那会把行高撑到六七行)。
   const meta = [
@@ -163,10 +174,10 @@ function actualCell(s, bound) {
     a.ts ? esc(fmtWhen(a.ts)) : '',
   ].filter(Boolean);
   return `<span class="actual-cell${diff ? ' diff' : ''}">
-    <span class="sum"><span class="ac-name" title="${esc(name)}">${esc(name)}</span>${a.status ? `<span class="ac-status ${statusCls}">${esc(String(a.status))}</span>` : ''}</span>
+    <span class="sum"><span class="ac-name" title="${esc(name)}">${esc(name)}</span>${a.status ? reqStatusHtml(a) : ''}</span>
     <span class="sub">${esc(a.model || '—')}</span>
     ${meta.length ? `<span class="meta">${meta.join(' · ')}</span>` : ''}
-    ${diff ? '<span class="sub why">与当前绑定不同</span>' : ''}</span>`;
+    ${diff ? `<span class="sub why" title="${esc(why[1])}">${why[0]}</span>` : ''}</span>`;
 }
 // 槽位请求对照该槽的独立/全局配置,不能拿普通请求渠道把正常的主链/子代理分流标成异常。
 function actualExpectedProvider(s, bound = boundOf(s)) {

@@ -432,3 +432,109 @@ test('直连标记与协议跟随当前草稿', async () => {
   assert.equal(providerReqs(h).at(-1).body.direct, true);
   assert.equal(providerReqs(h).at(-1).body.wire_api, 'chat');
 });
+
+// 第 2 轮 #2/#3/#16/#17:Claude 路由模式下的渠道卡与槽位摘要。
+function claudeRouterFixture() {
+  const data = fixture();
+  data.current.claude = '@router';
+  data.live.claude = { base_url: 'http://127.0.0.1:8787', model: 'mixr-main', match: true, router: true,
+    slots: { main: 'mixr-main', opus: 'mixr-opus', haiku: 'mixr-haiku' } };
+  data.providers.claude.push({ id: 'a3', name: 'Conv', base_url: 'https://conv.example/v1', models: ['gpt-x'], wire_api: 'responses', enabled: true, key_masked: '***' });
+  for (const s of data.slots.claude) {
+    const to = { opus: 'a2', sonnet: 'a2', haiku: 'a1' }[s.name];
+    if (to) Object.assign(s, { provider: to, provider_name: to === 'a1' ? 'Alpha' : 'Solo', model: to === 'a1' ? 'claude-special' : 'solo-model' });
+  }
+  return data;
+}
+const cardOf = (h, id) => h.get('prov-grid').innerHTML.match(new RegExp(`<article\\b[^>]*data-provider="${id}"[^>]*>[\\s\\S]*?</article>`))?.[0] || '';
+
+test('Claude 路由模式:按客户端 env 实际写入的槽位标「路由在用」,按钮写明会退出路由', async () => {
+  const h = await harness(claudeRouterFixture());
+  h.run("view = 'providers'; renderProviders()");
+  const main = cardOf(h, 'a1'), solo = cardOf(h, 'a2'), conv = cardOf(h, 'a3');
+  // main 槽渠道:on 色 + 当前行高亮;同渠道的其它已写入槽一并写明
+  assert.match(main, /<span class="badge on"[^>]*>路由在用 · 主模型 · 槽位 haiku<\/span>/);
+  assert.match(main, /class="card\s+cur\b/);
+  // 只被非主槽引用:次一级 route 色;sonnet 没写进 env,不算在用
+  assert.match(solo, /<span class="badge route"[^>]*>路由在用 · 槽位 opus<\/span>/);
+  assert.doesNotMatch(solo, /sonnet/);
+  assert.doesNotMatch(main + solo, /库内选中|已写入配置/);
+  // 按钮做的是 switchClaude:写直连 = 退出路由,文案与 title 按真实效果写
+  assert.match(main, /data-action="switch"[^>]*title="把此渠道写入 Claude 配置并退出路由模式[^"]*">改为直连<\/button>/);
+  // #3 只能走路由的渠道不摆禁用主按钮,换成说明标签,原因在 title
+  assert.doesNotMatch(conv, /data-action="switch"/);
+  assert.match(conv, /<span class="tag route-only-tag" title="该渠道只挂 Codex 型通道[^"]*">仅路由可用<\/span>/);
+  // 离线没有"在用"这回事
+  h.run('online = false; renderProviders()');
+  assert.doesNotMatch(h.get('prov-grid').innerHTML, /路由在用/);
+});
+
+test('Claude 直连模式:当前渠道「重新写入」,其他渠道「直连此渠道」,路由徽标不出现', async () => {
+  const h = await harness();
+  h.run("view = 'providers'; renderProviders()");
+  assert.match(cardOf(h, 'a1'), />重新写入<\/button>/);
+  assert.match(cardOf(h, 'a2'), /title="把此渠道写入 Claude 配置（直连）[^"]*">直连此渠道<\/button>/);
+  assert.doesNotMatch(h.get('prov-grid').innerHTML, /路由在用/);
+});
+
+test('渠道卡:开发备注单行截断留全文 title,停用 Key 告警照常换行;Key 小标签替代「API key ·」', async () => {
+  const data = fixture();
+  data.providers.claude[0].note = '很长的开发备注';
+  const h = await harness(data);
+  h.run("view = 'providers'; renderProviders()");
+  const card = cardOf(h, 'a1');
+  assert.match(card, /<p class="note dev-note" title="很长的开发备注">很长的开发备注<\/p>/);
+  assert.match(card, /<p class="note dead-keys">已停用的 Key：/);
+  assert.match(card, /<div class="provider-meta mono keyrow"><span class="key-label">Key<\/span><select class="keypick"/);
+  assert.doesNotMatch(card, /API key ·/);
+  const css = fs.readFileSync(path.join(__dirname, '../public/styles/providers.css'), 'utf8');
+  assert.match(css, /#prov-grid \.note\.dev-note \{[^}]*text-overflow: ellipsis/);
+});
+
+test('槽位折叠标题摘要:每槽一枚 tag,完整别名/env/渠道在 title,未配置单独标出', async () => {
+  const h = await harness(claudeRouterFixture());
+  h.run("view = 'providers'; renderSlots(true)");
+  const summary = h.get('slots-summary').innerHTML;
+  assert.equal((summary.match(/<span class="tag/g) || []).length, 5);
+  assert.match(summary, /<span class="tag" title="主模型 main · mixr-main · ANTHROPIC_MODEL · Alpha @ claude-special">main → Alpha · claude-special<\/span>/);
+  assert.match(summary, /title="Opus 槽 · mixr-opus · ANTHROPIC_DEFAULT_OPUS_MODEL · Solo @ solo-model">opus → Solo · solo-model</);
+  assert.match(summary, /<span class="tag unset" title="Subagent 槽 · mixr-subagent · CLAUDE_CODE_SUBAGENT_MODEL · 未配置">subagent → 未配置<\/span>/);
+});
+
+test('#29 多 Key 渠道隐藏无效的单行 API Key;清单删空后退回单 Key 并恢复提示', async () => {
+  const h = await harness();
+  h.run("openProvider('a1')");
+  assert.equal(h.get('m-key').hidden, true, '有清单时单行 Key 不参与保存,不该摆出来');
+  assert.match(h.get('m-key-hint').textContent, /清单/);
+  h.run('removeKeyDraft(2); removeKeyDraft(1); removeKeyDraft(0)');
+  assert.equal(h.get('m-key').hidden, false);
+  assert.match(h.get('m-key-hint').textContent, /留空保持不变/);
+  h.run('closeModal()'); h.run("openProvider('a2')");
+  assert.equal(h.get('m-key').hidden, false, '单 Key 渠道照常显示');
+  h.run('closeModal()'); h.run('openProvider()');
+  assert.equal(h.get('m-key').hidden, false, '新建渠道照常显示');
+  assert.equal(h.get('m-key-hint').textContent, '');
+});
+
+test('#15 Codex:main/reviewer 连排、阈值卡不进槽位行;直连时渠道名与下拉同一行;状态放卡头', async () => {
+  const data = fixture();
+  data.current.codex = '@router';
+  data.live.codex = { router: true, connection_mode: 'router', model: 'mixr-main', review_model: 'mixr-reviewer', base_url: 'http://127.0.0.1:8787/v1', match: true, revision: 'r1' };
+  data.slots.codex = ['main', 'reviewer'].map(name => ({ name, alias: 'mixr-' + name, provider: 'o1', provider_name: 'Beta', model: 'gpt-test', configured_model: '', enabled: true }));
+  const h = await harness(data);
+  h.run("view = 'providers'; setApp('codex')");
+  const rows = h.get('codex-model-fields').innerHTML;
+  assert.ok(rows.indexOf('id="codex-slot-main"') < rows.indexOf('id="codex-slot-reviewer"'));
+  assert.doesNotMatch(rows, /codex-compact-panel/);
+  assert.notEqual(h.get('codex-compact-panel').parentElement, h.get('codex-model-fields'), '槽位重绘不拆阈值草稿');
+  const css = fs.readFileSync(path.join(__dirname, '../public/styles/providers.css'), 'utf8');
+  const order = sel => Number(css.match(new RegExp(sel.replace(/[#.-]/g, m => '\\' + m) + ' \\{ order: (-?\\d+)'))?.[1]);
+  assert.ok(order('#view-providers #codex-slot-reviewer') < order('#view-providers #codex-compact-panel'), '阈值卡排在两行槽位之后');
+  assert.match(css, /#view-providers \.codex-models > \.model-actions \{\s*order: -1; grid-column: 2;/, '状态在卡头右侧');
+  // 直连:渠道名作为控件标签,和下拉在同一个横排 label 里
+  Object.assign(data.live.codex, { router: false, connection_mode: 'direct', direct_provider_id: 'o1', direct_provider_name: 'Beta', base_url: 'https://openai.example/v1', model: 'gpt-test', review_model: '' });
+  data.current.codex = 'o1';
+  await h.run('refresh()');
+  assert.match(h.get('codex-direct-fields').innerHTML, /<label class="field direct-control"><span class="direct-provider" title="直连渠道 Beta">Beta<\/span><select id="codex-direct-model"/);
+  assert.equal(h.get('codex-model-status').textContent, '当前直连 · 模型配置已读取');
+});

@@ -658,7 +658,7 @@ test('today 与既有实现等价:按本地日历日', t => {
   const stamp = at => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(at).padStart(2, '0')}T12:00:00.000Z`;
   log.append(entry({ ts: stamp(19), in: 5, out: 6 }));
   log.append(entry({ ts: stamp(18), in: 100, out: 100 })); // 昨天,不计
-  assert.deepEqual(log.today(), { reqs: 1, inTok: 5, outTok: 6 });
+  assert.deepEqual(log.today(), { reqs: 1, inTok: 5, outTok: 6, exact: false, since: new Date(fixed).toISOString() });
 });
 
 test('零第三方依赖:模块只 require node: 内置', () => {

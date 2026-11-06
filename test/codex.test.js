@@ -174,6 +174,20 @@ test('codexFirstUserText / sessionLabel(Codex):取 input 里首条人话', () =>
   assert.strictEqual(sessionLabel({ instructions: 'x', input: [] }, 'codex'), '');
 });
 
+test('sessionLabel(Codex):跳过 AGENTS.md 项目说明与尖括号注入块；全是注入块时不起标签', () => {
+  const { applyLabel, looksInternal } = require('../lib/session/identity');
+  const msg = text => ({ type: 'message', role: 'user', content: [{ type: 'input_text', text }] });
+  const agents = '# AGENTS.md instructions\n\n<INSTRUCTIONS>\n<!-- tinyfish-default-web -->\n## Web search';
+  const env = '<environment_context>\n  <cwd>/Users/x</cwd>\n</environment_context>';
+  assert.strictEqual(sessionLabel({ input: [msg(agents), msg(env), msg('接手 mixrouterui 重构项目')] }, 'codex'), '接手 mixrouterui 重构项目');
+  assert.strictEqual(sessionLabel({ input: [msg(agents), msg(env)] }, 'codex'), '');
+  // 旧数据里存成 AGENTS.md 的标签算内部文案,下一次拿到真人话时会被替换
+  const s = { label: '# AGENTS.md instructions <INSTRUCTIONS> <!-- tinyf' };
+  applyLabel(s, '接手 mixrouterui 重构项目');
+  assert.strictEqual(s.label, '接手 mixrouterui 重构项目');
+  assert.strictEqual(looksInternal('# 标题不是注入块'), false);
+});
+
 test('responsesToChat:instructions→system、developer→system、工具调用/结果成对映射、reasoning 丢弃', () => {
   const cc = responsesToChat({
     model: 'glm-5.3-flash', instructions: '你是助手', stream: true, max_output_tokens: 4096, temperature: 0.3,

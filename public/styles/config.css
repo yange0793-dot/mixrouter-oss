@@ -188,3 +188,17 @@
   #view-settings #health-body .table-wrap table { min-width: 0; }
   #view-settings #health-body .table-wrap td:first-child { white-space: normal; }
 }
+/* 手机：备份表一行一份。文件名可换行占满第一行；大小 · 时间并成第二行 dim 小字；摘要列收起（文件名的 title 里有）。 */
+@media (max-width: 560px) {
+  #view-settings .bk-dir .table-wrap { overflow: visible; }
+  #view-settings .bk-dir .table-wrap table { display: block; width: 100%; min-width: 0; table-layout: auto; }
+  #view-settings .bk-dir .table-wrap thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  #view-settings .bk-dir .table-wrap tbody { display: block; }
+  #view-settings .bk-dir .table-wrap tbody tr { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; padding: 8px 12px; border-top: 1px solid var(--border-soft); }
+  #view-settings .bk-dir .table-wrap tbody tr:first-child { border-top: 0; }
+  #view-settings .bk-dir .table-wrap td { display: block; padding: 0; border-top: 0; max-width: none; }
+  #view-settings .bk-dir .table-wrap td.bk-name { flex: 1 1 100%; white-space: normal; overflow: visible; word-break: break-all; font-size: 12.5px; line-height: 1.5; }
+  #view-settings .bk-dir .table-wrap td.bk-size, #view-settings .bk-dir .table-wrap td.bk-time { font-size: 12px; color: var(--dim); text-align: left; }
+  #view-settings .bk-dir .table-wrap td.bk-size::after { content: " ·"; }
+  #view-settings .bk-dir .table-wrap td.bk-sha { display: none; }
+}

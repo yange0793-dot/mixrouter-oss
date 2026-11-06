@@ -72,11 +72,16 @@ function renderCompactKeys() {
     : compactDraft.key_id ? '固定 Key 只影响两条压缩规则，不切换渠道当前账号。'
       : `跟随渠道当前 Key${active ? '：' + (active.label || active.id) + '（' + active.id + '）' : ''}；渠道切换当前账号后压缩也会跟随。`;
 }
+// 「压缩选择与上次载入一致」:有草稿、服务端版本没变、草稿没动过。app.js 用它禁用 #save-compact,
+// 和 #save-window 一样没有改动就不能点;状态行也按它写那句「一致」。
+function compactUnchanged() {
+  return !!compactDraft && state?.compact?.revision === compactBase && !compactDirty;
+}
 function updateCompactStatus() {
   if (!compactDraft) return;
   const text = savingCompact ? '正在保存压缩模型…'
     : state?.compact?.revision !== compactBase ? '服务端压缩规则已变化；草稿保留，请重新载入后保存。'
-      : compactDirty ? '有未保存的压缩选择；自动刷新不会覆盖。' : '压缩选择与上次载入一致。';
+      : compactUnchanged() ? '压缩选择与上次载入一致。' : '有未保存的压缩选择；自动刷新不会覆盖。';
   if ($('compact-msg').textContent !== text) $('compact-msg').textContent = text;
   renderSplitStatus();
 }
