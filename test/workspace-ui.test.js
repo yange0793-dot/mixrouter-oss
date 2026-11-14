@@ -1018,12 +1018,11 @@ test('index.html:用量页 DOM 契约完整,且不再有面积图与费用', () 
   assert.ok(usage.includes('id="usage-calendar-expand" onclick="expandUsageCalendar()" hidden'), '更早历史按钮默认隐藏');
   assert.ok(!usage.includes('id="usage-svg"'), '面积图不再渲染');
   assert.ok(!/费用|成本|pricing|cost/i.test(usage), '用量页不展示费用');
-  // ttfb_ms 是上游响应头到达时间,不是首个内容 token:文案不能写成「首字」。
-  // 只看可见文案:注释里说明这件事不算违规。
+  // HTTP 首响应仍须独立标注；供应商的 first_token_ms 可以显示为后台首字。
   const visible = usage.replace(/<!--[\s\S]*?-->/g, '');
-  assert.ok(!/首字/.test(visible), '延迟指标要写「首响应」并给出解释');
-  assert.match(visible, /首响应/, '补充指标标签用「首响应」');
-  assert.match(visible, /不是首个内容 token/, '「首响应」要带 title 解释它测的是什么');
+  const httpTiming = /<div><span title="[^"]*">首响应 P50<\/span><b id="usage-ttfb">[\s\S]*?<\/div>/.exec(visible)?.[0];
+  assert.ok(httpTiming && !/首字/.test(httpTiming), 'HTTP 延迟指标要写「首响应」并给出解释');
+  assert.match(httpTiming, /不是首个内容 token/, '「首响应」要带 title 解释它测的是什么');
 });
 
 // ---------------------------------------------------------------- 概览小时数据

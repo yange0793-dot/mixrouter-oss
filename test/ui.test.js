@@ -278,8 +278,9 @@ async function harness(data = fixture(), opts = {}) {
         return { ok: true, json: async () => options.method === 'POST' ? { ok: true, window, backup: '/tmp/backup' } : { window } };
       }
       if (url === '/api/compact' && options.method === 'POST') {
-        data.compact = { ...data.compact, revision: 'saved-revision', mode: 'single', selection: { provider: body.provider, model: body.model, ...(Object.hasOwn(body, 'key_id') ? { key_id: body.key_id } : {}) } };
-        return { ok: true, json: async () => ({ ok: true, compact: structuredClone(data.compact) }) };
+        const field = body.app === 'codex' ? 'codex_compact' : 'compact';
+        data[field] = { ...data[field], revision: 'saved-revision', mode: 'single', selection: { provider: body.provider, model: body.model, ...(Object.hasOwn(body, 'key_id') ? { key_id: body.key_id } : {}) } };
+        return { ok: true, json: async () => ({ ok: true, compact: structuredClone(data[field]) }) };
       }
       if (url === '/api/logs' || url.startsWith('/api/logs?')) return { ok: true, json: async () => ({ logs: [] }) };
       // ---- 设置页的三条只读端点。造的是"能读到"的常态;失败注入由用例自己覆写 fetch。
@@ -396,6 +397,89 @@ test('压缩保存带版本号、确认替换备池，自动刷新保留保存�
   assert.equal(h.run('compactDirty'), false);
   assert.equal(h.run('compactBase'), 'saved-revision', '保存后草稿基线跟着服务端新版本走');
   assert.equal(h.run('state.compact.selection.model'), 'new-model');
+});
+
+test('路由模式下两组压缩保留独立草稿和保存结果，Codex 提交指定 app', async () => {
+  const data = fixture();
+  data.compact = { key_selection_supported: true, revision: 'claude-one', mode: 'single',
+    selection: { provider: 'a1', model: 'claude-special', key_id: '' }, providers: [data.providers.claude[0]], rules: [] };
+  data.codex_compact = { key_selection_supported: true, revision: 'codex-one', mode: 'single',
+    selection: { provider: 'o1', model: 'gpt-test', key_id: '' },
+    providers: [{ ...data.providers.codex[0], app: 'codex', models: ['gpt-test'], keys: [{ id: 'klegacy', label: 'Codex account', enabled: true }] }], rules: [] };
+  data.live.codex = { router: true, base_url: 'http://127.0.0.1:8787/v1' };
+  const h = await harness(data);
+  h.run("pickCompactModel('__custom__'); setCompactCustom('claude-draft'); selectCompactApp('codex')");
+  assert.equal(h.get('compact-heading').textContent, 'Codex 压缩模型');
+  assert.match(h.get('compact-connection').textContent, /接入 MixRouter/);
+  assert.equal(h.get('compact-route-editor').hidden, false);
+  assert.match(h.get('compact-provider').innerHTML, /Beta.*Codex/);
+  h.run("pickCompactModel('__custom__'); setCompactCustom('codex-draft'); pickCompactKey('klegacy'); selectCompactApp('claude')");
+  assert.equal(h.run('compactDraft.model'), 'claude-draft');
+  assert.equal(h.run('compactDirty'), true);
+  assert.equal(h.get('compact-model-custom').value, 'claude-draft');
+  h.run("selectCompactApp('codex')");
+  await h.confirm('saveCompact()');
+  assert.deepEqual(h.requests.findLast(r => r.url === '/api/compact').body,
+    { app: 'codex', provider: 'o1', model: 'codex-draft', key_id: 'klegacy', expected_revision: 'codex-one' });
+  assert.equal(data.compact.selection.model, 'claude-special');
+  h.run("selectCompactApp('claude')");
+  assert.equal(h.run('compactDraft.model'), 'claude-draft');
+  assert.equal(h.run('compactOutcome'), null);
+  h.run("selectCompactApp('codex')");
+  assert.equal(h.run('compactDraft.model'), 'codex-draft');
+  assert.equal(h.run('compactDirty'), false);
+  assert.equal(h.run('compactOutcome.saved'), true);
+});
+
+test('Codex 直连时隐藏并禁用独立压缩选择，显示会话主模型及真实客户端配置', async () => {
+  const data = fixture();
+  data.codex_compact = { key_selection_supported: true, revision: 'codex-one', mode: 'single',
+    selection: { provider: 'o1', model: 'saved-but-inactive', key_id: '' },
+    providers: [{ ...data.providers.codex[0], app: 'codex', models: ['gpt-test'], keys: [] }], rules: [] };
+  data.live.codex = { router: false, base_url: 'https://openai.example/v1', direct_provider_name: '千刀', model: 'actual-main-model' };
+  const h = await harness(data);
+  h.run("selectCompactApp('codex')");
+  assert.equal(h.get('compact-route-editor').hidden, true);
+  assert.equal(h.get('compact-direct-current').hidden, false);
+  assert.match(h.get('compact-direct-current').innerHTML, /跟随当前会话主模型.*千刀.*actual-main-model/);
+  assert.doesNotMatch(h.get('compact-direct-current').innerHTML, /saved-but-inactive/);
+  for (const id of ['compact-provider', 'compact-model', 'compact-model-custom', 'compact-key', 'save-compact'])
+    assert.equal(h.get(id).disabled, true, id);
+  h.run("pickCompactModel('__custom__'); setCompactCustom('must-not-save')");
+  await h.run('saveCompact()');
+  assert.equal(h.requests.some(r => r.url === '/api/compact'), false);
+  assert.match(h.get('toast').textContent, /不能.*独立压缩模型/);
+  assert.equal(data.codex_compact.selection.model, 'saved-but-inactive');
+
+  data.live.codex.router = true;
+  await h.run('refresh()');
+  assert.equal(h.get('compact-route-editor').hidden, false);
+  assert.equal(h.get('compact-provider').disabled, false);
+  assert.equal(h.run('compactDraft.model'), 'must-not-save');
+  const saving = h.run('saveCompact()');
+  data.live.codex.router = false;
+  await h.run('refresh()');
+  h.run('finishConfirm(true)'); await saving;
+  assert.equal(h.requests.some(r => r.url === '/api/compact'), false);
+});
+
+test('渠道和模型选项随轮询更新，未变化的列表不重建且自定义输入保留', async () => {
+  const data = fixture();
+  data.compact = { key_selection_supported: true, revision: 'one', mode: 'single',
+    selection: { provider: 'a1', model: 'claude-special', key_id: '' }, providers: [data.providers.claude[0]], rules: [] };
+  const h = await harness(data);
+  const writes = h.get('compact-provider').htmlWrites;
+  await h.run('refresh()');
+  assert.equal(h.get('compact-provider').htmlWrites, writes);
+  h.run("pickCompactModel('__custom__'); document.getElementById('compact-model-custom').value = 'unfinished'; setCompactCustom('unfinished')");
+  data.compact.providers.push({ id: 'new-claude', app: 'claude', name: 'New Claude', models: ['next-model'], keys: [] });
+  data.compact.providers[0].models.push('new-model');
+  await h.run('refresh()');
+  assert.match(h.get('compact-provider').innerHTML, /New Claude/);
+  assert.match(h.get('compact-model').innerHTML, /new-model/);
+  assert.equal(h.get('compact-model-custom').value, 'unfinished');
+  assert.equal(h.run('compactDraft.provider'), 'a1');
+  assert.equal(h.run('compactDirty'), true);
 });
 
 test('压缩提交等待响应时的新编辑仍留在草稿，确认期间变更不冒充已保存', async () => {
@@ -2391,7 +2475,8 @@ test('保存渠道带回备份轮换:并进同一条提示、warn 基调,且不�
 
 test('切换生效 Key / 启停 / 删除:三扇门都要带出备份轮换', async () => {
   for (const [code, okWord] of [
-    ["setActiveKey('a1','k1')", '已切换生效 Key'],
+    // 夹具里 Claude 是直连(live.claude 无 router),生效 Key 改了要重新「直连此渠道」才写入客户端。
+    ["setActiveKey('a1','k1')", '渠道账号已保存'],
     ["toggleProvider('a1')", '渠道状态已更新'],
     ["delProvider('a1')", '渠道已删除'],
   ]) {
@@ -2855,6 +2940,10 @@ test('公共格式函数:tokens/计数/百分比/字节/时长/运行时长/速�
   assert.equal(h.run('fmtTtfb(65000)'), h.run('fmtDur(65000)'), '首字节耗时与请求耗时同一口径');
   assert.equal(h.run('fmtRate({ out: 423, ms: 10000 })'), '42.3tok/s', '数字与单位之间不加空格');
   assert.equal(h.run('fmtRate({ out: 0, ms: 10 })'), '—', '没有输出不冒充「极快」');
+  assert.equal(h.run('fmtRate({ speed_tps: 28.6, out: 1480, ms: 574 })'), '28.6tok/s', '显式含等待吞吐不被生成耗时重算覆盖');
+  assert.equal(h.run('fmtRate({ speed_tps: null, out: 1480, ms: 574 })'), '—', '明确缺失的派生速率不回退猜测');
+  assert.equal(h.run('fmtRate({ speed_tps: 0 })'), '—');
+  assert.equal(h.run('fmtRate({ out: -1, ms: 10 })'), '—');
   // 时间点用本地时区构造,不随运行环境的时区漂移;今天/今年两档依赖当前时间,这里只锁更早一档与完整时间。
   assert.equal(h.run('fmtWhen(new Date(2020, 0, 5, 12, 0, 0).getTime())'), '2020-01-05');
   assert.equal(h.run('fmtFullTime(new Date(2020, 0, 5, 12, 0, 0).getTime())'), '2020-01-05 12:00:00');
@@ -2920,6 +3009,93 @@ test('离线时会话表的改绑、配置与解绑一并禁用;改绑失败后�
   const writes = h.get('sess-body').htmlWrites;
   h.run('renderSessions()');
   assert.ok(h.get('sess-body').htmlWrites > writes, '缓存作废后下一次渲染一定重写,下拉回到服务端绑定');
+});
+
+// ---------------------------------------------------------------- 概览失败聚合
+// 概览此前只看得到成功率掉了,看不到为什么掉。recent_failures 来自 /api/state 的内存环聚合,
+// 这里钉三件事:阈值(≥5 才报)、明细(分类 + 最常见模型 mono)、入口(去诊断)。
+test('概览:最近窗口失败≥5 时列出分类与最常见模型,并跳到诊断页', async () => {
+  const data = fixture();
+  data.recent_failures = {
+    total: 1000, failed: 6,
+    by_class: { no_route_error: 4, upstream_server: 2 },
+    top: [
+      { model_in: 'gpt-6.1-sol', err_class: 'no_route_error', count: 4 },
+      { model_in: 'claude-special', err_class: 'upstream_server', count: 2 },
+    ],
+  };
+  const h = await harness(data);
+  const todo = h.get('overview-todo').innerHTML;
+  assert.match(todo, /最近 1000 条请求里有 6 条失败/);
+  assert.match(todo, /未登记模型 4/, 'no_route_error 要说成人话');
+  assert.match(todo, /上游故障 2/);
+  assert.match(todo, /<span class="mono">gpt-6\.1-sol<\/span>/, '最常见模型名要出现且是 mono');
+  assert.match(todo, /data-level="err"/);
+  assert.match(todo, /data-jump="diagnostics"/);
+  assert.match(todo, /去诊断/);
+});
+
+test('概览:失败少于 5 条或服务端没有该字段时,不出现失败提醒', async () => {
+  const few = fixture();
+  few.recent_failures = { total: 1000, failed: 4, by_class: { no_route_error: 4 }, top: [{ model_in: 'm', err_class: 'no_route_error', count: 4 }] };
+  const h = await harness(few);
+  assert.doesNotMatch(h.get('overview-todo').innerHTML, /条失败/);
+
+  const none = await harness(fixture());
+  assert.doesNotMatch(none.get('overview-todo').innerHTML, /条失败/, '旧服务端没有 recent_failures 时整条不出现');
+});
+
+// ---------------------------------------------------------------- 生效 Key 的三种生效方式
+test('Claude 直连切换生效 Key:提示要点「直连此渠道」才会写进 Claude Code', async () => {
+  const h = await harness();
+  await h.run("setActiveKey('a1','k1')");
+  const t = h.get('toast');
+  assert.equal(t.className, 'ok');
+  assert.match(t.textContent, /渠道账号已保存/);
+  assert.match(t.textContent, /直连此渠道/);
+  assert.match(t.textContent, /Claude Code/);
+  assert.doesNotMatch(t.textContent, /立刻跟着用新 Key/, '直连客户端读的是磁盘上的 Key,不能承诺立刻生效');
+});
+
+test('Claude 路由模式切换生效 Key:仍然提示立刻跟着用新 Key', async () => {
+  const data = fixture();
+  data.live.claude.router = true;
+  const h = await harness(data);
+  await h.run("setActiveKey('a1','k1')");
+  const t = h.get('toast');
+  assert.equal(t.className, 'ok');
+  assert.match(t.textContent, /已切换生效 Key/);
+  assert.match(t.textContent, /立刻跟着用新 Key/);
+});
+
+// ---------------------------------------------------------------- 渠道弹窗:寻址别名
+test('渠道弹窗:寻址别名 slug 回填、有说明,并随保存一起提交', async () => {
+  assert.match(html, /<label for="m-slug">寻址别名<\/label>/);
+  assert.match(html, /id="m-slug"[^>]*placeholder="agentrouter"/);
+  assert.match(html, /provider\/model 形式寻址，例如 agentrouter\/gpt-6\.1-sol；留空则按渠道名自动匹配/);
+
+  const data = fixture();
+  data.providers.claude[0].slug = 'alpha-gw';
+  const h = await harness(data);
+  h.run("openProvider('a1')");
+  assert.equal(h.get('m-slug').value, 'alpha-gw', '编辑时回填已保存的 slug');
+
+  h.get('m-slug').value = 'agentrouter';
+  await h.run('saveProvider()');
+  const put = h.requests.findLast(r => r.url === '/api/providers/a1' && r.method === 'PUT');
+  assert.ok(put, '保存走渠道 PUT');
+  assert.equal(put.body.slug, 'agentrouter');
+
+  // 新建渠道留空 = 后端按渠道名自动匹配;字段照样随 POST 提交(后端校验小写与长度)。
+  h.run('openProvider()');
+  assert.equal(h.get('m-slug').value, '', '新建时别名留空');
+  h.get('m-name').value = 'New'; h.get('m-base').value = 'https://new.example';
+  h.get('m-key').value = 'sk-test';
+  h.get('m-slug').value = 'new-gw';
+  await h.run('saveProvider()');
+  const post = h.requests.findLast(r => r.url === '/api/providers' && r.method === 'POST');
+  assert.ok(post, '新建走渠道 POST');
+  assert.equal(post.body.slug, 'new-gw');
 });
 
 // Mixrouter.app 用 WKWebView。子节点增删、选中和 hidden 变化不保证触发 :has 重算,

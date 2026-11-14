@@ -39,6 +39,9 @@ process.env.MIXUI_PORT = '0';
 // 重试间隔默认 1s:本文件测的是接线(日志/错误体形状),不是重试节奏。
 // 打死端口和打 500 上游的用例都会被重试放大成十秒级的空等。
 process.env.MIXR_RETRY_DELAY_MS = '0';
+// 同渠道连续失败上限同样会改变"最后返回哪一发的错误体":本文件钉的是上游错误正文的
+// 截断形状,不是重试次数,所以这里关掉上限,让 500 上游按原有预算走到最后。
+process.env.MIXR_SAME_PROVIDER_ATTEMPTS = '0';
 
 const bodyLib = require('../lib/http/body');
 const respondLib = require('../lib/http/respond');

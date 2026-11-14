@@ -125,6 +125,42 @@ test('Codex sync copies known metadata and registers unknown target identities w
   assert.equal(JSON.parse(fs.readFileSync(path.join(temporary, 'mixrouter-model-catalog.json'), 'utf8')).models.find(item => item.slug === 'mixr-main').x_mixrouter.capabilities_known, false);
 });
 
+test('Codex routed catalog retains Fast from a namespaced canonical model declaration', () => {
+  const canonical = { ...model, slug: 'auto/known-model', service_tiers: [{ id: 'priority', name: 'Fast' }] };
+  const source = JSON.stringify({ models: [canonical, { ...model, slug: 'provider/unknown-model' }] });
+  fs.writeFileSync(path.join(temporary, 'catalog.json'), source);
+  router.updateCodexConfig({ action: 'sync_catalog', revision: router.liveState().codex.revision });
+  const generated = JSON.parse(fs.readFileSync(path.join(temporary, 'mixrouter-model-catalog.json'), 'utf8'));
+  const main = generated.models.find(item => item.slug === 'mixr-main');
+  assert.deepEqual(main.service_tiers, canonical.service_tiers);
+  assert.deepEqual(main.supported_reasoning_levels, canonical.supported_reasoning_levels);
+  assert.equal(main.x_mixrouter.capabilities_known, true);
+  assert.equal(main.x_mixrouter.target, 'known-model');
+  assert.equal(generated.models.find(item => item.slug === 'mixr-reviewer').x_mixrouter.capabilities_known, false);
+  assert.equal(fs.readFileSync(path.join(temporary, 'catalog.json'), 'utf8'), source);
+});
+
+test('Codex catalog prefers the exact model declaration over the canonical namespaced fallback', () => {
+  const canonical = { ...model, slug: 'auto/known-model', service_tiers: [{ id: 'priority', name: 'Fast' }] };
+  const exact = { ...model, service_tiers: [], supported_reasoning_levels: [{ effort: 'max' }] };
+  fs.writeFileSync(path.join(temporary, 'catalog.json'), JSON.stringify({ models: [canonical, exact] }));
+  router.updateCodexConfig({ action: 'sync_catalog', revision: router.liveState().codex.revision });
+  const main = JSON.parse(fs.readFileSync(path.join(temporary, 'mixrouter-model-catalog.json'), 'utf8'))
+    .models.find(item => item.slug === 'mixr-main');
+  assert.deepEqual(main.service_tiers, []);
+  assert.deepEqual(main.supported_reasoning_levels, [{ effort: 'max' }]);
+});
+
+test('Codex direct catalog retains Fast from a namespaced canonical model declaration', () => {
+  const canonical = { ...model, slug: 'auto/known-model', service_tiers: [{ id: 'priority', name: 'Fast' }] };
+  fs.writeFileSync(path.join(temporary, 'catalog.json'), JSON.stringify({ models: [canonical] }));
+  const prepared = config.prepareDirectCatalog(codexFile, config.read(codexFile).document, ['known-model']);
+  const direct = JSON.parse(prepared.content).models.find(item => item.slug === 'known-model');
+  assert.deepEqual(direct.service_tiers, canonical.service_tiers);
+  assert.deepEqual(direct.supported_reasoning_levels, canonical.supported_reasoning_levels);
+  assert.deepEqual(prepared.unknown, []);
+});
+
 test('Codex 目录同步按同渠道两个槽的显式模型分别复制能力', () => {
   const reviewerModel = { ...model, slug: 'review-target', display_name: 'Reviewer', context_window: 128000,
     supported_reasoning_levels: [{ effort: 'medium' }], input_modalities: ['text'] };
@@ -394,4 +430,51 @@ test('Codex TOML leaves custom sections and profiles untouched when patching', (
   assert.equal(document.get('mcp_servers', 'test', 'command'), 'node');
   assert.equal(document.get('model_provider'), 'mixr-router');
   assert.equal(document.get('model'), 'gpt-5.1', '顶层 model 没在 top 里,必须原样留着');
+});
+
+test('Codex 热路径配置与模型目录源文件按文件签名缓存,变化后失效', () => {
+  const { createClientManager } = require('../lib/clients/manager');
+  const hotFile = path.join(temporary, 'hot-config.toml');
+  const sourceFile = path.join(temporary, 'mixrouter-model-catalog.source.json');
+  const write = legacy => {
+    fs.writeFileSync(hotFile, ['model_provider = "mixr-router"',
+      'model_catalog_json = "mixrouter-model-catalog.json"',
+      '',
+      '[model_providers.mixr-router]',
+      'name = "Router"',
+      `base_url = "${router.ROUTER_URL}/v1"`,
+      'wire_api = "responses"',
+      'requires_openai_auth = false',
+      `experimental_bearer_token = "${router.ROUTER_TOKEN}"`,
+      ''].join('\n'));
+    fs.writeFileSync(sourceFile, JSON.stringify({ legacy_models: legacy }));
+  };
+  const manager = createClientManager({
+    config: { CLAUDE_SETTINGS: claudeFile, CODEX_CONFIG: hotFile, PROVIDERS_FILE: path.join(temporary, 'providers.json'),
+      SLOTS_FILE: path.join(temporary, 'slots.json'), ROUTER_ID: router.ROUTER_ID, ROUTER_URL: router.ROUTER_URL,
+      ROUTER_TOKEN: router.ROUTER_TOKEN, ROUTER_SECTION: router.ROUTER_SECTION, PROXY_PORT: 0 },
+    getStore: () => ({ claude: [], codex: [] }), getCurrent: () => ({ claude: '@router', codex: router.ROUTER_ID }),
+    getSlotMap: () => ({ claude: {}, codex: {} }), setSlotMap: () => {},
+    slotsPublic: () => ({ claude: {}, codex: [] }), slotTable: { slotsPublic: () => ({ codex: [] }) },
+    setStoreWarnings: () => {}, findProvider: () => null,
+  });
+  const context = { token: router.ROUTER_TOKEN, ua: 'codex_desktop/0.162.1', session: 'cx:one' };
+  write({ 'legacy-model': 'mixr-main' });
+  assert.equal(manager.codexLegacyAlias('legacy-model', context), 'mixr-main');
+  assert.equal(manager.codexLegacyAlias('unknown-model', context), '');
+
+  // 文件未变:一次 readFileSync 都不该再发生(TOML 解析与 JSON 解析都省掉)。
+  const reads = [];
+  const realRead = fs.readFileSync;
+  fs.readFileSync = (file, ...args) => { reads.push(String(file)); return realRead(file, ...args); };
+  try {
+    assert.equal(manager.codexLegacyAlias('legacy-model', context), 'mixr-main');
+    assert.deepEqual(reads, []);
+    write({ 'legacy-model': 'mixr-reviewer' });
+    assert.equal(manager.codexLegacyAlias('legacy-model', context), 'mixr-reviewer');
+    assert.equal(reads.filter(file => file === hotFile).length, 1, '配置变化后重新读取一次');
+    assert.equal(reads.filter(file => file === sourceFile).length, 1, '源目录变化后重新读取一次');
+  } finally {
+    fs.readFileSync = realRead;
+  }
 });

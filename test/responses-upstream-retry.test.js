@@ -36,8 +36,8 @@ function rejectUpstream(res, event = failed(), json = false) {
   res.writeHead(200, { 'Content-Type': json ? 'application/json' : 'text/event-stream' });
   res.end(json ? JSON.stringify(event.response) : frame(event));
 }
-function configure({ pinned = false, other = false } = {}) {
-  const provider = id => ({ id, name: id, enabled: true, api_key: 'sk-fixture', wire_api: 'responses',
+function configure({ pinned = false, other = false, wire = 'responses' } = {}) {
+  const provider = id => ({ id, name: id, enabled: true, api_key: 'sk-fixture', wire_api: wire,
     base_url: `http://127.0.0.1:${upstream.address().port}/${id}`, models: ['fixture-model'] });
   mod._state.store = { claude: [], codex: [provider('primary'), ...(other ? [provider('secondary')] : [])] };
   // 槽位钉定主渠道;备池只在需要换渠道的用例里加。上游流式开关已随规则一起废弃。
@@ -233,6 +233,139 @@ test('正常原生 SSE 保留全部原始字节和跨块中文', async () => {
   assert.equal(hits, 1);
 });
 
+test('已提交的 Responses 半帧期间不插入心跳破坏 JSON', async () => {
+  const delta = frame({ type: 'response.output_text.delta', delta: '已有输出' });
+  const terminal = frame({ type: 'response.completed', response: completed() });
+  const at = terminal.indexOf('"output"') + 4;
+  reply = (_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    res.write(delta + terminal.slice(0, at));
+    setTimeout(() => res.end(terminal.slice(at)), 40);
+  };
+  assert.equal((await ask()).text, delta + terminal);
+  assert.equal(hits, 1);
+  assert.equal(lastLog().err_class || '', '');
+  assert.equal(lastLog().in, 8); assert.equal(lastLog().out, 3);
+});
+
+test('已提交的 Responses 完整事件之间仍发送心跳', async () => {
+  const delta = frame({ type: 'response.output_text.delta', delta: '已有输出' });
+  const terminal = frame({ type: 'response.completed', response: completed() });
+  let upstreamResponse, received = '';
+  reply = (_req, res) => {
+    upstreamResponse = res;
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    res.write(delta);
+  };
+  const result = await ask({}, (_req, res) => res.on('data', chunk => {
+    received += chunk.toString('utf8');
+    if (received.includes(': keep-alive\n\n') && !upstreamResponse.writableEnded) upstreamResponse.end(terminal);
+  }));
+  assert.match(result.text, /: keep-alive\n\n/);
+  assert.equal(result.text.replace(/(?<=\n\n): keep-alive\n\n/g, ''), delta + terminal);
+  assert.equal(hits, 1);
+  assert.equal(lastLog().err_class || '', '');
+});
+
+for (const placement of ['terminal', 'trailing']) test(`完整 Responses 终态不能被用量采样窗口裁掉 (${placement})`, async () => {
+  const response = { ...completed(), model: 'reported-model',
+    ...(placement === 'terminal' ? { instructions: '中文'.repeat(60000) } : {}),
+    usage: { input_tokens: 12345, output_tokens: 67, input_tokens_details: { cached_tokens: 12000 } } };
+  const raw = frame({ type: 'response.output_text.delta', delta: '最终答案' })
+    + (placement === 'trailing' ? ': ' + 'x'.repeat(150000) + '\n\n' : '')
+    + frame({ type: 'response.completed', response })
+    + (placement === 'trailing' ? ': ' + 'x'.repeat(300000) + '\n\n' : '');
+  reply = (_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    const bytes = Buffer.from(raw);
+    for (let offset = 0; offset < bytes.length; offset += 4093) res.write(bytes.subarray(offset, offset + 4093));
+    res.end();
+  };
+  const result = await ask();
+  assert.equal(result.text.replace(/(?<=\n\n): keep-alive\n\n/g, ''), raw);
+  assert.equal(hits, 1);
+  const log = lastLog();
+  assert.equal(log.err_class || '', '');
+  assert.equal(log.err || '', '');
+  assert.equal(log.in, 12345); assert.equal(log.out, 67); assert.equal(log.cache_read, 12000);
+  assert.equal(log.upstream_model, 'reported-model');
+});
+
+test('Responses 用量取协议 usage，不取嵌套 attribution 的最后一个 token 数', async () => {
+  const response = { ...completed(), usage: { input_tokens: 12345, output_tokens: 67,
+    input_tokens_details: { cached_tokens: 12000 }, attribution: { request_fields: {
+      instructions: { input_tokens: 11, output_tokens: 0, cached_tokens: 0 } } } } };
+  reply = (_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    res.end(frame({ type: 'response.completed', response }));
+  };
+  assert.equal((await ask()).status, 200);
+  const log = lastLog();
+  assert.equal(log.err_class || '', '');
+  assert.equal(log.in, 12345); assert.equal(log.out, 67); assert.equal(log.cache_read, 12000);
+});
+
+for (const newline of ['\r\n', '\r', '\n']) test(`多行 data 的完整终态按 SSE 事件解析 (${JSON.stringify(newline)})`, async () => {
+  const raw = JSON.stringify({ type: 'response.completed', response: completed() }, null, 2)
+    .split('\n').map(line => 'data: ' + line).join(newline) + newline + newline;
+  reply = (_req, res) => { res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.end(raw); };
+  assert.equal((await ask()).text, raw);
+  const log = lastLog();
+  assert.equal(log.err_class || '', '');
+  assert.equal(log.in, 8); assert.equal(log.out, 3);
+});
+
+test('大的 failed 事件优先记录 response.error，不让元数据挤掉真实原因', async () => {
+  const event = failed('invalid_request_error');
+  event.response = { instructions: 'private-instructions-'.repeat(200), ...event.response };
+  const raw = frame({ type: 'response.output_text.delta', delta: '已有输出' }) + frame(event);
+  reply = (_req, res) => { res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.end(raw); };
+  assert.equal((await ask()).text, raw);
+  assert.equal(hits, 1);
+  assert.equal(lastLog().err_class, 'stream_aborted');
+  assert.equal(lastLog().err, 'fixture invalid input');
+});
+
+test('采样窗口以外的真实错误不能被后续 completed 终态掩盖', async () => {
+  const raw = frame({ type: 'response.output_text.delta', delta: '已有输出' })
+    + ': ' + 'x'.repeat(150000) + '\n\n' + frame(failed('invalid_request_error'))
+    + ': ' + 'x'.repeat(150000) + '\n\n' + frame({ type: 'response.completed', response: completed() });
+  reply = (_req, res) => { res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.end(raw); };
+  const result = await ask();
+  assert.equal(result.text, raw);
+  assert.equal(hits, 1);
+  assert.equal(lastLog().err_class, 'stream_aborted');
+  assert.match(lastLog().err, /fixture invalid input/);
+});
+
+// 语义变化(同渠道重试审计):末帧**只缺收尾空行**时,事件本体是完整的 —— 现在按完整终态
+// 收下(见 lib/proxy/response.js 的 EOF 残帧处理);真正的截断(JSON 不完整)照旧记断流。
+test('大终态被截断(JSON 不完整)时仍然记录断流', async () => {
+  const terminal = frame({ type: 'response.completed', response: {
+    ...completed(), instructions: 'x'.repeat(300000),
+  } });
+  const raw = frame({ type: 'response.output_text.delta', delta: '已有输出' }) + terminal.slice(0, -120);
+  reply = (_req, res) => { res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.end(raw); };
+  assert.equal((await ask()).text, raw);
+  assert.equal(hits, 1);
+  assert.equal(lastLog().err_class, 'stream_aborted');
+  assert.equal(lastLog().in, 0); assert.equal(lastLog().out, 0);
+});
+
+test('大终态只缺收尾空行:事件本体完整,按成功收尾并记 usage', async () => {
+  const terminal = frame({ type: 'response.completed', response: {
+    ...completed(), instructions: 'x'.repeat(300000),
+  } });
+  const raw = frame({ type: 'response.output_text.delta', delta: '已有输出' }) + terminal.slice(0, -2);
+  reply = (_req, res) => { res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.end(raw); };
+  assert.equal((await ask()).text, raw);
+  assert.equal(hits, 1);
+  const log = lastLog();
+  assert.equal(log.err_class || '', '', '完整终态不能因为少了空行被记成 stream_aborted');
+  assert.equal(log.err || '', '');
+  assert.equal(log.in, 8); assert.equal(log.out, 3);
+});
+
 for (const prefix of [
   'data: malformed-output\n\n',
   'event: response.output_text.delta\n\n',
@@ -256,6 +389,37 @@ test('缺少明确 output:[] 的 upstream_error 不猜成空响应', async () =>
 test('连接重置后真实成功不残留 econnreset', async () => {
   reply = (req, res) => hits < 3 ? req.socket.destroy() : success(res, true);
   assertSuccess(await ask({ stream: false }), 3);
+});
+
+test('非流客户端(stream:false)上游断流:客户端零字节时仍可透明重试', async () => {
+  // chat 上游把客户端要的非流请求照流式回,是这条线上真实存在的形状;转换器在
+  // stream:false 时会把整条响应攒到收尾才写给客户端。第一块到达就置 committed 会让
+  // "客户端手里还是零字节"的窗口被提前关掉,只能回 502。
+  configure({ wire: 'chat' });
+  const chatChunk = value => `data: ${JSON.stringify(value)}\n\n`;
+  reply = (_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    if (hits === 1) {
+      res.write(chatChunk({ id: 'chatcmpl-1', object: 'chat.completion.chunk',
+        choices: [{ index: 0, delta: { role: 'assistant', content: '半截答案' } }] }));
+      setTimeout(() => res.destroy(), 10); // 没有 finish_reason、没有 [DONE]
+      return;
+    }
+    res.end(chatChunk({ id: 'chatcmpl-2', object: 'chat.completion.chunk',
+      choices: [{ index: 0, delta: { content: '最终答案' } }] })
+      + chatChunk({ id: 'chatcmpl-2', object: 'chat.completion.chunk',
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })
+      + 'data: [DONE]\n\n');
+  };
+  const result = await ask({ stream: false });
+  assert.equal(result.status, 200, result.text);
+  assert.equal(hits, 2, '第一次断流发生在给客户端写字节之前,必须换一代 key 重打');
+  assert.match(result.text, /最终答案/);
+  assert.doesNotMatch(result.text, /半截答案/, '被放弃那次的字节不能漏给客户端');
+  const log = lastLog();
+  assert.equal(log.status, 200);
+  assert.equal(log.attempts, 2);
+  assert.equal(log.err_class || '', '');
 });
 
 test('重试等待跨过 deadline 不会再发一次真实请求', async () => {

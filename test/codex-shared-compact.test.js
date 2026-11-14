@@ -5,7 +5,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createMockUpstream } = require('./mock-upstream');
-const { CODEX_COMPACT_PREFIX, COMPACT_RULES, isCodexCompactInstruction } = require('../lib/routing/compact-signature');
+const { CODEX_COMPACT_PREFIX, FIXED_PREFIX, COMPACT_RULES, isCodexCompactInstruction } = require('../lib/routing/compact-signature');
+const { normalizeRule } = require('../lib/routing/rules');
 const { compactTexts } = require('../lib/session/identity');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mixr-shared-compact-'));
@@ -29,7 +30,7 @@ const request = async (server, endpoint, body, method = 'POST') => {
 const send = (input = [message(summary)], extra = {}, endpoint = '/v1/responses') =>
   request(proxy, endpoint, { model: 'mixr-main', input, stream: false, ...extra });
 const select = (provider = 'shared', model = 'summary-model', key_id = '') =>
-  request(ui, '/api/compact', { provider, model, key_id });
+  request(ui, '/api/compact', { app: 'codex', provider, model, key_id });
 const preview = (kind = 'responses') => router.explainRoute({
   app: 'codex', model: 'mixr-main', kind, context: { compactTexts: [summary] },
 });
@@ -50,13 +51,18 @@ beforeEach(() => {
         models: ['next-summary'], api_key: 'fixture-other' },
     ],
     codex: [{ id: 'main', name: 'Main', base_url: base, enabled: true, wire_api: 'responses',
-      model: 'main-model', api_key: 'fixture-main' }],
+      model: 'main-model', api_key: 'fixture-main', active_key: 'active',
+      keys: [{ id: 'active', key: 'fixture-main' }, { id: 'summary', key: 'fixture-summary' }] }],
   };
   router._state.slotMap = { claude: {}, codex: { main: { provider: 'main', model: 'main-model' } } };
   router._state.routes = { rules: COMPACT_RULES.map(spec => ({
     id: 'renamed-' + spec.kind, app: 'claude', enabled: true, priority: spec.priority,
     when: { body: spec.body }, provider: 'shared', model: 'summary-model', pool: [],
-  })) };
+  })).concat({
+    id: 'codex-global', app: 'codex', provider_app: 'claude', enabled: true,
+    priority: COMPACT_RULES[0].priority, when: { body: COMPACT_RULES[0].body },
+    provider: 'shared', model: 'summary-model', pool: [],
+  }) };
   router._state.sessions.clear();
   router._state.resetPools();
   mock.requests.length = 0;
@@ -104,7 +110,7 @@ for (const wire of ['responses', 'chat']) test(`${wire}: Codex summary uses shar
   assert.deepEqual(router._state.store, store);
   const p = preview();
   assert.equal(p.ok, true);
-  assert.equal(p.matched.ruleId, 'renamed-global');
+  assert.equal(p.matched.ruleId, 'codex-global');
   assert.equal(p.selection.predicted.providerId, 'shared');
   assert.equal(p.selection.predicted.wire, wire);
 });
@@ -124,20 +130,20 @@ test('one compact setting hot-updates Codex model and fixed key without changing
   const config = 'model = "mixr-main"\nmodel_auto_compact_token_limit = 400000\n';
   fs.writeFileSync(process.env.MIXR_CODEX_CONFIG, config);
   const slots = structuredClone(router._state.slotMap);
-  assert.equal((await select('shared', 'summary-model', 'summary')).status, 200);
+  assert.equal((await select('main', 'summary-model', 'summary')).status, 200);
   assert.equal((await send()).status, 200);
   assert.equal(mock.requests.at(-1).headers.authorization, 'Bearer fixture-summary');
-  assert.equal(router._state.store.claude[0].active_key, 'active');
+  assert.equal(router._state.store.codex[0].active_key, 'active');
   assert.equal(preview().selection.key_source, 'compact');
   assert.equal(preview().selection.key_id, 'summary');
 
-  router._state.store.claude[0].keys[1].key = 'fixture-summary-updated';
+  router._state.store.codex[0].keys[1].key = 'fixture-summary-updated';
   assert.equal((await send()).status, 200);
   assert.equal(mock.requests.at(-1).headers.authorization, 'Bearer fixture-summary-updated');
-  assert.equal((await select('other', 'next-summary')).status, 200);
+  assert.equal((await select('main', 'next-summary', 'active')).status, 200);
   assert.equal((await send()).status, 200);
   assert.equal(mock.requests.at(-1).body.model, 'next-summary');
-  assert.equal(mock.requests.at(-1).headers.authorization, 'Bearer fixture-other');
+  assert.equal(mock.requests.at(-1).headers.authorization, 'Bearer fixture-main');
   assert.deepEqual(router._state.slotMap, slots);
   assert.equal(fs.readFileSync(process.env.MIXR_CODEX_CONFIG, 'utf8'), config);
 });
@@ -152,8 +158,8 @@ test('unfixed shared channel key is reloaded, rather than using a copied Codex p
 });
 
 test('missing fixed summary key fails without falling back to main or the active account', async () => {
-  await select('shared', 'summary-model', 'summary');
-  router._state.store.claude[0].keys[1].enabled = false;
+  await select('main', 'summary-model', 'summary');
+  router._state.store.codex[0].keys[1].enabled = false;
   const result = await send();
   assert.equal(result.status, 503);
   assert.equal(JSON.parse(result.text).error.code, 'provider_key_unavailable_error');
@@ -199,10 +205,44 @@ test('native compact on Chat and local compact on Anthropic fail explicitly', as
 });
 
 test('without an enabled global compact rule, Codex retains its existing routing', async () => {
-  router._state.routes.rules[0].enabled = false;
+  router._state.routes.rules.find(r => r.app === 'codex').enabled = false;
   assert.equal((await send()).status, 200);
   assert.equal(mock.requests.at(-1).body.model, 'main-model');
   router._state.routes.rules = [];
   assert.equal((await send([], {}, '/v1/responses/compact')).status, 200);
   assert.equal(mock.requests.at(-1).body.model, 'main-model');
+});
+
+test('saving either client leaves the other client compaction target and normal main model unchanged', async () => {
+  assert.equal((await select('main', 'codex-summary', 'active')).status, 200);
+  router._state.routes.rules = router._state.routes.rules.map(rule => normalizeRule(rule));
+  assert.equal((await request(ui, '/api/compact', { provider: 'other', model: 'claude-summary' })).status, 200);
+  assert.equal((await send()).status, 200);
+  assert.equal(mock.requests.at(-1).body.model, 'codex-summary');
+  assert.equal(mock.requests.at(-1).headers.authorization, 'Bearer fixture-main');
+  assert.equal(preview().selection.predicted.providerId, 'main');
+  assert.equal(preview().selection.key_id, 'active');
+
+  const claudeSummary = FIXED_PREFIX + 'Your task is to create a detailed summary of the conversation so far.';
+  const result = await request(proxy, '/v1/messages', { model: 'mixr-main', max_tokens: 128,
+    messages: [{ role: 'user', content: claudeSummary }] });
+  assert.equal(result.status, 200, result.text);
+  assert.equal(mock.requests.at(-1).body.model, 'claude-summary');
+  assert.equal(mock.requests.at(-1).headers.authorization, 'Bearer fixture-other');
+  assert.equal((await send('normal request')).status, 200);
+  assert.equal(mock.requests.at(-1).body.model, 'main-model');
+
+  assert.equal((await send([], {}, '/v1/responses/compact')).status, 200);
+  assert.equal(mock.requests.at(-1).url, '/v1/responses/compact');
+  assert.equal(mock.requests.at(-1).body.model, 'codex-summary');
+});
+
+test('cross-group compaction choices are rejected even when the wire protocol is compatible', async () => {
+  const store = structuredClone(router._state.store);
+  const routes = structuredClone(router._state.routes);
+  assert.equal((await request(ui, '/api/compact', { provider: 'main', model: 'claude-on-codex', key_id: 'active' })).status, 400);
+  assert.equal((await select('shared', 'summary-model', 'summary')).status, 400);
+  assert.deepEqual(router._state.routes, routes);
+  assert.deepEqual(router._state.store, store);
+  assert.equal(mock.requests.length, 0);
 });

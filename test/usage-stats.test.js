@@ -628,7 +628,9 @@ test('legacy:不带 dashboard=1 的响应形状与统计口径完全不变', asy
 
   const dash = await createUsageSummary({ file: exactFile, ...clock }).summarize({ range: 'all', dashboard: '1' });
   for (const key of ['scope', 'totals', 'series', 'by_provider', 'by_model']) {
-    assert.deepStrictEqual(dash[key], legacy[key], `dashboard=1 不能改变 ${key} 的口径`);
+    const previousFields = key === 'totals'
+      ? Object.fromEntries(Object.keys(legacy.totals).map(field => [field, dash.totals[field]])) : dash[key];
+    assert.deepStrictEqual(previousFields, legacy[key], `dashboard=1 不能改变 ${key} 原有字段的口径`);
   }
   // 老调用多传分页/状态参数不该报错(它们对老响应没有意义,只是被忽略)
   const noisy = await createUsageSummary({ file: exactFile, ...clock })
@@ -673,4 +675,24 @@ test('API /api/usage?dashboard=1:扩展键、分页、白名单,老响应键不�
   const badStatus = await json('GET', '/api/usage?range=all&dashboard=1&status=maybe');
   assert.strictEqual(badStatus.status, 400);
   assert.strictEqual(badStatus.body.code, 'USAGE_STATUS_INVALID');
+});
+
+test('API /api/usage reads direct Codex accounting from the configured client home', async () => {
+  const dir = path.join(TMP, 'sessions');
+  fs.mkdirSync(dir, { recursive: true });
+  const stamp = new Date().toISOString();
+  fs.writeFileSync(path.join(dir, 'usage-api-fixture.jsonl'), [
+    { type: 'session_meta', timestamp: stamp, payload: { id: 'usage-api-thread', model_provider: 'direct-api-fixture' } },
+    { type: 'turn_context', timestamp: stamp, payload: { model: 'local-api-model' } },
+    { type: 'token_usage_record', timestamp: stamp, payload: { thread_id: 'usage-api-thread', response_id: 'local-api-fixture',
+      usage: { input_tokens: 100, cached_input_tokens: 40, output_tokens: 10 },
+      thread_token_usage: { input_tokens: 100, cached_input_tokens: 40, output_tokens: 10, total_tokens: 110 } } },
+  ].map(row => JSON.stringify(row)).join('\n') + '\n');
+  const result = await json('GET', '/api/usage?range=today&dashboard=1&search=local-api-fixture');
+  assert.strictEqual(result.status, 200);
+  assert.strictEqual(result.body.totals.reqs, 1);
+  assert.strictEqual(result.body.totals.tokens_total, 110);
+  assert.strictEqual(result.body.totals.ok_rate, null);
+  assert.strictEqual(result.body.dashboard.records.rows[0].source, 'codex-local');
+  assert.strictEqual(result.body.dashboard.records.rows[0].status, null);
 });

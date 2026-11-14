@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const {
-  createRequestLog, LOG_FIELDS, LOG_FIELD_SET, normalizeLimit, scrubText, parseSince,
+  createRequestLog, LOG_FIELDS, LOG_FIELD_SET, USAGE_PERFORMANCE_FIELDS, normalizeLimit, scrubText, parseSince,
   MAX_DEPTH, MAX_KEYS,
 } = require('../lib/observability/request-log');
 const { proxySource } = require('./proxy-sources.js');
@@ -139,13 +139,14 @@ test('白名单与代理源码的 entry 字段实际集合双向相等', () => {
   for (const m of source.matchAll(/\bentry\.([A-Za-z_][A-Za-z0-9_]*)\s*(?:\|\|=|\+=|=(?!=))/g)) assigned.add(m[1]);
   const used = new Set([...assigned, ...literalKeys(source)]);
   const missing = [...used].filter(f => !LOG_FIELD_SET.has(f)).sort();
-  const extra = LOG_FIELDS.filter(f => !used.has(f)).sort();
+  const extra = LOG_FIELDS.filter(f => !used.has(f) && !USAGE_PERFORMANCE_FIELDS.includes(f)).sort();
   assert.deepEqual(missing, [], `白名单漏了源码里实际使用的字段: ${missing.join(', ')}`);
   assert.deepEqual(extra, [], `白名单里有源码根本没用的字段: ${extra.join(', ')}`);
   // resource_recovery_skipped 只记录历史投影拒绝的固定分类,不含请求内容;
   // retry_reason 同理,只记固定枚举(例如 unprojected_resource_retry)。
   // provider_id / provider_app 是渠道身份(id 与所在渠道库),供用量页按渠道分组。
-  assert.equal(LOG_FIELDS.length, 39);
+  assert.equal(LOG_FIELDS.length, 42 + USAGE_PERFORMANCE_FIELDS.length);
+  assert.equal(new Set(LOG_FIELDS).size, LOG_FIELDS.length);
   // 先建后挂的三个字段只能靠赋值扫出来(不在字面量里),这里单独钉住扫描有效性
   for (const f of ['think', 'reasoning', 'tools_dropped', 'effort']) {
     assert.ok(assigned.has(f), `${f} 应由赋值扫描命中(它是先建后挂的)`);
