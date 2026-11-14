@@ -10,7 +10,7 @@ test('recorded slot wins; legacy session kind/model never guessed; history survi
   const file = path.join(root, 'requests.jsonl');
   const log = createRequestLog({ file, capacity: 2 });
   t.after(async () => { await log.flush(); fs.rmSync(root, { recursive: true, force: true }); });
-  const base = { ts: '2026-09-29T00:00:00Z', in: 3, out: 4, cache_read: 5, status: 200 };
+  const base = { ts: new Date().toISOString(), in: 3, out: 4, cache_read: 5, status: 200 };
   log.append({ ...base, slot: 'opus', session_kind: 'haiku' });
   log.append({ ...base, slot: '__proto__' });
   log.append({ ...base, session_kind: 'sonnet', model_in: 'claude-sonnet' });

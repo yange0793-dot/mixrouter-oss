@@ -125,6 +125,42 @@ test('Codex sync copies known metadata and registers unknown target identities w
   assert.equal(JSON.parse(fs.readFileSync(path.join(temporary, 'mixrouter-model-catalog.json'), 'utf8')).models.find(item => item.slug === 'mixr-main').x_mixrouter.capabilities_known, false);
 });
 
+test('Codex routed catalog retains Fast from a namespaced canonical model declaration', () => {
+  const canonical = { ...model, slug: 'auto/known-model', service_tiers: [{ id: 'priority', name: 'Fast' }] };
+  const source = JSON.stringify({ models: [canonical, { ...model, slug: 'provider/unknown-model' }] });
+  fs.writeFileSync(path.join(temporary, 'catalog.json'), source);
+  router.updateCodexConfig({ action: 'sync_catalog', revision: router.liveState().codex.revision });
+  const generated = JSON.parse(fs.readFileSync(path.join(temporary, 'mixrouter-model-catalog.json'), 'utf8'));
+  const main = generated.models.find(item => item.slug === 'mixr-main');
+  assert.deepEqual(main.service_tiers, canonical.service_tiers);
+  assert.deepEqual(main.supported_reasoning_levels, canonical.supported_reasoning_levels);
+  assert.equal(main.x_mixrouter.capabilities_known, true);
+  assert.equal(main.x_mixrouter.target, 'known-model');
+  assert.equal(generated.models.find(item => item.slug === 'mixr-reviewer').x_mixrouter.capabilities_known, false);
+  assert.equal(fs.readFileSync(path.join(temporary, 'catalog.json'), 'utf8'), source);
+});
+
+test('Codex catalog prefers the exact model declaration over the canonical namespaced fallback', () => {
+  const canonical = { ...model, slug: 'auto/known-model', service_tiers: [{ id: 'priority', name: 'Fast' }] };
+  const exact = { ...model, service_tiers: [], supported_reasoning_levels: [{ effort: 'max' }] };
+  fs.writeFileSync(path.join(temporary, 'catalog.json'), JSON.stringify({ models: [canonical, exact] }));
+  router.updateCodexConfig({ action: 'sync_catalog', revision: router.liveState().codex.revision });
+  const main = JSON.parse(fs.readFileSync(path.join(temporary, 'mixrouter-model-catalog.json'), 'utf8'))
+    .models.find(item => item.slug === 'mixr-main');
+  assert.deepEqual(main.service_tiers, []);
+  assert.deepEqual(main.supported_reasoning_levels, [{ effort: 'max' }]);
+});
+
+test('Codex direct catalog retains Fast from a namespaced canonical model declaration', () => {
+  const canonical = { ...model, slug: 'auto/known-model', service_tiers: [{ id: 'priority', name: 'Fast' }] };
+  fs.writeFileSync(path.join(temporary, 'catalog.json'), JSON.stringify({ models: [canonical] }));
+  const prepared = config.prepareDirectCatalog(codexFile, config.read(codexFile).document, ['known-model']);
+  const direct = JSON.parse(prepared.content).models.find(item => item.slug === 'known-model');
+  assert.deepEqual(direct.service_tiers, canonical.service_tiers);
+  assert.deepEqual(direct.supported_reasoning_levels, canonical.supported_reasoning_levels);
+  assert.deepEqual(prepared.unknown, []);
+});
+
 test('Codex 目录同步按同渠道两个槽的显式模型分别复制能力', () => {
   const reviewerModel = { ...model, slug: 'review-target', display_name: 'Reviewer', context_window: 128000,
     supported_reasoning_levels: [{ effort: 'medium' }], input_modalities: ['text'] };

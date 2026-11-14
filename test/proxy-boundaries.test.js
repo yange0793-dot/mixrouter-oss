@@ -174,6 +174,24 @@ test('请求上下文:keepalive 只在提交后启动,收尾即停', async () =>
   assert.equal(a.writes.length, after, '收尾后必须停掉心跳');
 });
 
+test('请求上下文:keepalive 尊重调用方的事件边界', async () => {
+  const { createRequestContext } = require('../lib/proxy/context');
+  const a = fakeContextDeps({ sseKeepAliveMs: 5 });
+  const ctx = createRequestContext(a.deps);
+  let ready = false;
+  ctx.startKeepAlive(() => ready);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(a.writes, [], '半帧期间不能插入注释');
+  ready = true;
+  await new Promise(resolve => setTimeout(resolve, 20));
+  ready = false;
+  const after = a.writes.length;
+  await new Promise(resolve => setTimeout(resolve, 20));
+  ctx.finish();
+  assert.ok(after >= 1, '完整事件之间继续发送心跳');
+  assert.equal(a.writes.length, after, '进入下一条半帧后再次暂停');
+});
+
 // ---------------------------------------------------------------- attempt 调度
 
 function fakeLoop(plan, ctx) {

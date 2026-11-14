@@ -183,7 +183,7 @@ test('O4:正常 Key 显示当前账号，作用域进 title；失效与旧服务
   assert.match(h.get('compact-key-hint').title, /渠道切换当前账号后压缩也会跟随/);
   h.run("compactDraft.key_id = 'k2'; renderCompactKeys()");
   assert.equal(h.get('compact-key-hint').textContent, '固定 Key：固定账号');
-  assert.match(h.get('compact-key-hint').title, /只影响两条压缩规则，不切换渠道当前账号/);
+  assert.match(h.get('compact-key-hint').title, /只影响本组压缩规则，不切换渠道当前账号/);
   h.run("compactDraft.key_id = 'removed'; renderCompactKeys()");
   assert.match(h.get('compact-key-hint').textContent, /不可用.*选择仍保留.*不会自动替换/);
   assert.equal(h.get('compact-key').value, 'removed');

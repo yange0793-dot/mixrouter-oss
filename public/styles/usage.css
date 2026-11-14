@@ -65,7 +65,7 @@
 #topbar-page-actions .usage-sync-group .usage-last-sync {
   display: inline-flex; align-items: center; padding: 0 12px;
   border-left: 1px solid var(--border); background: var(--panel);
-  color: var(--dim); font-size: 12.5px; white-space: nowrap; font-variant-numeric: tabular-nums;
+  color: var(--dim); font-size: 11px; line-height: 14px; white-space: pre; font-variant-numeric: tabular-nums;
 }
 #view-usage .usage-head-actions > #usage-source-toggle,
 #topbar-page-actions .usage-head-actions > #usage-source-toggle {
@@ -531,6 +531,15 @@ body[data-view="usage"] { --bg: var(--surface); }
    原始错误与 err_class 在 title 里。 */
 #view-usage .usage-table td .usage-st { display: inline-flex; align-items: center; gap: 6px; vertical-align: middle; }
 #view-usage .usage-table td .usage-st-code { font: 12px/1 var(--mono); color: var(--dim); }
+#view-usage .usage-table [data-column="latency"] { min-width: 190px; }
+#view-usage .usage-latency { display: grid; gap: 4px; min-height: 40px; padding-left: 10px; border-left: 2px solid var(--accent-line); }
+#view-usage .usage-latency-line { display: grid; grid-template-columns: 72px minmax(72px, 1fr); align-items: center; gap: 8px; font-size: 12px; line-height: 18px; text-align: left; color: var(--dim); }
+#view-usage .usage-latency-value { color: var(--accent-text); font: 12px/18px var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+#view-usage .usage-latency-value[data-missing="true"] { color: var(--dim); }
+#view-usage .usage-latency-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+#view-usage .usage-latency-heading .usage-sort { width: auto; justify-content: flex-start; }
+#view-usage .usage-latency-heading select { width: 84px; min-height: 26px; padding: 2px 20px 2px 6px; border-color: transparent; background-color: transparent; font-size: 12px; color: var(--dim); }
+#view-usage .usage-latency-heading select:hover { border-color: var(--border); color: var(--text); }
 
 #view-usage .usage-pagination {
   display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 0 0;

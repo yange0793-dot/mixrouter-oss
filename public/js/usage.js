@@ -21,14 +21,16 @@ const USAGE_RANGE_LABELS = { today: '今天', '24h': '近 24 小时', '7d': '近
 const USAGE_METRIC_LABELS = { tokens: 'Tokens', reqs: '请求' };
 const USAGE_TABS = ['requests', 'providers', 'models'];
 const USAGE_APP_LABELS = { claude: 'Anthropic', codex: 'OpenAI' };
+const USAGE_TIMING_SCOPES = { 'codex-local': '客户端', 'claude-local': '客户端', 'dsh-local': '阶段' };
 const USAGE_WEEKDAY_CHARS = ['日', '一', '二', '三', '四', '五', '六'];
 const USAGE_DETAIL_HEAD = {
-  requests: ['时间', '协议组', '供应商', '模型', '新增输入', '输出', '缓存读取', '状态', '速度', '首响应'],
+  requests: ['时间', '协议组', '供应商', '模型', '新增输入', '输出', '缓存读取', '状态', '延迟', '输出 TPS', '首流事件', 'HTTP 首响应', '生成 TPS', '吞吐 TPM'],
   providers: ['供应商', '请求', '新增输入', '输出', '缓存读取', '缓存命中率'],
   models: ['模型', '请求', '新增输入', '输出', '缓存读取', '缓存命中率'],
 };
-const USAGE_REQUEST_KEYS = ['ts', 'app', 'provider', 'model', 'in', 'out', 'cache_read', 'status', 'speed_tps', 'ttfb_ms'];
-const USAGE_SORT_LABELS = { ts: '时间', in: '新增输入', out: '输出', cache_read: '缓存读取', speed_tps: '速度', ttfb_ms: '首响应' };
+const USAGE_REQUEST_KEYS = ['ts', 'app', 'provider', 'model', 'in', 'out', 'cache_read', 'status', 'latency', 'speed_tps', 'first_event_ms', 'ttfb_ms', 'decode_tps', 'speed_tpm'];
+const USAGE_OPTIONAL_COLUMNS = ['first_event_ms', 'ttfb_ms', 'decode_tps', 'speed_tpm'];
+const USAGE_SORT_LABELS = { ts: '时间', in: '新增输入', out: '输出', cache_read: '缓存读取', ms: '总耗时', first_event_ms: '首流事件', speed_tps: '输出 TPS', ttfb_ms: 'HTTP 首响应', ttft_ms: '首内容', decode_tps: '生成 TPS', speed_tpm: '吞吐 TPM' };
 const USAGE_WEEK_COUNT = 53;
 const USAGE_MAX_EXPAND = 8;
 // 格子与 usage.css 的 --usage-cell-max / --usage-gap / 星期列宽同值。
@@ -42,10 +44,11 @@ const USAGE_HEAT_SPARSE_CELL = 13;
 // 页面状态只在这里一处。`data` 是上次成功读取的响应;失败时保留旧数据并标 stale。
 const usageState = {
   range: 'today', app: '', provider: '', model: '', status: '', statusCode: '', search: '',
-  from: '', to: '', sort: 'ts', order: 'desc', density: 'compact', hiddenColumns: [], analyticsOpen: false, searchTimer: null,
+  timing: 'provider',
+  from: '', to: '', sort: 'ts', order: 'desc', density: 'compact', hiddenColumns: [...USAGE_OPTIONAL_COLUMNS], analyticsOpen: false, searchTimer: null,
   metric: 'tokens', interval: 60, tab: 'requests', recordsScope: 'recent', limit: 50, offset: 0, pageAgg: 0,
   data: null, shownQuery: '', pendingQuery: '',
-  inited: false, visible: false, timer: null, controller: null, seq: 0, lastSync: 0, busy: false,
+  inited: false, visible: false, timer: null, timingTimer: null, controller: null, seq: 0, lastSync: 0, busy: false,
   heatExpanded: 0, heatDate: null, heatFocus: false, heatKeyMode: false,
   heatSig: '', heatModel: null, heatLive: null, dailyRefs: null, heatFit: 0,
   legendResolved: false, legendHost: null, legendExtra: null,
@@ -114,10 +117,14 @@ function usageLoadPrefs() {
     if (typeof raw.source === 'boolean') usageState.sourceOpen = raw.source;
     if ([25, 50, 100, 200].includes(raw.limit)) usageState.limit = raw.limit;
     if (['compact', 'comfortable'].includes(raw.density)) usageState.density = raw.density;
-    if (Array.isArray(raw.hiddenColumns)) usageState.hiddenColumns = raw.hiddenColumns.filter(key => USAGE_REQUEST_KEYS.includes(key) && !['ts', 'model'].includes(key));
+    if (Array.isArray(raw.hiddenColumns)) usageState.hiddenColumns = [...new Set([
+      ...raw.hiddenColumns.filter(key => USAGE_REQUEST_KEYS.includes(key) && !['ts', 'model'].includes(key)),
+      ...(raw.columnsVersion === 3 ? [] : USAGE_OPTIONAL_COLUMNS),
+    ])];
     if (Object.hasOwn(USAGE_SORT_LABELS, raw.sort)) usageState.sort = raw.sort;
     if (['asc', 'desc'].includes(raw.order)) usageState.order = raw.order;
     if (typeof raw.analytics === 'boolean') usageState.analyticsOpen = raw.analytics;
+    if (['provider', 'local'].includes(raw.timing)) usageState.timing = raw.timing;
     if (usageParseDayKey(raw.from) && usageParseDayKey(raw.to) && raw.from <= raw.to) {
       usageState.from = raw.from;
       usageState.to = raw.to;
@@ -129,9 +136,9 @@ function usageSavePrefs() {
     localStorage.setItem(USAGE_PREF_KEY, JSON.stringify({
       range: usageState.range, metric: usageState.metric,
       interval: usageState.interval, app: usageState.app, source: usageState.sourceOpen,
-      limit: usageState.limit, density: usageState.density, hiddenColumns: usageState.hiddenColumns,
+      limit: usageState.limit, density: usageState.density, hiddenColumns: usageState.hiddenColumns, columnsVersion: 3,
       sort: usageState.sort, order: usageState.order, analytics: usageState.analyticsOpen,
-      from: usageState.from, to: usageState.to,
+      from: usageState.from, to: usageState.to, timing: usageState.timing,
     }));
   } catch { /* 同上:存不下不影响本页 */ }
 }
@@ -160,6 +167,7 @@ function usageQuery() {
   q.set('sort', usageState.sort);
   q.set('order', usageState.order);
   q.set('records_scope', usageState.recordsScope);
+  q.set('timing', usageState.timing);
   q.set('offset', String(usageState.offset));
   q.set('limit', String(usageState.limit));
   return q.toString();
@@ -177,11 +185,24 @@ function usageWriteStatus(text, tone = '') {
   // 样式表用 #usage-status.stale 标失败态;颜色只走 CSS,不在 JS 里写死。
   el.classList.toggle('stale', tone === 'err');
 }
-function usageSetLastSync(text, ms) {
+function usageSetLastSync(text, ms, timing) {
   const el = $('usage-last-sync');
   if (!el) return;
+  let title = ms ? fmtFullTime(ms) : '';
+  if (timing) {
+    const connections = timing.connections || [];
+    const times = connections.map(c => Date.parse(c.synced_at)).filter(Number.isFinite);
+    const label = times.length === connections.length ? '后台同步' : '后台部分同步';
+    text += '\n' + (!connections.length ? '后台未连接'
+      : connections.some(c => c.syncing) ? '后台同步中'
+      : times.length ? `${label} ${fmtWhen(Math.min(...times))}` : '后台尚未同步');
+    title = `本地读取 ${title}` + connections.map(c =>
+      `\n${c.provider}: ${c.synced_at ? fmtFullTime(c.synced_at) : '尚未同步'}`
+      + (Number.isFinite(c.cached_rows) ? `; 已缓存 ${fmtCount(c.cached_rows)} 条` : '')
+      + (c.error ? `; ${c.error}` : '')).join('');
+  }
   el.textContent = text;
-  if (el.setAttribute) el.setAttribute('title', ms ? fmtFullTime(ms) : '');
+  if (el.setAttribute) el.setAttribute('title', title);
 }
 function usageSetBusy(busy) {
   usageState.busy = !!busy;
@@ -216,19 +237,23 @@ function usageSyncButton(busy) {
 
 // seq 保证只有「最后一次发起」的响应能落地;AbortController 让被取代的请求真正取消。
 // 超时与「被新请求取代」必须分开:前者要报错,后者静默丢弃。
-async function loadUsage() {
+async function loadUsage({ automatic = false, timingRefresh = 'auto' } = {}) {
   if (!usageState.inited) usageInitControls();
+  const query = usageQuery();
+  if (automatic && usageState.busy && usageState.pendingQuery === query) return;
+  clearTimeout(usageState.timingTimer);
+  usageState.timingTimer = null;
   const seq = ++usageState.seq;
   if (usageState.controller) usageState.controller.abort();
   const controller = new AbortController();
   usageState.controller = controller;
   let timedOut = false;
+  const timeoutMs = ['today', '24h'].includes(usageState.range) ? 20000 : 60000;
   const timer = setTimeout(() => {
     timedOut = true;
     try { controller.abort(); } catch { /* 已结束 */ }
-  }, 20000);
+  }, timeoutMs);
 
-  const query = usageQuery();
   usageState.pendingQuery = query;
   usageSyncButton(true);
   usageSetBusy(true);
@@ -240,7 +265,8 @@ async function loadUsage() {
   try {
     let response;
     try {
-      response = await fetch('/api/usage?' + query, {
+      response = await fetch('/api/usage?' + query
+        + (usageState.timing === 'provider' && timingRefresh !== 'auto' ? '&timing_refresh=' + timingRefresh : ''), {
         signal: controller.signal, cache: 'no-store', headers: { Accept: 'application/json' },
       });
     } catch (e) {
@@ -265,17 +291,30 @@ async function loadUsage() {
     usageChartState('ready');
     usageMarkStale();
     // 只剩内存窗口时要说出来:这时的数字只是还没落盘的那一段,不是完整历史。
-    usageWriteStatus(body.scope && body.scope.source === 'memory'
-      ? '只读到内存窗口(还没有落盘日志),数字不是完整历史。' : '', 'ok');
-    usageSetLastSync(`最近同步 ${fmtWhen(usageState.lastSync)}`, usageState.lastSync);
+    const warnings = [...(body.scope?.local_usage?.warnings || []), ...(body.scope?.provider_timing?.warnings || [])];
+    const noProvider = body.scope?.timing === 'provider' && !body.scope.provider_timing?.connections?.length;
+    usageWriteStatus(warnings.length ? `部分数据未同步：${warnings.join('；')}`
+      : noProvider ? '尚未连接中转站后台，后台延迟暂无数据。'
+      : body.scope?.provider_timing?.connections?.some(c => c.syncing)
+        ? '后台计时正在更新，当前显示已同步记录。'
+      : body.scope && body.scope.source === 'memory'
+        ? '只读到内存窗口(还没有落盘日志),数字不是完整历史。' : '', warnings.length || noProvider ? 'warn' : 'ok');
+    usageSetLastSync(`本地读取 ${fmtWhen(usageState.lastSync)}`, usageState.lastSync, body.scope?.provider_timing);
+    if (usageState.visible && body.scope?.provider_timing?.connections?.some(c => c.syncing)) {
+      usageState.timingTimer = setTimeout(() => {
+        usageState.timingTimer = null;
+        if (!usageState.visible || document.visibilityState === 'hidden') return;
+        loadUsage({ automatic: true, timingRefresh: 'cache' });
+      }, 1000);
+    }
   } catch (e) {
     if (seq !== usageState.seq) return;
     if (e && e.name === 'AbortError' && !timedOut) return; // 被新请求取代,不是错误
-    const reason = timedOut ? '读取超时(20 秒未返回)' : (e && e.message ? e.message : '未知错误');
+    const reason = timedOut ? `读取超时(${timeoutMs / 1000} 秒未返回)` : (e && e.message ? e.message : '未知错误');
     usageMarkStale(true);
     usageWriteStatus(`用量读取失败:${reason}。${usageState.data
       ? '下方是上一次成功读取的数据,不是当前筛选的结果;' : '还没有任何数据;'}点「立即同步」重试。`, 'err');
-    usageSetLastSync(`同步失败 ${fmtWhen(Date.now())}`, Date.now());
+    usageSetLastSync(`本地读取失败 ${fmtWhen(Date.now())}`, Date.now(), usageState.data?.scope?.provider_timing);
     if (!usageState.data) usageChartState('error');
   } finally {
     clearTimeout(timer);
@@ -291,6 +330,7 @@ function usageSourceLabel(data) {
   const source = data && data.scope ? data.scope.source : '';
   if (source === 'memory') return '仅内存窗口(还没落盘日志)';
   if (source === 'disk+memory') return '磁盘日志 + 内存窗口';
+  if (source === 'gateway+local') return '网关日志 + 客户端本地用量';
   return '本机请求日志';
 }
 
@@ -324,6 +364,7 @@ function usageSyncChrome() {
     ['usage-page-size', String(usageState.limit)], ['usage-density', usageState.density],
     ['usage-from', usageState.from], ['usage-to', usageState.to],
     ['usage-records-scope', usageState.recordsScope],
+    ['usage-timing', usageState.timing],
   ];
   for (const [id, value] of pairs) {
     const el = $(id);
@@ -386,7 +427,7 @@ function usageSchedule() {
   if (!usageState.visible || !usageState.interval) return;
   usageState.timer = setInterval(() => {
     if (document.visibilityState === 'hidden') return; // 看不见就不该占资源
-    loadUsage();
+    loadUsage({ automatic: true });
   }, usageState.interval * 1000);
 }
 // app.js 的 showView 调这个:进入/离开用量页。
@@ -394,6 +435,8 @@ function usageSetVisible(on) {
   usageState.visible = !!on;
   if (!on) {
     clearTimeout(usageState.searchTimer);
+    clearTimeout(usageState.timingTimer);
+    usageState.timingTimer = null;
     if (usageState.timer) { clearInterval(usageState.timer); usageState.timer = null; }
     if (usageState.controller) {
       usageState.seq += 1; // 离开页面后返回的响应一律丢弃
@@ -443,7 +486,7 @@ function setUsageFilter(key, value) {
   loadUsage();
 }
 function setUsageStatus(value) {
-  const next = value === 'ok' || value === 'err' ? value : '';
+  const next = ['ok', 'err', 'unknown'].includes(value) ? value : '';
   if (usageState.status === next) return;
   usageState.status = next;
   usageState.offset = 0;
@@ -511,6 +554,14 @@ function setUsageSort(key) {
   usageSavePrefs();
   loadUsage();
 }
+function setUsageTiming(timing) {
+  if (!['provider', 'local'].includes(timing) || timing === usageState.timing) return;
+  usageState.timing = timing;
+  usageState.offset = 0;
+  usageSavePrefs();
+  usageSyncChrome();
+  loadUsage();
+}
 function setUsageRecordsScope(scope) {
   if (!['recent', 'history'].includes(scope) || scope === usageState.recordsScope) return;
   usageState.recordsScope = scope;
@@ -566,15 +617,58 @@ function usageDrillDown(key, value) {
   usageSyncChrome();
   loadUsage();
 }
+const USAGE_BUFFERED_TIMING = '上游未提供完整逐 Token / 推理时间（含隐藏推理），首内容时间和生成 TPS 不可测；晚到工具 Token 不代表此前推理的开始。吞吐 TPS 仍按输出 / 完整模型阶段耗时计算。';
+function usageDshOutcome(row) {
+  return row.source === 'dsh-local' && ['completed', 'failed', 'cancelled'].includes(row.outcome) ? row.outcome : '';
+}
+function usageResultLabel(row) {
+  const outcome = usageDshOutcome(row);
+  if (outcome) return { completed: '成功', failed: '失败', cancelled: '取消' }[outcome];
+  if (row.status == null && ['codex-local', 'claude-local', 'dsh-local'].includes(row.source)) return '状态未知';
+  return !row.err && !row.err_class && row.status >= 200 && row.status < 400 ? '成功' : '失败';
+}
+function usageThroughput(row) {
+  if (Object.hasOwn(row, 'speed_tps')) return usageNum(row.speed_tps);
+  const out = usageNum(row.out), ms = usageNum(row.ms);
+  return out !== null && out > 0 && ms !== null && ms > 0 ? out * 1000 / ms : null;
+}
+function usageThroughputTpm(row) {
+  if (Object.hasOwn(row, 'speed_tpm')) return usageNum(row.speed_tpm);
+  const tps = usageThroughput(row);
+  return tps === null ? null : tps * 60;
+}
+function usageDecodeTps(row) {
+  if (['buffered', 'untimed'].includes(row.timing_quality)) return null;
+  if (Object.hasOwn(row, 'decode_tps')) return usageNum(row.decode_tps);
+  const out = usageNum(row.out), ms = usageNum(row.decode_ms);
+  return out !== null && out > 0 && ms !== null && ms > 0 ? out * 1000 / ms : null;
+}
+function usageTokenDelay(row) {
+  if (row.timing_source === 'provider') return usageNum(row.ttft_ms);
+  return ['buffered', 'untimed'].includes(row.timing_quality) ? null : usageNum(row.ttft_ms);
+}
+function usageDuration(value) {
+  const ms = usageNum(value);
+  return ms === null || ms < 0 ? '—' : ms === 0 ? '0ms' : fmtDur(ms);
+}
+function usageTpmText(value) {
+  const tpm = usageNum(value);
+  return tpm === null || tpm <= 0 ? '—' : (tpm >= 100 ? Math.round(tpm) : tpm.toFixed(1)) + 'tok/min';
+}
 function usageCsv(data) {
   const slice = usageDetailSlice(data);
   const headers = slice.tab === 'requests'
-    ? ['时间', '协议组', '供应商', '模型', '原始模型', '新增输入', '输出', '缓存读取', 'HTTP 状态码', '结果', '耗时 ms', '首响应 ms', '请求 ID', '会话', '错误']
+    ? ['时间', '协议组', '供应商', '模型', '原始模型', '新增输入', '输出', '缓存读取', 'HTTP 状态码', '结果', '总响应时间 ms', 'HTTP 首响应 ms', '请求 ID', '会话', '错误', '来源', '缓存写入', '模型结果', '结束原因', '时间质量', '首流事件 ms', data.scope?.timing === 'provider' ? '后台首字 ms' : '首内容 ms', '生成耗时 ms', '吞吐 TPS', '吞吐 TPM', '生成 TPS', '计时口径', '后台记录 ID', '后台请求 ID', '本地总耗时 ms', '本地首内容 ms']
     : slice.columns;
   const rows = slice.rows.map(row => slice.tab === 'requests'
     ? [fmtFullTime(row.ts), USAGE_APP_LABELS[row.app] || row.app, row.provider, row.model_out || row.model_in, row.model_in,
-      row.in, row.out, row.cache_read, row.status, !row.err && !row.err_class && row.status >= 200 && row.status < 400 ? '成功' : '失败',
-      row.ms, row.ttfb_ms, row.request_id, row.session, row.err || row.err_class]
+      row.in, row.out, row.cache_read, row.status, usageResultLabel(row),
+      row.ms, row.ttfb_ms, row.request_id, row.session, row.err || row.err_class, row.source || 'gateway', row.cache_write,
+      row.outcome, row.finish_reason, row.timing_quality, row.first_event_ms, usageTokenDelay(row),
+      ['buffered', 'untimed'].includes(row.timing_quality) ? null : row.decode_ms,
+      usageThroughput(row), usageThroughputTpm(row), usageDecodeTps(row),
+      row.timing_source === 'provider' ? '中转站后台' : USAGE_TIMING_SCOPES[row.source] || '网关',
+      row.provider_timing_id, row.provider_request_id, row.local_ms, row.local_ttft_ms]
     : [slice.tab === 'providers' ? row.name : row.model, row.reqs, row.tokens_in, row.tokens_out, row.cache_read,
       row.tokens_in + row.cache_read > 0 ? row.cache_read / (row.tokens_in + row.cache_read) : '']);
   return '\ufeff' + [headers, ...rows].map(row => row.map(value => {
@@ -687,8 +781,12 @@ function usageRenderCards(data) {
   const rate = usageNum(totals.ok_rate);
   set('usage-success', fmtPct(rate));
   const failed = usageNum(data && data.dashboard && data.dashboard.outcomes && data.dashboard.outcomes.failed);
-  set('usage-ok-rate', reqs === null || rate === null ? '暂无成功率样本' : `${fmtCount(reqs)} 次请求样本`,
-    '成功率 = 成功请求 / 总请求;按最终状态判定,断流与取消计为失败');
+  const unknown = usageNum(data?.dashboard?.outcomes?.unknown) || 0;
+  const samples = usageNum(scope.status_samples) ?? reqs;
+  set('usage-ok-rate', reqs === null ? '暂无成功率样本'
+    : unknown ? `${fmtCount(samples)} 次结果样本 · ${fmtCount(unknown)} 次结果未知`
+      : rate === null ? '暂无成功率样本' : `${fmtCount(samples)} 次结果样本`,
+    '成功率按已记录最终结果的请求计算；断流与取消计为失败。Harness 模型结束结果独立于 HTTP 状态，结果未知的本地用量不参与计算');
   // 成功率低于 95% 时把数字本身染成告警色:失败是这页唯一需要人动手看的数字。
   const success = $('usage-success');
   if (success && success.classList) {
@@ -706,7 +804,15 @@ function usageRenderCards(data) {
   }
   // 速度/首响应是补充指标,放在「更多指标」里;格式与诊断页同一套(app.js 的 fmtRate / fmtTtfb),
   // 没有样本时也是「—」而不是 0。卡片只有聚合后的 tok/s,按「1 秒输出 tps 个」交给 fmtRate。
-  set('usage-speed', fmtRate({ out: usageNum(totals.speed_tps), ms: 1000 }));
+  set('usage-speed', fmtRate({ speed_tps: totals.speed_tps }), '含等待吞吐 TPS = 有耗时样本的输出 Tokens 合计 / 模型或请求阶段总秒数，不是逐 Token 生成速度');
+  set('usage-tpm', usageTpmText(totals.speed_tpm), '等效吞吐 TPM = 未舍入的吞吐 TPS × 60，不是滚动一分钟用量');
+  set('usage-decode-speed', fmtRate({ speed_tps: totals.decode_tps }), '生成 TPS 仅使用完整逐 Token 时间样本；汇总输出 / 汇总生成秒数，缓冲完整块不参与');
+  set('usage-first-event', usageDuration(totals.first_event_p50_ms), '模型阶段开始到首个已记录流事件(P50)，可能是 block-start；不是 HTTP 响应头或首 Token');
+  const providerTiming = data.scope?.timing === 'provider';
+  set('usage-ttft-label', providerTiming ? '后台首字 P50' : '首内容 P50');
+  set('usage-ttft', usageDuration(totals.ttft_p50_ms), providerTiming
+    ? '供应商后台 first_token_ms 的 P50，仅已同步并唯一匹配的请求'
+    : '按记录的客户端、网关或模型阶段起点，到首个已记录内容增量的 P50；仅已测样本，不代表服务端开始生成');
   const ttfb = $('usage-ttfb');
   if (ttfb) {
     ttfb.textContent = fmtTtfb(usageNum(totals.ttfb_p50_ms));
@@ -1634,6 +1740,15 @@ const USAGE_ERR_LABELS = {
 // err / err_class 优先于数字上的 200(断流时 status 仍记 200)。
 function usageRecordStatus(row) {
   const status = usageNum(row.status);
+  const outcome = usageDshOutcome(row);
+  if (outcome) {
+    const label = usageResultLabel(row);
+    const details = [row.finish_reason, row.err_class, row.err].filter(Boolean).join(' · ');
+    const title = `Harness 模型结果；${status === null ? 'HTTP 状态未记录' : `HTTP ${status}`}${details ? ' · ' + details.slice(0, 300) : ''}`;
+    return `<span class="badge ${outcome === 'completed' ? 'ok' : outcome === 'failed' ? 'err' : 'muted'} badge-dot" title="${esc(title)}">${label}</span>`;
+  }
+  if (status === null && ['codex-local', 'claude-local', 'dsh-local'].includes(row.source))
+    return '<span class="muted" title="客户端已记录用量；HTTP 状态、请求耗时与首响应未记录">用量已记录</span>';
   const errClass = typeof row.err_class === 'string' ? row.err_class : '';
   const err = row.err ? String(row.err) : '';
   if (!err && !errClass && status !== null && status >= 200 && status < 400) return '<span class="badge ok badge-dot">成功</span>';
@@ -1657,14 +1772,50 @@ function usageRecordRow(row) {
     : '—';
   // 每项单独显示:缺失是「—」,记录为 0 就是 0,不从其它字段推断是否回报。
   const when = fmtFullTime(row.ts);
+  const source = row.source === 'codex-local' ? 'Codex 本地' : row.source === 'claude-local' ? 'Claude 本地'
+    : row.source === 'dsh-local' ? 'DeepSeek Harness 本地' : '';
+  const providerTiming = row.timing_source === 'provider';
+  const timingScope = providerTiming ? '后台' : USAGE_TIMING_SCOPES[row.source] || '网关';
+  const totalTitle = providerTiming
+    ? row.provider_timing_id === null ? '尚未同步到这次请求的后台计时'
+      : `供应商后台总耗时${row.provider_timing_precision_ms === 1000 ? '，后台精度为整秒' : ''}；本地总耗时 ${usageDuration(row.local_ms)}`
+    : row.source === 'dsh-local'
+    ? '总响应时间：Harness 模型阶段开始到本次响应结算，包含阶段内准备、等待、重试和输出，不含之前的预处理或之后的工具执行；不是 HTTP 耗时'
+    : timingScope === '客户端'
+      ? '客户端总耗时：客户端发起 HTTP 请求到收到响应完成事件，包含连接、上传、等待和接收；按客户端原生遥测计时，不等于供应商后台耗时'
+      : '网关总耗时：MixRouter 收到请求到响应结束，包含准备、等待、重试和输出；失败或取消时截止到请求结束';
+  const firstTitle = (providerTiming
+    ? row.provider_timing_id === null ? '尚未同步到这次请求的后台计时'
+      : `${row.ttft_ms == null ? '供应商后台未提供首字耗时' : '供应商后台首字耗时'}；本地首内容 ${usageDuration(row.local_ttft_ms)}`
+    : row.timing_quality === 'buffered' ? USAGE_BUFFERED_TIMING
+    : timingScope === '客户端'
+      ? '客户端首内容：客户端发起 HTTP 请求到收到首个文本、推理文本或工具参数增量；不代表服务端开始生成，也不等于供应商后台首字'
+      : row.source === 'dsh-local'
+        ? '阶段首内容：Harness 模型阶段开始到首个非空文本、推理或工具增量；仅完整流时间样本'
+        : '网关首内容：MixRouter 收到请求到记录首个内容增量；不代表服务端开始生成')
+    + (usageNum(row.ttfb_ms) === null ? '' : `；HTTP 首响应 ${usageDuration(row.ttfb_ms)}，与首内容分开计时`);
+  const latency = '<div class="usage-latency">' + [
+    ['ttft_ms', providerTiming ? '后台首字' : timingScope + '首内容', usageTokenDelay(row), firstTitle],
+    ['ms', timingScope + '总耗时', usageNum(row.ms), totalTitle],
+  ].map(([key, label, value, title]) => {
+    const missing = value === null || value < 0;
+    return `<div class="usage-latency-line" title="${esc(title)}"><span>${label}</span>`
+      + `<span class="usage-latency-value" data-timing="${key}"${missing ? ' data-missing="true"' : ''}>${missing ? '—' : (value / 1000).toFixed(2) + 's'}</span></div>`;
+  }).join('') + '</div>';
   const cells = [
     [fmtWhen(row.ts), when],
     [`<span class="usage-app-label" data-app="${esc(row.app || '')}">${esc(USAGE_APP_LABELS[row.app] || row.app || '—')}</span>`],
-    [esc(row.provider || '—'), row.provider],
+    [esc(row.provider || '—') + (source ? ` <span class="muted">${source}</span>` : '')
+      + (row.timing_quality === 'buffered' ? ` <span class="muted" title="${esc(USAGE_BUFFERED_TIMING)}">流时间不完整</span>` : ''), row.provider],
     [modelCell, [primary, modelIn && modelIn !== primary ? `原始模型 ${modelIn}` : '', row.request_id ? `请求 ID ${row.request_id}` : ''].filter(Boolean).join(' · ')],
     ...[row.in, row.out, row.cache_read].map(value => [fmtTok(usageNum(value)), usageNum(value) === null ? '' : fmtCount(value)]),
-    [usageRecordStatus(row)], [fmtRate(row), '输出 Tokens / 请求总耗时（含等待）'],
-    [fmtTtfb(usageNum(row.ttfb_ms)), '上游响应头到达时间;不是模型首个输出 token 的时间'],
+    [usageRecordStatus(row)],
+    [latency],
+    [fmtRate(row), `含等待吞吐 TPS = 输出 Tokens / ${timingScope}总秒数；等效输出 TPM ${usageTpmText(usageThroughputTpm(row))} = 未舍入 TPS × 60，不是服务商配额 TPM`],
+    [usageDuration(row.first_event_ms), '模型阶段开始到首个已记录流事件，可能是 block-start；不是 HTTP 响应头或首 Token'],
+    [fmtTtfb(usageNum(row.ttfb_ms)), 'HTTP 上游响应头到达时间;不是首流事件或首 Token，Harness 本地未记录时保持空缺'],
+    [fmtRate({ speed_tps: usageDecodeTps(row) }), row.timing_quality === 'buffered' ? USAGE_BUFFERED_TIMING : '生成 TPS = 输出 Tokens / 首 Token 到模型结算的秒数；仅完整逐 Token 时间样本'],
+    [usageTpmText(usageThroughputTpm(row)), '等效输出吞吐 TPM = 未舍入吞吐 TPS × 60；不是滚动一分钟用量或服务商配额 TPM'],
   ];
   return '<tr>' + cells.map(([content, title], index) => `<td data-column="${USAGE_REQUEST_KEYS[index]}"${title ? ` title="${esc(title)}"` : ''}>${content}</td>`).join('') + '</tr>';
 }
@@ -1746,13 +1897,24 @@ function usageRenderDetail(data) {
   const records = data && data.dashboard && data.dashboard.records;
   const sort = records && records.sort || 'ts';
   const order = records && records.order || 'desc';
+  const firstLabel = usageState.timing === 'provider' ? '后台首字' : '首内容';
   const focusedSort = document.activeElement && document.activeElement.getAttribute('data-usage-sort');
+  const sortIcon = '<svg viewBox="0 0 12 14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4"><path class="usage-sort-up" d="m3 5 3-3 3 3"/><path class="usage-sort-down" d="m3 9 3 3 3-3"/></svg>';
   if (head) head.innerHTML = `<tr>${slice.columns.map((text, index) => {
     const key = slice.tab === 'requests' ? USAGE_REQUEST_KEYS[index] : '';
+    if (key === 'latency') {
+      const field = sort === 'ttft_ms' ? 'ttft_ms' : 'ms';
+      const direction = field === sort ? (order === 'asc' ? 'ascending' : 'descending') : 'none';
+      return `<th scope="col" data-column="latency" aria-sort="${direction}"><div class="usage-latency-heading">`
+        + `<button class="usage-sort" data-usage-sort="${field}" type="button" onclick="setUsageSort('${field}')" title="按${field === 'ttft_ms' ? firstLabel : USAGE_SORT_LABELS[field]}排序">延迟${sortIcon}</button>`
+        + '<select id="usage-latency-sort" data-usage-sort="latency" aria-label="延迟排序指标" title="延迟排序指标" onchange="setUsageSort(this.value)">'
+        + [['ms', '总耗时'], ['ttft_ms', firstLabel]].map(([value, label]) => `<option value="${value}"${field === value ? ' selected' : ''}>${label}</option>`).join('')
+        + '</select></div></th>';
+    }
     const sortable = key && Object.hasOwn(USAGE_SORT_LABELS, key);
     const direction = key === sort ? (order === 'asc' ? 'ascending' : 'descending') : 'none';
     return `<th scope="col"${key ? ` data-column="${key}"` : ''}${sortable ? ` aria-sort="${direction}"` : ''}>`
-      + (sortable ? `<button class="usage-sort" data-usage-sort="${key}" type="button" onclick="setUsageSort('${key}')" title="按${text}排序">${text}<svg viewBox="0 0 12 14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4"><path class="usage-sort-up" d="m3 5 3-3 3 3"/><path class="usage-sort-down" d="m3 9 3 3 3-3"/></svg></button>` : text) + '</th>';
+      + (sortable ? `<button class="usage-sort" data-usage-sort="${key}" type="button" onclick="setUsageSort('${key}')" title="按${text}排序">${text}${sortIcon}</button>` : text) + '</th>';
   }).join('')}</tr>`;
   if (head && focusedSort) head.querySelector(`[data-usage-sort="${focusedSort}"]`)?.focus();
   for (const [id, value] of [
@@ -1773,7 +1935,7 @@ function usageRenderDetail(data) {
   if (count) {
     const prefix = slice.tab === 'requests' && records?.scope === 'recent' ? '最近' : '共';
     count.textContent = slice.available
-      ? `${prefix} ${fmtCount(slice.total)} ${unit} · ${slice.tab === 'requests' ? `按${USAGE_SORT_LABELS[sort] || '时间'}${order === 'asc' ? '升序' : '降序'}` : '按请求数降序'}`
+      ? `${prefix} ${fmtCount(slice.total)} ${unit} · ${slice.tab === 'requests' ? `按${sort === 'ttft_ms' ? firstLabel : USAGE_SORT_LABELS[sort] || '时间'}${order === 'asc' ? '升序' : '降序'}` : '按请求数降序'}`
       : '服务端没有返回明细数据。';
     count.title = slice.tab === 'requests' && usageNum(records?.matched_total) !== null
       ? `当前筛选共匹配 ${fmtCount(records.matched_total)} 条；请求明细${records.scope === 'recent' ? '展示最近 1000 条以内' : '展示全部保留历史'}。` : '';
@@ -1831,24 +1993,37 @@ function usageRenderSource(data) {
   const last = usageLocalDayKey(coverage.last_ts);
   const today = usageDayKey(new Date());
   const lines = [
-    `数据来源:${usageSourceLabel(data)}。区间内的数字来自本机请求日志(logs/requests.jsonl 及轮转归档),并补入尚未落盘的内存窗口。`,
+    `数据来源:${usageSourceLabel(data)}。网关请求来自本机请求日志及内存窗口；Codex、Claude 和 DeepSeek Harness 本地会话补入未经过网关的实际用量，路由请求与重复消息去重。`,
     `统计区间:${usageLocalDayKey(scope.from) || '—'} – ${usageLocalDayKey(scope.to) || '—'}(${scope.timezone || '本地时区'})。`,
     first && last
       ? `当前可用日志:最早一条记录 ${first},最新一条 ${last}。这是日志里实际观察到的最早/最晚记录,既不是完整保留期,也不保证中间没有断档;每天读取都会扫到当前时刻,所以 ${last} 之后到今天(${today})没有记录的日子按「没有请求」计算,而 ${first} 之前的日期显示为「未覆盖」,不会算成 0。`
       : '当前可用日志:数据源里暂时没有任何请求日志;热力图所有日期显示为「未覆盖」,而不是零用量。',
     '协议组按请求协议归类，不冒充客户端识别。供应商按渠道分组，旧日志没有渠道 id 时按同名渠道归并，归不了的单独一行。模型为精确匹配。搜索匹配模型、供应商、渠道 ID、请求 ID 或会话，作用于全部统计；HTTP 状态码与最终结果可独立筛选，err / err_class 优先于状态码。',
-    '请求明细默认在当前筛选内取最新 1000 条，再按表头排序分页；切换「保留历史」可查询更早记录。卡片、趋势、供应商与模型统计始终使用全部匹配记录，不受明细窗口限制。历史保留 30 天、最多 10 万条。',
+    '请求明细默认在当前筛选内取最新 1000 条，再按表头排序分页；切换「保留历史」可查询更早记录。卡片、趋势、供应商与模型统计始终使用全部匹配记录，不受明细窗口限制。网关历史保留 30 天、最多 10 万条；客户端本地用量读取同期最多 10 万条，不修改原会话。',
     '失败次数按实际记录计数，不从四舍五入的成功率倒推。导出本页包含完整数值、请求 ID 与错误信息。',
-    'Tokens 合计 = 新增输入 + 输出 + 缓存读取;缓存命中率 = 缓存读取 / (新增输入 + 缓存读取)。页面不折算金额。',
+    'Tokens 合计 = 新增输入 + 输出 + 缓存读取;缓存命中率 = 缓存读取 / (新增输入 + 缓存读取)。新增输入包含缓存写入，OpenAI 已包含在输入中的缓存读取只计算一次。页面不折算金额。',
+    'Codex 原生遥测可补充直连请求的状态、客户端耗时和首响应。仅按会话、模型、完整用量与完成时间唯一对应；采集前的历史记录仍为未知，不计入成功率、失败次数或速度样本。供应商无法从历史记录确定时显示未知，不使用当前渠道倒推。',
+    '计时口径随来源标注：客户端总耗时从客户端发起 HTTP 请求到收到完成事件；网关总耗时从 MixRouter 收到请求到响应结束；DeepSeek Harness 阶段总耗时从模型阶段开始到本次助手响应结算，包含阶段内准备，不含此前预处理和之后的工具执行。未记录耗时的历史请求保持空缺。',
+    '中转站计时直接同步供应商后台的 duration_ms 与 first_token_ms，并按渠道、模型、完整用量和完成时间唯一匹配。未同步、未接入或有歧义的请求保持空缺；不使用本地计时替代。输出 TPS 同样按后台总耗时计算。',
+    '本地计时保留客户端、网关与 Harness 的原始测量。客户端直连记录由 MixRouter 读取遥测，不代表经过 MixRouter 转发。它与供应商后台的起止点和首字事件定义可能不同，差额也不能全部归因于网络。',
+    'DeepSeek Harness 本地会话仅补入已记录的统计用量，不改变原请求路由。成功、失败和取消按模型结束证据判断，独立于 HTTP 状态；没有 HTTP 响应头证据时不虚构状态码或首响应。',
+    '首流事件是模型阶段到首个记录流事件的延迟，可能是 block-start；首内容是从对应计时起点到首个已记录文本、推理文本或工具参数增量，不代表服务端开始生成。两者与 HTTP 首响应分开计时。Harness 上游未提供完整逐 Token / 推理时间（含隐藏推理）时标记「流时间不完整」，首内容与生成 TPS 留空。',
+    '输出 TPS = 有耗时样本的输出合计 / 对应计时口径的总秒数（含等待）；生成 TPS = 完整逐 Token 时间样本的输出合计 / 生成总秒数。等效输出吞吐 TPM = 未舍入的输出 TPS × 60，不是滚动一分钟用量或服务商配额 TPM。首内容与总耗时合并显示在延迟列，首流事件、HTTP 首响应、生成 TPS 与吞吐 TPM 可在显示设置中开启。',
     '首响应 = 上游响应头到达的时间(ttfb_ms),不是模型首个输出 token 的时间;两者不能互相替代。',
   ];
+  if (scope.local_usage) {
+    const local = scope.local_usage;
+    lines.splice(1, 0, `当前筛选包含 Codex 本地 ${fmtCount(local.codex)} 次、Claude 本地 ${fmtCount(local.claude)} 次、DeepSeek Harness 本地 ${fmtCount(local.dsh ?? 0)} 次。`
+      + (local.truncated ? '本地记录已达到条数上限。' : '')
+      + (local.warnings?.length ? `部分来源未读取：${local.warnings.join('；')}。` : ''));
+  }
   el.innerHTML = lines.map(line => `<p>${esc(line)}</p>`).join('');
 }
 
 // ---- 生命周期 -------------------------------------------------------------
 document.addEventListener('visibilitychange', () => {
   // 从后台切回来立即刷新一次:轮询在隐藏期间是跳过的,回来时数字可能已经过时。
-  if (document.visibilityState === 'visible' && usageState.visible && usageState.inited) loadUsage();
+  if (document.visibilityState === 'visible' && usageState.visible && usageState.inited) loadUsage({ automatic: true });
 });
 document.addEventListener('DOMContentLoaded', () => {
   const menu = $('usage-column-menu');

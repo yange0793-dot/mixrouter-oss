@@ -421,6 +421,7 @@ test('流式:工具参数物化前剪掉可选空占位,客户端收到的 parti
 function createResponsesUpstream() {
   const requests = [];
   let failTimes = 0, jsonAlways = false, abortMidStream = false, jsonBody = null, errorStreamTimes = 0, toolCalls = null;
+  let failedStream = null;
   const server = http.createServer((req, res) => {
     const chunks = [];
     req.on('data', c => chunks.push(c));
@@ -458,6 +459,12 @@ function createResponsesUpstream() {
           return res.end();
         }
         sse({ type: 'response.created', response: { id: 'resp_1', model: body.model } });
+        if (failedStream && failedStream.times > 0) {
+          failedStream.times--;
+          sse({ type: 'response.failed', response: { status: 'failed', output: [], error: null } });
+          sse({ type: 'error', error: failedStream.error });
+          return res.end();
+        }
         // 流式工具调用(剪空占位的端到端用):按 [name, argsObject] 逐个发 function_call
         if (toolCalls) {
           toolCalls.forEach(([name, a], i) => {
@@ -492,6 +499,7 @@ function createResponsesUpstream() {
     setAbortMidStream: v => { abortMidStream = v; },
     setJsonBody: v => { jsonBody = v; },
     setErrorStream: n => { errorStreamTimes = n; },
+    setFailedStream: (times, error) => { failedStream = { times, error }; },
     setToolCalls: v => { toolCalls = v; },
   };
 }
@@ -776,6 +784,67 @@ test('上游 200 + SSE 皮里包错误:换一代 key 重试,同一条响应继�
   assert.ok(r.text.includes('conv-echo:gpt-6-astra'));
   assert.ok(r.text.includes('event: message_stop'));
   assert.ok(!r.text.includes('上游渠道池打满'), '被重试掉的错误不该漏给客户端');
+});
+
+for (const stream of [true, false]) test(`failed followed by a transient error recovers the Claude request (stream=${stream})`, async t => {
+  up.setFailedStream(1, { type: 'too_many_requests', code: 'rate_limit_exceeded',
+    headers: { 'x-ms-fe-error': 'true' }, message: 'Too many requests' });
+  t.after(() => up.setFailedStream(0, null));
+  const before = up.requests.length;
+  const result = await rawRequest(proxyPort, 'POST', '/v1/messages', {
+    body: { model: 'mixr-main', max_tokens: 64, stream, output_config: { effort: 'xhigh' },
+      messages: [{ role: 'user', content: `terminal recovery ${stream}` }] },
+  });
+  assert.strictEqual(result.status, 200);
+  const message = stream ? wire.collectAnthropicMessage(result.text) : JSON.parse(result.text);
+  assert.strictEqual(message.content[0].text, 'conv-echo:gpt-6-astra');
+  assert.doesNotMatch(result.text, /Too many requests|upstream failure|rate_limit_exceeded/);
+  const pair = up.requests.slice(before);
+  assert.strictEqual(pair.length, 2);
+  assert.strictEqual(pair[0].headers.authorization, pair[1].headers.authorization);
+  const { prompt_cache_key: firstKey, ...first } = pair[0].body;
+  const { prompt_cache_key: nextKey, ...next } = pair[1].body;
+  assert.notStrictEqual(firstKey, nextKey);
+  assert.deepStrictEqual(first, next, 'only the existing affinity key changes on retry');
+  assert.deepStrictEqual(next.reasoning, { effort: 'xhigh' });
+  const log = lastRequestLog();
+  assert.strictEqual(log.status, 200);
+  assert.strictEqual(log.attempts, 2);
+  assert.strictEqual(log.retry_reason, 'translated_preoutput_retry');
+  assert.strictEqual(log.err || '', '');
+  assert.strictEqual(log.err_class || '', '');
+});
+
+test('translated terminal failures retain the existing retry budget and final error detail', async t => {
+  up.setFailedStream(10, { code: 'rate_limit_exceeded', message: 'Too many requests' });
+  t.after(() => up.setFailedStream(0, null));
+  const before = up.requests.length;
+  const result = await rawRequest(proxyPort, 'POST', '/v1/messages', {
+    body: { model: 'mixr-main', max_tokens: 64, stream: false,
+      messages: [{ role: 'user', content: 'exhaust terminal retries' }] },
+  });
+  assert.strictEqual(result.status, 502);
+  assert.strictEqual(up.requests.length - before, 3, 'one initial call plus the existing two conversion retries');
+  assert.match(JSON.parse(result.text).error.message, /rate_limit_exceeded.*Too many requests/);
+  const log = lastRequestLog();
+  assert.strictEqual(log.status, 502);
+  assert.strictEqual(log.attempts, 3);
+  assert.match(log.err, /Too many requests/);
+});
+
+test('a different provider preserves deployment errors without retrying', async t => {
+  up.setFailedStream(1, { type: 'user_error', code: 'DeploymentNotFound',
+    headers: { 'x-ms-fe-error': 'true' }, message: 'Could not find an existing deployment.' });
+  t.after(() => up.setFailedStream(0, null));
+  const before = up.requests.length;
+  const result = await rawRequest(proxyPort, 'POST', '/v1/messages', {
+    body: { model: 'mixr-main', max_tokens: 64, stream: false,
+      messages: [{ role: 'user', content: 'unrelated provider deployment' }] },
+  });
+  assert.strictEqual(result.status, 502);
+  assert.strictEqual(up.requests.length - before, 1);
+  assert.match(JSON.parse(result.text).error.message, /DeploymentNotFound/);
+  assert.match(lastRequestLog().err, /Could not find an existing deployment/);
 });
 
 test('count_tokens:responses 上游没有该端点,本地估一个', async () => {

@@ -125,6 +125,7 @@ function harness(options = {}) {
   const get = id => elements.get(id) || null;
   const ids = ['usage-reqs', 'usage-request-hint', 'usage-tokens', 'usage-token-split', 'usage-cache',
     'usage-cache-hint', 'usage-success', 'usage-ok-rate', 'usage-speed', 'usage-ttfb',
+    'usage-tpm', 'usage-decode-speed', 'usage-first-event', 'usage-ttft', 'usage-ttft-label', 'usage-timing',
     'usage-status', 'usage-last-sync', 'usage-count', 'usage-range-label', 'usage-page-label',
     'usage-calendar-summary', 'usage-data-frame', 'usage-chart-holder', 'usage-heatmap',
     'usage-chart-empty', 'usage-chart-tooltip', 'usage-detail-panel', 'usage-sync',
@@ -382,7 +383,7 @@ test('四张指标卡:请求/tokens/缓存/成功率,补充指标进更多指标
   assert.equal(h.get('usage-cache').textContent, '50.0%');
   assert.equal(h.get('usage-success').textContent, '97.6%');
   // 副行只给真实样本数字,不从两位小数成功率逆推成功次数;判定口径留在 title。
-  assert.equal(h.get('usage-ok-rate').textContent, '42 次请求样本');
+  assert.equal(h.get('usage-ok-rate').textContent, '42 次结果样本');
   assert.match(h.get('usage-ok-rate').getAttribute('title'), /断流与取消计为失败/);
   assert.equal(h.get('usage-cache-hint').textContent, `读取 ${h.run('fmtTok(8000)')} tokens`);
   assert.match(h.get('usage-cache-hint').getAttribute('title'), /缓存命中率 = 缓存读取/);
@@ -819,7 +820,7 @@ test('读取失败:报错清楚、旧数据标 stale 且明说不是当前筛选
 
   await h.run('loadUsage()');
   assert.equal(h.get('usage-data-frame').dataset.stale, 'false', '成功后摘掉 stale');
-  assert.match(h.get('usage-last-sync').textContent, /最近同步/);
+  assert.match(h.get('usage-last-sync').textContent, /本地读取/);
   assert.match(h.get('usage-last-sync').getAttribute('title'), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/, '完整同步时间在 title');
   assert.equal(h.get('usage-status').hidden, true, '恢复正常后状态行收起,不重复卡片和顶栏里已有的数');
 });
@@ -891,7 +892,8 @@ test('指针与键盘:同一格给出同样的读数,Esc 收起,读数进 aria-l
   h.run("usageHeatPointer({ target: { dataset: { date: '" + today + "' } } })");
   root.events.keydown({ key: 'ArrowLeft', preventDefault() {} });
   assert.equal(h.state.heatDate, dayKeyAgo(7), '左方向键退一周');
-  assert.match(h.state.heatLive.textContent, new RegExp(dayKeyAgo(7).slice(5).replace('-', '月') + '日'));
+  const [, month, day] = dayKeyAgo(7).split('-').map(Number);
+  assert.match(h.state.heatLive.textContent, new RegExp(`${month}月${day}日`));
   root.events.keydown({ key: 'ArrowDown', preventDefault() {} });
   assert.equal(h.state.heatDate, dayKeyAgo(6));
   root.events.keydown({ key: 'Escape', preventDefault() {} });
@@ -1004,6 +1006,101 @@ test('同步间隔与后台生命周期:关闭/离开页面不起定时器,隐�
   assert.equal(h.intervals.size, 0, '离开页面清掉定时器');
 });
 
+test('automatic refresh keeps a slow identical query alive while changed filters still cancel it', async () => {
+  const h = harness();
+  const release = h.defer(usageFixture());
+  h.run("usageState.range = '30d'; usageState.visible = true; usageState.interval = 30");
+  const first = h.run('loadUsage()');
+  const timer = [...h.intervals.values()][0];
+  timer();
+  timer();
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.state.controller.signal.aborted, false);
+  assert.equal(h.state.busy, true);
+  h.run("setUsageFilter('provider', 'id:another')");
+  await first;
+  await tick();
+  assert.equal(h.requests.length, 2);
+  assert.equal(new URL(h.requests[1].url, 'http://local').searchParams.get('channel'), 'id:another');
+  assert.equal(h.state.busy, false);
+  release();
+});
+
+test('manual sync forces backend refresh without changing the displayed query identity', async () => {
+  const h = harness();
+  await h.run('loadUsage()');
+  const before = h.state.shownQuery;
+  await h.run("loadUsage({ timingRefresh: 'force' })");
+  assert.equal(new URL(h.requests.at(-1).url, 'http://local').searchParams.get('timing_refresh'), 'force');
+  assert.equal(h.state.shownQuery, before);
+  assert.equal(h.get('usage-data-frame').dataset.stale, 'false');
+  const html = fs.readFileSync(path.join(ROOT, 'public/index.html'), 'utf8');
+  assert.match(html, /id="usage-sync" onclick="loadUsage\(\{timingRefresh:'force'\}\)"/);
+});
+
+test('backend sync completion is polled from cache and updates the visible timing without another sync', async () => {
+  const waiting = usageFixture();
+  waiting.scope.timing = 'provider';
+  waiting.scope.provider_timing = { warnings: [], connections: [
+    { provider: 'Test', provider_id: 'p1', syncing: true, synced_at: null, cached_rows: 0 },
+  ] };
+  const h = harness({ response: waiting });
+  h.run('usageState.visible = true; usageState.interval = 0');
+  await h.run('loadUsage()');
+  assert.ok(h.state.timingTimer);
+  assert.match(h.get('usage-last-sync').textContent, /后台同步中/);
+  const ready = structuredClone(waiting);
+  ready.scope.provider_timing.connections[0] = {
+    provider: 'Test', provider_id: 'p1', syncing: false, synced_at: new Date().toISOString(), cached_rows: 1,
+  };
+  ready.dashboard.records.rows[0].ms = 14060;
+  ready.dashboard.records.rows[0].ttft_ms = 11134;
+  ready.dashboard.records.rows[0].timing_source = 'provider';
+  h.setResponse(ready);
+  h.fireTimeouts();
+  await tick();
+  assert.equal(h.requests.length, 2);
+  assert.equal(new URL(h.requests[1].url, 'http://local').searchParams.get('timing_refresh'), 'cache');
+  assert.equal(h.state.data.dashboard.records.rows[0].ms, 14060);
+  assert.equal(h.state.timingTimer, null);
+  assert.doesNotMatch(h.get('usage-last-sync').textContent, /后台同步中/);
+  h.fireTimeouts();
+  assert.equal(h.requests.length, 2);
+});
+
+test('local read time and backend freshness stay separate and expose empty key coverage', async () => {
+  const now = new Date('2026-11-11T04:00:00Z'), old = '2026-11-11T02:00:00Z';
+  const fixture = usageFixture({ now });
+  fixture.scope.timing = 'provider';
+  fixture.scope.provider_timing = { warnings: ['Empty: failed'], connections: [
+    { provider: 'Recent', synced_at: '2026-11-11T03:00:00Z', cached_rows: 10, syncing: false },
+    { provider: 'Empty', synced_at: old, cached_rows: 0, error: 'failed', syncing: false },
+  ] };
+  const h = harness({ now, response: fixture });
+  await h.run('loadUsage()');
+  const clock = h.get('usage-last-sync');
+  assert.ok(clock.textContent.includes('本地读取 ' + h.run(`fmtWhen(${now.getTime()})`)));
+  assert.ok(clock.textContent.includes('后台同步 ' + h.run(`fmtWhen(${Date.parse(old)})`)));
+  assert.ok(clock.getAttribute('title').includes('Empty: ' + h.run(`fmtFullTime(${Date.parse(old)})`)));
+  assert.match(clock.getAttribute('title'), /已缓存 0 条; failed/);
+  assert.match(h.get('usage-status').textContent, /failed/);
+});
+
+test('leaving the usage page cancels scheduled backend timing followups', async () => {
+  const fixture = usageFixture();
+  fixture.scope.provider_timing = { warnings: [], connections: [
+    { provider: 'Test', syncing: true, synced_at: null },
+  ] };
+  const h = harness({ response: fixture });
+  h.run('usageState.visible = true');
+  await h.run('loadUsage()');
+  assert.ok(h.state.timingTimer);
+  h.run('usageSetVisible(false)');
+  assert.equal(h.state.timingTimer, null);
+  h.fireTimeouts();
+  assert.equal(h.requests.length, 1);
+});
+
 test('覆盖边界:最早记录之前是未覆盖,最后一条记录之后到今天按真实 0 算(不是未覆盖)', async () => {
   const fixture = usageFixture();
   // 最新一条记录停在 5 天前:这几天没有记录,但读取已经扫到当前时刻,应画成 0 而不是未覆盖。
@@ -1020,14 +1117,100 @@ test('覆盖边界:最早记录之前是未覆盖,最后一条记录之后到今
   if (before) assert.equal(before['data-coverage'], 'outside', '最早记录之前才是未覆盖');
 });
 
-test('首响应:卡片与表头都用「首响应」而不是「首字」,并写明量的是上游响应头', async () => {
+test('HTTP 首响应保留独立含义，不冒充延迟组里的首字耗时', async () => {
   const h = harness();
   await h.run('loadUsage()');
   assert.match(h.get('usage-ttfb').getAttribute('title'), /上游响应头到达时间/);
   assert.match(h.get('usage-ttfb').getAttribute('title'), /不是模型首个输出 token/);
-  assert.match(h.get('usage-table-head').innerHTML, /首响应/);
-  assert.doesNotMatch(h.get('usage-table-head').innerHTML, /首字/);
-  assert.match(h.get('usage-rows').innerHTML, /title="上游响应头到达时间;不是模型首个输出 token 的时间"/);
+  const header = /<th[^>]*data-column="ttfb_ms"[\s\S]*?<\/th>/.exec(h.get('usage-table-head').innerHTML)[0];
+  assert.match(header, /首响应/);
+  assert.doesNotMatch(header, /首字/);
+  assert.match(h.get('usage-rows').innerHTML, /title="HTTP 上游响应头到达时间;不是首流事件或首 Token，Harness 本地未记录时保持空缺"/);
+});
+
+test('首内容与总耗时按来源标注，TPS 独立显示，排序和导出保留完整数值', async () => {
+  const base = { ts: new Date().toISOString(), app: 'codex', provider: 'test', model_out: 'test',
+    status: 200, in: 20, out: 10, cache_read: 0 };
+  const records = [
+    { ...base, ms: 12345, ttfb_ms: 1000, ttft_ms: 2000 },
+    { ...base, source: 'dsh-local', status: null, outcome: 'completed', ms: 42901, ttft_ms: 30621 },
+    { ...base, source: 'codex-local', ms: null },
+    { ...base, ms: 0, ttft_ms: 0 },
+    { ...base, source: 'codex-local', ms: 28551, ttfb_ms: 25428, ttft_ms: 25655 },
+  ];
+  const h = harness({ response: usageFixture({ records }) });
+  h.run("usageState.timing = 'local'");
+  await h.run('loadUsage()');
+  assert.equal(h.state.hiddenColumns.includes('latency'), false);
+  assert.equal(h.state.hiddenColumns.includes('speed_tps'), false);
+  assert.match(h.get('usage-table-head').innerHTML, /data-usage-sort="ms"[^>]*title="按总耗时排序">延迟/);
+  assert.match(h.get('usage-table-head').innerHTML, /data-column="speed_tps"[\s\S]*?>输出 TPS/);
+  assert.match(h.get('usage-table-head').innerHTML, /aria-label="延迟排序指标"/);
+  assert.match(h.get('usage-column-options').innerHTML, /data-usage-column="latency"[^>]*checked[^>]*>延迟/);
+  assert.doesNotMatch(h.get('usage-column-options').innerHTML, /data-usage-column="ms"|data-usage-column="ttft_ms"/);
+  const rows = h.get('usage-rows').innerHTML.split('</tr>');
+  const latency = /<td data-column="latency">([\s\S]*?)<\/td>/.exec(rows[0])[1];
+  assert.equal((latency.match(/class="usage-latency-line"/g) || []).length, 2);
+  assert.match(latency, /<span>网关首内容<\/span>[\s\S]*data-timing="ttft_ms">2.00s/);
+  assert.match(latency, /网关总耗时：MixRouter 收到请求到响应结束[\s\S]*<span>网关总耗时<\/span>[\s\S]*data-timing="ms">12.35s/);
+  assert.doesNotMatch(latency, /TPS|tok\/s/);
+  assert.match(rows[0], /data-column="latency"[\s\S]*<\/td><td data-column="speed_tps"/);
+  assert.match(rows[1], /总响应时间：Harness 模型阶段开始到本次响应结算[\s\S]*data-timing="ms">42.90s/);
+  assert.match(rows[1], /<span>阶段首内容<\/span>/);
+  assert.match(rows[2], /data-timing="ms" data-missing="true">—/);
+  assert.match(rows[2], /data-timing="ttft_ms" data-missing="true">—/);
+  assert.match(rows[3], /data-timing="ms">0.00s/);
+  assert.match(rows[3], /data-timing="ttft_ms">0.00s/);
+  assert.match(rows[4], /客户端首内容：客户端发起 HTTP 请求到收到首个文本、推理文本或工具参数增量/);
+  assert.match(rows[4], /<span>客户端首内容<\/span>[\s\S]*data-timing="ttft_ms">25.66s/);
+  assert.match(rows[4], /<span>客户端总耗时<\/span>[\s\S]*data-timing="ms">28.55s/);
+  assert.match(rows[4], /不等于供应商后台耗时/);
+  assert.match(rows[4], /输出 Tokens \/ 客户端总秒数/);
+  const csv = h.run('usageCsv(usageState.data)');
+  assert.match(csv, /"总响应时间 ms"/);
+  assert.match(csv, /"12345","1000"/);
+  assert.match(csv, /"42901"/);
+  assert.match(csv, /"首内容 ms"/);
+  assert.match(csv, /"计时口径","后台记录 ID"/);
+  assert.match(csv, /"28551","25428".*"25655".*"客户端"/);
+  h.run("setUsageSort('ms')");
+  assert.match(h.requests.at(-1).url, /sort=ms/);
+  await h.run('loadUsage()');
+  assert.match(h.get('usage-table-head').innerHTML, /data-column="latency" aria-sort="descending"/);
+  h.run("setUsageSort('ttft_ms')");
+  await h.run('loadUsage()');
+  assert.match(h.get('usage-table-head').innerHTML, /data-usage-sort="ttft_ms"[^>]*title="按首内容排序">延迟/);
+  assert.match(h.get('usage-table-head').innerHTML, /<option value="ttft_ms" selected>首内容/);
+  const html = fs.readFileSync(path.join(ROOT, 'public/index.html'), 'utf8');
+  assert.match(html, /<th scope="col">延迟<\/th><th scope="col">输出 TPS<\/th>/);
+  assert.doesNotMatch(h.get('usage-table-head').innerHTML + csv, /模型\/请求耗时/);
+});
+
+test('后台计时保留精确值和本地对照，未匹配请求不回退，切换口径同步查询与导出', async () => {
+  const base = { ts: new Date().toISOString(), app: 'codex', source: 'codex-local', provider: 'Test',
+    model_out: 'model', status: 200, in: 257, out: 204, cache_read: 190720, timing_source: 'provider',
+    ms: 14060, ttft_ms: 11134, speed_tps: 14.51, local_ms: 28551, local_ttft_ms: 25655,
+    provider_timing_id: 10224230, provider_request_id: 'client:test' };
+  const fixture = usageFixture({ records: [base, { ...base, provider_timing_id: null, ms: null,
+    ttft_ms: null, speed_tps: null }] });
+  fixture.scope.timing = 'provider';
+  fixture.scope.provider_timing = { connections: [{ provider: 'Test' }], warnings: [] };
+  const h = harness({ response: fixture });
+  await h.run('loadUsage()');
+  assert.match(h.requests.at(-1).url, /timing=provider/);
+  const [matched, missing] = h.get('usage-rows').innerHTML.split('</tr>');
+  assert.match(matched, /后台首字<\/span>[\s\S]*data-timing="ttft_ms">11.13s/);
+  assert.match(matched, /后台总耗时<\/span>[\s\S]*data-timing="ms">14.06s/);
+  assert.match(matched, /本地总耗时 28.6s/);
+  assert.match(missing, /data-timing="ms" data-missing="true">—/);
+  assert.doesNotMatch(missing, /data-timing="ms">28.55s/);
+  const csv = h.run('usageCsv(usageState.data)');
+  assert.match(csv, /后台首字 ms/);
+  assert.match(csv, /"14060".*"11134".*"中转站后台","10224230","client:test","28551","25655"/);
+  h.run("setUsageTiming('local')");
+  assert.match(h.requests.at(-1).url, /timing=local/);
+  assert.equal(h.get('usage-timing').value, 'local');
+  assert.match(h.run("localStorage.getItem('mixr.usage.prefs')"), /"timing":"local"/);
 });
 
 test('来源说明:只说「当前可用日志」,不冒充完整保留期;首响应口径写明不是模型首字', async () => {
@@ -1044,6 +1227,8 @@ test('来源说明:只说「当前可用日志」,不冒充完整保留期;首�
   assert.match(detail, /缓存命中率/);
   assert.match(detail, /首响应 = 上游响应头到达的时间/);
   assert.match(detail, /不是模型首个输出 token/);
+  assert.match(detail, /中转站计时直接同步供应商后台/);
+  assert.match(detail, /差额也不能全部归因于网络/);
   // 面板默认收起(首屏留给指标卡与热力图),展开状态记进浏览器偏好。
   assert.equal(h.get('usage-source').hidden, true, '首次进入默认收起统计口径');
   h.run('toggleUsageSource()');
@@ -1356,12 +1541,12 @@ test('显示列和行距只改本地偏好，时间和模型始终保留', async
   await h.run('loadUsage()');
   const before = h.requests.length;
   h.run("setUsageColumn('cache_read', false); setUsageColumn('ts', false); setUsageDensity('comfortable')");
-  assert.deepEqual([...h.state.hiddenColumns], ['cache_read']);
+  assert.deepEqual([...h.state.hiddenColumns], ['first_event_ms', 'ttfb_ms', 'decode_tps', 'speed_tpm', 'cache_read']);
   assert.equal(h.get('usage-detail-panel').getAttribute('data-density'), 'comfortable');
   assert.equal(h.requests.length, before);
   assert.match(h.run("localStorage.getItem('mixr.usage.prefs')"), /comfortable/);
   h.run("setUsageColumn('cache_read', true)");
-  assert.equal(h.state.hiddenColumns.length, 0);
+  assert.deepEqual([...h.state.hiddenColumns], ['first_event_ms', 'ttfb_ms', 'decode_tps', 'speed_tpm']);
 });
 
 test('图表默认折叠且不渲染，展开时使用同一份用量快照', async () => {
@@ -1420,4 +1605,160 @@ test('CSV 导出保留完整数值，转义引号与公式前缀，空结果不�
   h.setResponse(fixture);
   await h.run('loadUsage()');
   assert.equal(h.get('usage-export').disabled, true);
+});
+
+test('本地用量在表格、成功率样本、来源、筛选与导出中保持状态未知', async () => {
+  const fixture = usageFixture();
+  fixture.scope.source = 'gateway+local';
+  fixture.scope.status_samples = 40;
+  fixture.scope.local_usage = { codex: 2, claude: 0, warnings: [] };
+  fixture.dashboard.outcomes = { succeeded: 39, failed: 1, unknown: 2 };
+  fixture.dashboard.records.rows = [{
+    ts: new Date().toISOString(), app: 'codex', source: 'codex-local', provider: 'Primary', model_out: 'model-local',
+    in: 60, out: 10, cache_read: 40, status: null, ms: null, ttfb_ms: null, request_id: 'codex:response-one',
+  }];
+  const h = harness({ response: fixture });
+  await h.run('loadUsage()');
+  assert.match(h.get('usage-rows').innerHTML, /Codex 本地/);
+  assert.match(h.get('usage-rows').innerHTML, /用量已记录/);
+  assert.doesNotMatch(h.get('usage-rows').innerHTML, /badge ok|badge err|HTTP 0/);
+  assert.equal(h.get('usage-ok-rate').textContent, '40 次结果样本 · 2 次结果未知');
+  assert.equal(h.get('usage-fail').textContent, '失败 1 次');
+  assert.match(h.get('usage-source-detail').innerHTML, /网关日志 \+ 客户端本地用量/);
+  assert.match(h.run('usageCsv(usageState.data)'), /状态未知/);
+  assert.match(h.run('usageCsv(usageState.data)'), /codex-local/);
+  h.run("setUsageStatus('unknown')");
+  assert.match(h.requests.at(-1).url, /status=unknown/);
+});
+
+for (const [app, label] of [['codex', 'OpenAI'], ['claude', 'Anthropic']]) {
+  test(`Harness 本地用量保留 ${label} 协议组并展示来源、计数和未知状态`, async () => {
+    const fixture = usageFixture();
+    fixture.scope.source = 'gateway+local';
+    fixture.scope.status_samples = 40;
+    fixture.scope.local_usage = { codex: 0, claude: 0, dsh: 2, warnings: [] };
+    fixture.dashboard.outcomes = { succeeded: 39, failed: 1, unknown: 2 };
+    fixture.dashboard.records.rows = [{
+      ts: new Date().toISOString(), app, source: 'dsh-local', provider: 'Harness provider',
+      model_in: 'model-harness', model_out: 'model-harness', in: 60, out: 10, cache_read: 40,
+      status: null, ms: null, ttfb_ms: null, request_id: 'dsh:response-one',
+    }];
+    const h = harness({ response: fixture });
+    await h.run('loadUsage()');
+    const rows = h.get('usage-rows').innerHTML;
+    assert.match(rows, /DeepSeek Harness 本地/);
+    assert.match(rows, new RegExp(`data-app="${app}">${label}`));
+    assert.match(rows, /用量已记录/);
+    assert.doesNotMatch(rows, /badge ok|badge err|HTTP 0/);
+    assert.equal(h.get('usage-ok-rate').textContent, '40 次结果样本 · 2 次结果未知');
+    assert.equal(h.get('usage-fail').textContent, '失败 1 次');
+    assert.match(h.get('usage-source-detail').innerHTML, /DeepSeek Harness 本地 2 次/);
+    assert.match(h.get('usage-source-detail').innerHTML, /不改变原请求路由/);
+    const csv = h.run('usageCsv(usageState.data)');
+    assert.match(csv, new RegExp(`"${label}"`));
+    assert.match(csv, /"状态未知"/);
+    assert.match(csv, /"dsh-local"/);
+    assert.doesNotMatch(csv, /"成功"|"失败"/);
+    h.run(`setUsageFilter('app', '${app}')`);
+    assert.match(h.requests.at(-1).url, new RegExp(`app=${app}`));
+  });
+}
+
+test('Harness 来源说明兼容尚未返回 dsh 计数的后端', async () => {
+  const fixture = usageFixture();
+  fixture.scope.local_usage = { codex: 2, claude: 0, warnings: [] };
+  const h = harness({ response: fixture });
+  await h.run('loadUsage()');
+  assert.match(h.get('usage-source-detail').innerHTML, /DeepSeek Harness 本地 0 次/);
+  const html = fs.readFileSync(path.join(ROOT, 'public/index.html'), 'utf8');
+  assert.match(html, /用量来自网关日志与 Codex、Claude、DeepSeek Harness 本地会话/);
+  assert.match(html, /data-usage-app="codex"/);
+  assert.match(html, /data-usage-app="claude"/);
+  assert.doesNotMatch(html, /data-usage-app="dsh"/);
+});
+
+test('Harness 模型结果独立于 HTTP 状态，性能列显示真实阶段吞吐并保护缓冲流', async () => {
+  const fixture = usageFixture();
+  fixture.scope.local_usage = { codex: 0, claude: 0, dsh: 3, warnings: [] };
+  fixture.scope.status_samples = 3;
+  fixture.totals.speed_tps = 28.6;
+  fixture.totals.speed_tpm = 1716.04;
+  fixture.totals.decode_tps = 99.92;
+  fixture.totals.first_event_p50_ms = 14965;
+  fixture.totals.ttft_p50_ms = 30621;
+  fixture.dashboard.outcomes = { succeeded: 1, failed: 2, unknown: 0 };
+  const base = { ts: new Date().toISOString(), app: 'codex', source: 'dsh-local', provider: 'Harness',
+    model_out: 'native-model', status: null, ttfb_ms: null, in: 60, cache_read: 40 };
+  fixture.dashboard.records.rows = [
+    { ...base, outcome: 'completed', finish_reason: 'stop', out: 1227, ms: 42901, first_event_ms: 14965,
+      ttft_ms: 30621, decode_ms: 12280, timing_quality: 'streamed', speed_tps: 28.6, speed_tpm: 1716.04, decode_tps: 99.92 },
+    { ...base, outcome: 'failed', finish_reason: 'error', err_class: 'RATE_LIMIT', out: 0, ms: 2000 },
+    { ...base, outcome: 'cancelled', finish_reason: 'aborted', out: 1480, ms: 46534, first_event_ms: 12838,
+      ttft_ms: 45960, decode_ms: 574, timing_quality: 'buffered', speed_tps: 31.8, speed_tpm: 1908.28, decode_tps: 2578 },
+  ];
+  const h = harness({ response: fixture });
+  await h.run('loadUsage()');
+  const [completed, failed, cancelled] = h.get('usage-rows').innerHTML.split('</tr>');
+  assert.match(completed, /badge ok badge-dot[^>]*>成功/);
+  assert.match(failed, /badge err badge-dot[^>]*>失败/);
+  assert.match(cancelled, /badge muted badge-dot[^>]*>取消/);
+  assert.doesNotMatch(h.get('usage-rows').innerHTML, /HTTP 200|HTTP 0/);
+  assert.match(completed, /data-column="latency"[\s\S]*data-timing="ttft_ms">30.62s/);
+  assert.match(completed, /data-timing="ms">42.90s/);
+  assert.match(completed, /data-column="first_event_ms"[^>]*>15.0s/);
+  assert.match(completed, /data-column="speed_tps"[^>]*>28.6tok\/s/);
+  assert.match(completed, /data-column="decode_tps"[^>]*>99.9tok\/s/);
+  assert.match(completed, /data-column="speed_tpm"[^>]*>1716tok\/min/);
+  assert.match(cancelled, /流时间不完整/);
+  assert.match(cancelled, /含隐藏推理/);
+  assert.match(cancelled, /data-timing="ttft_ms" data-missing="true">—/);
+  assert.match(cancelled, /data-column="decode_tps"[^>]*>—/);
+  assert.doesNotMatch(cancelled, /2578tok\/s/);
+  assert.equal(h.get('usage-speed').textContent, '28.6tok/s');
+  assert.equal(h.get('usage-tpm').textContent, '1716tok/min');
+  assert.equal(h.get('usage-decode-speed').textContent, '99.9tok/s');
+  assert.equal(h.get('usage-first-event').textContent, '15.0s');
+  assert.equal(h.get('usage-ttft').textContent, '30.6s');
+  assert.equal(h.get('usage-ok-rate').textContent, '3 次结果样本');
+  assert.match(h.get('usage-source-detail').innerHTML, /不是滚动一分钟用量或服务商配额 TPM/);
+  const csv = h.run('usageCsv(usageState.data)');
+  assert.match(csv, /"首流事件 ms".*"首内容 ms".*"吞吐 TPS".*"吞吐 TPM".*"生成 TPS"/);
+  assert.match(csv, /"1716.04"/);
+  assert.match(csv, /"completed"/);
+  assert.match(csv, /"取消"/);
+  assert.doesNotMatch(csv, /"2578"|"45960"|"574"/);
+  assert.equal((completed.match(/<td /g) || []).length, 14);
+  for (const key of ['ms', 'first_event_ms', 'ttft_ms', 'decode_tps', 'speed_tpm']) {
+    h.run(`setUsageSort('${key}')`);
+    assert.match(h.requests.at(-1).url, new RegExp(`sort=${key}`));
+  }
+});
+
+test('新性能可选列默认隐藏，旧空列偏好迁移后仍可开启并保存', async () => {
+  const h = harness();
+  h.run("localStorage.setItem('mixr.usage.prefs', JSON.stringify({ hiddenColumns: [] })); usageLoadPrefs()");
+  await h.run('loadUsage()');
+  assert.deepEqual([...h.state.hiddenColumns], ['first_event_ms', 'ttfb_ms', 'decode_tps', 'speed_tpm']);
+  assert.match(h.get('usage-column-options').innerHTML, /data-usage-column="speed_tpm"/);
+  h.run("setUsageColumn('speed_tpm', true); usageLoadPrefs()");
+  assert.deepEqual([...h.state.hiddenColumns], ['first_event_ms', 'ttfb_ms', 'decode_tps']);
+  assert.match(h.run("localStorage.getItem('mixr.usage.prefs')"), /"columnsVersion":3/);
+});
+
+test('旧耗时列偏好迁移到延迟组，保留其它隐藏列与排序，重新加载后不展开重复指标', async () => {
+  const h = harness();
+  h.run(`localStorage.setItem('mixr.usage.prefs', JSON.stringify({
+    columnsVersion: 2, hiddenColumns: ['provider', 'ms', 'ttft_ms'], sort: 'ttft_ms', order: 'asc'
+  })); usageLoadPrefs()`);
+  await h.run('loadUsage()');
+  assert.deepEqual([...h.state.hiddenColumns], ['provider', 'first_event_ms', 'ttfb_ms', 'decode_tps', 'speed_tpm']);
+  assert.equal(h.state.sort, 'ttft_ms');
+  assert.equal(h.state.order, 'asc');
+  assert.match(h.get('usage-table-head').innerHTML, /data-column="latency" aria-sort="ascending"/);
+  h.run("setUsageColumn('latency', false); usageLoadPrefs()");
+  assert.equal(h.state.hiddenColumns.includes('latency'), true);
+  h.run("setUsageColumn('latency', true); usageLoadPrefs()");
+  assert.equal(h.state.hiddenColumns.includes('latency'), false);
+  assert.equal(h.state.hiddenColumns.includes('provider'), true);
+  assert.equal(h.state.hiddenColumns.includes('ttfb_ms'), true);
 });

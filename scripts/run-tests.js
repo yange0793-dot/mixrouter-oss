@@ -32,8 +32,7 @@ function testArgs(files, help) {
 }
 
 function testEnv(parent, root) {
-  // DSH_HOME 是已移除的 Harness 集成留下的变量名,不在 MIXR_* 前缀里,必须按名字单独剔掉:
-  // 调用方 shell 里留着一个旧 DSH_HOME,就会让每个测试进程都指到真实目录去。
+  // DSH_HOME 不在 MIXR_* 前缀里,必须单独剔掉,避免本地用量测试读取真实 Harness 会话。
   const env = Object.fromEntries(Object.entries(parent)
     .filter(([key]) => !/^(MIXR_|MIXROUTER_|MIXUI_)/.test(key)
       && key !== 'NODE_TEST_CONTEXT' && key !== 'DSH_HOME'));

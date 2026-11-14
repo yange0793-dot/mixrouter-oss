@@ -48,7 +48,7 @@ const domIdOf = value => 'session-' + String(value ?? '').replace(/[^A-Za-z0-9-]
 
 async function api(path, opt = {}) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), path.includes('/test') ? 65000 : 12000);
+  const timer = setTimeout(() => controller.abort(), path.includes('/test') ? 65000 : path.startsWith('/api/usage') ? 60000 : 12000);
   try {
     const r = await fetch(path, { ...opt, headers: { 'Content-Type': 'application/json', ...opt.headers }, signal: controller.signal, cache: 'no-store' });
     const j = await r.json();
@@ -126,9 +126,16 @@ const fmtTtfb = v => {
 const fmtDur = fmtTtfb;
 // 单条请求的派生指标。分母为 0 / 没测到一律显示「—」,不拿 0 冒充「极快」或「没命中」。
 const fmtRate = l => {
-  const out = Number(l.out), ms = Number(l.ms);
-  if (!Number.isFinite(out) || !Number.isFinite(ms) || ms <= 0 || !out) return '—';
-  const tps = out * 1000 / ms;
+  let tps;
+  if (Object.hasOwn(l, 'speed_tps')) {
+    const value = l.speed_tps;
+    tps = value === null || value === undefined || value === '' ? NaN : Number(value);
+  } else {
+    const out = Number(l.out), ms = Number(l.ms);
+    if (!Number.isFinite(out) || !Number.isFinite(ms) || ms <= 0 || out <= 0) return '—';
+    tps = out * 1000 / ms;
+  }
+  if (!Number.isFinite(tps) || tps <= 0) return '—';
   return (tps >= 100 ? Math.round(tps) : tps.toFixed(1)) + 'tok/s';
 };
 // 缓存读没记录是「—」,记录为 0 才写 0;命中率 = 缓存读 / (缓存读 + 新输入)。
@@ -243,7 +250,7 @@ function setConnection(connected, error = '') {
   $('connection-message').setAttribute('title', !connected && error ? (lastSync ? fmtFullTime(lastSync) + ' · ' : '') + error : '');
   $('new-provider').disabled = !state;
   // 缺渠道或模型名时保存必被拦下,按钮直接禁用,不让人点了才看到报错;草稿与上次载入一致时也没有可保存的(和 #save-window 同一口径)。
-  $('save-compact').disabled = !connected || !state?.compact || savingCompact || !compactDraft?.provider || !compactDraft.model?.trim()
+  $('save-compact').disabled = !connected || !compactState() || !compactRouteEditable() || savingCompact || !compactDraft?.provider || !compactDraft.model?.trim()
     || compactUnchanged();
   $('save-window').disabled = !connected || !windowSnapshot || !windowDirty || savingWindow || !!windowLoadTask;
   // 会话覆盖弹窗:离线、没读到服务端版本、或正在保存时,三扇门都封掉
@@ -285,7 +292,7 @@ function syncClientDots() {
     link.setAttribute('title', configured ? '已写入客户端配置' : '尚未接入客户端');
   }
 }
-// Polling updates status only: editors keep their draft DOM, never rebuilt by refresh.
+// Polling preserves drafts; option lists update only when their available choices change.
 function refresh() {
   if (refreshTask) return refreshTask;
   // 本机一次读取通常几十毫秒:立刻禁用会让顶栏按钮每 5 秒闪一下。超过 300ms 才进入「刷新中…」。
@@ -306,8 +313,8 @@ function refresh() {
       if (uiRevision && loadedUiRevision === null) loadedUiRevision = uiRevision;
       $('ui-update-banner').classList.toggle('show', !!uiRevision && uiRevision !== loadedUiRevision);
       state = next; lastSync = new Date();
-      if (state.compact && !compactDraft) loadCompactDraft();
-      renderCompactCurrent(); renderCompactKeys();
+      if (compactState() && !compactDraft) loadCompactDraft();
+      renderCompactCurrent(); renderCompactEditor({ refreshOnly: true });
       renderOverview(); setConnection(true); updateCompactStatus(); renderSlots();
       // 概览在 setConnection 之后渲染:客户端状态那三行要读 online(liveFacts 的口径),
       // 早一步渲染就会把一次成功的刷新说成"待确认"。
@@ -612,7 +619,8 @@ function renderOverviewUsage() {
     status.textContent = (overviewUsageError ? '今日用量读取失败；每分钟自动重试' : '正在读取今日用量…') + (scope ? `；请求${scope}，不是全天` : '');
     return;
   }
-  const t = overviewUsage.totals, source = overviewUsage.scope?.source === 'memory' ? '内存窗口' : '本机日志';
+  const t = overviewUsage.totals, source = overviewUsage.scope?.source === 'memory' ? '内存窗口'
+    : overviewUsage.scope?.source === 'gateway+local' ? '网关与客户端本地用量' : '本机日志';
   const tokenTotal = Number(t.tokens_in) + Number(t.tokens_out) + Number(t.cache_read);
   $('ov-reqs').textContent = fmtCount(t.reqs);
   $('ov-reqs').setAttribute('title', `今天（本地日历日）当前可用${source}的请求数；用量快照 ${fmtFullTime(overviewUsageSync)}`);
@@ -622,8 +630,10 @@ function renderOverviewUsage() {
   $('ov-tokens').textContent = `新增输入 ${fmtTok(t.tokens_in)} / 输出 ${fmtTok(t.tokens_out)} / 缓存读取 ${fmtTok(t.cache_read)}`;
   $('ov-tokens').setAttribute('title', $('ov-token-total').getAttribute('title'));
   $('ov-success').textContent = fmtPct(t.ok_rate);
-  $('ov-success').setAttribute('title', '按今日请求最终状态计算；HTTP 200 的断流与客户端取消仍计为失败，不代表上游连通性。');
-  $('ov-success-note').textContent = Number(t.reqs) ? `今日 ${fmtCount(t.reqs)} 次请求` : '今日暂无请求';
+  $('ov-success').setAttribute('title', '按今日已记录的请求最终状态计算；断流与取消计为失败，本地未记录状态的用量不参与成功率。');
+  const unknown = Number(overviewUsage.dashboard?.outcomes?.unknown) || 0;
+  $('ov-success-note').textContent = unknown ? `${fmtCount(overviewUsage.scope.status_samples)} 次状态样本 · ${fmtCount(unknown)} 次状态未知`
+    : Number(t.reqs) ? `今日 ${fmtCount(t.reqs)} 次请求` : '今日暂无请求';
   status.textContent = stale ? `用量数据过期，保留 ${fmtWhen(overviewUsageSync)} 快照；每分钟自动重试`
     : overviewUsageTask ? '今日用量更新中…' : `${source} · 用量同步 ${fmtWhen(overviewUsageSync)}`;
   renderOverviewTrend('ov-req-trend', overviewUsage.series, 'reqs');

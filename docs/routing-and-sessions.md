@@ -355,17 +355,24 @@ CLI 2.1.282 的发行代码和离线反例,**未抓真实压缩请求包**;CLI �
 
 **Codex 识别判据**:本地压缩的 `/v1/responses` 请求,只检查 `input` 最后一项 user 消息的直接
 文本,以 Codex CLI 0.166.0 的完整 `CONTEXT CHECKPOINT COMPACTION` 首段开头才命中。
-`/v1/responses/compact` 则按专用端点识别。两者共用现有全局压缩规则的渠道、模型和 Key,
-不复制渠道到 Codex 组,也不改会话绑定;在控制台保存压缩选择后,后续请求立即读取新选择。
+`/v1/responses/compact` 则按专用端点识别。两者使用 Codex 组的独立压缩规则,
+Claude 使用自己的一组规则。两组只允许选择各自渠道库中的渠道,`provider_app` 保留旧配置的渠道所属库,
+不复制渠道或 Key,也不改会话绑定;保存一组不会影响另一组的选择或版本号。
+旧版共享配置在加载时拆为独立规则,保留原渠道、模型、Key 与池,下一次保存时一起落盘。
 本地压缩支持 Responses / Chat 渠道,Anthropic-only 渠道明确返回协议不匹配。
 原生压缩保持原端点和响应透传,需要上游本身支持 `/v1/responses/compact`;不会用普通摘要冒充
 原生压缩结果。没有启用的全局压缩规则时保留原有主模型路由。
 
 **入口**:控制台左侧「压缩设置」(`#compact` 视图;旧 `#routes` 链接会归一到这里)。
-它包含两块,接口与数据含义与之前一致:
+Claude、Codex 分别选择压缩落点。直连上游的客户端不经过 MixRouter,不使用这些规则;
+页面显示当前客户端是否接入路由。Codex 直连时只读展示跟随会话主模型与客户端配置,
+隐藏并禁用独立压缩编辑。渠道协议兼容不代表上游允许 MixRouter 调用,只接受官方客户端的上游
+不能仅凭 Responses 协议就当成可用的代理压缩渠道。
 
-**专用模型 / Key**(接口 `GET/POST /api/compact`)选择渠道、模型及该渠道的 Key,
-替换旧备池,**不修改主模型和普通转发**。
+**专用模型 / Key**(接口 `GET /api/compact?app=claude|codex`, POST JSON 使用同名 `app`,
+省略时默认 Claude)选择渠道、模型及该渠道的 Key,只替换本组旧备池,
+**不修改另一组压缩选择、主模型和普通转发**。`GET /api/state` 的 `compact` 为 Claude,
+`codex_compact` 为 Codex。渠道和模型列表随刷新更新,两组未提交的草稿分别保留。
 
 - Key 默认「跟随渠道当前 Key」,选择固定 `key_id` 后**只影响压缩请求**,不改 `active_key`、槽位或
   普通转发。

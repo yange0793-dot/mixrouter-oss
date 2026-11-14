@@ -7,6 +7,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
+const { loadConfiguration } = require('../lib/config/repository');
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'mixr-compact-'));
 process.env.MIXR_DATA_DIR = TMP;
 process.env.MIXR_CLAUDE_SETTINGS = path.join(TMP, 'claude.json');
@@ -51,7 +52,7 @@ beforeEach(() => {
     { id: 'old', name: 'Old', base_url: base, api_key: 'fake', enabled: true, models: ['real-pool-model'] },
     { id: 'new', name: 'New', base_url: base, api_key: 'fake', enabled: true, models: ['chosen-model'] },
     { id: 'off', name: 'Off', base_url: base, api_key: 'fake', enabled: false, models: [] },
-  ], codex: [{ id: 'codex', base_url: base, enabled: true, model: 'codex-model' }] };
+  ], codex: [{ id: 'codex', base_url: base, api_key: 'fake', enabled: true, model: 'codex-model' }] };
   mod._state.routes = { rules: [rule('renamed-a', GLOBAL), rule('renamed-b', LOCAL), { ...STALE }],
     default: { ...STALE_DEFAULT } };
   mod._state.slotMap = { claude: { main: { provider: 'old', model: 'ordinary' } }, codex: {} };
@@ -64,6 +65,7 @@ test('GET describes actual pool targets, not misleading rule model; never expose
   assert.deepEqual(r.data.compact.rules[0].targets.map(m => m.model), ['real-pool-model', 'backup-model']);
   assert.equal(JSON.stringify(r.data).includes('api_key'), false);
   assert.equal(r.data.compact.providers.length, 2);
+  assert.equal(r.data.compact.providers.some(p => p.id === 'codex'), false);
 });
 
 test('renamed compact rules both change, clear pool, preserve unrelated rules and route to chosen model', async () => {
@@ -117,11 +119,56 @@ test('missing compact rules are created, not inferred from IDs', async () => {
 
 test('invalid selections are rejected before disk or memory change', async () => {
   const before = JSON.stringify(mod._state.routes);
-  for (const body of [{}, { provider: 'missing', model: 'x' }, { provider: 'off', model: 'x' }, { provider: 'codex', model: 'x' },
+  for (const body of [{}, { provider: 'missing', model: 'x' }, { provider: 'off', model: 'x' }, { app: 'unknown', provider: 'codex', model: 'x' },
+    { app: 'codex', provider: 'new', model: 'x' }, { app: 'claude', provider: 'codex', model: 'x' },
     { provider: 'new', model: ' ' }, { provider: 'new', model: {} }, { provider: {}, model: 'x' }, { provider: 'new', model: 'a\nb' }]) {
     assert.equal((await api('POST', body)).status, 400); assert.equal(JSON.stringify(mod._state.routes), before);
     assert.equal(fs.existsSync(path.join(TMP, 'routes.json')), false);
   }
+});
+
+test('Claude and Codex selections are independent and only expose their own provider group', async () => {
+  const claude = (await api()).data.compact;
+  const codex = (await api('GET', undefined, '/api/compact?app=codex')).data.compact;
+  assert.equal(codex.mode, 'unconfigured');
+  assert.deepEqual(codex.providers.map(p => p.id), ['codex']);
+  assert.deepEqual(codex.providers[0].models, ['codex-model']);
+  assert.deepEqual(claude.providers.map(p => p.id), ['old', 'new']);
+  const savedCodex = await api('POST', { app: 'codex', provider: 'codex', model: 'codex-summary',
+    expected_revision: codex.revision });
+  assert.equal(savedCodex.status, 200);
+  assert.equal(savedCodex.data.compact.rules.length, 1);
+  assert.equal((await api()).data.compact.revision, claude.revision);
+  assert.equal((await api('POST', { provider: 'new', model: 'claude-summary', expected_revision: claude.revision })).status, 200);
+  const after = (await api('GET', undefined, '/api/compact?app=codex')).data.compact;
+  assert.equal(after.revision, savedCodex.data.compact.revision);
+  assert.deepEqual(after.selection, { provider: 'codex', model: 'codex-summary', key_id: '' });
+  assert.equal((await api('GET', undefined, '/api/compact?app=unknown')).status, 400);
+  const state = (await api('GET', undefined, '/api/state')).data;
+  assert.equal(state.compact.selection.model, 'claude-summary');
+  assert.equal(state.codex_compact.selection.model, 'codex-summary');
+});
+
+test('legacy shared compaction loads as independent rules and preserves targets, pools and keys across reload', async () => {
+  const original = structuredClone(mod._state.routes);
+  original.rules[0].pool = [];
+  original.rules[0].key_id = 'klegacy';
+  fs.writeFileSync(path.join(TMP, 'routes.json'), JSON.stringify(original));
+  const files = { PROVIDERS_FILE: path.join(TMP, 'providers.json'), ROUTES_FILE: path.join(TMP, 'routes.json'),
+    SLOTS_FILE: path.join(TMP, 'slots.json') };
+  const loaded = loadConfiguration(files);
+  assert.deepEqual(loaded.routes.rules.filter(r => r.app === 'codex').map(r => [r.provider, r.model, r.provider_app, r.key_id]),
+    [['old', 'misleading-rule-model', 'claude', 'klegacy']]);
+  assert.equal(JSON.parse(fs.readFileSync(files.ROUTES_FILE)).rules.length, original.rules.length);
+  mod._state.routes = loaded.routes;
+  assert.equal((await api('POST', { provider: 'new', model: 'changed-claude' })).status, 200);
+  const reloaded = loadConfiguration(files);
+  const codexRules = reloaded.routes.rules.filter(r => r.app === 'codex');
+  assert.equal(codexRules.length, 1);
+  assert.equal(codexRules[0].provider, 'old');
+  assert.equal(codexRules[0].provider_app, 'claude');
+  assert.equal(codexRules[0].key_id, 'klegacy');
+  assert.equal(codexRules[0].model, 'misleading-rule-model');
 });
 
 test('stale compact drafts cannot overwrite newer state;通用规则保存入口已关闭', async () => {

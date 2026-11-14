@@ -161,12 +161,12 @@
             <button class="small quiet" type="button" id="usage-source-toggle" onclick="toggleUsageSource()" aria-expanded="false" aria-controls="usage-source">数据来源</button>
             <!-- 同步节奏与最近同步合成一个控件:顶栏在 1440 已经放不下五个独立控件。排在最后:页内主刷新占顶栏最右端。 -->
             <div class="usage-sync-group" role="group" aria-label="同步">
-              <button class="small" id="usage-sync" onclick="loadUsage()">立即同步</button>
+              <button class="small" id="usage-sync" onclick="loadUsage({timingRefresh:'force'})">立即同步</button>
               <label class="rc-mini" for="usage-interval" title="后台自动同步间隔">
                 <span class="sr-only">自动同步间隔</span>
                 <select id="usage-interval" aria-label="自动同步间隔" onchange="setUsageInterval(this.value)"><option value="30">每 30 秒</option><option value="60" selected>每 60 秒</option><option value="300">每 5 分钟</option><option value="0">关闭</option></select>
               </label>
-              <span class="usage-last-sync" id="usage-last-sync" role="status">尚未同步</span>
+              <span class="usage-last-sync" id="usage-last-sync" role="status">尚未读取</span>
             </div>
           </div>
         </div>
@@ -175,7 +175,7 @@
         <!-- 统计口径不占首屏:默认收起,由「数据来源」按钮展开;开合记在浏览器偏好里。 -->
         <div class="panel usage-source" id="usage-source" hidden>
           <h2>数据来源与统计口径</h2>
-          <div class="hint" id="usage-source-detail">请求数、tokens 与缓存命中全部来自本机请求日志（内存中最近的请求加上 logs/requests.jsonl）。「全部」指本机当前可用的日志范围，不是账号历史总量，也不读取任何上游账单。tokens 取上游回报的真实用量；缓存命中率 = 缓存读 /（新增输入 + 缓存读）。成功率按请求最终状态统计，断流与客户端取消即使 HTTP 状态是 200 也计为失败。</div>
+          <div class="hint" id="usage-source-detail">用量来自网关日志与 Codex、Claude、DeepSeek Harness 本地会话。中转站计时直接读取供应商后台首字和总耗时，未匹配的请求保持空缺。本地计时保留客户端、网关或模型阶段的原始测量。</div>
         </div>
         <div class="usage-bar">
           <label class="usage-filter usage-date-filter" for="usage-range-select">
@@ -225,7 +225,7 @@
                 <input id="usage-search" type="search" maxlength="200" placeholder="搜索模型、渠道、请求 ID" aria-label="搜索模型、渠道、请求 ID 或会话，回车应用" oninput="scheduleUsageSearch()">
               </form>
               <label class="usage-filter" for="usage-status-filter"><span class="sr-only">请求结果（筛选本页全部统计）</span>
-                <select id="usage-status-filter" onchange="setUsageStatus(this.value)"><option value="">全部结果</option><option value="ok">仅成功</option><option value="err">仅失败</option></select></label>
+                <select id="usage-status-filter" onchange="setUsageStatus(this.value)"><option value="">全部结果</option><option value="ok">仅成功</option><option value="err">仅失败</option><option value="unknown">状态未知</option></select></label>
               <label class="usage-filter" for="usage-status-code"><span class="sr-only">HTTP 状态码</span>
                 <select id="usage-status-code" onchange="setUsageFilter('statusCode', this.value)"><option value="">全部状态码</option></select></label>
               <button class="small quiet" id="usage-export" type="button" onclick="exportUsagePage()" disabled title="导出当前页，保留完整数值">导出本页</button>
@@ -240,11 +240,12 @@
           </div>
           <div class="usage-records-window" id="usage-records-window">
             <label class="usage-filter" for="usage-records-scope"><span class="sr-only">请求明细范围</span><select id="usage-records-scope" onchange="setUsageRecordsScope(this.value)"><option value="recent">最近 1000 条</option><option value="history">保留历史</option></select></label>
+            <label class="usage-filter" for="usage-timing"><span class="sr-only">计时口径</span><select id="usage-timing" onchange="setUsageTiming(this.value)"><option value="provider">中转站计时</option><option value="local">本地计时</option></select></label>
             <p class="hint" id="usage-records-hint">仅展示筛选内最新 1000 条；统计仍按全部匹配记录计算。更早记录请切换保留历史。</p>
           </div>
           <div class="table-wrap usage-table" id="usage-detail-panel" role="tabpanel" aria-labelledby="usage-tab-requests" tabindex="0">
             <table id="usage-detail-table"><caption class="sr-only">用量明细；可点击数值表头排序</caption>
-              <thead id="usage-table-head"><tr><th scope="col">时间</th><th scope="col">协议组</th><th scope="col">供应商</th><th scope="col">模型</th><th scope="col">新增输入</th><th scope="col">输出</th><th scope="col">缓存读取</th><th scope="col">状态</th><th scope="col">速度</th><th scope="col">首响应</th></tr></thead>
+              <thead id="usage-table-head"><tr><th scope="col">时间</th><th scope="col">协议组</th><th scope="col">供应商</th><th scope="col">模型</th><th scope="col">新增输入</th><th scope="col">输出</th><th scope="col">缓存读取</th><th scope="col">状态</th><th scope="col">延迟</th><th scope="col">输出 TPS</th><th scope="col" hidden>首流事件</th><th scope="col" hidden>HTTP 首响应</th><th scope="col" hidden>生成 TPS</th><th scope="col" hidden>吞吐 TPM</th></tr></thead>
               <tbody id="usage-rows"></tbody></table>
           </div>
           <div class="usage-pagination">
@@ -259,7 +260,11 @@
           <details class="usage-more-metrics" id="usage-more-metrics">
             <summary>更多指标</summary>
             <div class="usage-more-grid">
-              <div><span>输出速度</span><b id="usage-speed">—</b></div>
+              <div><span title="含等待输出吞吐，不是逐 Token 生成速度">吞吐 TPS</span><b id="usage-speed">—</b></div>
+              <div><span title="未舍入吞吐 TPS × 60，不是服务商配额 TPM">等效输出 TPM</span><b id="usage-tpm">—</b></div>
+              <div><span title="仅完整逐 Token / 推理时间样本">生成 TPS</span><b id="usage-decode-speed">—</b></div>
+              <div><span title="模型阶段开始到首个记录流事件，不是 HTTP 响应头或首 Token">首流事件 P50</span><b id="usage-first-event">—</b></div>
+              <div><span id="usage-ttft-label">后台首字 P50</span><b id="usage-ttft">—</b></div>
               <!-- ttfb_ms 记的是上游响应头到达,不是首个内容 token:标签不能写成「首字」。 -->
               <div><span title="请求发出到上游响应头到达的 P50，不是首个内容 token 的时间">首响应 P50</span><b id="usage-ttfb">—</b></div>
             </div>
@@ -381,14 +386,21 @@
         </div>
       </section>
 
-      <!-- 压缩设置是独立视图:共享压缩模型、压缩 Key 与 Claude 三层窗口只在服务端路由/客户端磁盘上生效,
+      <!-- 压缩设置是独立视图:两组压缩模型、压缩 Key 与 Claude 三层窗口只在服务端路由/客户端磁盘上生效,
            与渠道、槽位分开管。控件默认全展开,不再藏在折叠组里。
            compact-* / window-* 的 DOM id 与保存动作保持不变。 -->
       <section id="view-compact" style="display:none" aria-labelledby="compact-title">
-        <div class="head"><div><h1 id="compact-title">压缩设置</h1><div class="sub" title="Claude / Codex 共用压缩模型与 Key；Claude 压缩窗口按配置层管理。">压缩模型由 Claude / Codex 共用；Claude 窗口按配置层管理。</div></div>
+        <div class="head"><div><h1 id="compact-title">压缩设置</h1><div class="sub">Claude 与 Codex 分组管理；独立压缩模型仅用于路由请求。</div></div>
           <div class="actions"><button id="reload-compact" onclick="reloadCompact()">重新载入压缩选择</button></div></div>
+        <div class="apptabs" role="group" aria-label="压缩客户端">
+          <button type="button" id="compact-app-claude" class="active" aria-pressed="true" onclick="selectCompactApp('claude')">Claude</button>
+          <button type="button" id="compact-app-codex" aria-pressed="false" onclick="selectCompactApp('codex')">Codex</button>
+        </div>
         <div class="panel" id="compact-panel">
-          <div class="cfg-panel-head" title="只改两条压缩规则，不动主模型、子代理槽位与渠道当前 Key。"><h2>Claude / Codex 压缩模型</h2></div>
+          <div class="cfg-panel-head"><h2 id="compact-heading">Claude 压缩模型</h2></div>
+          <p id="compact-connection" class="hint" role="status">等待客户端接入状态</p>
+          <div id="compact-direct-current" class="hint" role="status" hidden></div>
+          <div id="compact-route-editor">
           <div id="compact-current" class="hint" role="status">等待压缩路由配置</div>
           <div class="rc-line"><label class="field">压缩渠道<select id="compact-provider" onchange="pickCompactProvider(this.value)"></select></label>
             <label class="field">压缩模型<select id="compact-model" onchange="pickCompactModel(this.value)"></select><input id="compact-model-custom" type="text" placeholder="自定义模型名" hidden oninput="setCompactCustom(this.value)"></label>
@@ -397,8 +409,9 @@
           <div id="compact-status" class="split-status" role="status"></div>
           <div class="savebar"><button class="primary" id="save-compact" onclick="saveCompact()" disabled>保存压缩模型</button><span id="compact-msg" class="msg" role="status"></span></div>
           <details class="cfg-more"><summary>保存会改动什么</summary>
-            <p class="hint">保存会把现有压缩备池替换为所选单一渠道；普通主模型、子代理槽位和渠道当前账号都不变。压缩只按已知的压缩标记命中，不做通用规则匹配。</p>
+            <p class="hint">保存会把本组压缩备池替换为所选单一渠道；另一组压缩选择、普通主模型、子代理槽位和渠道当前账号都不变。仅对经过 MixRouter 的压缩请求生效。</p>
           </details>
+          </div>
         </div>
         <div class="panel" id="compact-window-panel">
           <div class="cfg-panel-head" title="只改所选磁盘层的 autoCompactWindow；全局只改全局，不同步项目。"><h2>Claude 压缩上下文窗口</h2></div>

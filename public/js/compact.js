@@ -1,5 +1,22 @@
 'use strict';
 // ---------------- 压缩模型 ----------------
+let compactApp = 'claude';
+const compactDrafts = {};
+const compactState = () => compactApp === 'codex' ? state?.codex_compact : state?.compact;
+const compactLabel = () => compactApp === 'codex' ? 'Codex' : 'Claude';
+const compactRouteEditable = () => compactApp !== 'codex' || state?.live?.codex?.router === true;
+function selectCompactApp(app) {
+  if (app === compactApp || savingCompact || !['claude', 'codex'].includes(app)) return;
+  compactDrafts[compactApp] = { draft: compactDraft, base: compactBase, dirty: compactDirty,
+    revision: compactRevision, custom: compactCustom, outcome: compactOutcome };
+  compactApp = app;
+  const saved = compactDrafts[app];
+  compactDraft = saved?.draft || null; compactBase = saved?.base || '';
+  compactDirty = saved?.dirty || false; compactRevision = saved?.revision || 0;
+  compactCustom = saved?.custom || false; compactOutcome = saved?.outcome || null;
+  if (!compactDraft) loadCompactDraft(); else renderCompactEditor();
+  renderCompactCurrent(); updateCompactStatus(); setConnection(online);
+}
 // 5 秒轮询会反复重绘这几块只读状态:内容没变就不写 DOM,免得冲掉用户正在选中的文字,
 // 也免得 role=status 的区域被读屏软件每 5 秒重读一遍。
 const compactPainted = new WeakMap();
@@ -8,9 +25,10 @@ function compactPaint(el, html) {
   compactPainted.set(el, html); el.innerHTML = html;
 }
 function loadCompactDraft() {
-  if (!state?.compact) return;
-  compactDraft = { provider: '', model: '', key_id: '', ...state.compact.selection };
-  compactBase = state.compact.revision; compactDirty = false; compactCustom = false;
+  const c = compactState();
+  if (!c) return;
+  compactDraft = { provider: '', model: '', key_id: '', ...c.selection };
+  compactBase = c.revision; compactDirty = false; compactCustom = false;
   renderCompactEditor(); updateCompactStatus();
 }
 // 还没保存过任何东西时,两块状态也要先摆出来(全是"尚未保存过"),否则用户看不出这里在分账。
@@ -18,7 +36,36 @@ renderSplitStatus();
 // 每条压缩规则一行:规则名(用户可改)+ 状态胶囊,下一行是按顺序的目标链。
 // 规则 kind 才是身份,名字只是标签;失效与停用画成警告胶囊,不混在句子里。
 function renderCompactCurrent() {
-  const c = state?.compact;
+  const c = compactState();
+  const editable = compactRouteEditable();
+  for (const app of ['claude', 'codex']) {
+    const button = $('compact-app-' + app);
+    button?.classList.toggle('active', compactApp === app);
+    button?.setAttribute('aria-pressed', String(compactApp === app));
+    if (button) button.disabled = savingCompact || (app === 'codex' && !state?.codex_compact);
+  }
+  if ($('compact-heading')) $('compact-heading').textContent = compactLabel() + ' 压缩模型';
+  if ($('compact-window-panel')) $('compact-window-panel').hidden = compactApp === 'codex';
+  if ($('compact-route-editor')) $('compact-route-editor').hidden = !editable;
+  if ($('compact-direct-current')) {
+    $('compact-direct-current').hidden = editable;
+    if (!editable) {
+      const live = state?.live?.codex;
+      compactPaint($('compact-direct-current'), live?.base_url
+        ? '<p><b>压缩模型：跟随当前会话主模型</b></p>'
+          + `<p>客户端配置：${esc(live.direct_provider_name || live.provider || '直连上游')} / ${esc(live.model || '未提供模型')}</p>`
+          + '<p>直连请求不经过 MixRouter，无法在这里单独设置压缩渠道、模型或 Key。会话内另选模型时，以该会话为准。</p>'
+        : '尚未读取到 Codex 路由接入配置，独立压缩设置不可用。');
+    }
+  }
+  if ($('reload-compact')) $('reload-compact').textContent = editable ? '重新载入压缩选择' : '刷新客户端状态';
+  if ($('compact-connection')) {
+    const live = state?.live?.[compactApp];
+    $('compact-connection').textContent = live?.router
+      ? compactLabel() + ' 当前接入 MixRouter，使用本组压缩规则。'
+      : live?.base_url ? compactLabel() + ' 当前配置为直连上游，本组规则暂不生效；压缩跟随会话主模型。'
+        : compactLabel() + ' 尚未接入 MixRouter，本组规则暂不生效。';
+  }
   if (!c) return compactPaint($('compact-current'), '当前服务端不支持压缩选择');
   const kind = { global: '通用压缩', talentsai: 'TalentsAI 压缩' };
   const flag = (text, tone = 'warn') => `<span class="badge ${tone}">${text}</span>`;
@@ -29,23 +76,28 @@ function renderCompactCurrent() {
     + (r.has_pool ? flag('渠道池', 'off') : '') + '</div>'
     + `<div class="cc-rule-chain">${r.targets.map(target).join('<span class="cc-arrow"> → </span>') || '无可用目标'}</div></div>`).join('');
   compactPaint($('compact-current'), (c.mode === 'mixed' ? '<b>当前为混合落点或未完整配置，不代表单一模型。</b>' : '')
-    + (rows || '尚无压缩规则；保存时创建两条规则。'));
+    + (rows || (compactApp === 'codex' ? '尚无独立压缩规则；当前跟随主模型，保存后使用所选落点。' : '尚无压缩规则；保存时创建两条规则。')));
 }
-function renderCompactEditor() {
+function renderCompactEditor({ refreshOnly = false } = {}) {
   if (!compactDraft) return;
-  const list = state.compact.providers;
-  $('compact-provider').innerHTML = '<option value="">（选择渠道）</option>' + list.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
+  const list = compactState()?.providers || [];
+  const editable = compactRouteEditable();
+  const missing = compactDraft.provider && !list.some(p => p.id === compactDraft.provider);
+  compactPaint($('compact-provider'), '<option value="">（选择渠道）</option>' + list.map(p => `<option value="${esc(p.id)}">${esc(p.name)}${p.app ? ' · ' + (p.app === 'codex' ? 'Codex' : 'Claude') : ''}</option>`).join('')
+    + (missing ? `<option value="${esc(compactDraft.provider)}" disabled>已不可用渠道（${esc(compactDraft.provider)}）</option>` : ''));
   $('compact-provider').value = compactDraft.provider;
+  $('compact-provider').disabled = !editable;
   const models = list.find(p => p.id === compactDraft.provider)?.models || [];
   const custom = compactCustom || !!compactDraft.model && !models.includes(compactDraft.model);
-  $('compact-model').innerHTML = '<option value="">（选择模型）</option>' + models.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('') + '<option value="__custom__">自定义模型…</option>';
+  compactPaint($('compact-model'), '<option value="">（选择模型）</option>' + models.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('') + '<option value="__custom__">自定义模型…</option>');
   $('compact-model').value = custom ? '__custom__' : compactDraft.model;
-  $('compact-model').disabled = !compactDraft.provider;
+  $('compact-model').disabled = !editable || !compactDraft.provider;
   $('compact-model-custom').hidden = !custom;
-  $('compact-model-custom').value = compactDraft.model;
+  $('compact-model-custom').disabled = !editable;
+  if (!refreshOnly) $('compact-model-custom').value = compactDraft.model;
   renderCompactKeys();
 }
-function compactKeySupported(c = state?.compact) {
+function compactKeySupported(c = compactState()) {
   return c?.key_selection_supported === true && Array.isArray(c.providers)
     && c.providers.every(p => Array.isArray(p.keys)) && (!c.selection || Object.hasOwn(c.selection, 'key_id'));
 }
@@ -60,7 +112,14 @@ function renderCompactKeys() {
     hint.classList.add('is-warning');
     return;
   }
-  const provider = state.compact.providers.find(p => p.id === compactDraft.provider);
+  const provider = compactState().providers.find(p => p.id === compactDraft.provider);
+  if (compactDraft.provider && !provider) {
+    $('compact-key').innerHTML = `<option value="${esc(compactDraft.key_id)}">原 Key 选择（${esc(compactDraft.key_id || '跟随渠道')}）</option>`;
+    $('compact-key').value = compactDraft.key_id; $('compact-key').disabled = true;
+    hint.textContent = '原渠道不属于本组或已不可用；已保存配置保留，重新保存时请选择本组渠道。';
+    hint.title = hint.textContent; hint.classList.add('is-warning');
+    return;
+  }
   const keys = provider?.keys || [], selected = keys.find(k => k.id === compactDraft.key_id);
   const active = keys.find(k => k.id === provider?.active_key);
   const missing = compactDraft.key_id && !selected;
@@ -69,26 +128,26 @@ function renderCompactKeys() {
     + (missing ? `<option value="${esc(compactDraft.key_id)}" disabled>已失效 Key（${esc(compactDraft.key_id)}）· 保留原选择</option>` : '');
   if ($('compact-key').innerHTML !== options) $('compact-key').innerHTML = options;
   $('compact-key').value = compactDraft.key_id;
-  $('compact-key').disabled = !compactDraft.provider;
+  $('compact-key').disabled = !compactRouteEditable() || !compactDraft.provider;
   const unavailable = !!missing || selected?.enabled === false;
   hint.textContent = unavailable
     ? '原固定 Key 已不可用，选择仍保留；请明确改选可用 Key 或跟随渠道当前 Key，不会自动替换。'
     : compactDraft.key_id ? `固定 Key：${selected.label || selected.id}`
       : `跟随渠道当前 Key${active ? '：' + (active.label || active.id) : ''}`;
   hint.title = unavailable ? hint.textContent
-    : compactDraft.key_id ? '固定 Key 只影响两条压缩规则，不切换渠道当前账号。'
+    : compactDraft.key_id ? '固定 Key 只影响本组压缩规则，不切换渠道当前账号。'
       : `跟随渠道当前 Key${active ? '：' + (active.label || active.id) + '（' + active.id + '）' : ''}；渠道切换当前账号后压缩也会跟随。`;
   hint.classList.toggle('is-warning', unavailable);
 }
 // 「压缩选择与上次载入一致」:有草稿、服务端版本没变、草稿没动过。app.js 用它禁用 #save-compact,
 // 和 #save-window 一样没有改动就不能点;状态行也按它写那句「一致」。
 function compactUnchanged() {
-  return !!compactDraft && state?.compact?.revision === compactBase && !compactDirty;
+  return !!compactDraft && compactState()?.revision === compactBase && !compactDirty;
 }
 function updateCompactStatus() {
   if (!compactDraft) return;
   const text = savingCompact ? '正在保存压缩模型…'
-    : state?.compact?.revision !== compactBase ? '服务端压缩规则已变化；草稿保留，请重新载入后保存。'
+    : compactState()?.revision !== compactBase ? '服务端压缩规则已变化；草稿保留，请重新载入后保存。'
       : compactUnchanged() ? '压缩选择与上次载入一致。' : '有未保存的压缩选择；自动刷新不会覆盖。';
   if ($('compact-msg').textContent !== text) $('compact-msg').textContent = text;
   renderSplitStatus();
@@ -117,7 +176,7 @@ function renderSplitStatus() {
     + splitStatusLine('请求', o ? o.saved : null, o ? (o.saved ? '已成功返回' : o.error || '未成功') : '尚未保存过')
     + splitStatusLine('已写盘', o ? o.written : null, o ? (o.written ? '配置已写入服务端磁盘' : '未确认写盘') : '尚未保存过')
     + splitStatusLine('服务已加载', o ? o.loaded : null, o ? (o.loaded ? '运行中的服务按新压缩规则分发' : '未确认服务已加载') : '尚未保存过')
-    + splitStatusLine('客户端需重开', o ? o.restart : null, o ? '不需要（压缩落点在服务端，下次请求即用新规则）' : '尚未保存过', true)
+    + splitStatusLine('客户端需重开', o ? o.restart : null, o ? '不需要（经过 MixRouter 的新压缩请求即用本组规则）' : '尚未保存过', true)
     + (o ? '</div>' : '</div></details>'));
   renderWindowStatus();
 }
@@ -154,39 +213,45 @@ function pickCompactKey(key_id) {
 function setCompactCustom(value) { compactDraft.model = value; markCompactDirty(); }
 async function reloadCompact() {
   if (savingCompact) return;
+  if (!compactRouteEditable()) { await refresh(); return; }
   if (compactDirty && !await askConfirm('重新载入压缩选择', '丢弃未保存的压缩选择，使用服务端当前落点？', '重新载入')) return;
   if (await refresh()) loadCompactDraft();
 }
 async function saveCompact() {
   if (!online || !compactDraft || savingCompact) return;
+  if (!compactRouteEditable()) return toast('Codex 未接入 MixRouter 路由，不能在这里设置独立压缩模型', 'err');
+  const app = compactApp;
   const provider = compactDraft.provider, model = compactDraft.model.trim(), key_id = compactDraft.key_id, keySupported = compactKeySupported();
   if (!provider || !model) return toast('请选择压缩渠道和非空模型名', 'err');
+  if (!compactState().providers.some(p => p.id === provider)) return toast('请选择本组可用的压缩渠道', 'err');
   if (key_id && !keySupported) return toast('当前服务端尚不支持指定Key，更新服务后可用；固定 Key 草稿未提交', 'err');
-  const key = state.compact.providers.find(p => p.id === provider)?.keys?.find(k => k.id === key_id);
+  const key = compactState().providers.find(p => p.id === provider)?.keys?.find(k => k.id === key_id);
   if (key_id && (!key || key.enabled === false)) return toast('固定 Key 已不可用；请明确改选可用 Key 或跟随渠道当前 Key', 'err');
-  if (compactBase !== state.compact.revision) return toast('服务端压缩规则已变化，请重新载入压缩选择', 'err');
+  if (compactBase !== compactState().revision) return toast('服务端压缩规则已变化，请重新载入压缩选择', 'err');
   const revision = compactRevision, expected_revision = compactBase;
   const keyText = !keySupported ? '服务端不支持指定 Key，本次只保存渠道与模型' : key_id ? `固定 Key ${key.label || key.id}（${key.id}）` : '跟随渠道当前 Key';
-  if (!await askConfirm('保存压缩模型', `只将两条压缩规则同步改为 ${provider} / ${model} / ${keyText}，并替换现有压缩备池为单一渠道。普通模型、子代理槽位和渠道当前 Key（active_key）均不变。`, '保存压缩模型')) return;
+  if (!await askConfirm('保存 ' + compactLabel() + ' 压缩模型', `只将 ${compactLabel()} 的${app === 'claude' ? '两条压缩规则' : '压缩规则'}改为 ${provider} / ${model} / ${keyText}，并替换本组现有压缩备池为单一渠道。另一组压缩选择、普通模型、子代理槽位和渠道当前 Key（active_key）均不变。`, '保存压缩模型')) return;
+  if (app !== compactApp) return toast('压缩分组已切换，请重新确认本组选择', 'err');
+  if (!compactRouteEditable()) return toast('Codex 已退出 MixRouter 路由，压缩选择未提交', 'err');
   if (savingCompact) return toast('压缩选择正在保存，请稍候', 'err');
   if (keySupported && !compactKeySupported()) return toast('服务端 Key 支持状态已变化，请重新确认；选择未提交', 'err');
-  savingCompact = true; setConnection(online); updateCompactStatus();
+  savingCompact = true; setConnection(online); updateCompactStatus(); renderCompactCurrent();
   // 服务端是否成功回包与"要不要继续抛"是两件事:Key 未确认那条分支是在**回包之后**抛的,
   // 那时请求其实已经成功、配置多半也已落盘。分开记,免得失败提示把"可能已写入"说成"没写"。
   let responseOk = false;
   try {
-    const result = await api('/api/compact', { method: 'POST', body: JSON.stringify({ provider, model, ...(keySupported ? { key_id } : {}), expected_revision }) });
+    const result = await api('/api/compact', { method: 'POST', body: JSON.stringify({ ...(app === 'codex' ? { app } : {}), provider, model, ...(keySupported ? { key_id } : {}), expected_revision }) });
     responseOk = true;   // 请求本身成功了;后面若因响应不完整而抛,也不该说成"没发生过"
     if (!result.compact) throw new Error('服务端未返回压缩配置');
     if (keySupported && (!compactKeySupported(result.compact) || result.compact.selection?.key_id !== key_id)) {
-      state.compact = result.compact;
+      state[app === 'codex' ? 'codex_compact' : 'compact'] = result.compact;
       compactDirty = true; renderCompactCurrent(); renderCompactKeys(); updateCompactStatus();
       // 请求成功了,但服务端没确认 Key 选择 —— 写盘与加载都无从确认,只能如实标"未确认"。
       compactOutcome = { saved: true, written: null, loaded: null, restart: false, error: '服务端未确认 Key 选择' };
       renderSplitStatus();
       throw new Error('服务端未确认 Key 选择；渠道和模型可能已写入，固定 Key 草稿保留，请更新服务并重新读取核对');
     }
-    state.compact = result.compact;
+    state[app === 'codex' ? 'codex_compact' : 'compact'] = result.compact;
     compactBase = result.compact.revision;
     if (compactRevision === revision) loadCompactDraft();
     renderCompactCurrent(); updateCompactStatus();
@@ -195,7 +260,7 @@ async function saveCompact() {
     // 这三句都是**依据**,不是"看起来像"——所以这里敢把三段都标成 ✓。
     compactOutcome = { saved: true, written: true, loaded: true, restart: false, error: '' };
     renderSplitStatus();
-    toast('压缩模型已保存；两条规则的旧备池已替换', 'ok');
+    toast(compactLabel() + ' 压缩模型已保存；本组规则的旧备池已替换', 'ok');
   } catch (e) {
     // 已经回过包的那条分支上面自己写过 compactOutcome,不要被这里覆盖成"什么都没发生"。
     if (!responseOk) {
@@ -204,7 +269,7 @@ async function saveCompact() {
     }
     toast('压缩选择保存失败：' + e.message, 'err');
   }
-  finally { savingCompact = false; setConnection(online); updateCompactStatus(); }
+  finally { savingCompact = false; setConnection(online); updateCompactStatus(); renderCompactCurrent(); }
 }
 
 // ---------------- 压缩上下文窗口 ----------------

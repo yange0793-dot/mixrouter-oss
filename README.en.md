@@ -119,6 +119,15 @@ Not a good fit:
   Search, custom dates, request outcomes, and HTTP status codes filter all totals and tables together.
   Sort across all matching requests before pagination, choose columns and row density, or export the current page as CSV.
   Failure counts are exact; trends and the calendar expand on demand. Only available local logs are counted, without converting usage into money.
+  Read-only local accounting also includes Claude Code, Codex, and DeepSeek Harness, without changing Harness model routes.
+  Harness defaults to `~/.dsh/sessions`; override its data root with `MIXR_DSH_HOME` (preferred) or `DSH_HOME`.
+  v2–v4 JSONL and concatenated Zstandard frames are supported (Zstandard needs Node 22.15+ / 23.8+).
+  Only durable token/model/provider metadata is read; copied history and repeated settlements are deduplicated.
+  Native terminal events provide completed/failed/cancelled outcomes; stream timestamps provide model duration and first-event latency.
+  Throughput TPS divides output tokens by model wall time including waiting; throughput TPM converts that same rate to minutes.
+  Generation TPS divides output tokens by first-token-to-settlement time, only for complete delta streams.
+  Buffered full-block delivery is flagged instead of turning a late tool fragment into an inflated generation rate.
+  First stream event, first token, and HTTP response headers remain distinct; unrecorded HTTP status stays unknown.
 
 ![Local console, Claude Code providers page: client entries in the sidebar, provider rows, enablement and connection status, account switching, and layout switch](docs/images/console-providers.jpg)
 

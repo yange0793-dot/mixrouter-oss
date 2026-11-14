@@ -71,6 +71,12 @@ test('extractUsage 无 usage 时返回零值', () => {
   assert.deepStrictEqual(extractUsage('nothing here'), { in: 0, out: 0, cache_read: 0 });
 });
 
+test('extractUsage 保留 Anthropic 缓存写入供总量结算', () => {
+  assert.deepStrictEqual(extractUsage(JSON.stringify({ usage: {
+    input_tokens: 11, output_tokens: 7, cache_read_input_tokens: 3, cache_creation_input_tokens: 19,
+  } })), { in: 11, out: 7, cache_read: 3, cache_write: 19 });
+});
+
 test('maskKey 长 key 掐头去尾,短 key 全掩码', () => {
   assert.strictEqual(maskKey('sk-abcdefghijklmnop'), 'sk-abc…mnop');
   assert.strictEqual(maskKey('short'), '***');

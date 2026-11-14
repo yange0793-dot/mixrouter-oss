@@ -190,6 +190,111 @@ test('completed 里带 status=failed / error 事件:不发 message_stop', async 
   }
 });
 
+test('empty failed terminal preserves the following gateway error in the same or next chunk', async () => {
+  for (const separate of [false, true]) {
+    const up = upstreamFake(); const res = sink();
+    const p = relay(up, res, { mayRetry: true });
+    const failed = sse({ type: 'response.failed', response: { status: 'failed', output: [], error: null } });
+    const detail = sse({ type: 'error', error: { type: 'user_error', code: 'DeploymentNotFound',
+      headers: { 'x-ms-fe-error': 'true' },
+      message: 'Could not find an existing deployment to match the model in the request.' } });
+    if (separate) {
+      up.write(failed);
+      assert.strictEqual(res.headersSent, false, 'wait for the error detail before committing');
+      await new Promise(resolve => setImmediate(resolve));
+      up.end(detail);
+    } else up.end(failed + detail);
+    const result = await p;
+    assert.strictEqual(result.retryable, false, 'an unavailable deployment is not a generic transient error');
+    assert.strictEqual(result.aborted, true);
+    assert.match(result.detail, /DeploymentNotFound/);
+    assert.match(res.text, /Could not find an existing deployment/);
+    assert.doesNotMatch(res.text, /upstream failure|event: message_stop/);
+  }
+});
+
+test('empty failed terminal at EOF still closes as a failure', async () => {
+  const up = upstreamFake(); const res = sink();
+  const p = relay(up, res, { mayRetry: true });
+  up.end(sse({ type: 'response.failed', response: { status: 'failed', output: [], error: null } }));
+  const result = await p;
+  assert.strictEqual(result.retryable, false);
+  assert.strictEqual(result.aborted, true);
+  assert.match(result.detail, /response\.failed/);
+  assert.ok(res.writableEnded);
+  assert.doesNotMatch(res.text, /event: message_stop/);
+});
+
+test('pre-output transient failed terminals retry without leaking the failed stream', async () => {
+  for (const detailedTail of [false, true]) {
+    const up = upstreamFake(); const res = sink();
+    const p = relay(up, res, { mayRetry: true });
+    const error = { code: 'rate_limit_exceeded', type: 'too_many_requests',
+      message: 'Too many requests', headers: { 'x-ms-fe-error': 'true' } };
+    up.end(sse({ type: 'response.failed', response: { status: 'failed', output: [], error: detailedTail ? null : error } })
+      + (detailedTail ? sse({ type: 'error', error }) : ''));
+    const result = await p;
+    assert.strictEqual(result.retryable, true);
+    assert.strictEqual(res.headersSent, false);
+    assert.strictEqual(res.text, '');
+    assert.strictEqual(res.writableEnded, false);
+    assert.match(result.detail, /Too many requests/);
+  }
+});
+
+test('terminal auth errors and failures after output are never replayed', async () => {
+  for (const hasOutput of [false, true]) {
+    const up = upstreamFake(); const res = sink();
+    const p = relay(up, res, { mayRetry: true });
+    if (hasOutput) up.write(sse({ type: 'response.output_text.delta', output_index: 0, delta: 'already visible' }));
+    up.end(sse({ type: 'response.failed', response: { status: 'failed', output: [],
+      error: { code: hasOutput ? 'rate_limit_exceeded' : 'invalid_api_key', message: hasOutput ? 'Too many requests' : 'Invalid API key' } } }));
+    const result = await p;
+    assert.strictEqual(result.retryable, false);
+    assert.strictEqual(result.aborted, true);
+    assert.doesNotMatch(res.text, /event: message_stop/);
+    if (hasOutput) assert.match(res.text, /already visible/);
+  }
+});
+
+test('deployment recovery is scoped to official AgentRouter and an uncommitted empty response', async () => {
+  for (const [base_url, hasOutput, allowed] of [
+    ['https://agentrouter.org', false, true],
+    ['https://ps.air-outer.com', false, true],
+    ['https://other.example', false, false],
+    ['http://agentrouter.org', false, false],
+    ['https://agentrouter.org', true, false],
+  ]) {
+    const up = upstreamFake(); const res = sink();
+    const p = relay(up, res, { mayRetry: true, provider: { base_url } });
+    if (hasOutput) up.write(sse({ type: 'response.output_text.delta', output_index: 0, delta: 'already visible' }));
+    up.write(sse({ type: 'response.failed', response: { status: 'failed', output: [], error: null } }));
+    up.end(sse({ type: 'error', error: { type: 'user_error', code: 'DeploymentNotFound',
+      headers: { 'x-ms-fe-error': 'true' }, message: 'Could not find an existing deployment.' } }));
+    const result = await p;
+    assert.strictEqual(result.retryable, allowed, `${base_url}, output=${hasOutput}`);
+    assert.match(result.detail, /DeploymentNotFound/);
+    assert.doesNotMatch(res.text, /event: message_stop/);
+    if (allowed) assert.strictEqual(res.text, '');
+  }
+});
+
+test('a detailed error cannot replay a failed response with output or overwrite it with success', async () => {
+  for (const laterSuccess of [false, true]) {
+    const up = upstreamFake(); const res = sink();
+    const p = relay(up, res, { mayRetry: true });
+    up.write(sse({ type: 'response.failed', response: { status: 'failed', error: null,
+      output: laterSuccess ? [] : [{ type: 'function_call', call_id: 'do-once', name: 'Write', arguments: '{}' }] } }));
+    up.end(sse(laterSuccess
+      ? { type: 'response.completed', response: { status: 'completed', output: [] } }
+      : { type: 'error', error: { code: 'rate_limit_exceeded', message: 'Too many requests' } }));
+    const result = await p;
+    assert.strictEqual(result.retryable, false);
+    assert.strictEqual(result.aborted, true);
+    assert.doesNotMatch(res.text, /event: message_stop/);
+  }
+});
+
 // ---------------------------------------------------------------- 工具流完整性
 test('多工具交错:两个 function_call 各自成块,参数不串', async () => {
   const up = upstreamFake(); const res = sink();
