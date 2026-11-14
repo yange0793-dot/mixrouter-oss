@@ -179,6 +179,8 @@ done
 [ "$FOUND_COUNT" -gt 0 ] || die "数据目录 $DATA_DIR(来源:$DATA_SOURCE_LABEL)里找不到任何已知数据文件。迁移后数据不在代码目录:先运行 mixctl data-dir 核对来源,再重试(不接受备份 0 个文件就算成功)"
 mkdir -p "$BACKUP_DIR"
 for f in $FOUND_FILES; do
+  # 清单里可能有嵌套路径(如 .run/provider-timing-auth.json),备份目录同样先建父目录。
+  mkdir -p "$BACKUP_DIR/$(dirname "$f")"
   cp -p "$DATA_DIR/$f" "$BACKUP_DIR/$f"
 done
 say "已备份 $FOUND_COUNT 个数据文件:$DATA_DIR → $BACKUP_DIR"

@@ -43,7 +43,12 @@ const sourceLabel = lineSource.source === 'env' ? '环境变量 MIXR_DATA_DIR'
 let copied = [];
 for (const f of paths.RUNTIME_DATA_FILES) {
   const s = path.join(LIVE_DATA, f);
-  if (fs.existsSync(s)) { fs.copyFileSync(s, path.join(data, f)); copied.push(f); }
+  if (!fs.existsSync(s)) continue;
+  // 清单里可能有嵌套路径(如 .run/provider-timing-auth.json),副本目录要先建出来。
+  const dest = path.join(data, f);
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.copyFileSync(s, dest);
+  copied.push(f);
 }
 if (!copied.length) {
   console.log(`FAIL 数据目录 ${LIVE_DATA}(来源:${sourceLabel})里没有任何已知数据文件。`);
