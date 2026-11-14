@@ -239,7 +239,9 @@ test('mixctl 从 paths 取到的四个路径与改动前逐字相同(等价搬�
   // 搬迁不改行为:mixctl 原来那四行拼出来的东西,今天必须还是同一个字符串。
   // 不设 MIXR_DATA_DIR 时(默认分支)与设了时(重定向分支)各对一遍。
   const root = ROOT;
-  for (const env of [{}, { MIXR_DATA_DIR: '/data/x' }]) {
+  // 默认分支要显式忽略 `.run/data-dir` 指针:线上仓库迁移过以后,指针会让默认值
+  // 指向真实数据目录,这条"等价搬迁"的对表就会失真。
+  for (const env of [{ MIXR_IGNORE_DATA_DIR_POINTER: '1' }, { MIXR_DATA_DIR: '/data/x' }]) {
     assert.equal(paths.runDir(root), path.join(root, '.run'));
     assert.equal(paths.pidFile(root), path.join(root, '.run', 'mixrouter.pid'));
     assert.equal(paths.serverLog(root), path.join(root, 'logs', 'server.log'));

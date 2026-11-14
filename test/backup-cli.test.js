@@ -431,7 +431,9 @@ test('backups: 默认路径(DATA_DIR 未重定向)指向仓库目录本身,不�
   const runNoDataDir = args => new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [MIXCTL, ...args], {
       env: { ...env, HOME: env.home, USERPROFILE: env.home, XDG_CONFIG_HOME: path.join(env.home, '.config'),
-        MIXR_CLAUDE_SETTINGS: env.settings, MIXR_CODEX_CONFIG: env.codex, MIXR_DATA_DIR: '' },
+        MIXR_CLAUDE_SETTINGS: env.settings, MIXR_CODEX_CONFIG: env.codex, MIXR_DATA_DIR: '',
+        // 线上仓库可能已经迁移过(存在 .run/data-dir 指针);这条用例测的是默认分支。
+        MIXR_IGNORE_DATA_DIR_POINTER: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let out = ''; child.stdout.on('data', c => { out += c; }); child.stderr.on('data', c => { out += c; });
@@ -510,7 +512,9 @@ test('backups: 不设环境变量时,清点用的默认路径与主文件读写�
   const r = await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [MIXCTL, 'backups', '--json'], {
       env: { ...process.env, HOME: home, USERPROFILE: home,
-             MIXR_DATA_DIR: '', MIXR_CLAUDE_SETTINGS: '', MIXR_CODEX_CONFIG: '' },
+             MIXR_DATA_DIR: '', MIXR_CLAUDE_SETTINGS: '', MIXR_CODEX_CONFIG: '',
+             // 同一条:已迁移的仓库里指针会让默认值指向真实数据目录,这里只要 env/默认两级。
+             MIXR_IGNORE_DATA_DIR_POINTER: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = ''; let stderr = '';
