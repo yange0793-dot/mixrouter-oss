@@ -469,6 +469,59 @@ test('cancelled queued summaries skip history collection and do not block the ne
   assert.equal(reads, 2);
 });
 
+test('history loads lazily on first use instead of during construction', async t => {
+  const config = setup(t, async () => reply({ items: [remote()], pages: 1 }));
+  await config.tracker.sync({ from: NOW - DAY, to: NOW });
+  assert.ok(fs.existsSync(config.file));
+  // 构造后立刻删掉文件:如果构造阶段就解析过,内存里仍然有旧行。
+  const lazy = createProviderTiming({ ...config, fetchImpl: async () => { throw new Error('no request expected'); } });
+  fs.unlinkSync(config.file);
+  await lazy.sync({ from: NOW - DAY, to: NOW, refresh: false });
+  assert.equal(lazy.match(compact(local())), null, '首次使用时文件已不存在,说明构造阶段没有读取');
+  // 同一份快照在首次 match() 时也能加载。
+  const restored = createProviderTiming({ ...config, fetchImpl: async () => { throw new Error('no request expected'); } });
+  fs.writeFileSync(config.file, JSON.stringify({ rows: [JSON.parse(JSON.stringify({
+    app: 'codex', provider_id: 'p1', id: 10224230, key_id: '', backend: 'sub2api', precision_ms: 1,
+    request_id: 'client:test-request', model: 'model', input: 257, output: 204, cache: 190720,
+    at: Date.parse('2026-11-10T01:47:48.720Z'), duration_ms: 14060, first_token_ms: 11134,
+  }))] }));
+  assert.equal(restored.match(compact(local())).duration_ms, 14060);
+});
+
+test('auth file is parsed once per (mtime, size) instead of every sync', async t => {
+  const config = setup(t, async () => reply({ items: [], pages: 1 }));
+  const reads = [];
+  const realRead = fs.readFileSync;
+  fs.readFileSync = (file, ...args) => { reads.push(String(file)); return realRead(file, ...args); };
+  t.after(() => { fs.readFileSync = realRead; });
+  await config.tracker.sync({ from: NOW - DAY, to: NOW, refresh: false });
+  const first = reads.filter(file => file === config.authFile).length;
+  assert.equal(first, 1);
+  await config.tracker.sync({ from: NOW - DAY, to: NOW, refresh: false });
+  assert.equal(reads.filter(file => file === config.authFile).length, first, 'mtime 与 size 未变时复用解析结果');
+  fs.writeFileSync(config.authFile, JSON.stringify({ connections: [] }));
+  await config.tracker.sync({ from: NOW - DAY, to: NOW, refresh: false });
+  assert.equal(reads.filter(file => file === config.authFile).length, first + 1, '文件变化后重新解析');
+});
+
+test('history writes are coalesced inside the interval and flushed after it', async t => {
+  let clock = NOW, items = [remote()];
+  const config = setup(t, async () => reply({ items, pages: 1 }));
+  const tracker = createProviderTiming({ ...config, now: () => clock, writeIntervalMs: 5000 });
+  const first = await tracker.sync({ from: NOW - DAY, to: NOW });
+  assert.deepEqual(first.connections.map(connection => connection.cached_rows), [1]);
+  assert.equal(JSON.parse(fs.readFileSync(config.file, 'utf8')).rows.length, 1);
+  items = [remote(), remote({ id: 10224231, request_id: 'second-request', output_tokens: 300, duration_ms: 20000 })];
+  clock += 1000;
+  const second = await tracker.sync({ from: NOW - DAY, to: NOW, force: true });
+  assert.deepEqual(second.connections.map(connection => connection.cached_rows), [2], '计数增量维护');
+  assert.equal(JSON.parse(fs.readFileSync(config.file, 'utf8')).rows.length, 1, '间隔内合并成一次写盘');
+  assert.equal(tracker.match(compact(local())).duration_ms, 14060, '内存中的数据立即可用');
+  clock += 5000;
+  await tracker.sync({ from: NOW - DAY, to: NOW, force: true });
+  assert.equal(JSON.parse(fs.readFileSync(config.file, 'utf8')).rows.length, 2, '间隔过后补写');
+});
+
 test('usage HTTP disconnect aborts its queued summary and sends no late response', async () => {
   let signal, release;
   const res = new EventEmitter(), sent = [];

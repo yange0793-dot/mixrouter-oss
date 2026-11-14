@@ -40,8 +40,10 @@ function fixture(t) {
     fs.writeFileSync(file, rows.map(row => JSON.stringify(row)).join('\n') + '\n');
     return file;
   };
+  // scanTtlMs: 0 —— 这组用例靠"写完立刻再读"验证增量语义,目录扫描缓存会遮住同一时钟下的变化。
   const options = { codexHome: path.join(root, 'codex'), claudeHome: path.join(root, 'claude'),
-    now: () => at, getProviders: () => ({ codex: [{ id: 'provider-one', name: 'Primary' }] }) };
+    now: () => at, scanTtlMs: 0,
+    getProviders: () => ({ codex: [{ id: 'provider-one', name: 'Primary' }] }) };
   return { root, write, options, reader: createLocalSessionUsage(options) };
 }
 
@@ -188,6 +190,64 @@ test('gateway cache writes are included once and normalized details can be read 
   assert.equal(result.dashboard.records.rows[0].in, 50);
   const replay = await createUsageSummary({ memoryEntries: () => result.dashboard.records.rows, now: () => at }).summarize({ range: 'today' });
   assert.equal(replay.totals.tokens_total, 100);
+});
+
+test('缓存行数按 maxEntries 硬上限并按 ts 淘汰最旧,不改变返回形状', async t => {
+  const f = fixture(t);
+  const fileB = f.write('codex/sessions/new.jsonl', [meta(), context(),
+    modern('b1', usage(), usage(), -2000), modern('b2', usage(), usage(), -1000)]);
+  f.write('codex/sessions/old.jsonl', [meta(), context(),
+    modern('a1', usage(), usage(), -5000), modern('a2', usage(), usage(), -4000)]);
+  const reader = createLocalSessionUsage({ ...f.options, maxEntries: 2 });
+  const first = await reader.read();
+  assert.deepEqual(first.rows.map(row => row.request_id), ['codex:b2', 'codex:b1']);
+  assert.equal(first.truncated, true);
+  assert.equal(first.retention_days, 30);
+  // 旧文件的两行已被缓存硬上限淘汰:删掉较新的文件后它们不会"复活"。
+  fs.unlinkSync(fileB);
+  const second = await reader.read();
+  assert.equal(second.rows.length, 0);
+  assert.equal(second.truncated, true);
+});
+
+test('超过单行上限的记录整行跳过并计数,同文件其他记录照常统计', async t => {
+  const f = fixture(t);
+  f.write('codex/sessions/big.jsonl', [meta(), context(),
+    { type: 'event_msg', timestamp: iso(-1500), payload: { type: 'token_count',
+      info: { last_token_usage: usage(), total_token_usage: usage() }, junk: 'x'.repeat(300 * 1024) } },
+    modern()]);
+  const result = await f.reader.read();
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.rows[0].request_id, 'codex:response-one');
+  assert.ok(result.warnings.some(warning => /超过 256KB/.test(warning)), JSON.stringify(result.warnings));
+});
+
+test('目录扫描结果按 TTL 缓存,过期后重新扫描', async t => {
+  let clock = at;
+  const f = fixture(t);
+  f.write('codex/sessions/one.jsonl', [meta(), context(), modern()]);
+  const reader = createLocalSessionUsage({ ...f.options, now: () => clock, scanTtlMs: 5000 });
+  const stats = [];
+  const realStat = fs.promises.stat;
+  fs.promises.stat = async (...args) => { stats.push(String(args[0])); return realStat(...args); };
+  t.after(() => { fs.promises.stat = realStat; });
+  const fileStats = () => stats.filter(file => file.endsWith('.jsonl')).length;
+  assert.equal((await reader.read()).rows.length, 1);
+  assert.equal(fileStats(), 1);
+  await reader.read();
+  assert.equal(fileStats(), 1, 'TTL 内不再逐文件 stat');
+  clock += 5001;
+  await reader.read();
+  assert.equal(fileStats(), 2, 'TTL 过期后重新 stat 文件');
+});
+
+test('TTL 内新建的会话文件因目录 mtime 变化立即可见', async t => {
+  const f = fixture(t);
+  const reader = createLocalSessionUsage({ ...f.options, now: () => at, scanTtlMs: 5000 });
+  f.write('codex/sessions/one.jsonl', [meta(), context(), modern()]);
+  assert.equal((await reader.read()).rows.length, 1);
+  f.write('codex/sessions/two.jsonl', [meta(), context(), modern('response-two', usage(), usage(), -1000)]);
+  assert.equal((await reader.read()).rows.length, 2, '新文件不需要等文件 stat 的 TTL');
 });
 
 test('memory requests with earlier start times are not lost when absent from the disk log', async t => {

@@ -128,6 +128,27 @@ test('DSH Zstandard reads all concatenated frames and resumes a torn final frame
   assert.deepEqual(await f.reader.read(), result);
 });
 
+test('损坏的完整 zstd 帧被跳过并推进游标,同文件后续帧与其他文件照常读取', {
+  skip: typeof zlib.zstdCompressSync !== 'function',
+}, async t => {
+  const f = fixture(t);
+  const frameOf = row => zlib.zstdCompressSync(Buffer.from(JSON.stringify(row) + '\n'));
+  const file = f.write('project/one', [header(), route()], true);
+  const broken = frameOf(assistant('broken'));
+  broken[6] ^= 0xff;                       // 帧头之后的内容大小/块数据被破坏
+  fs.appendFileSync(file, broken);
+  fs.appendFileSync(file, frameOf(assistant('next', { time: time + 100,
+    data: { ...assistant('next').data, step: 2 } })));
+  f.write('project/two', [header('session-two'), route(), assistant('other')]);
+  const result = await f.reader.read();
+  assert.deepEqual(result.rows.map(row => row.request_id).sort(), ['dsh:next', 'dsh:other'],
+    '坏帧被跳过,后面的帧和其他文件都读到了');
+  assert.ok(result.warnings.includes('Harness: ZSTD_DECODE_FAILED'));
+  const again = await f.reader.read();
+  assert.deepEqual(again.rows, result.rows);
+  assert.deepEqual(again.warnings, [], '游标已越过坏帧,不会反复报同一条警告');
+});
+
 test('DSH future format and corrupt complete frames expose warnings without transcript details', async t => {
   const f = fixture(t);
   f.write('future', [header('future', 99), route(), assistant()]);
