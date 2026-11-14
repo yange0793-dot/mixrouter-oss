@@ -1,15 +1,19 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const http = require('node:http');
+const os = require('node:os');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 const { codeRevision } = require('../lib/runtime-code');
+const { deployLedgerWarning } = require('../lib/cli/deploy-ledger');
+const { runDataDirCmd } = require('../lib/cli/data-dir');
 
-function run(args, port) {
+function run(args, port, extraEnv = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [path.join(__dirname, '..', 'mixctl'), ...args], {
-      env: { ...process.env, MIXUI_PORT: String(port) }, stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, MIXUI_PORT: String(port), ...extraEnv }, stdio: ['ignore', 'pipe', 'pipe'],
     });
     let output = '';
     child.stdout.on('data', chunk => { output += chunk; });
@@ -21,6 +25,9 @@ function run(args, port) {
 
 test('mixctl status 比较运行源码指纹,旧进程和未知版本不得报告已生效', async t => {
   let revision = codeRevision(path.join(__dirname, '..'));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mixr-status-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const env = { MIXR_DATA_DIR: dataDir };
   const requests = [];
   const server = http.createServer((req, res) => {
     requests.push({ method: req.method, url: req.url });
@@ -33,16 +40,20 @@ test('mixctl status 比较运行源码指纹,旧进程和未知版本不得报�
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => server.close(resolve)));
   const port = server.address().port;
-  const current = await run(['status'], port);
+  const current = await run(['status'], port, env);
   assert.equal(current.code, 0);
   assert.match(current.output, /已加载当前源码/);
+  // 数据目录与来源必须一起显示:同一个路径可能来自 env / 指针 / 代码目录默认,
+  // 排查"为什么读到空配置"时只知道最终路径是不够的。
+  assert.ok(current.output.includes(`数据:   ${dataDir}`), `status 没显示数据目录:${current.output}`);
+  assert.match(current.output, /来源: 环境变量 MIXR_DATA_DIR/);
   revision = 'outdated';
-  const stale = await run(['status'], port);
+  const stale = await run(['status'], port, env);
   assert.equal(stale.code, 1);
   assert.match(stale.output, /源码已更新,运行进程仍是旧版/);
   assert.match(stale.output, /mixctl restart/);
   revision = undefined;
-  const unknown = await run(['status'], port);
+  const unknown = await run(['status'], port, env);
   assert.equal(unknown.code, 1);
   assert.match(unknown.output, /无法核对已加载版本/);
   assert.doesNotMatch(unknown.output, /已加载当前源码/);
@@ -353,4 +364,147 @@ test('mixctl logs:尾读渲染、坏行跳过,且尊重 MIXR_DATA_DIR', async t 
   assert.equal(capped.code, 0);
   assert.match(capped.output, /达到上限或文件在读取期间被截短/);
   assert.doesNotMatch(capped.output, /暂无请求日志/, '未读到不等于文件里没有记录');
+});
+
+// ---------------------------------------------------------------- 部署台账
+
+test('部署台账:pid / target_commit / code_revision 任一不符都明确警告;缺失字段与坏 JSON 不报', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mixr-ledger-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const runDir = path.join(root, '.run');
+  fs.mkdirSync(runDir);
+  const file = path.join(runDir, 'deploy-state.json');
+  const write = state => fs.writeFileSync(file, JSON.stringify(state));
+  const head = 'a'.repeat(40);
+  const other = 'b'.repeat(40);
+
+  write({ target_commit: head, pid: 100, code_revision: 'rev-1' });
+  assert.equal(deployLedgerWarning({ root, runDir, pid: 100, revision: 'rev-1', head }), null,
+    '三项都对上时不该报警');
+
+  const all = deployLedgerWarning({ root, runDir, pid: 200, revision: 'rev-2', head: other });
+  assert.match(all, /部署台账过期\/不一致/);
+  assert.match(all, /pid 100 ≠ 当前 200/);
+  assert.match(all, new RegExp(`target_commit ${head.slice(0, 12)} ≠ 当前 HEAD ${other.slice(0, 12)}`));
+  assert.match(all, /code_revision 与运行进程不符/);
+  assert.match(all, new RegExp(file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), '警告里要带台账路径');
+
+  assert.match(deployLedgerWarning({ root, runDir, pid: 0, revision: 'rev-1', head }),
+    /pid 100 ≠ 当前 未运行/);
+
+  // 旧版部署脚本写的台账没有 pid / code_revision:缺失字段跳过,不产生噪音。
+  write({ target_commit: head });
+  assert.equal(deployLedgerWarning({ root, runDir, pid: 999, revision: 'whatever', head }), null);
+
+  fs.writeFileSync(file, '{ 坏 JSON');
+  assert.equal(deployLedgerWarning({ root, runDir, pid: 0, head }), null, '坏 JSON 只当没有台账');
+  fs.rmSync(file);
+  assert.equal(deployLedgerWarning({ root, runDir, pid: 0, head }), null, '没有台账不报警');
+});
+
+// ---------------------------------------------------------------- data-dir
+
+const capture = () => {
+  const lines = [];
+  return { lines, log: line => lines.push(String(line)) };
+};
+
+test('mixctl data-dir:只读显示数据目录、来源与指针文件状态', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mixr-datadir-show-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  const envOut = capture();
+  assert.equal(runDataDirCmd([], { root, env: { MIXR_DATA_DIR: '/data/from-env' }, log: envOut.log }), 0);
+  assert.ok(envOut.lines.some(line => line.includes('数据目录: /data/from-env')));
+  assert.ok(envOut.lines.some(line => line.includes('来源:     环境变量 MIXR_DATA_DIR')));
+  assert.ok(envOut.lines.some(line => line.includes('指针文件:') && line.includes('不存在')));
+
+  const defaultOut = capture();
+  assert.equal(runDataDirCmd([], { root, env: {}, log: defaultOut.log }), 0);
+  assert.ok(defaultOut.lines.some(line => line.includes(`数据目录: ${root}`)));
+  assert.ok(defaultOut.lines.some(line => line.includes('来源:     默认(代码目录)')));
+
+  const target = fs.mkdtempSync(path.join(os.tmpdir(), 'mixr-datadir-target-'));
+  t.after(() => fs.rmSync(target, { recursive: true, force: true }));
+  require('../lib/paths').writeDataDirPointer(root, target);
+  const pointerOut = capture();
+  assert.equal(runDataDirCmd([], { root, env: {}, log: pointerOut.log }), 0);
+  assert.ok(pointerOut.lines.some(line => line.includes(`数据目录: ${target}`)));
+  assert.ok(pointerOut.lines.some(line => line.includes('来源:     指针文件')));
+  assert.ok(pointerOut.lines.some(line => line.includes(`内容:     ${JSON.stringify(target)}`)));
+});
+
+test('mixctl data-dir --move:默认干跑不写盘;--apply 备份→复制→校验→写指针,源不动', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mixr-move-root-'));
+  const source = fs.mkdtempSync(path.join(os.tmpdir(), 'mixr-move-src-'));
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'mixr-move-dst-'));
+  const target = path.join(parent, 'moved');
+  t.after(() => {
+    for (const d of [root, source, parent]) fs.rmSync(d, { recursive: true, force: true });
+  });
+  fs.writeFileSync(path.join(source, 'providers.json'), '{"version":2}\n');
+  fs.mkdirSync(path.join(source, 'logs'), { recursive: true });
+  fs.writeFileSync(path.join(source, 'logs', 'requests.jsonl'), 'x'.repeat(128) + '\n');
+
+  const dry = capture();
+  assert.equal(runDataDirCmd(['--move', target], { root, env: { MIXR_DATA_DIR: source }, log: dry.log }), 0);
+  assert.equal(fs.existsSync(target), false, '干跑不得创建目标目录');
+  assert.equal(fs.existsSync(path.join(root, '.run', 'data-dir')), false, '干跑不得写指针');
+  assert.ok(dry.lines.some(line => line.includes('干跑')));
+  assert.ok(dry.lines.some(line => line.includes('providers.json')));
+
+  const apply = capture();
+  assert.equal(runDataDirCmd(['--move', target, '--apply'], { root, env: { MIXR_DATA_DIR: source }, log: apply.log }), 0);
+  assert.equal(fs.readFileSync(path.join(target, 'providers.json'), 'utf8'), '{"version":2}\n');
+  assert.equal(fs.readFileSync(path.join(target, 'logs', 'requests.jsonl'), 'utf8'), 'x'.repeat(128) + '\n');
+  // 源文件保留:迁移是复制 + 改指向,不是 move。
+  assert.equal(fs.readFileSync(path.join(source, 'providers.json'), 'utf8'), '{"version":2}\n');
+  const pointer = path.join(root, '.run', 'data-dir');
+  assert.deepEqual(fs.readFileSync(pointer, 'utf8'), target + '\n');
+  assert.equal(fs.statSync(pointer).mode & 0o777, 0o600);
+  assert.ok(fs.readdirSync(path.join(source, 'backups')).some(name => name.startsWith('data-move-')),
+    '迁移前必须留一份安全备份');
+  assert.ok(apply.lines.some(line => line.includes('复制校验通过')));
+  assert.ok(apply.lines.some(line => line.includes('重启服务')), '要提示重启,但命令本身不重启');
+  assert.ok(apply.lines.some(line => line.includes('没有重启任何服务')));
+});
+
+test('mixctl data-dir --move:无数据/目标非空都失败,且不改已有指针', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mixr-move-fail-'));
+  const source = fs.mkdtempSync(path.join(os.tmpdir(), 'mixr-move-fail-src-'));
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'mixr-move-fail-dst-'));
+  t.after(() => {
+    for (const d of [root, source, parent]) fs.rmSync(d, { recursive: true, force: true });
+  });
+  const pointer = path.join(root, '.run', 'data-dir');
+  require('../lib/paths').writeDataDirPointer(root, source);
+  const before = fs.readFileSync(pointer, 'utf8');
+
+  // 源目录里没有任何已知数据文件:明确失败,不写指针。
+  const emptyOut = capture();
+  assert.equal(runDataDirCmd(['--move', path.join(parent, 'n1'), '--apply'],
+    { root, env: { MIXR_DATA_DIR: source }, log: emptyOut.log }), 1);
+  assert.ok(emptyOut.lines.some(line => line.includes('没有任何已知运行数据文件')));
+  assert.equal(fs.readFileSync(pointer, 'utf8'), before);
+
+  // 目标非空:不合并、不覆盖,指针原样。
+  fs.writeFileSync(path.join(source, 'providers.json'), '{}\n');
+  const busy = path.join(parent, 'busy');
+  fs.mkdirSync(busy);
+  fs.writeFileSync(path.join(busy, 'keep.txt'), 'keep\n');
+  const busyOut = capture();
+  assert.equal(runDataDirCmd(['--move', busy, '--apply'],
+    { root, env: { MIXR_DATA_DIR: source }, log: busyOut.log }), 1);
+  assert.ok(busyOut.lines.some(line => line.includes('不是空的')));
+  assert.equal(fs.readFileSync(pointer, 'utf8'), before, '失败不得改指针');
+  assert.equal(fs.readFileSync(path.join(busy, 'keep.txt'), 'utf8'), 'keep\n', '失败不得覆盖目标已有文件');
+
+  // 目标落在要复制的 logs/ 里面:复制 logs 时会把自己复制进自己,必须提前拒绝。
+  fs.mkdirSync(path.join(source, 'logs'), { recursive: true });
+  const nested = capture();
+  assert.equal(runDataDirCmd(['--move', path.join(source, 'logs', 'nested'), '--apply'],
+    { root, env: { MIXR_DATA_DIR: source }, log: nested.log }), 1);
+  assert.ok(nested.lines.some(line => line.includes('不能位于要复制的 logs/')));
+  assert.equal(fs.readFileSync(pointer, 'utf8'), before);
+  process.exitCode = 0;
 });

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // mixctl — mixrouter 管理命令
-//   start | stop | restart | status | ls | sessions | slots | explain | backups | restore | probe | logs [n] | gc [天] [--apply] [--archives-only] | route [claude|codex] [--slots] | open | help
+//   start | stop | restart | status | ls | sessions | slots | explain | backups | restore | data-dir | probe | logs [n] | gc [天] [--apply] [--archives-only] | route [claude|codex] [--slots] | open | help
 'use strict';
 const { spawn, execSync } = require('child_process');
 const http = require('http');
@@ -16,6 +16,7 @@ const { baseFromBackupName } = require('./lib/backup/naming');
 // 与 lib/backup/* 的职责混在一起;搬出去之后本文件只剩"取数 + 拼参数 + 分发"。
 const backupView = require('./lib/cli/backup-view');
 const { runRestoreCmd } = require('./lib/cli/restore');
+const { runDataDirCmd } = require('./lib/cli/data-dir');
 const { runLogs } = require('./lib/cli/logs');
 const { runSessions } = require('./lib/cli/sessions');
 const { EXPLAIN_USAGE, BACKUPS_USAGE, PROBE_USAGE, SPLIT_USAGE, ROUTE_USAGE, MAIN_USAGE } = require('./lib/cli/usage');
@@ -23,6 +24,7 @@ const { EXPLAIN_USAGE, BACKUPS_USAGE, PROBE_USAGE, SPLIT_USAGE, ROUTE_USAGE, MAI
 // (ROOT / RUN_DIR / PID_FILE / REQ_LOG),那四行与 mixrouter.js 的同名常量、以及
 // scripts/launchd-run.sh 里的 `$DIR/.run`,靠"都在仓库根"这一条巧合对齐。
 const paths = require('./lib/paths');
+const { deployLedgerWarning } = require('./lib/cli/deploy-ledger');
 
 const ROOT = __dirname;
 const RUN_DIR = paths.runDir(ROOT);
@@ -333,12 +335,24 @@ async function restart() {
   await stop();
   await start();
 }
+// ---- 部署台账 -----------------------------------------------------------------
+// deploy-live.sh 在 .run/deploy-state.json 记下"上次切到哪个提交、当时进程 pid 与运行指纹"。
+// status 只**提示**不一致,不阻断命令、不改退出码:台账是取证线索,不是命令的前置条件。
+const dataSourceLabel = info => info.source === 'env' ? '环境变量 MIXR_DATA_DIR'
+  : info.source === 'pointer' ? `指针文件 ${info.pointer.file}`
+    : '默认(代码目录)';
+
 async function status() {
   const pid = getPid();
   const running = pid && alive(pid);
   console.log(`进程:   ${running ? `运行中 (pid ${pid})` : '未运行'}`);
+  // 数据目录与来源一起显示:同一个路径可能来自三处,排查"为什么读到空配置"时
+  // 只知道最终路径是不够的。
+  const dataInfo = paths.resolveDataDir(process.env, ROOT);
+  console.log(`数据:   ${dataInfo.dir}   (来源: ${dataSourceLabel(dataInfo)})`);
+  let s = null;
   try {
-    const s = await api('/api/state');
+    s = await api('/api/state');
     console.log(`版本:   v${s.version}   运行时长 ${Math.floor(s.uptime_s / 60)} 分 ${s.uptime_s % 60} 秒`);
     const diskRevision = codeRevision(ROOT);
     if (!s.code_revision || !diskRevision) {
@@ -353,6 +367,8 @@ async function status() {
       : s.stats.exact === false ? `今日(自 ${new Date(s.stats.since).toLocaleString('zh-CN', { hour12: false })} 起,非全天)` : '今日(近期窗口)';
     console.log(`${scope}:   ${s.stats.reqs} 次请求,入 ${s.stats.inTok} / 出 ${s.stats.outTok} tokens`);
   } catch { console.log('控制台不可达'); process.exitCode = 1; }
+  const ledger = deployLedgerWarning({ root: ROOT, runDir: RUN_DIR, pid: running ? pid : 0, revision: s && s.code_revision });
+  if (ledger) console.log(`部署:   ⚠ ${ledger}`);
 }
 async function ls() {
   let s;
@@ -865,6 +881,7 @@ else if (cmd === 'explain') explainCmd(process.argv.slice(3));
 else if (cmd === 'probe') probeCmd(process.argv.slice(3));
 else if (cmd === 'backups') runBackupsCmd(process.argv.slice(3));
 else if (cmd === 'restore') runRestoreCmd(process.argv.slice(3), { root: ROOT, home: os.homedir(), env: process.env });
+else if (cmd === 'data-dir' || cmd === 'datadir') runDataDirCmd(process.argv.slice(3), { root: ROOT, env: process.env });
 else if (cmd === 'split') splitCmd(process.argv.slice(3));
 else if (cmd === 'logs') logsCmd(process.argv.slice(3));
 else if (cmd === 'gc') gc(process.argv.slice(3));
