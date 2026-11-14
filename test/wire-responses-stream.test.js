@@ -347,6 +347,24 @@ test('工具参数残缺却报 completed:按失败处理,不当成可执行调�
   assert.strictEqual(r.aborted, true);
 });
 
+test('output_item.done 带着非法 JSON 参数:工具块一个字节都不下行', async () => {
+  const up = upstreamFake(); const res = sink();
+  const p = relay(up, res, { mayRetry: false });
+  up.write(sse({ type: 'response.output_item.added', output_index: 0, item: { type: 'function_call', call_id: 'c1', name: 'Write' } }));
+  // 上游把截断的参数当"完整 item"发下来:以前这里先开 tool_use 块、把坏 JSON 当
+  // input_json_delta 发出去,随后 finishTerminal 才改口报错 —— 客户端已拿到可执行块。
+  up.write(sse({ type: 'response.output_item.done', output_index: 0,
+    item: { type: 'function_call', call_id: 'c1', name: 'Write', arguments: '{"file_path":"a.tx' } }));
+  up.write(sse({ type: 'response.completed', response: { status: 'completed', usage: {} } }));
+  const r = await p;
+
+  assert.ok(!res.text.includes('"type":"tool_use"'), `坏参数工具块不许下行:${res.text}`);
+  assert.ok(!res.text.includes('input_json_delta'), '坏参数不许当 partial_json 发给客户端');
+  assert.ok(res.text.includes('event: error'), '要给出协议级 error');
+  assert.ok(res.text.includes('工具调用参数不完整'));
+  assert.strictEqual(r.aborted, true);
+});
+
 // ---------------------------------------------------------------- 增量解码
 test('中文跨 TCP 包:多字节字符被切开也不许出现替换符', async () => {
   const up = upstreamFake(); const res = sink();

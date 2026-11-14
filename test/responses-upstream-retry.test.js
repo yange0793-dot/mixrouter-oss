@@ -36,8 +36,8 @@ function rejectUpstream(res, event = failed(), json = false) {
   res.writeHead(200, { 'Content-Type': json ? 'application/json' : 'text/event-stream' });
   res.end(json ? JSON.stringify(event.response) : frame(event));
 }
-function configure({ pinned = false, other = false } = {}) {
-  const provider = id => ({ id, name: id, enabled: true, api_key: 'sk-fixture', wire_api: 'responses',
+function configure({ pinned = false, other = false, wire = 'responses' } = {}) {
+  const provider = id => ({ id, name: id, enabled: true, api_key: 'sk-fixture', wire_api: wire,
     base_url: `http://127.0.0.1:${upstream.address().port}/${id}`, models: ['fixture-model'] });
   mod._state.store = { claude: [], codex: [provider('primary'), ...(other ? [provider('secondary')] : [])] };
   // 槽位钉定主渠道;备池只在需要换渠道的用例里加。上游流式开关已随规则一起废弃。
@@ -338,17 +338,32 @@ test('采样窗口以外的真实错误不能被后续 completed 终态掩盖', 
   assert.match(lastLog().err, /fixture invalid input/);
 });
 
-for (const ending of ['truncated', 'missing-delimiter']) test(`大终态不完整时仍然记录断流 (${ending})`, async () => {
+// 语义变化(同渠道重试审计):末帧**只缺收尾空行**时,事件本体是完整的 —— 现在按完整终态
+// 收下(见 lib/proxy/response.js 的 EOF 残帧处理);真正的截断(JSON 不完整)照旧记断流。
+test('大终态被截断(JSON 不完整)时仍然记录断流', async () => {
   const terminal = frame({ type: 'response.completed', response: {
     ...completed(), instructions: 'x'.repeat(300000),
   } });
-  const raw = frame({ type: 'response.output_text.delta', delta: '已有输出' })
-    + (ending === 'truncated' ? terminal.slice(0, -120) : terminal.slice(0, -2));
+  const raw = frame({ type: 'response.output_text.delta', delta: '已有输出' }) + terminal.slice(0, -120);
   reply = (_req, res) => { res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.end(raw); };
   assert.equal((await ask()).text, raw);
   assert.equal(hits, 1);
   assert.equal(lastLog().err_class, 'stream_aborted');
   assert.equal(lastLog().in, 0); assert.equal(lastLog().out, 0);
+});
+
+test('大终态只缺收尾空行:事件本体完整,按成功收尾并记 usage', async () => {
+  const terminal = frame({ type: 'response.completed', response: {
+    ...completed(), instructions: 'x'.repeat(300000),
+  } });
+  const raw = frame({ type: 'response.output_text.delta', delta: '已有输出' }) + terminal.slice(0, -2);
+  reply = (_req, res) => { res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.end(raw); };
+  assert.equal((await ask()).text, raw);
+  assert.equal(hits, 1);
+  const log = lastLog();
+  assert.equal(log.err_class || '', '', '完整终态不能因为少了空行被记成 stream_aborted');
+  assert.equal(log.err || '', '');
+  assert.equal(log.in, 8); assert.equal(log.out, 3);
 });
 
 for (const prefix of [
@@ -374,6 +389,37 @@ test('缺少明确 output:[] 的 upstream_error 不猜成空响应', async () =>
 test('连接重置后真实成功不残留 econnreset', async () => {
   reply = (req, res) => hits < 3 ? req.socket.destroy() : success(res, true);
   assertSuccess(await ask({ stream: false }), 3);
+});
+
+test('非流客户端(stream:false)上游断流:客户端零字节时仍可透明重试', async () => {
+  // chat 上游把客户端要的非流请求照流式回,是这条线上真实存在的形状;转换器在
+  // stream:false 时会把整条响应攒到收尾才写给客户端。第一块到达就置 committed 会让
+  // "客户端手里还是零字节"的窗口被提前关掉,只能回 502。
+  configure({ wire: 'chat' });
+  const chatChunk = value => `data: ${JSON.stringify(value)}\n\n`;
+  reply = (_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    if (hits === 1) {
+      res.write(chatChunk({ id: 'chatcmpl-1', object: 'chat.completion.chunk',
+        choices: [{ index: 0, delta: { role: 'assistant', content: '半截答案' } }] }));
+      setTimeout(() => res.destroy(), 10); // 没有 finish_reason、没有 [DONE]
+      return;
+    }
+    res.end(chatChunk({ id: 'chatcmpl-2', object: 'chat.completion.chunk',
+      choices: [{ index: 0, delta: { content: '最终答案' } }] })
+      + chatChunk({ id: 'chatcmpl-2', object: 'chat.completion.chunk',
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })
+      + 'data: [DONE]\n\n');
+  };
+  const result = await ask({ stream: false });
+  assert.equal(result.status, 200, result.text);
+  assert.equal(hits, 2, '第一次断流发生在给客户端写字节之前,必须换一代 key 重打');
+  assert.match(result.text, /最终答案/);
+  assert.doesNotMatch(result.text, /半截答案/, '被放弃那次的字节不能漏给客户端');
+  const log = lastLog();
+  assert.equal(log.status, 200);
+  assert.equal(log.attempts, 2);
+  assert.equal(log.err_class || '', '');
 });
 
 test('重试等待跨过 deadline 不会再发一次真实请求', async () => {

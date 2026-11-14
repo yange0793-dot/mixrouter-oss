@@ -262,3 +262,97 @@ test('attempt 调度:候选游标、固定 Key 截断与换 key 配额都在调�
   runAttempts(plan, ctx);
   assert.deepEqual(seen, [0, 0, 1]);
 });
+
+// ---------------------------------------------------------------- 槽位 dropTools 的协议组
+// 两组的槽名可以重名(main/subagent 都有)。恒读 slotMap.claude 会让 codex 槽拿到 claude 槽
+// 的 dropTools(反之亦然),把另一组配置的工具静默删掉。这里用注入的假 transport 直接跑
+// runAttempt,只看它交给上游的 body —— 不起服务、不发网络。
+function fakeTransport() {
+  const requests = [];
+  const request = options => {
+    const { EventEmitter } = require('node:events');
+    const req = new EventEmitter();
+    const record = { options, body: '' };
+    requests.push(record);
+    req.end = body => { record.body = body; };
+    req.destroy = () => {};
+    req.setTimeout = () => req;
+    return req;
+  };
+  return { requests, http: { request }, https: { request } };
+}
+
+function runSlotAttempt({ app, slotMap, dropToolsSlot, tools }) {
+  const { createAttempt } = require('../lib/proxy/attempt');
+  const toolFilter = require('../lib/tool-filter');
+  const wireResponses = require('../lib/wire-responses');
+  const wireOpenai = require('../lib/wire-openai-bridge');
+  const transport = fakeTransport();
+  const provider = { id: `${app}-provider`, name: `${app}-provider`, enabled: true,
+    api_key: 'sk-fixture', wire_api: 'responses', base_url: `http://127.0.0.1:9/${app}`, models: ['slot-model'] };
+  const entry = { status: 0, err: '', err_class: '', ms: 0 };
+  const ctx = {
+    entry, started: Date.now(), deadlineMs: 0, deadlineAt: Date.now() + 600000,
+    rawLen: 0, netAttempts: 0, maxUpstreamCalls: 5, capWhy: '',
+    finalized: false, clientClosed: false, deadlineHit: false,
+    res: {}, finish() { this.finalized = true; }, sendErr() {}, markDeadlineHit() {},
+    recordAttemptEvent() {}, clearAttemptTimers() {}, setActiveTimers() {}, setActiveRequest() {},
+    setActiveResponse() {}, bumpNetAttempts() { this.netAttempts++; },
+  };
+  const { runAttempt } = createAttempt({
+    http: transport.http, https: transport.https,
+    storeOf: () => [provider], refreshProvider: () => provider, slotMapOf: () => slotMap,
+    sessionConfig: { selectSessionKey: () => ({ provider, key_id: 'fixture-key' }) }, compactLib: {},
+    wireOf: () => 'responses', upstreamPathOf: () => '/v1/responses', joinUpstreamPath: (base, path) => base + path,
+    buildUpstreamHeaders: () => ({}), buildOpenAiHeaders: () => ({ 'Content-Type': 'application/json' }),
+    applyModel: model => model, toolFilter, safeHeader: value => value, hasCtlChar: () => false,
+    transportAgent: () => undefined, channelSecrets: () => [], clientToken: () => '', errorClass: () => 'upstream_server',
+    retryableStatus: () => false, sha256: () => '', wireResponses, wireOpenai, wireChat: require('../lib/wire-chat'),
+    convCacheKey: () => '', convCacheGen: () => 0, rotateConvCacheGen() {},
+    firstHeaderTimeoutFor: () => 5000, streamIdleTimeoutMs: 0, nonstreamTotalTimeoutMs: 0,
+    responseArchiveOn: false, responseArchiveDir: '', uiPort: 0, DEFAULT_UA_CODEX: 'codex-fixture',
+    dispatchResponse: () => ({ mode: 'test' }), settleRequest() {},
+  });
+  const plan = {
+    ep: { kind: 'responses' }, body: { model: 'mixr-main', stream: true, input: 'fixture', tools },
+    req: { headers: {} }, modelIn: 'mixr-main', ident: { key: 'slot-group-test' },
+    resolved: { slot: dropToolsSlot, rule: { id: `slot:${app}/main`, app } },
+    compactPin: false, sessionRouting: {}, sessionKey: 'slot-group-test', app,
+    ordered: [{ provider, model: 'slot-model' }],
+  };
+  const loop = { retry() {}, pinTo() {}, convRetriesLeft: 0 };
+  runAttempt(loop, plan, ctx, 0);
+  assert.equal(transport.requests.length, 1, '这一发必须真的交给 transport');
+  return { sent: JSON.parse(transport.requests[0].body), entry };
+}
+
+test('dropTools 按槽位所属协议组取:codex 槽自己的配置生效', () => {
+  const slotMap = {
+    claude: { main: { provider: 'claude-provider', dropTools: ['Read'] } },
+    codex: { main: { provider: 'codex-provider', dropTools: ['Bash'] } },
+  };
+  const { sent, entry } = runSlotAttempt({ app: 'codex', slotMap, dropToolsSlot: 'main',
+    tools: [{ type: 'function', name: 'Bash' }, { type: 'function', name: 'Read' }] });
+  assert.deepEqual(sent.tools.map(t => t.name), ['Read'], 'codex 槽丢掉的是自己配的 Bash');
+  assert.equal(entry.tools_dropped, 1);
+});
+
+test('claude 槽的 dropTools 不再污染 codex 请求', () => {
+  const slotMap = {
+    claude: { main: { provider: 'claude-provider', dropTools: ['Read'] } },
+    codex: { main: { provider: 'codex-provider' } },
+  };
+  const { sent } = runSlotAttempt({ app: 'codex', slotMap, dropToolsSlot: 'main',
+    tools: [{ type: 'function', name: 'Bash' }, { type: 'function', name: 'Read' }] });
+  assert.deepEqual(sent.tools.map(t => t.name), ['Bash', 'Read'], 'codex 槽没配:claude 槽的工具不许被删');
+});
+
+test('claude 槽自己的 dropTools 仍然生效(分组不是单边特例)', () => {
+  const slotMap = {
+    claude: { main: { provider: 'claude-provider', dropTools: ['Read'] } },
+    codex: { main: { provider: 'codex-provider', dropTools: ['Bash'] } },
+  };
+  const { sent } = runSlotAttempt({ app: 'claude', slotMap, dropToolsSlot: 'main',
+    tools: [{ type: 'function', name: 'Bash' }, { type: 'function', name: 'Read' }] });
+  assert.deepEqual(sent.tools.map(t => t.name), ['Bash']);
+});
