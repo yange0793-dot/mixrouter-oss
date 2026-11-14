@@ -609,6 +609,8 @@
       <h3 id="m-title">新建渠道</h3><p class="description" id="m-description"></p>
       <form id="provider-form" onsubmit="event.preventDefault();saveProvider()">
         <label for="m-name">名称 <span aria-hidden="true">*</span></label><input type="text" id="m-name" placeholder="如团队网关" required autocomplete="off">
+        <label for="m-slug">寻址别名</label><input type="text" id="m-slug" placeholder="agentrouter" maxlength="32" autocomplete="off" spellcheck="false">
+        <p class="muted">用于 provider/model 形式寻址，例如 agentrouter/gpt-6.1-sol；留空则按渠道名自动匹配</p>
         <label for="m-base">Base URL <span aria-hidden="true">*</span> <span id="m-base-hint"></span></label><input type="text" id="m-base" placeholder="https://api.example.com" required spellcheck="false">
         <fieldset class="codex-mode" id="m-codex-mode" hidden>
           <legend>Codex 接入方式</legend>

@@ -441,6 +441,20 @@ function overviewJump(view, text) {
   // 跳转按钮只调视图切换,绝不发写请求(它连 api() 都不碰)。
   return `<button class="small" data-jump="${esc(view)}" onclick="showView(${handlerArg(view)})">${esc(text)}</button>`;
 }
+// 失败分类的短标签:沿用诊断页那张表(logs.js 的 LOG_ERR_CLASS_LABEL),只补路由侧的本地
+// 错误码 —— no_route_error 这类请求根本没发出去,不会出现在上游分类里,而它恰恰是
+// "模型没登记 / 槽位没绑定"这种最常见失败的名字。没收录的枚举原样显示,不隐藏原始值。
+const OVERVIEW_ERR_CLASS_LABEL = {
+  no_route_error: '未登记模型', model_ambiguous_error: '模型指向不唯一', provider_disabled_error: '渠道已停用',
+  provider_key_unavailable_error: 'Key 不可用', wire_api_mismatch_error: '协议不匹配',
+  unsupported_compaction: '压缩落点不支持', bad_credential: '凭据含控制字符',
+  secret_source: '密钥源不可用', protocol_error: '协议错误',
+};
+function overviewErrClassLabel(name) {
+  if (!name) return '未分类失败';
+  if (typeof LOG_ERR_CLASS_LABEL !== 'undefined' && Object.hasOwn(LOG_ERR_CLASS_LABEL, name)) return LOG_ERR_CLASS_LABEL[name];
+  return OVERVIEW_ERR_CLASS_LABEL[name] || name;
+}
 // 「需处理事项」清单。每一条都必须对应一个用户真能动手的状态,且能跳到管它的那一页;
 // 没有事项时明确写出来——留空白会让人以为还没加载出来。
 // 一条 = 一句人话标题 + 一行次级明细(渠道名 / 槽位;内部 id 用 mono 小字跟在后面)。
@@ -460,6 +474,30 @@ function overviewTodo() {
     text: parts.map(p => p.id && p.id !== p.label ? `${p.label}（${p.id}）` : p.label).join('、'),
     html: parts.map(p => esc(p.label) + (p.id && p.id !== p.label ? ` <span class="mono">${esc(p.id)}</span>` : '')).join('、'),
   });
+
+  // 最近窗口的失败聚合(/api/state 的 recent_failures)。概览此前只看到"成功率掉了",
+  // 看不到为什么掉;这里把总量、占比最高的几类失败和最常被撞的模型名摆到首屏。
+  // 阈值 5:单次重试抖动不值得报警;没有这个字段(旧服务端)或没有失败时整条不出现。
+  const failures = state.recent_failures;
+  const failedCount = Number(failures?.failed);
+  if (Number.isFinite(failedCount) && failedCount >= 5) {
+    const total = Number(failures.total);
+    const scope = Number.isFinite(total) ? total : 1000;
+    const classes = Object.entries(failures.by_class || {})
+      .filter(([, count]) => Number(count) > 0)
+      .sort((a, b) => Number(b[1]) - Number(a[1]) || String(a[0]).localeCompare(String(b[0])))
+      .slice(0, 3)
+      .map(([name, count]) => ({ label: `${overviewErrClassLabel(name)} ${count}` }));
+    // top 已按计数降序;第一行就是最常见的那一对(模型, 分类)。模型名走 mono 小字。
+    const topRow = Array.isArray(failures.top) ? failures.top[0] : null;
+    if (topRow && topRow.model_in) classes.push({ label: '最常见模型', id: String(topRow.model_in) });
+    items.push({
+      level: 'err',
+      title: `最近 ${scope} 条请求里有 ${failedCount} 条失败`,
+      detail: detail(classes),
+      view: 'diagnostics', action: '去诊断',
+    });
+  }
 
   if (ghosts.length) items.push({ level: 'err', title: '槽位里有失效引用，请求会失败', detail: detail(ghosts.map(g => ({ label: `${g.app} · ${g.slot}`, id: g.provider }))), view: 'providers', action: '去渠道与 Key' });
   if (staleSessions) items.push({ level: 'err', title: `${staleSessions} 个会话的 Key / 槽位覆盖里存在已失效的引用`, view: 'sessions', action: '去会话' });

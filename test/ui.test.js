@@ -2475,7 +2475,8 @@ test('保存渠道带回备份轮换:并进同一条提示、warn 基调,且不�
 
 test('切换生效 Key / 启停 / 删除:三扇门都要带出备份轮换', async () => {
   for (const [code, okWord] of [
-    ["setActiveKey('a1','k1')", '已切换生效 Key'],
+    // 夹具里 Claude 是直连(live.claude 无 router),生效 Key 改了要重新「直连此渠道」才写入客户端。
+    ["setActiveKey('a1','k1')", '渠道账号已保存'],
     ["toggleProvider('a1')", '渠道状态已更新'],
     ["delProvider('a1')", '渠道已删除'],
   ]) {
@@ -3008,6 +3009,93 @@ test('离线时会话表的改绑、配置与解绑一并禁用;改绑失败后�
   const writes = h.get('sess-body').htmlWrites;
   h.run('renderSessions()');
   assert.ok(h.get('sess-body').htmlWrites > writes, '缓存作废后下一次渲染一定重写,下拉回到服务端绑定');
+});
+
+// ---------------------------------------------------------------- 概览失败聚合
+// 概览此前只看得到成功率掉了,看不到为什么掉。recent_failures 来自 /api/state 的内存环聚合,
+// 这里钉三件事:阈值(≥5 才报)、明细(分类 + 最常见模型 mono)、入口(去诊断)。
+test('概览:最近窗口失败≥5 时列出分类与最常见模型,并跳到诊断页', async () => {
+  const data = fixture();
+  data.recent_failures = {
+    total: 1000, failed: 6,
+    by_class: { no_route_error: 4, upstream_server: 2 },
+    top: [
+      { model_in: 'gpt-6.1-sol', err_class: 'no_route_error', count: 4 },
+      { model_in: 'claude-special', err_class: 'upstream_server', count: 2 },
+    ],
+  };
+  const h = await harness(data);
+  const todo = h.get('overview-todo').innerHTML;
+  assert.match(todo, /最近 1000 条请求里有 6 条失败/);
+  assert.match(todo, /未登记模型 4/, 'no_route_error 要说成人话');
+  assert.match(todo, /上游故障 2/);
+  assert.match(todo, /<span class="mono">gpt-6\.1-sol<\/span>/, '最常见模型名要出现且是 mono');
+  assert.match(todo, /data-level="err"/);
+  assert.match(todo, /data-jump="diagnostics"/);
+  assert.match(todo, /去诊断/);
+});
+
+test('概览:失败少于 5 条或服务端没有该字段时,不出现失败提醒', async () => {
+  const few = fixture();
+  few.recent_failures = { total: 1000, failed: 4, by_class: { no_route_error: 4 }, top: [{ model_in: 'm', err_class: 'no_route_error', count: 4 }] };
+  const h = await harness(few);
+  assert.doesNotMatch(h.get('overview-todo').innerHTML, /条失败/);
+
+  const none = await harness(fixture());
+  assert.doesNotMatch(none.get('overview-todo').innerHTML, /条失败/, '旧服务端没有 recent_failures 时整条不出现');
+});
+
+// ---------------------------------------------------------------- 生效 Key 的三种生效方式
+test('Claude 直连切换生效 Key:提示要点「直连此渠道」才会写进 Claude Code', async () => {
+  const h = await harness();
+  await h.run("setActiveKey('a1','k1')");
+  const t = h.get('toast');
+  assert.equal(t.className, 'ok');
+  assert.match(t.textContent, /渠道账号已保存/);
+  assert.match(t.textContent, /直连此渠道/);
+  assert.match(t.textContent, /Claude Code/);
+  assert.doesNotMatch(t.textContent, /立刻跟着用新 Key/, '直连客户端读的是磁盘上的 Key,不能承诺立刻生效');
+});
+
+test('Claude 路由模式切换生效 Key:仍然提示立刻跟着用新 Key', async () => {
+  const data = fixture();
+  data.live.claude.router = true;
+  const h = await harness(data);
+  await h.run("setActiveKey('a1','k1')");
+  const t = h.get('toast');
+  assert.equal(t.className, 'ok');
+  assert.match(t.textContent, /已切换生效 Key/);
+  assert.match(t.textContent, /立刻跟着用新 Key/);
+});
+
+// ---------------------------------------------------------------- 渠道弹窗:寻址别名
+test('渠道弹窗:寻址别名 slug 回填、有说明,并随保存一起提交', async () => {
+  assert.match(html, /<label for="m-slug">寻址别名<\/label>/);
+  assert.match(html, /id="m-slug"[^>]*placeholder="agentrouter"/);
+  assert.match(html, /provider\/model 形式寻址，例如 agentrouter\/gpt-6\.1-sol；留空则按渠道名自动匹配/);
+
+  const data = fixture();
+  data.providers.claude[0].slug = 'alpha-gw';
+  const h = await harness(data);
+  h.run("openProvider('a1')");
+  assert.equal(h.get('m-slug').value, 'alpha-gw', '编辑时回填已保存的 slug');
+
+  h.get('m-slug').value = 'agentrouter';
+  await h.run('saveProvider()');
+  const put = h.requests.findLast(r => r.url === '/api/providers/a1' && r.method === 'PUT');
+  assert.ok(put, '保存走渠道 PUT');
+  assert.equal(put.body.slug, 'agentrouter');
+
+  // 新建渠道留空 = 后端按渠道名自动匹配;字段照样随 POST 提交(后端校验小写与长度)。
+  h.run('openProvider()');
+  assert.equal(h.get('m-slug').value, '', '新建时别名留空');
+  h.get('m-name').value = 'New'; h.get('m-base').value = 'https://new.example';
+  h.get('m-key').value = 'sk-test';
+  h.get('m-slug').value = 'new-gw';
+  await h.run('saveProvider()');
+  const post = h.requests.findLast(r => r.url === '/api/providers' && r.method === 'POST');
+  assert.ok(post, '新建走渠道 POST');
+  assert.equal(post.body.slug, 'new-gw');
 });
 
 // Mixrouter.app 用 WKWebView。子节点增删、选中和 hidden 变化不保证触发 :has 重算,

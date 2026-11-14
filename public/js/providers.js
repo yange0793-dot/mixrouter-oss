@@ -314,7 +314,7 @@ function openProvider(id) {
   $('m-description').textContent = isCodex ? '保存到渠道库后，通过渠道卡片应用到 Codex。'
     : '保存到渠道库后，通过渠道卡片写入客户端配置。Claude 模型列表第一项作为主模型。';
   $('m-base-hint').textContent = isCodex ? '（通常包含 /v1）' : '';
-  $('m-name').value = editing?.name || ''; $('m-base').value = editing?.base_url || ''; $('m-key').value = '';
+  $('m-name').value = editing?.name || ''; $('m-slug').value = editing?.slug || ''; $('m-base').value = editing?.base_url || ''; $('m-key').value = '';
   // 清单是唯一真相:渠道一旦有清单(老式单 Key 渠道也会合成一条「账号1」),顶栏那个单行
   // API Key 就不参与保存了——否则服务端会把它当成"改当前生效那把",悄悄覆盖掉账号1
   keyDraft = (editing?.keys || []).map(k => ({ id: k.id, label: k.label, key: '', masked: k.key_masked }));
@@ -385,9 +385,14 @@ async function setActiveKey(id, keyId) {
   if (!online) return toast('控制台离线，未保存切换', 'err');
   try {
     const res = await api('/api/providers/' + encodeURIComponent(id), { method: 'PUT', body: JSON.stringify({ active_key: keyId }) });
+    // 直连模式下客户端读的是已写进磁盘的 Key:Codex 要点「应用直连」,Claude 要点「直连此渠道」
+    // 重新写 ~/.claude/settings.json;只有路由模式才会在下一发请求立刻用上新 Key。
+    const claudeDirect = curApp === 'claude' && !state?.live?.claude?.router;
     toastWithBackupWarnings(curApp === 'codex' && codexConnectionMode() === 'direct'
       ? '渠道账号已保存；点击「应用直连」将新 Key 写入 Codex'
-      : '已切换生效 Key；槽位按渠道走，立刻跟着用新 Key', res);
+      : claudeDirect
+        ? '渠道账号已保存；点击「直连此渠道」会把新 Key 写入 Claude Code'
+        : '已切换生效 Key；槽位按渠道走，立刻跟着用新 Key', res);
     await refresh();
   } catch (e) { toast('切换失败：' + e.message, 'err'); await refresh(); }
 }
@@ -614,7 +619,7 @@ async function saveProvider() {
   if (!$('provider-form').reportValidity()) return;
   // 出站代理留空 = 跟随全局(服务端编辑时按空串清除),所以这里原样传 trim 后的值,不省略字段。
   const proxyUrl = $('m-proxy-url').value.trim();
-  const body = { app: editingGroup, name: $('m-name').value.trim(), base_url: $('m-base').value.trim(), api_key: keyDraft.length ? '' : $('m-key').value, note: $('m-note').value, enabled: $('m-enabled').checked, direct: $('m-direct').checked, proxy_url: proxyUrl };
+  const body = { app: editingGroup, name: $('m-name').value.trim(), slug: $('m-slug').value.trim(), base_url: $('m-base').value.trim(), api_key: keyDraft.length ? '' : $('m-key').value, note: $('m-note').value, enabled: $('m-enabled').checked, direct: $('m-direct').checked, proxy_url: proxyUrl };
   body.models = [...new Set(modelDraft.map(r => String(r.value || '').trim()).filter(Boolean))];
   if (editingGroup === 'codex') {
     body.model = $('m-model').value.trim(); body.wire_api = $('m-wire').value; body.drop_images = $('m-dropimg').checked;
