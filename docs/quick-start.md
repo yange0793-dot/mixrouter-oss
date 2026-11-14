@@ -149,6 +149,7 @@ Codex 页的「自动压缩阈值」可填 token 数、`250k` 或 `0.5m`,确认�
 | --- | --- | --- |
 | `app` | 否 | `claude`(默认)/ `codex`。决定进哪一组;建完之后**不能改组** |
 | `name` | 是 | 渠道名,须非空 |
+| `slug` | 否 | 寻址别名:小写字母、数字与 `. _ -`,最长 32。用于 `slug/模型名` 形式的请求;留空时按归一化渠道名匹配 |
 | `base_url` | 是 | 合法 `http(s)` URL,尾部 `/` 会被去掉 |
 | `api_key` | Claude 组可后补 | 含换行或控制字符会被拒(400) |
 | `models` | 否 | 模型名数组;Claude 组第一项是主模型,支持 `[1M]` 后缀;Codex 组是可选的登记候选列表 |
@@ -158,7 +159,7 @@ Codex 页的「自动压缩阈值」可填 token 数、`250k` 或 `0.5m`,确认�
 | `ua` | 否 | 渠道级 User-Agent,压过客户端自己的 UA |
 | `direct` | 否 | `true` = Mixrouter 请求该渠道时绕过出站代理;与 Codex 客户端直连是两个独立设置 |
 | `enabled` | 否 | 默认启用 |
-| `keys` | 否 | 多 Key 清单 `[{id,label,key}]`;建渠道时给了就取第一项当生效 Key |
+| `keys` | 否 | 多 Key 清单 `[{id,label,key,enabled}]`;建渠道时给了就取第一项当生效 Key,`enabled: false` 的 Key 保存后保持停用 |
 
 各字段的完整形状与模板可以直接照抄 `providers.example.json`(仓库根有配套的 `routes.example.json`)。
 

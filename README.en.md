@@ -47,9 +47,10 @@ Not a good fit:
   `/v1/chat/completions` all go to `127.0.0.1:8787` and are dispatched by exact model name.
 - **Fixed selection order.** A recognised compaction request, then a slot alias
   (`mixr-<slot>`), then the single enabled and valid provider that registered that exact model
-  name. There is no substring matching, no configurable default route, and no picking one
-  candidate for you: an unregistered model or two providers registering the same model fail
-  explicitly with the reason.
+  name, then a `provider/model` prefix fallback. There is no substring matching, no configurable
+  default route, and no picking one candidate for you: an unregistered model, an unresolvable
+  prefix, or two providers registering the same model fail explicitly with the reason. A prefix
+  is a provider id, the provider's addressing alias, or its normalised display name.
 - **In-process protocol translation.** Models that only sit behind OpenAI-style endpoints can
   still serve Claude Code. Requests to a provider marked `wire_api: responses` are translated to
   Responses; `wire_api: chat` is translated to Chat Completions. No second proxy on the client
