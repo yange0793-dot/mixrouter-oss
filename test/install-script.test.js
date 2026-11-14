@@ -264,13 +264,35 @@ test('--apply 的发布物不含数据文件与日志,且带 RELEASE.json 清单
   assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
   const releaseDir = fs.readlinkSync(path.join(prefix, 'releases', 'current'));
 
-  for (const banned of ['providers.json', 'routes.json', 'slots.json', 'sessions.json', 'logs', '.run', '.git']) {
+  for (const banned of ['providers.json', 'routes.json', 'slots.json', 'sessions.json', 'logs', '.git']) {
     assert.ok(!fs.existsSync(path.join(releaseDir, banned)), `发布物里不该有 ${banned}`);
   }
+  // .run 里**只允许**有安装脚本写的数据目录指针;pid、日志等运行状态仍由运行时自己建。
+  assert.deepEqual(fs.readdirSync(path.join(releaseDir, '.run')), ['data-dir'],
+    '发布目录的 .run 里只该有 data-dir 指针');
   const manifest = JSON.parse(fs.readFileSync(path.join(releaseDir, 'RELEASE.json'), 'utf8'));
   assert.equal(typeof manifest.version, 'string');
   assert.match(manifest.code_revision, /^[0-9a-f]{64}$/, 'RELEASE.json 应记下源码修订(与 mixctl status 同一份哈希)');
   assert.equal(manifest.data_dir, path.join(prefix, 'data'), '清单里的数据目录应指向固定数据目录');
+});
+
+test('--apply 在发布目录写数据目录指针:一行绝对路径、0600,CLI 不依赖 plist 环境', async t => {
+  const { home, prefix } = fixture(t);
+  const { proxy, ui } = await twoPorts();
+  const r = runScript(['--apply', '--yes', '--port', proxy, '--ui-port', ui], { home });
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  const releaseDir = fs.readlinkSync(path.join(prefix, 'releases', 'current'));
+  const pointer = path.join(releaseDir, '.run', 'data-dir');
+  const dataDir = path.join(prefix, 'data');
+  assert.equal(fs.readFileSync(pointer, 'utf8'), dataDir + '\n', '指针内容应是一行固定数据目录');
+  assert.equal(fs.statSync(pointer).mode & 0o777, 0o600, '指针文件必须是 0600');
+  // 指向的目录必须真的存在,否则运行时解析指针会当成无效内容回落。
+  assert.ok(fs.statSync(dataDir).isDirectory());
+  // 再跑一次:内容一致就不重写(原子写会换 inode;这里用内容与"已存在"提示双重确认)。
+  const second = runScript(['--apply', '--yes', '--port', proxy, '--ui-port', ui], { home });
+  assert.equal(second.status, 0, `${second.stdout}\n${second.stderr}`);
+  assert.equal(fs.readFileSync(pointer, 'utf8'), dataDir + '\n');
+  assert.ok((second.stdout + second.stderr).includes('数据目录指针已存在且一致'), '重复安装不该重写指针');
 });
 
 test('--apply 把数据目录建在安装根下,不在发布目录里', async t => {

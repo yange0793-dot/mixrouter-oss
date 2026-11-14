@@ -1762,3 +1762,50 @@ test('旧耗时列偏好迁移到延迟组，保留其它隐藏列与排序，�
   assert.equal(h.state.hiddenColumns.includes('provider'), true);
   assert.equal(h.state.hiddenColumns.includes('ttfb_ms'), true);
 });
+
+// 窄屏:请求明细改成卡片行(与 observe.css 的会话表同一做法),DOM 与列定义不变,只换排版。
+test('窄屏请求表:≤560px 卡片规则齐全,行仍是带 data-column 的原单元格', async () => {
+  const h = harness();
+  await h.run('loadUsage()');
+  assert.equal(h.get('usage-detail-panel').attributes['aria-labelledby'], 'usage-tab-requests',
+    '卡片规则只在请求页签生效');
+  const row = /<tr>[\s\S]*?<\/tr>/.exec(h.get('usage-rows').innerHTML)[0];
+  const keys = [...row.matchAll(/<td data-column="([^"]+)"/g)].map(match => match[1]);
+  assert.deepEqual(keys, ['ts', 'app', 'provider', 'model', 'in', 'out', 'cache_read', 'status',
+    'latency', 'speed_tps', 'first_event_ms', 'ttfb_ms', 'decode_tps', 'speed_tpm'],
+  '每格仍带 data-column,卡片排版按属性选格');
+  assert.equal((row.match(/<tr>/g) || []).length, 1, '一行仍是单个 tr');
+  assert.match(row, /data-column="status"[^>]*><span class="badge ok/, '状态徽章留在状态格');
+
+  // 取出含卡片规则的那个 ≤560px 媒体块(卡在括号配对里,不吃到别的断点规则)。
+  const css = fs.readFileSync(path.join(ROOT, 'public/styles/usage.css'), 'utf8');
+  const marker = css.indexOf('td[data-column="status"]');
+  assert.ok(marker >= 0, '找不到卡片的状态格规则');
+  const start = css.lastIndexOf('@media (max-width: 560px)', marker);
+  assert.ok(start >= 0, '卡片规则写在 ≤560px 媒体查询里');
+  let depth = 0;
+  let end = -1;
+  for (let i = css.indexOf('{', start); i < css.length; i += 1) {
+    if (css[i] === '{') depth += 1;
+    else if (css[i] === '}') {
+      depth -= 1;
+      if (!depth) { end = i; break; }
+    }
+  }
+  const block = css.slice(start, end + 1);
+  assert.match(block, /\.usage-table\[aria-labelledby="usage-tab-requests"\] thead \{[^}]*clip: rect\(0 0 0 0\)/,
+    '窄屏表头只留给读屏');
+  assert.match(block, /tbody tr \{[^}]*display: grid/, '每行一张卡(四列网格)');
+  assert.match(block, /td\[data-column="ts"\] \{[^}]*grid-area: 1 \/ 1 \/ 2 \/ 4/, '第一行:时间占左三列');
+  assert.match(block, /td\[data-column="status"\] \{[^}]*grid-area: 1 \/ 4 \/ 2 \/ 5[^}]*justify-self: end/, '第一行:状态靠右');
+  assert.match(block, /td\[data-column="model"\] \{[^}]*overflow-wrap: break-word/, '模型名只在词边界换行');
+  assert.doesNotMatch(block, /word-break: break-all/, '不逐字拆模型名');
+  for (const [column, label, area] of [
+    ['in', '输入', '3 / 1 / 4 / 2'], ['out', '输出', '3 / 2 / 4 / 3'],
+    ['cache_read', '缓存', '3 / 3 / 4 / 4'], ['latency', '延迟', '3 / 4 / 4 / 5']]) {
+    assert.match(block, new RegExp(`td\\[data-column="${column}"\\]::before \\{ content: "${label}"`), `${label}列的小标签`);
+    assert.match(block, new RegExp(`td\\[data-column="${column}"\\] \\{ grid-area: ${area}`), `${label}列的格位`);
+  }
+  assert.doesNotMatch(block, /#view-usage \.usage-table(?!\[aria-labelledby="usage-tab-requests"\])/,
+    '卡片规则都限定请求页签,供应商/模型汇总表不跟着变卡片');
+});

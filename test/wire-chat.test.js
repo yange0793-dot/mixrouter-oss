@@ -749,3 +749,42 @@ test('请求:swe-2-max 不收 reasoning_effort,chat 线只丢这一个字段', (
   assert.strictEqual(wire.anthropicToChat({ model: 'deepseek-flash', max_tokens: 100,
     output_config: { effort: 'low' }, messages: [{ role: 'user', content: '你好' }] }).reasoning_effort, 'low');
 });
+
+// ---------------------------------------------------------------- EOF 残行
+// 最后一行 data: 没有换行收尾(上游把 [DONE]/finish_reason 和 res.end() 写在一起)。
+test('流式:末行 [DONE] 没有换行收尾,EOF 仍按成功收尾', async () => {
+  const up = upstreamFake(); const res = sink();
+  const p = relay(up, res, { mayRetry: false });
+  up.write(sse({ id: 'c1', choices: [{ index: 0, delta: { content: '好' } }] }));
+  up.write(sse({ id: 'c1', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 5, completion_tokens: 1 } }));
+  up.end('data: [DONE]'); // 无换行
+  const r = await p;
+
+  assert.strictEqual(r.aborted, false, '残行里的 [DONE] 是正式终态');
+  assert.ok(res.text.includes('event: message_stop'));
+  assert.strictEqual(r.usage.output_tokens, 1);
+});
+
+test('流式:末行只有 finish_reason 且没有换行收尾,EOF 仍按成功收尾', async () => {
+  const up = upstreamFake(); const res = sink();
+  const p = relay(up, res, { mayRetry: false });
+  up.write(sse({ id: 'c1', choices: [{ index: 0, delta: { content: '好' } }] }));
+  up.end(`data: ${JSON.stringify({ id: 'c1', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}`);
+  const r = await p;
+
+  assert.strictEqual(r.aborted, false);
+  assert.ok(res.text.includes('event: message_stop'));
+});
+
+test('流式:末行 JSON 真截断仍判夭折', async () => {
+  const up = upstreamFake(); const res = sink();
+  const p = relay(up, res, { mayRetry: false });
+  up.write(sse({ id: 'c1', choices: [{ index: 0, delta: { content: '半截' } }] }));
+  up.end('data: {"choices":[{"delta":{"content":"半截"');
+  const r = await p;
+
+  assert.strictEqual(r.aborted, true);
+  assert.ok(!res.text.includes('event: message_stop'));
+  assert.ok(res.text.includes('event: error'));
+});

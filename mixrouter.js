@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 'use strict';
-const VERSION = '3.11.0';
+const VERSION = '3.12.0';
 const { createApplication } = require('./lib/application');
 const application = createApplication({ root: __dirname, version: VERSION });
 

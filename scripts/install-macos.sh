@@ -351,7 +351,7 @@ printf '%-18s %s\n' "端口" "代理 ${PORT_PROXY} / 控制台 ${PORT_UI}"
 printf '%-18s %s\n' "发布内容" "按白名单复制 $(printf '%s' "$RELEASE_ITEMS" | tr ':' ' ')"
 printf '%-18s %s\n' "发布物禁止项" "出现即失败:$(printf '%s' "$FORBIDDEN" | tr ':' ' ')"
 printf '\n写入范围(仅此四处):\n'
-note "① $RELEASE_DIR(代码 + launchd/ 下的建议服务配置 + RELEASE.json)"
+note "① $RELEASE_DIR(代码 + launchd/ 下的建议服务配置 + RELEASE.json + .run/data-dir 指针)"
 note "② $DATA_DIR 与 $LOG_DIR(只建目录,已存在的文件一律不动)"
 note "③ $BACKUP_ROOT(只建目录)"
 note "④ $CURRENT_LINK 符号链接(指向新发布目录;不重启、不影响正在运行的服务)"
@@ -483,6 +483,28 @@ note "$DATA_DIR"
 note "$LOG_DIR"
 note "$BACKUP_ROOT"
 note "已存在的配置文件一个都没动、没读、没备份"
+
+# 数据目录指针:写在**发布目录**的 .run/ 下(这是发布目录里唯一的运行状态文件,
+# 与 launchd-run.sh 的 pid 同处)。plist 的 MIXR_DATA_DIR 只覆盖 launchd 拉起的服务进程;
+# 从发布目录手动运行 ./mixctl 时没有那份环境,靠这个指针才能找到同一份数据。
+# 重复安装时内容一致就跳过,避免无谓地改动已就位的发布目录。
+POINTER_RESULT="$("$NODE" -e '
+  const fs = require("fs");
+  const path = require("path");
+  const paths = require(process.argv[1]);
+  const root = process.argv[2];
+  const dir = path.resolve(process.argv[3]);
+  const file = paths.dataDirPointerFile(root);
+  let current = null;
+  try { current = fs.readFileSync(file, "utf8").trim(); } catch {}
+  if (current === dir) { process.stdout.write("unchanged"); }
+  else { paths.writeDataDirPointer(root, dir); process.stdout.write("written"); }
+' "$SOURCE/lib/paths.js" "$RELEASE_DIR" "$DATA_DIR")" || die "写入数据目录指针失败"
+if [ "$POINTER_RESULT" = "written" ]; then
+  note "数据目录指针已写入:$RELEASE_DIR/.run/data-dir → $DATA_DIR"
+else
+  note "数据目录指针已存在且一致:$RELEASE_DIR/.run/data-dir → $DATA_DIR"
+fi
 
 step "更新 current 符号链接"
 PREVIOUS_TARGET=""

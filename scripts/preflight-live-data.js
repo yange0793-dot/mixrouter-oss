@@ -22,17 +22,34 @@ if (!fs.existsSync(path.join(LIVE, 'mixrouter.js'))) {
   process.exit(2);
 }
 const DEV = path.resolve(__dirname, '..');
+let paths;
+try { paths = require(path.join(DEV, 'lib', 'paths')); }
+catch (e) { console.log(`无法加载 ${DEV}/lib/paths.js:${e.message}`); process.exit(2); }
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mixr-preflight-'));
 const home = path.join(root, 'home');
 const data = path.join(root, 'data');
 for (const d of [home, data, path.join(root, 'img'), path.join(root, 'tmp')]) fs.mkdirSync(d, { recursive: true });
 
+// 线上数据可能已经迁移到代码目录之外:优先级与运行时完全相同(env → .run/data-dir 指针 → 代码目录)。
+// 这里用**新版代码**的 paths.js 解析,预检读到的就是部署后新进程会读的那一份。
+const lineSource = paths.resolveDataDir(process.env, LIVE);
+const LIVE_DATA = lineSource.dir;
+const sourceLabel = lineSource.source === 'env' ? '环境变量 MIXR_DATA_DIR'
+  : lineSource.source === 'pointer' ? `指针文件 ${lineSource.pointer.file}`
+    : '默认(代码目录)';
+
 // 复制线上数据(只读来源),让新代码去写副本
 let copied = [];
-for (const f of ['providers.json', 'routes.json', 'slots.json', 'bots.json', 'profiles.json', 'model-specs.json', 'sessions.json']) {
-  const s = path.join(LIVE, f);
+for (const f of paths.RUNTIME_DATA_FILES) {
+  const s = path.join(LIVE_DATA, f);
   if (fs.existsSync(s)) { fs.copyFileSync(s, path.join(data, f)); copied.push(f); }
+}
+if (!copied.length) {
+  console.log(`FAIL 数据目录 ${LIVE_DATA}(来源:${sourceLabel})里没有任何已知数据文件。`);
+  console.log('     迁移后数据不在代码目录:先运行 mixctl data-dir 核对来源,再重跑预检。');
+  fs.rmSync(root, { recursive: true, force: true });
+  process.exit(2);
 }
 
 process.env.HOME = home;
@@ -126,7 +143,7 @@ const get = (port, p) => new Promise(resolve => {
 
   let bad = 0;
   for (const r of results) { if (!r.pass) bad++; console.log(`${r.pass ? 'PASS' : 'FAIL'}  ${r.name}${r.detail ? '  [' + r.detail + ']' : ''}`); }
-  console.log(`\n数据副本: ${copied.join(', ')}`);
+  console.log(`\n数据副本: ${LIVE_DATA}(来源:${sourceLabel})→ ${copied.join(', ')}`);
   console.log(`预检 ${results.length - bad}/${results.length} 通过`);
   fs.rmSync(root, { recursive: true, force: true });
   process.exit(bad ? 1 : 0);

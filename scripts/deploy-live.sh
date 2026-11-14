@@ -12,6 +12,8 @@
 #   线上目录因此**必须**由 MIXR_LIVE_DIR 显式给出；其余默认值都能安全推导或被覆盖。
 #   MIXR_BRANCH（默认 main）/ MIXR_REF / MIXR_LAUNCHD_LABEL（默认 com.<当前用户>.mixrouter）/
 #   MIXR_DEV_DIR（预检脚本所在仓库，默认本脚本所在仓库）。
+#   数据目录按 lib/paths.js 的同一套优先级解析：MIXR_DATA_DIR → <线上目录>/.run/data-dir 指针 →
+#   线上目录本身；备份读解析结果，不再假设数据一定在代码目录里。
 #
 # 为什么要有这个脚本，而不是手敲几条命令：
 #   线上服务既供控制台，也是**本机 Claude Code 的出站通道**（~/.claude/settings.json 的
@@ -35,8 +37,12 @@ HEALTH_TIMEOUT="${MIXR_HEALTH_TIMEOUT:-60}"
 PROXY_PORT="${MIXR_PROXY_PORT:-8787}"
 UI_PORT="${MIXR_UI_PORT:-8788}"
 LABEL="${MIXR_LAUNCHD_LABEL:-com.$(id -un).mixrouter}"
+# RUN_DIR / 台账始终在**代码目录**:它们描述"这份代码的部署状态",不跟数据目录走。
 RUN_DIR="$LIVE_DIR/.run"
 STATE_FILE="$RUN_DIR/deploy-state.json"
+# 预检脚本来自开发副本(默认本脚本所在仓库);数据目录解析也用它 —— 路径规则只有
+# lib/paths.js 一处,shell 里不再拼 `MIXR_DATA_DIR || LIVE_DIR`。
+DEV_DIR="${MIXR_DEV_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 APPLY=0; MODE="deploy"; TARGET=""
 while [ $# -gt 0 ]; do
@@ -59,6 +65,32 @@ if [ -z "$LIVE_DIR" ]; then
   printf '  MIXR_LIVE_DIR="$HOME/src/mixrouter" ./scripts/deploy-live.sh\n' >&2
   exit 2
 fi
+NODE="$(command -v node 2>/dev/null || true)"
+[ -n "$NODE" ] || die "PATH 里找不到 node,无法解析数据目录(部署脚本需要 node >= 18)"
+
+# 数据目录解析的**唯一**入口:调 lib/paths.js 的 resolveDataDir(env → .run/data-dir 指针 → 代码目录)。
+# 不在 shell 里重写这套优先级 —— 迁移后指针文件才是真值,任何一处自己拼 `MIXR_DATA_DIR || LIVE_DIR`
+# 都会在迁移后安静地指向旧目录,而这里要的正是"找不到就明确报错"。
+resolve_data_dir() {
+  "$NODE" -e '
+    const paths = require(process.argv[1]);
+    const info = paths.resolveDataDir(process.env, process.argv[2]);
+    process.stdout.write(`DIR=${info.dir}\nSOURCE=${info.source}\n`);
+  ' "$DEV_DIR/lib/paths.js" "$LIVE_DIR" 2>/dev/null
+}
+DATA_INFO="$(resolve_data_dir || true)"
+DATA_DIR="$(printf '%s\n' "$DATA_INFO" | sed -n 's/^DIR=//p')"
+DATA_SOURCE="$(printf '%s\n' "$DATA_INFO" | sed -n 's/^SOURCE=//p')"
+[ -n "$DATA_DIR" ] || die "无法解析数据目录:$DEV_DIR/lib/paths.js 不可用或 resolveDataDir 未实现(需要新版源码)"
+case "$DATA_SOURCE" in
+  env) DATA_SOURCE_LABEL="环境变量 MIXR_DATA_DIR" ;;
+  pointer) DATA_SOURCE_LABEL="指针文件 $LIVE_DIR/.run/data-dir" ;;
+  *) DATA_SOURCE_LABEL="默认(代码目录)" ;;
+esac
+# 备份清单同样从 paths 取,避免部署脚本与 mixctl data-dir 各维护一份文件名表。
+DATA_FILES="$("$NODE" -e 'process.stdout.write(require(process.argv[1]).RUNTIME_DATA_FILES.join(" "))' \
+  "$DEV_DIR/lib/paths.js" 2>/dev/null || true)"
+[ -n "$DATA_FILES" ] || die "无法从 $DEV_DIR/lib/paths.js 读取 RUNTIME_DATA_FILES(需要新版源码)"
 # 切过代码之后再失败,必须把树放回 OLD_COMMIT —— 否则"半切换"(新版代码/旧版资源或反之)
 # 会让控制台白屏,而人不在场。checkout 本身失败也要报出来,不静默。
 restore_and_die() {
@@ -99,6 +131,7 @@ else
     || die "解析不了默认引用:$REF(是不是还没 fetch 到?)"
 fi
 say "线上目录 : $LIVE_DIR"
+say "数据目录 : $DATA_DIR(来源:$DATA_SOURCE_LABEL)"
 say "当前提交 : $OLD_COMMIT"
 say "目标提交 : $NEW_COMMIT"
 if git -C "$LIVE_DIR" cat-file -e "$NEW_COMMIT^{commit}" 2>/dev/null; then :; else die "目标提交不存在:$NEW_COMMIT"; fi
@@ -114,10 +147,10 @@ say "控制台端口 $UI_PORT : $(lsof -ti tcp:$UI_PORT 2>/dev/null | head -1 ||
 # 上线前预检:新版代码吃**线上数据副本**,验能加载 + 控制台资源齐。
 step "2/8 预检(新版代码 × 线上数据副本,临时端口)"
 # 预检脚本默认从**本脚本所在仓库**取(开发副本),可用 MIXR_DEV_DIR 指到另一份源码;
-# 两者都没有就直接跳过 —— 不拿别人的目录去猜。
-DEV_DIR="${MIXR_DEV_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+# 两者都没有就直接跳过 —— 不拿别人的目录去猜。数据目录显式传进去:解析结果与上面那份
+# 必须一致,预检读的是**同一批数据**,不是"代码目录里恰好还有一份旧数据"。
 if [ -f "$DEV_DIR/scripts/preflight-live-data.js" ]; then
-  MIXR_LIVE_DIR="$LIVE_DIR" node "$DEV_DIR/scripts/preflight-live-data.js" || die "预检未通过,不上线"
+  MIXR_LIVE_DIR="$LIVE_DIR" MIXR_DATA_DIR="$DATA_DIR" "$NODE" "$DEV_DIR/scripts/preflight-live-data.js" || die "预检未通过,不上线"
 else
   say "跳过预检:找不到 $DEV_DIR/scripts/preflight-live-data.js(MIXR_DEV_DIR 可指定)"
 fi
@@ -132,10 +165,23 @@ fi
 step "3/8 备份数据与现场"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_DIR="$LIVE_DIR/backups/deploy-$STAMP"
-mkdir -p "$BACKUP_DIR"
-for f in providers.json routes.json slots.json bots.json profiles.json model-specs.json dsh.json sessions.json; do
-  [ -f "$LIVE_DIR/$f" ] && cp -p "$LIVE_DIR/$f" "$BACKUP_DIR/$f"
+# 先在**解析出的数据目录**里确认真有数据,再动手。数据目录与代码目录解耦之后,
+# "$LIVE_DIR/$f" 可能一个都不存在;而"备份 0 个文件也算成功"会让下一步在没有任何
+# 备份的情况下 checkout,失败时无路可退。所以这里是硬失败,不是提示。
+FOUND_FILES=""
+FOUND_COUNT=0
+for f in $DATA_FILES; do
+  if [ -f "$DATA_DIR/$f" ]; then
+    FOUND_FILES="$FOUND_FILES $f"
+    FOUND_COUNT=$((FOUND_COUNT + 1))
+  fi
 done
+[ "$FOUND_COUNT" -gt 0 ] || die "数据目录 $DATA_DIR(来源:$DATA_SOURCE_LABEL)里找不到任何已知数据文件。迁移后数据不在代码目录:先运行 mixctl data-dir 核对来源,再重试(不接受备份 0 个文件就算成功)"
+mkdir -p "$BACKUP_DIR"
+for f in $FOUND_FILES; do
+  cp -p "$DATA_DIR/$f" "$BACKUP_DIR/$f"
+done
+say "已备份 $FOUND_COUNT 个数据文件:$DATA_DIR → $BACKUP_DIR"
 # 未跟踪文件(会被 checkout 拦住或被 clean 删掉的)先搬到备份区,不丢
 git -C "$LIVE_DIR" status --porcelain --untracked-files=all | awk '$1=="??"{print $2}' > "$BACKUP_DIR/untracked.list" || true
 if [ -s "$BACKUP_DIR/untracked.list" ]; then
@@ -152,10 +198,14 @@ if [ -s "$BACKUP_DIR/untracked.list" ]; then
   done < "$BACKUP_DIR/untracked.list"
 fi
 mkdir -p "$RUN_DIR"
-python3 - "$STATE_FILE" "$OLD_COMMIT" "$NEW_COMMIT" "$BACKUP_DIR" <<'PY'
+# 台账记下"这次部署用了哪个数据目录、来源是什么":迁移后只看代码目录会找不到数据,
+# 而台账是事后核对"当时到底读写的是哪一份"的第一手证据。
+python3 - "$STATE_FILE" "$OLD_COMMIT" "$NEW_COMMIT" "$BACKUP_DIR" "$DATA_DIR" "$DATA_SOURCE" <<'PY'
 import json,sys,time
-path,old,new,bak=sys.argv[1:5]
-json.dump({"previous_commit":old,"target_commit":new,"backup_dir":bak,"at":time.strftime("%Y-%m-%dT%H:%M:%S")},open(path,"w"),ensure_ascii=False,indent=2)
+path,old,new,bak,data_dir,data_source=sys.argv[1:7]
+json.dump({"previous_commit":old,"target_commit":new,"backup_dir":bak,
+           "data_dir":data_dir,"data_dir_source":data_source,
+           "at":time.strftime("%Y-%m-%dT%H:%M:%S")},open(path,"w"),ensure_ascii=False,indent=2)
 PY
 say "数据已备份:$BACKUP_DIR"
 say "上次提交已记:$STATE_FILE"
@@ -203,6 +253,39 @@ wait_healthy() {
   return 1
 }
 
+running_revision() {
+  curl -fsS --max-time 8 "http://127.0.0.1:$UI_PORT/api/state" 2>/dev/null \
+    | python3 -c 'import json,sys;print(json.load(sys.stdin).get("code_revision",""))' 2>/dev/null || true
+}
+
+# 把"当前真正在跑的进程"记进台账。没有这一步,台账里的 target_commit 只是"想切到哪",
+# 而不是"切成了没有";mixctl status 的过期判断也就没有 pid / 运行指纹可对。
+record_runtime() {
+  local rolled_back_to="${1:-}" pid rev
+  # pid 文件优先:launchd-run.sh 在 exec 之前写入,exec 不换 PID,它才是真正的服务进程。
+  # 端口上可能同时挂着别的持有者(旧 fd、别的监听者),lsof 只作兜底。
+  pid="$(cat "$LIVE_DIR/.run/mixrouter.pid" 2>/dev/null || true)"
+  if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+    pid="$(lsof -ti tcp:$PROXY_PORT 2>/dev/null | head -1 || true)"
+  fi
+  rev="$(running_revision)"
+  python3 - "$STATE_FILE" "$pid" "$rev" "$rolled_back_to" <<'PY'
+import json,sys,time
+path,pid,rev,rolled=sys.argv[1:5]
+try: data=json.load(open(path))
+except Exception: data={}
+if str(pid).isdigit(): data["pid"]=int(pid)
+else: data.pop("pid",None)
+if rev and rev != "?": data["code_revision"]=rev
+else: data.pop("code_revision",None)
+data["runtime_recorded_at"]=time.strftime("%Y-%m-%dT%H:%M:%S")
+if rolled:
+    data["rolled_back_to"]=rolled
+    data["rolled_back_at"]=data["runtime_recorded_at"]
+json.dump(data,open(path,"w"),ensure_ascii=False,indent=2)
+PY
+}
+
 step "5/8 重启(launchd)"
 say "重启会**短暂中断**本机出站(Claude Code 也走这里)。"
 restart_service
@@ -214,6 +297,7 @@ else
   git -C "$LIVE_DIR" checkout --quiet "$OLD_COMMIT" || say "警告:回退 checkout 失败,现场保留"
   restart_service
   if wait_healthy; then
+    record_runtime "$OLD_COMMIT" || say "警告:部署台账写入失败(不影响回退结果)"
     say "已回退到 $(git -C "$LIVE_DIR" rev-parse --short HEAD),服务恢复。"
     say "线上未升级;备份在 $BACKUP_DIR"
     exit 1
@@ -238,6 +322,7 @@ say "  运行源码修订:$REV"
 
 step "8/8 结果"
 if [ "$FAIL" -eq 0 ]; then
+  record_runtime || say "警告:部署台账写入失败(不影响上线结果;mixctl status 将无法核对本次部署)"
   say "上线完成:$(git -C "$LIVE_DIR" rev-parse --short HEAD)"
   say "回退用:./scripts/deploy-live.sh --rollback --apply"
   exit 0
@@ -245,5 +330,10 @@ fi
 say "自检有项失败 —— 自动回退"
 git -C "$LIVE_DIR" checkout --quiet "$OLD_COMMIT" || say "警告:回退 checkout 失败"
 restart_service
-wait_healthy && say "已回退到 $(git -C "$LIVE_DIR" rev-parse --short HEAD),服务恢复。" || say "回退后仍不健康,现场保留:$BACKUP_DIR"
+if wait_healthy; then
+  record_runtime "$OLD_COMMIT" || say "警告:部署台账写入失败(不影响回退结果)"
+  say "已回退到 $(git -C "$LIVE_DIR" rev-parse --short HEAD),服务恢复。"
+else
+  say "回退后仍不健康,现场保留:$BACKUP_DIR"
+fi
 exit 1

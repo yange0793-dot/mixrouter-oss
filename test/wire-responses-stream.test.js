@@ -538,3 +538,49 @@ test('思考转发:思考块之后的工具块不得把 signature 挤掉', async
   assert.strictEqual(evs.find(e => e.name === 'message_delta').json.delta.stop_reason, 'tool_use');
   assert.strictEqual(r.aborted, false);
 });
+
+// ---------------------------------------------------------------- EOF 残帧
+// 上游 res.end() 常常紧跟在最后一个事件后面:最后一条 `data:` 没有空行收尾。
+// transition 线以前只处理完整帧,残段里的 response.completed 从没被解析过。
+test('末帧 completed 没有 \\n\\n:EOF 补解析后判成功并结算 usage', async () => {
+  const up = upstreamFake(); const res = sink();
+  const p = relay(up, res, { mayRetry: false });
+  up.write(sse({ type: 'response.created', response: { id: 'r-eof', model: 'gpt-6-astra' } }));
+  up.write(sse({ type: 'response.output_text.delta', output_index: 0, delta: '答案' }));
+  up.end(`data: ${JSON.stringify({ type: 'response.completed', response: { id: 'r-eof', status: 'completed',
+    output: [], usage: { input_tokens: 12, output_tokens: 4 } } })}`); // 无收尾空行
+  const r = await p;
+
+  assert.strictEqual(r.aborted, false, '残帧是正常终态,不能记成夭折');
+  assert.strictEqual(r.retryable, false);
+  assert.strictEqual(r.usage.input_tokens, 12);
+  assert.strictEqual(r.usage.output_tokens, 4);
+  assert.ok(res.text.includes('答案'), '已经产出的正文要留给客户端');
+  assert.ok(res.text.includes('event: message_stop'));
+  assert.ok(!res.text.includes('event: error'));
+});
+
+test('末帧 JSON 真截断:EOF 补分隔符后仍判夭折', async () => {
+  const up = upstreamFake(); const res = sink();
+  const p = relay(up, res, { mayRetry: false });
+  up.write(sse({ type: 'response.output_text.delta', output_index: 0, delta: '半截' }));
+  up.end('data: {"type":"response.completed","response":{"status":"completed"');
+  const r = await p;
+
+  assert.strictEqual(r.aborted, true, '解析不出的残帧不能当成终态');
+  assert.ok(!res.text.includes('event: message_stop'), '不得伪造正常结束');
+  assert.ok(res.text.includes('event: error'));
+});
+
+// ---------------------------------------------------------------- 缓冲上限
+// 单条事件一直不闭合(上游卡死/畸形流)时,残段不能无界增长。
+test('单条事件超过 4MB 还不闭合:丢弃残段,后续帧在分隔符处重新对齐', () => {
+  const res = sink();
+  const st = new wire.AnthropicStream(res, 'gpt-6-astra', {});
+  st.feed(`data: {"type":"response.output_text.delta","delta":"${'x'.repeat(wire.SSE_BUFFER_LIMIT + 1)}`);
+  assert.strictEqual(st.buf, '', '超过上限的未闭合残段必须被丢掉');
+  // 丢弃点落在事件中间:下一块直到分隔符前都是坏 JSON,解析器忽略;之后的完整事件照常处理
+  st.feed('"}\n\ndata: {"type":"response.completed","response":{"status":"completed","usage":{}}}\n\n');
+  assert.strictEqual(st.finished, true, '重新对齐后的终态事件仍要认出');
+  assert.strictEqual(st.terminal, 'completed');
+});
