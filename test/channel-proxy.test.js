@@ -41,7 +41,7 @@ process.env.MIXR_RESPONSE_ARCHIVE = 'off';
 process.env.MIXROUTER_PORT = '0';
 process.env.MIXUI_PORT = '0';
 
-const { channelProxyUrl, upstreamAgent, transportAgent, directAgent, destroyAgents } =
+const { channelProxyUrl, parseSystemProxy, upstreamAgent, transportAgent, directAgent, destroyAgents } =
   require('../lib/upstream-proxy');
 const { fetchProviderModels } = require('../lib/provider-models');
 const { testProvider } = require('../lib/provider-test');
@@ -213,6 +213,29 @@ test('channelProxyUrl:只认非空字符串并 trim,其余一律空串', () => {
   assert.equal(channelProxyUrl({ proxy_url: ['http://127.0.0.1:7890'] }), '');
 });
 
+test('parseSystemProxy:读取 HTTPS/HTTP 系统代理,关闭项与 PAC 不猜', () => {
+  const scutil = `<dictionary> {
+  HTTPEnable : 1
+  HTTPPort : 7890
+  HTTPProxy : 127.0.0.1
+  HTTPSEnable : 1
+  HTTPSPort : 7891
+  HTTPSProxy : 127.0.0.2
+  ProxyAutoConfigEnable : 0
+}`;
+  assert.equal(parseSystemProxy(scutil), 'http://127.0.0.2:7891', 'HTTPS 代理优先');
+  assert.equal(parseSystemProxy(scutil.replace('HTTPSEnable : 1', 'HTTPSEnable : 0')), 'http://127.0.0.1:7890',
+    'HTTPS 关掉时退回 HTTP 代理');
+  assert.equal(parseSystemProxy('HTTPEnable : 0\nHTTPSEnable : 0'), '', '都关掉 = 直连');
+  assert.equal(parseSystemProxy('ProxyAutoConfigEnable : 1'), '', 'PAC 不解析');
+  assert.equal(parseSystemProxy(''), '');
+});
+
+test('channelProxyUrl:proxy_url=system 跟随传入的系统代理,VPN 关掉即直连', () => {
+  assert.equal(channelProxyUrl({ proxy_url: 'system' }, 'http://127.0.0.1:7890'), 'http://127.0.0.1:7890');
+  assert.equal(channelProxyUrl({ proxy_url: ' SYSTEM ' }, ''), '', '系统没有代理时必须回直连,不能拼出一个假地址');
+});
+
 test('upstreamAgent:direct > 渠道代理 > 环境变量 > 直连,并按代理 URL 复用同一个 agent', () => {
   const channelUrl = 'http://127.0.0.1:9';
   const envUrl = 'http://127.0.0.1:8';
@@ -264,13 +287,13 @@ test('upstreamAgent:direct > 渠道代理 > 环境变量 > 直连,并按代理 U
 test('POST /api/providers:合法的 http:// 代理地址写进渠道库(内存与落盘都有),并去掉首尾空白', async () => {
   const before = mod._state.store.claude.length;
   const created = [];
-  for (const proxy_url of ['http://127.0.0.1:7890', 'http://proxy.local:8080', '  http://127.0.0.1:7891  ']) {
+  for (const proxy_url of ['http://127.0.0.1:7890', 'http://proxy.local:8080', '  http://127.0.0.1:7891  ', 'System']) {
     const r = await request('/api/providers', 'POST', channel({ proxy_url }));
     assert.equal(r.status, 200, `${proxy_url} 应被接受: ${r.text}`);
     assert.equal(typeof r.json.id, 'string', '回包应带新建渠道的 id');
-    created.push({ id: r.json.id, expected: proxy_url.trim() });
+    created.push({ id: r.json.id, expected: proxy_url.trim() === 'System' ? 'system' : proxy_url.trim() });
   }
-  assert.equal(mod._state.store.claude.length, before + 3);
+  assert.equal(mod._state.store.claude.length, before + 4);
   const disk = readDiskStore();
   for (const { id, expected } of created) {
     const mem = findMem(id);
