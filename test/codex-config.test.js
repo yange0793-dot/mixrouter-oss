@@ -151,6 +151,29 @@ test('Codex catalog prefers the exact model declaration over the canonical names
   assert.deepEqual(main.supported_reasoning_levels, [{ effort: 'max' }]);
 });
 
+test('router catalog can recover a managed catalog without its source sidecar', t => {
+  const directory = fs.mkdtempSync(path.join(temporary, 'sidecar-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const managed = path.join(directory, 'mixrouter-model-catalog.json');
+  fs.writeFileSync(managed, JSON.stringify({ models: [model] }));
+  const document = config.parse('model_catalog_json = "mixrouter-model-catalog.json"\n');
+  const prepared = config.prepareCatalog(path.join(directory, 'config.toml'), document, [
+    { alias: 'mixr-main', model: model.slug, provider: 'native', enabled: true, name: 'main' },
+  ]);
+  const generated = JSON.parse(prepared.content);
+  assert.equal(generated.models.find(item => item.slug === 'mixr-main').context_window, model.context_window);
+  assert.equal(prepared.source, null);
+});
+
+test('status never treats an unknown target placeholder as a capability declaration', () => {
+  const placeholder = { slug: 'unknown-model', x_mixrouter: { capabilities_known: false } };
+  fs.writeFileSync(path.join(temporary, 'catalog.json'), JSON.stringify({ models: [model, placeholder] }));
+  const live = router.liveState().codex;
+  assert.equal(live.reviewer.capabilities_known, false);
+  assert.equal(live.reviewer.metadata_source, '');
+  assert.equal(live.reviewer.context_window, null);
+});
+
 test('Codex direct catalog retains Fast from a namespaced canonical model declaration', () => {
   const canonical = { ...model, slug: 'auto/known-model', service_tiers: [{ id: 'priority', name: 'Fast' }] };
   fs.writeFileSync(path.join(temporary, 'catalog.json'), JSON.stringify({ models: [canonical] }));
@@ -276,6 +299,56 @@ test('Codex direct keeps newer real-model metadata even when the original catalo
   assert.equal(document.get('service_tier'), 'fast');
   assert.equal(document.get('model_reasoning_effort'), 'max');
   assert.equal(fs.readFileSync(sourceFile, 'utf8'), originalSource);
+});
+
+test('Codex direct recovers Fast from restored source metadata over an unknown placeholder', () => {
+  const sourceFile = path.join(temporary, 'catalog.json');
+  const declared = { ...model, service_tiers: [{ id: 'priority', name: 'Fast' }],
+    additional_speed_tiers: ['fast'], default_service_tier: 'priority' };
+  fs.writeFileSync(sourceFile, JSON.stringify({ models: [declared] }));
+  fs.writeFileSync(path.join(temporary, 'mixrouter-model-catalog.json'), JSON.stringify({
+    models: [{ slug: model.slug, supported_reasoning_levels: [], base_instructions: 'Keep local instructions',
+      x_mixrouter: { capabilities_known: false } }],
+  }));
+  fs.writeFileSync(path.join(temporary, 'mixrouter-model-catalog.source.json'), JSON.stringify({ source: sourceFile }));
+  fs.writeFileSync(codexFile, initial().replace('model_catalog_json = "catalog.json"',
+    'model_catalog_json = "mixrouter-model-catalog.json"\nservice_tier = "fast"'));
+
+  router.switchCodex(provider);
+  router.updateCodexConfig({ action: 'sync_catalog', revision: router.liveState().codex.revision });
+  const entries = JSON.parse(fs.readFileSync(path.join(temporary, 'mixrouter-model-catalog.json'), 'utf8')).models;
+  const restored = entries.find(item => item.slug === model.slug);
+  assert.deepEqual(restored.service_tiers, declared.service_tiers);
+  assert.deepEqual(restored.additional_speed_tiers, ['fast']);
+  assert.deepEqual(restored.supported_reasoning_levels, model.supported_reasoning_levels);
+  assert.equal(restored.base_instructions, 'Keep local instructions');
+  assert.notEqual(restored.x_mixrouter?.capabilities_known, false);
+  assert.equal(config.read(codexFile).document.get('service_tier'), 'fast');
+});
+
+test('Codex speed selection persists both switches across direct and routed model changes', () => {
+  for (const tier of ['ultrafast', 'fast']) {
+    const result = router.updateCodexConfig({ action: 'service_tier', service_tier: tier,
+      revision: router.liveState().codex.revision });
+    assert.equal(result.restart_required, true);
+    assert.equal(result.codex.service_tier, tier);
+    assert.equal(result.codex.fast_mode, true);
+    assert.equal(result.codex.ultrafast_mode, tier === 'ultrafast');
+    router.switchCodex(provider);
+    router.updateCodexConfig({ action: 'direct_models', model: 'known-model',
+      revision: router.liveState().codex.revision });
+    router.switchCodexRouter();
+    const document = config.read(codexFile).document;
+    assert.equal(document.get('service_tier'), tier);
+    assert.equal(document.get('features', 'fast_mode'), true);
+    assert.equal(document.get('features', 'ultrafast_mode'), tier === 'ultrafast');
+    assert.equal(document.get('model_reasoning_effort'), 'max');
+    assert.equal(fs.readFileSync(claudeFile, 'utf8'), originalClaude);
+  }
+  const text = fs.readFileSync(codexFile, 'utf8');
+  assert.throws(() => router.updateCodexConfig({ action: 'service_tier', service_tier: 'off',
+    revision: router.liveState().codex.revision }), /fast 或 ultrafast/);
+  assert.equal(fs.readFileSync(codexFile, 'utf8'), text);
 });
 
 test('Codex preserves providers referenced by profiles and blocks ambiguous profile writes', () => {

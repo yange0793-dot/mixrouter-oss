@@ -246,6 +246,11 @@ async function harness(data = fixture(), opts = {}) {
             return { ok: true, json: async () => ({ ok: true, codex: structuredClone(data.live.codex),
               ...(opts.codexRuntime ? { runtime: opts.codexRuntime } : {}) }) };
           }
+          if (body.action === 'service_tier') {
+            Object.assign(data.live.codex, { service_tier: body.service_tier, fast_mode: true,
+              ultrafast_mode: body.service_tier === 'ultrafast', revision: 'codex-speed-' + body.service_tier });
+            return { ok: true, json: async () => ({ ok: true, codex: structuredClone(data.live.codex), restart_required: true }) };
+          }
           const raw = body.model_auto_compact_token_limit;
           const match = String(raw).match(/^(\d+(?:\.\d+)?)(k|m)?$/);
           const configured = raw === 'auto' ? null : Number(match[1]) * (match[2] === 'm' ? 1000000 : match[2] === 'k' ? 1000 : 1);
@@ -1400,7 +1405,7 @@ function codexDirectFixture() {
     ...data.live.codex, provider: 'external-provider', router: false, match: false,
     connection_mode: 'direct', direct_provider_id: 'o1', direct_provider_name: 'Beta',
     base_url: data.providers.codex[0].base_url, model: 'gpt-test', review_model: 'gpt-review',
-    model_reasoning_effort: 'xhigh', service_tier: 'fast',
+    model_reasoning_effort: 'xhigh', service_tier: 'fast', fast_mode: true, ultrafast_mode: false,
   };
   return data;
 }
@@ -1433,6 +1438,33 @@ test('Codex direct main and reviewer selectors show real names and save independ
   await h.run("saveCodexDirectModel('model','gpt-review')");
   assert.equal(h.run('state.live.codex.review_model'), 'gpt-test');
   assert.equal(h.requests.some(r => r.url === '/api/slots' && r.method !== 'GET'), false);
+});
+
+test('Codex speed buttons save exclusive persistent defaults and never toggle the selected mode off', async () => {
+  const data = codexDirectFixture();
+  const h = await harness(data);
+  h.run("setApp('codex')");
+  const pressed = tier => h.get('liveinfo').innerHTML
+    .includes(`id="codex-speed-${tier}" aria-pressed="true"`);
+  assert.equal(pressed('fast'), true);
+  assert.equal(pressed('ultrafast'), false);
+  h.get('codex-speed-ultrafast').parentElement = h.get('liveinfo');
+  h.get('codex-speed-ultrafast').focus();
+  await h.run("saveCodexSpeed('ultrafast')");
+  assert.deepEqual(h.requests.findLast(r => r.method === 'POST').body,
+    { action: 'service_tier', service_tier: 'ultrafast', revision: 'codex-one' });
+  assert.equal(pressed('ultrafast'), true);
+  assert.equal(pressed('fast'), false);
+  await h.run("saveCodexSpeed('fast')");
+  await h.run("saveCodexSpeed('fast')");
+  assert.equal(pressed('fast'), true);
+  assert.equal(h.run('state.live.codex.ultrafast_mode'), false);
+  assert.equal(h.run('state.live.codex.model'), 'gpt-test');
+  assert.equal(h.run('state.live.codex.model_reasoning_effort'), 'xhigh');
+  const count = h.requests.length;
+  h.run('online = false; renderProviders()');
+  await h.run("saveCodexSpeed('ultrafast')");
+  assert.equal(h.requests.length, count);
 });
 
 test('Codex direct custom reviewer survives polling, can follow main, and is disabled offline or under profile', async () => {

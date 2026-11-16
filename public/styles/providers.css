@@ -27,7 +27,7 @@
   display: grid; grid-template-columns: 1fr 1.2fr 1.65fr; gap: 0;
   margin: 0 0 6px; padding: 13px 0 8px; border: 0;
 }
-#liveinfo .current-config.codex-config { grid-template-columns: 1fr 1.1fr 1.3fr .7fr; }
+#liveinfo .current-config.codex-config { grid-template-columns: 1fr 1.1fr 1.3fr minmax(168px, .85fr); }
 #liveinfo .current-config > div { display: block; min-width: 0; padding: 0 16px; }
 #liveinfo .current-config > div:first-child { padding-left: 0; }
 #liveinfo .current-config > div:last-child { padding-right: 0; }
@@ -38,6 +38,13 @@
   color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 #liveinfo .current-config dd.mono { font: 500 13px/1.65 var(--mono); color: var(--text); }
+#liveinfo .current-config .codex-speed-switch {
+  display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; overflow: visible;
+}
+.codex-speed-switch button { min-height: 30px; padding: 4px 9px; font-size: 12px; white-space: nowrap; }
+.codex-speed-switch button[aria-pressed="true"] {
+  color: var(--accent-text); border-color: var(--accent); background: var(--accent-soft);
+}
 #liveinfo .current-config small { display: block; margin: 4px 0 0; font-size: 12px; line-height: 1.4; color: var(--dim); }
 #liveinfo .mode-pill { display: inline-flex; align-items: center; gap: 7px; }
 #liveinfo .mode-pill.on { color: var(--accent-text); }
@@ -281,6 +288,7 @@ body[data-connection=offline] #prov-grid .card.sel { border-color: var(--border)
   #liveinfo .current-config > div + div { border-left: 0; border-top: 1px solid var(--border-soft); }
   #liveinfo .current-config dt { margin: 0; }
   #liveinfo .current-config dd { font-size: 14px; }
+  #liveinfo .current-config .codex-speed-switch { grid-column: 2; margin-top: 6px; }
   #liveinfo .current-config small { grid-column: 2; margin: 0; }
   #liveinfo .connection-details > summary { min-height: 32px; padding: 6px 0; box-sizing: border-box; line-height: 20px; }
 

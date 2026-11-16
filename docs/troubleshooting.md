@@ -48,6 +48,29 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8788/
 
 ---
 
+## Codex 直连正常,经本机路由却返回空正文 502
+
+如果 Codex 报 `502 Bad Gateway: Unknown error`，响应只有 `Connection: close`、
+`Content-Length: 0`，而 Mixrouter 日志没有对应请求，先检查客户端到本机的连接。
+这类 502 可能来自系统代理，请求尚未到达 Mixrouter。
+
+macOS 上可用 `scutil --proxy` 检查当前代理，再查看代理客户端日志是否出现
+`127.0.0.1:8787` / `127.0.0.1:8788 using GLOBAL`。LLG 的绕过列表曾将多个地址
+拼成一条分号字符串；即使修正为独立条目，原生 Codex 也可能没有采用系统绕过规则。
+通过进程环境显式排除本机地址可以修复这条路径：
+
+```sh
+export NO_PROXY="${NO_PROXY:+$NO_PROXY,}${no_proxy:+$no_proxy,}localhost,127.0.0.1,::1"
+export no_proxy="$NO_PROXY"
+codex
+```
+
+将本机绕过保存在统一客户端启动入口，覆盖普通启动、resume、exec 和子进程。
+它不依赖渠道名，也不改变远端渠道原有的代理出口。已启动进程需重新启动才能继承环境。
+
+切换渠道还应核对 `[memories]` 中的模型。跟随原主模型的审核与记忆模型会随切换更新；
+独立指定的模型保留，直连渠道未登记的记忆模型会显示在 Codex 配置警告中。
+
 ## Azure 资源绑定错误
 
 看到 `The requested item was created under a different Azure OpenAI resource` 时,不是本机

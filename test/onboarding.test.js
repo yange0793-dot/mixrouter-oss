@@ -67,8 +67,10 @@ function codexStub(file, routerURL, routerToken, { slots = true } = {}) {
     const top = { model: slots ? 'mixr-main' : currentModel, model_provider: 'mixr-router',
       model_catalog_json: 'mixrouter-model-catalog.json' };
     if (slots) top.review_model = 'mixr-reviewer';
+    const { memories } = codexConfig.followingModels(before.document, top.model);
     const text = codexConfig.patch(before.text, {
       top,
+      tables: Object.keys(memories).length ? [{ parts: ['memories'], values: memories }] : [],
       section: 'mixr-router',
       provider: {
         name: 'mixrouter(经 :8787 路由)',
@@ -424,6 +426,24 @@ test('Codex 接入:TOML 结构补丁只动受管字段,撤销可完整还原', t
   assert.match(text, /experimental_bearer_token = "old-codex-key"/);
   assert.match(text, /command = "uvx --quiet"/);
   assert.deepEqual(readJson(ws.ledger).apps, {});
+});
+
+test('Codex onboarding previews and undoes memory followers while preserving explicit models', t => {
+  const ws = workspace(t);
+  fs.mkdirSync(path.dirname(ws.codex), { recursive: true });
+  fs.writeFileSync(ws.codex, CODEX_ORIGINAL + '\n[memories]\nextract_model = "gpt-5"\nconsolidation_model = "custom-memory"\n');
+  const onboarding = factory(ws, { applyRouter: codexStub(ws.codex, ROUTER_URL, ROUTER_TOKEN) });
+  const preview = onboarding.preview('codex');
+  assert.ok(preview.changes.some(change => change.field === 'memories.extract_model' && change.after === 'mixr-main'));
+  assert.ok(!preview.changes.some(change => change.field === 'memories.consolidation_model'));
+  onboarding.apply('codex', { token: preview.token, confirm: true });
+  assert.equal(codexConfig.read(ws.codex).document.get('memories', 'extract_model'), 'mixr-main');
+  const undo = onboarding.previewUndo('codex');
+  assert.equal(undo.can_undo, true);
+  onboarding.undo('codex', { token: undo.token, confirm: true });
+  const document = codexConfig.read(ws.codex).document;
+  assert.equal(document.get('memories', 'extract_model'), 'gpt-5');
+  assert.equal(document.get('memories', 'consolidation_model'), 'custom-memory');
 });
 
 test('全局环境变量会覆盖配置文件:预览按变量名提示,值绝不出现在返回里', t => {

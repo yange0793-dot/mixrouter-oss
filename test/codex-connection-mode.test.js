@@ -286,6 +286,64 @@ test('Codex direct model edits save real main/reviewer independently without cha
   assert.equal(fs.readFileSync(claudeFile, 'utf8'), claudeText);
 });
 
+test('Codex dependent models follow consecutive direct switches and return to router aliases', async () => {
+  for (const provider of ['native', 'other']) {
+    const result = await request(`/api/switch/${provider}`, { mode: 'direct' });
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    const document = config.read(file).document;
+    const model = provider === 'native' ? native.model : other.model;
+    assert.equal(document.get('review_model'), model);
+    assert.equal(document.get('memories', 'extract_model'), model);
+    assert.equal(document.get('memories', 'consolidation_model'), model);
+  }
+  const result = await request('/api/switch/native', { mode: 'router' });
+  assert.equal(result.status, 200, JSON.stringify(result.body));
+  const document = config.read(file).document;
+  assert.equal(document.get('review_model'), 'mixr-reviewer');
+  assert.equal(document.get('memories', 'extract_model'), 'mixr-main');
+  assert.equal(document.get('memories', 'consolidation_model'), 'mixr-main');
+  assert.equal(document.get('model_reasoning_effort'), 'ultra');
+  assert.equal(document.get('service_tier'), 'fast');
+});
+
+test('changing the direct default also updates followers while preserving explicit side models', async () => {
+  assert.equal((await request('/api/switch/native', { mode: 'direct' })).status, 200);
+  const result = await request('/api/codex/config', {
+    action: 'direct_models', model: 'real-alt', revision: config.read(file).revision,
+  });
+  assert.equal(result.status, 200, JSON.stringify(result.body));
+  let document = config.read(file).document;
+  assert.equal(document.get('review_model'), 'real-alt');
+  assert.equal(document.get('memories', 'extract_model'), 'real-alt');
+  assert.equal(document.get('memories', 'consolidation_model'), 'real-alt');
+  fs.writeFileSync(file, config.patch(fs.readFileSync(file, 'utf8'), {
+    top: { review_model: 'custom-review' },
+    tables: [{ parts: ['memories'], values: { consolidation_model: 'custom-memory' } }],
+  }));
+  assert.equal((await request('/api/switch/other', { mode: 'direct' })).status, 200);
+  document = config.read(file).document;
+  assert.equal(document.get('review_model'), 'custom-review');
+  assert.equal(document.get('memories', 'extract_model'), 'other-main');
+  assert.equal(document.get('memories', 'consolidation_model'), 'custom-memory');
+});
+
+test('direct status flags unregistered memory models and conflicting authentication', async () => {
+  assert.equal((await request('/api/switch/native', { mode: 'direct' })).status, 200);
+  const text = fs.readFileSync(file, 'utf8');
+  fs.writeFileSync(file, config.patch(text, {
+    tables: [{ parts: ['memories'], values: { extract_model: 'stale-memory' } }],
+  }));
+  let live = (await request('/api/state', undefined, 'GET')).body.live.codex;
+  assert.equal(live.memories.extract_model, 'stale-memory');
+  assert.ok(live.warnings.some(warning => warning.includes('stale-memory') && warning.includes('extract_model')));
+  for (const extra of ['env_key = "OTHER_KEY"', 'requires_openai_auth = true']) {
+    fs.writeFileSync(file, text.replace('requires_openai_auth = false', extra));
+    live = (await request('/api/state', undefined, 'GET')).body.live.codex;
+    assert.equal(live.match, false);
+    assert.equal(live.direct_provider_id, '');
+  }
+});
+
 test('Codex direct edits reject aliases, invalid fields, stale revision and routed/profile configs without writes', async () => {
   const body = { action: 'direct_models', model: 'valid', revision: config.read(file).revision };
   assert.equal((await request('/api/codex/config', body)).status, 400);

@@ -4,6 +4,7 @@ function routerBase(app = curApp) {
   return app === 'claude' ? (r.claude_base || r.url || '') : (r.codex_base || r.url || '');
 }
 const connectionExpanded = {};
+let savingCodexSpeed = false;
 // 已保存的接入偏好优先;旧渠道沿用实际接入方式,新 Responses 渠道默认直连。
 function codexProviderMode(provider) {
   if (provider?.wire_api === 'chat') return 'router';
@@ -65,7 +66,9 @@ function liveLine() {
   const directName = isCodex ? codexDirectProviderName(lv) : (lv?.match === true ? selected?.name || lv?.provider || '自定义上游' : lv?.provider || '自定义上游（配置未匹配）');
   const model = slot?.model || lv?.model || '未配置';
   const reasoning = isCodex ? String(lv?.model_reasoning_effort || '').trim() : '';
-  const fast = isCodex && ['fast', 'priority'].includes(lv?.service_tier) ? 'Fast' : '';
+  const speed = lv?.ultrafast_mode && lv?.service_tier === 'ultrafast' ? 'ultrafast'
+    : lv?.fast_mode && ['fast', 'priority'].includes(lv?.service_tier) ? 'fast' : '';
+  const speedLocked = !healthy || !!lv?.profile || savingCodexSpeed;
   // 两个客户端共用同一块「当前配置」摘要,口径一致(liveFacts 一处判定),
   // 接入细节默认收起、按客户端记住展开状态。
   // 详情里仍是那两张模式卡与配置行,离线时 liveFacts 会把它们降级成「待确认」,不冒充已写入。
@@ -73,12 +76,34 @@ function liveLine() {
     <div class="config-mode"><dt>接入方式</dt><dd><span class="mode-pill ${modeTone}">${modeLabel}</span></dd><small>${esc(lv?.wire_api || '')}</small></div>
     <div><dt>当前渠道</dt><dd title="${esc(configuredName)}">${esc(configuredName)}</dd><small>${esc(stateLabel)}</small></div>
     <div><dt>默认模型</dt><dd class="mono" title="${esc(model)}">${esc(model)}</dd>${slot ? `<small>槽位 ${esc(lv.model)}</small>` : ''}</div>
-    ${isCodex ? `<div><dt>推理强度</dt><dd>${esc(reasoning || '客户端默认')}</dd>${fast ? `<small><span class="badge on">${esc(fast)}</span></small>` : ''}</div>` : ''}
+    ${isCodex ? `<div><dt>推理强度</dt><dd>${esc(reasoning || '客户端默认')}</dd>
+      <dd class="codex-speed-switch" role="group" aria-label="Codex 默认速度" aria-busy="${savingCodexSpeed}">
+        ${[['fast', 'Fast'], ['ultrafast', 'Ultra Fast']].map(([tier, label]) => `<button type="button" class="small" id="codex-speed-${tier}" aria-pressed="${speed === tier}" title="${lv?.profile ? '当前使用 profile，请在对应配置中设置速度' : '设为默认速度；重新打开 Codex 后生效'}" onclick="saveCodexSpeed('${tier}')" ${speedLocked ? 'disabled' : ''}>${label}</button>`).join('')}
+      </dd></div>` : ''}
     </dl><details class="connection-details"${connectionExpanded[curApp] ? ' open' : ''} ontoggle="connectionExpanded['${curApp}']=this.open"><summary>连接配置</summary><div class="mode-grid">
     <article class="mode-card ${direct ? 'selected' : ''}"><div class="top"><h2>${isCodex ? 'Codex 直连' : '直连渠道'}</h2>${modeBadge(direct)}</div><p>${direct ? esc(directName) : '客户端直接请求上游，不经过本地路由'}</p><p class="mono">${esc(direct && lv?.base_url ? lv.base_url : '从下方渠道卡片选择接入')}</p></article>
     <article class="mode-card ${inRouter ? 'selected' : ''}"><div class="top"><h2>${isCodex ? 'Mixrouter 路由' : '路由模式'}</h2>${modeBadge(inRouter)}</div><p>经本地代理按精确槽位与已登记模型分发，按会话保持渠道粘性</p><p class="mono">${esc(inRouter ? lv.base_url || routerBase() : routerBase() || '等待后端提供路由地址')}</p></article>
     </div><p class="config-line">${esc(APPS[curApp].cfg)} · ${stateLabel}${lv?.wire_api ? ' · 协议 ' + esc(lv.wire_api) : ''}${lv?.model ? ' · 配置模型 ' + esc(lv.model) : ''}${isCodex ? ' · 实际渠道 ' + esc(configuredName) : cur ? ' · 库内选中 ' + esc(cur === (state.router?.id || '@router') ? '路由模式' : selected?.name || cur) : ''}</p>
     <p class="integration-note">切换会写入客户端配置，原文件自动备份。${curApp === 'claude' ? 'Claude Code 需重启会话生效。' : '首次接入或切换直连需重新打开 Codex；路由槽位调整从下一次请求生效。'}</p></details>`;
+}
+async function saveCodexSpeed(tier) {
+  const live = state?.live?.codex;
+  if (!online || !live || live.error || live.profile || savingCodexSpeed) return;
+  savingCodexSpeed = true;
+  renderProviders();
+  try {
+    const result = await api('/api/codex/config', { method: 'POST',
+      body: JSON.stringify({ action: 'service_tier', service_tier: tier, revision: live.revision }) });
+    state.live.codex = result.codex;
+    toastWithBackupWarnings(`${tier === 'ultrafast' ? 'Ultra Fast' : 'Fast'} 已设为默认，重新打开 Codex 后生效。`, result);
+    renderSlots();
+    renderOverviewPage();
+  } catch (e) {
+    toast('速度设置未保存：' + e.message, 'err');
+  } finally {
+    savingCodexSpeed = false;
+    renderProviders();
+  }
 }
 // 渠道库布局:list(默认,高密度行式账本)或 grid(并列卡片)。偏好记在 localStorage,
 // 但读写全程兜底:隐私模式、旧浏览器或坏值都不能把渠道页带崩,读不到就退回默认。
@@ -153,8 +178,11 @@ function renderProviders() {
   $('empty-action').textContent = ps.length ? '清除筛选' : '＋ 新建渠道';
   $('empty-action').onclick = ps.length ? () => { $('provider-search').value = ''; $('provider-filter').value = 'all'; renderProviders(); $('provider-search').focus(); } : () => openProvider();
   const liveHtml = liveLine();
-  if ($('liveinfo').innerHTML !== liveHtml && !$('liveinfo').contains(document.activeElement))
+  const speedFocus = document.activeElement?.id?.startsWith('codex-speed-') ? document.activeElement.id : '';
+  if ($('liveinfo').innerHTML !== liveHtml && (!$('liveinfo').contains(document.activeElement) || speedFocus)) {
     $('liveinfo').innerHTML = liveHtml;
+    if (speedFocus) $(speedFocus)?.focus();
+  }
   const lv = state.live?.[curApp], curId = state.current?.[curApp];
   // 可用性按渠道 id 索引一次,卡片里按 id 取。只读,来自 /api/health
   // (liveHealth 可能还没回来或读失败;冷却已移除,/api/state 的 cooldowns 恒为空表)。
