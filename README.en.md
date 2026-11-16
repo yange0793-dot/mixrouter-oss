@@ -55,6 +55,11 @@ Not a good fit:
   still serve Claude Code. Requests to a provider marked `wire_api: responses` are translated to
   Responses; `wire_api: chat` is translated to Chat Completions. No second proxy on the client
   side.
+- **Historical image slimming.** Enable it in Settings & backups to replace older inline
+  images with text before forwarding. Keep the current turn and a configurable number of
+  completed turns for both Codex and Claude Code; saved settings apply immediately.
+  Tool text and known file paths are preserved, as are local images and session files.
+  See [Image slimming](docs/image-slim.md) (Chinese).
 - **Session affinity, best effort.** Conversations from the same agent can use different keys
   on different providers, while a conversation is kept on one provider when possible. This is
   not a hard guarantee: key fallback, retries, manual pinning, and session overrides can all

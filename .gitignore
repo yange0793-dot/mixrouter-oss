@@ -26,6 +26,8 @@ model-specs.json
 model-specs.json.*
 profiles.json
 profiles.json.*
+image-slim.json
+image-slim.json.*
 
 # Harness 主模型与白名单池(本机路由状态)
 harness.json

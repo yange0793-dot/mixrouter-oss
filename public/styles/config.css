@@ -110,6 +110,18 @@
 #view-compact #window-layers .badge { align-self: center; }
 #view-compact .panel:last-child { margin-bottom: 0; }
 /* ---- 设置与备份 ---------------------------------------------------------------- */
+#view-settings .image-slim-section { margin-bottom: 24px; padding: 0 0 20px; border-bottom: 1px solid var(--border-soft); }
+#view-settings .image-slim-section h2 { font-size: 15px; font-weight: 600; letter-spacing: 0; }
+#view-settings #image-slim-fields { min-width: 0; margin: 0; padding: 0; border: 0; }
+#view-settings .image-slim-switches { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-bottom: 14px; }
+#view-settings .image-slim-switches label { display: flex; align-items: center; gap: 8px; min-height: var(--control-h); font-size: 13px; }
+#view-settings .image-slim-inputs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; max-width: 720px; }
+#view-settings .image-slim-inputs input { min-height: var(--control-h); font-variant-numeric: tabular-nums; }
+#view-settings .image-slim-stats { margin-top: 20px; }
+#view-settings .image-slim-stats h3 { margin: 0 0 8px; font-size: 13px; font-weight: 500; color: var(--dim); }
+#view-settings .image-slim-stats dl { display: flex; flex-wrap: wrap; gap: 12px 32px; margin: 0; }
+#view-settings .image-slim-stats dt { font-size: 12px; color: var(--dim); }
+#view-settings .image-slim-stats dd { margin: 4px 0 0; font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 #view-settings #health-status, #view-settings #backup-status { margin: 0 0 12px; font-size: 13px; }
 /* 状态行:读失败但下面还留着上一次的结果是"过期"(警告色、数据区变淡);什么都没有才是错误色。 */
 #view-settings .hint.stale { color: var(--warn-text); }
@@ -198,6 +210,8 @@
 }
 /* 手机：备份表一行一份。文件名可换行占满第一行；大小 · 时间并成第二行 dim 小字；摘要列收起（文件名的 title 里有）。 */
 @media (max-width: 560px) {
+  #view-settings .image-slim-inputs { grid-template-columns: minmax(0, 1fr); }
+  #view-settings #image-slim-status { flex-basis: 100%; }
   #view-settings .bk-dir .table-wrap { overflow: visible; }
   #view-settings .bk-dir .table-wrap table { display: block; width: 100%; min-width: 0; table-layout: auto; }
   #view-settings .bk-dir .table-wrap thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

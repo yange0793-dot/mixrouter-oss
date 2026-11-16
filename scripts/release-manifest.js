@@ -77,6 +77,7 @@ const EXCLUDE = [
   { path: 'bots.json', why: '本机独立 Bot 的模型绑定,运行数据' },
   { path: 'profiles.json', why: '本机路由方案及渠道引用,运行数据' },
   { path: 'model-specs.json', why: '本机模型能力声明,运行数据' },
+  { path: 'image-slim.json', why: '本机历史图片精简设置,运行数据' },
   { path: 'harness.json', why: '已移除接入模块的遗留运行数据(Harness 集成不再由本产品管理),仍禁止进入制品' },
   { path: 'dsh.json', why: '已移除接入模块的遗留运行数据,仍禁止进入制品' },
   { path: 'logs', why: '运行期日志(server.log / requests.jsonl / 响应归档)' },
@@ -94,7 +95,7 @@ const EXCLUDE = [
 
 // 运行数据基线:全仓唯一一处定义"什么算绝不发布的运行数据"。
 // 制品检查(CI)与单测都从这里取,不各自再抄一份。
-const RUNTIME_DATA_FILES = ['providers.json', 'routes.json', 'sessions.json', 'slots.json', 'bots.json', 'profiles.json', 'model-specs.json', 'harness.json', 'dsh.json', 'client-managed.json'];
+const RUNTIME_DATA_FILES = ['providers.json', 'routes.json', 'sessions.json', 'slots.json', 'bots.json', 'profiles.json', 'model-specs.json', 'image-slim.json', 'harness.json', 'dsh.json', 'client-managed.json'];
 const RUNTIME_DATA_DIRS = ['logs', 'backups', '.run'];
 
 // 控制台的每个脚本都必须随运行包交付,避免页面能打开但主题、导航或用量页失效。
@@ -103,6 +104,7 @@ const REQUIRED_ENTRIES = [
   'lib/application.js', 'lib/runtime/config.js', 'lib/config/repository.js',
   'lib/clients/manager.js', 'lib/clients/codex-runtime.js', 'lib/providers/public.js',
   'lib/http/clients-api.js', 'lib/http/providers-api.js', 'lib/http/routing-api.js', 'lib/http/status-api.js',
+  'lib/image-slim.js', 'lib/http/image-slim-api.js', 'docs/licenses/image-slim-MIT.txt',
   'public/js/providers.js', 'public/js/models.js', 'public/js/compact.js',
   'public/js/sessions.js', 'public/js/session-routing.js', 'public/js/settings.js',
   'public/js/logs.js', 'public/js/bootstrap.js',

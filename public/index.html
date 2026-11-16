@@ -478,10 +478,39 @@
         </div>
       </section>
 
-      <!-- 设置与备份:接的是 /api/backups、/api/health、/api/routing/preview、/api/metrics 四个只读端点。
-           响应里不含任何配置正文或密钥,前端也不去请求正文;没有"一键恢复"——恢复写入需要单独设计。 -->
+      <!-- 设置与备份:图片精简配置通过 /api/image-slim 读写;备份、健康、路由解释与指标仍是只读。
+           不请求客户端配置正文或密钥;没有备份恢复入口。 -->
       <section id="view-settings" style="display:none" aria-labelledby="settings-title">
-        <div class="head"><div><h1 id="settings-title">设置与备份</h1><div class="sub" title="备份清点、运行健康、路由解释与脱敏导出全部只读；路由解释是按当前配置的预测，不是请求的实际落点；恢复写入不在当前版本提供。">备份清点、健康状态、路由预测与指标导出，全部只读。</div></div><div class="actions"><button onclick="loadBackups()">重新清点备份</button><button onclick="loadHealth()">重新读取健康</button></div></div>
+        <div class="head"><div><h1 id="settings-title">设置与备份</h1></div><div class="actions"><button onclick="loadBackups()">重新清点备份</button><button onclick="loadHealth()">重新读取健康</button></div></div>
+        <section class="image-slim-section" aria-labelledby="settings-image-slim-title">
+          <div class="cfg-panel-head"><h2 id="settings-image-slim-title">历史图片精简</h2></div>
+          <form id="image-slim-form" novalidate onsubmit="event.preventDefault();saveImageSlim()" oninput="markImageSlimDirty()">
+            <fieldset id="image-slim-fields" aria-label="历史图片精简配置" disabled>
+              <div class="image-slim-switches">
+                <label for="image-slim-enabled"><input type="checkbox" id="image-slim-enabled">启用精简</label>
+                <label for="image-slim-attachments"><input type="checkbox" id="image-slim-attachments">精简用户附件</label>
+              </div>
+              <div class="image-slim-inputs">
+                <label class="field" for="image-slim-keep-turns">保留已完成轮数<input type="number" id="image-slim-keep-turns" min="0" max="1000" step="1" required></label>
+                <label class="field" for="image-slim-keep-last">额外保留图片数<input type="number" id="image-slim-keep-last" min="0" max="1000" step="1" required></label>
+                <label class="field" for="image-slim-min-bytes">小图阈值（字节）<input type="number" id="image-slim-min-bytes" min="0" max="2147483647" step="1" required></label>
+              </div>
+            </fieldset>
+            <div class="savebar">
+              <button type="submit" class="primary" id="image-slim-save" disabled>保存</button>
+              <button type="button" id="image-slim-reload" onclick="loadImageSlim(true)">重新读取</button>
+              <span class="hint" id="image-slim-status" role="status" aria-live="polite">尚未读取</span>
+            </div>
+          </form>
+          <div class="image-slim-stats" id="image-slim-stats">
+            <h3>当前进程累计</h3>
+            <dl>
+              <div><dt>已精简请求</dt><dd id="image-slim-requests">—</dd></div>
+              <div><dt>已精简图片</dt><dd id="image-slim-images">—</dd></div>
+              <div><dt>已节省字节</dt><dd id="image-slim-bytes">—</dd></div>
+            </dl>
+          </div>
+        </section>
         <div class="panel" aria-labelledby="settings-backup-title">
           <div class="cfg-panel-head" title="每个池按名字顺序保留最近几份，超出上限的在下次写入时删掉。"><h2 id="settings-backup-title">备份清点</h2></div>
           <div id="backup-status" class="hint" role="status">正在清点备份…</div>

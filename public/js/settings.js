@@ -1,11 +1,11 @@
 'use strict';
-// ---------------- 设置与备份(只读) ----------------
-// 这一页把后端早就存在、前端此前零引用的四个端点接出来。四条都是**只读**:
+// ---------------- 设置与备份 ----------------
+// 图片精简设置通过 /api/image-slim 读写,其余四条端点只读:
 //   /api/backups        备份清点(只有文件名/大小/时间/摘要,响应里没有任何配置正文或密钥)
 //   /api/health         渠道可用性与超时、重试配置(cooldown_* 是兼容旧客户端的恒 0 字段)
 //   /api/routing/preview 路由解释(预测,不消耗游标、不写绑定)
 //   /api/metrics        Prometheus 文本,可导出
-// 全部走 api(),不新增任何写请求。这里没有任何"恢复"入口:真正的恢复写入不在本期。
+// 图片精简保存只提交配置字段,不提交统计。这里没有备份恢复入口。
 //
 // 显示口径:重新读取时保留上一次的结果、只改状态行;读失败也不清空,而是标明"下面是几点的结果"。
 // 时间点、计数、时长与字节一律走 app.js 的 fmtWhen / fmtCount / fmtTtfb / fmtBytes,不在这里另写一套。
@@ -23,6 +23,82 @@ function settingsBusy(areaId, fn, busy) {
   const button = document.querySelector(`#view-settings button[onclick="${fn}()"]`);
   if (button) button.disabled = busy;
 }
+const imageSlimFields = {
+  enabled: 'image-slim-enabled', keep_last_turns: 'image-slim-keep-turns',
+  keep_last: 'image-slim-keep-last', min_bytes: 'image-slim-min-bytes', attachments: 'image-slim-attachments',
+};
+let imageSlimSettings = null, imageSlimDirty = false, imageSlimBusy = false, imageSlimReadAt = null;
+function imageSlimValues() {
+  return Object.fromEntries(Object.entries(imageSlimFields).map(([key, id]) => {
+    const input = $(id);
+    return [key, input.type === 'checkbox' ? input.checked : input.valueAsNumber];
+  }));
+}
+function updateImageSlimControls() {
+  $('image-slim-form').setAttribute('aria-busy', String(imageSlimBusy));
+  $('image-slim-fields').disabled = imageSlimBusy || !imageSlimSettings;
+  $('image-slim-save').disabled = imageSlimBusy || !imageSlimSettings || !imageSlimDirty;
+  $('image-slim-reload').disabled = imageSlimBusy;
+}
+function markImageSlimDirty() {
+  if (!imageSlimSettings) return;
+  imageSlimDirty = Object.entries(imageSlimValues()).some(([key, value]) => value !== imageSlimSettings[key]);
+  settingsStatus($('image-slim-status'), imageSlimDirty ? '有未保存修改' : `未修改 · ${fmtWhen(imageSlimReadAt)}`);
+  updateImageSlimControls();
+}
+function renderImageSlim(res, keepDraft = false) {
+  if (!keepDraft) {
+    for (const [key, id] of Object.entries(imageSlimFields)) {
+      const input = $(id);
+      if (input.type === 'checkbox') input.checked = res.settings[key];
+      else input.value = res.settings[key];
+    }
+    imageSlimSettings = res.settings;
+    imageSlimDirty = false;
+  }
+  $('image-slim-requests').textContent = fmtCount(res.stats.requests);
+  $('image-slim-images').textContent = fmtCount(res.stats.images_removed);
+  $('image-slim-bytes').textContent = fmtBytes(res.stats.bytes_saved);
+  $('image-slim-bytes').title = `${fmtCount(res.stats.bytes_saved)} 字节`;
+  $('image-slim-stats').classList.remove('is-stale');
+  imageSlimReadAt = new Date();
+}
+async function loadImageSlim(discardDraft = false) {
+  if (imageSlimBusy) return;
+  if (discardDraft && imageSlimDirty && !await askConfirm('重新读取图片精简设置', '丢弃未保存的修改，读取当前设置？', '重新读取')) return;
+  const keepDraft = imageSlimDirty && !discardDraft, box = $('image-slim-status');
+  imageSlimBusy = true; updateImageSlimControls();
+  settingsStatus(box, '正在读取…');
+  try {
+    const res = await api('/api/image-slim');
+    renderImageSlim(res, keepDraft);
+    settingsStatus(box, keepDraft ? '已更新统计；有未保存修改' : `已读取 · ${fmtWhen(imageSlimReadAt)}`);
+  } catch (e) {
+    $('image-slim-stats').classList.toggle('is-stale', !!imageSlimReadAt);
+    settingsStatus(box, `读取失败：${e.message}。${imageSlimDirty ? '草稿已保留；' : ''}${imageSlimReadAt ? `统计停在 ${fmtWhen(imageSlimReadAt)}；` : ''}请重新读取。`, imageSlimReadAt ? 'stale' : 'err');
+  } finally { imageSlimBusy = false; updateImageSlimControls(); }
+}
+async function saveImageSlim() {
+  if (imageSlimBusy || !imageSlimSettings || !imageSlimDirty) return;
+  const box = $('image-slim-status');
+  if (!$('image-slim-form').reportValidity()) {
+    settingsStatus(box, '请填写范围内的整数。', 'err');
+    return;
+  }
+  const patch = Object.fromEntries(Object.entries(imageSlimValues()).filter(([key, value]) => value !== imageSlimSettings[key]));
+  imageSlimBusy = true; updateImageSlimControls();
+  settingsStatus(box, '正在保存…');
+  try {
+    const res = await api('/api/image-slim', { method: 'PUT', body: JSON.stringify(patch) });
+    renderImageSlim(res);
+    settingsStatus(box, `已保存并生效 · ${fmtWhen(imageSlimReadAt)}`);
+  } catch (e) {
+    settingsStatus(box, `保存失败：${e.message}。修改未保存，可重试。`, 'err');
+  } finally { imageSlimBusy = false; updateImageSlimControls(); }
+}
+window.addEventListener('beforeunload', e => {
+  if (imageSlimDirty) { e.preventDefault(); e.returnValue = ''; }
+});
 async function loadBackups() {
   if (backupsBusy) return;
   const box = $('backup-status');

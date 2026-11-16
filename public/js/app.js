@@ -380,9 +380,10 @@ function showView(name) {
   if (view === 'sessions') renderSessions();
   // 压缩页进入时才去读磁盘窗口(默认「用户全局」层);已读过且有草稿时不重读,免得覆盖草稿。
   if (view === 'compact' && !windowSnapshot && !windowLoadTask) loadCompactWindow();
-  // 设置页的四条只读读取按页面进入时机触发,且各自独立失败:
+  // 设置页按页面进入时机读取,且各自独立失败:
   // 健康端点挂了不会连累备份清点,反之也一样(每个 load* 自带 try/catch)。
   if (view === 'settings') {
+    if (typeof loadImageSlim === 'function') loadImageSlim();
     if (!backupsLoaded) loadBackups();
     ensureHealth();
     // **不自动跑预览**:模型名留空时服务端按契约回 503 "暂无可用落点",浏览器会把这条 503
