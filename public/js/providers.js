@@ -66,9 +66,6 @@ function liveLine() {
   const directName = isCodex ? codexDirectProviderName(lv) : (lv?.match === true ? selected?.name || lv?.provider || '自定义上游' : lv?.provider || '自定义上游（配置未匹配）');
   const model = slot?.model || lv?.model || '未配置';
   const reasoning = isCodex ? String(lv?.model_reasoning_effort || '').trim() : '';
-  const speed = lv?.ultrafast_mode && lv?.service_tier === 'ultrafast' ? 'ultrafast'
-    : lv?.fast_mode && ['fast', 'priority'].includes(lv?.service_tier) ? 'fast' : '';
-  const speedLocked = !healthy || !!lv?.profile || savingCodexSpeed;
   // 两个客户端共用同一块「当前配置」摘要,口径一致(liveFacts 一处判定),
   // 接入细节默认收起、按客户端记住展开状态。
   // 详情里仍是那两张模式卡与配置行,离线时 liveFacts 会把它们降级成「待确认」,不冒充已写入。
@@ -76,30 +73,31 @@ function liveLine() {
     <div class="config-mode"><dt>接入方式</dt><dd><span class="mode-pill ${modeTone}">${modeLabel}</span></dd><small>${esc(lv?.wire_api || '')}</small></div>
     <div><dt>当前渠道</dt><dd title="${esc(configuredName)}">${esc(configuredName)}</dd><small>${esc(stateLabel)}</small></div>
     <div><dt>默认模型</dt><dd class="mono" title="${esc(model)}">${esc(model)}</dd>${slot ? `<small>槽位 ${esc(lv.model)}</small>` : ''}</div>
-    ${isCodex ? `<div><dt>推理强度</dt><dd>${esc(reasoning || '客户端默认')}</dd>
-      <dd class="codex-speed-switch" role="group" aria-label="Codex 默认速度" aria-busy="${savingCodexSpeed}">
-        ${[['fast', 'Fast'], ['ultrafast', 'Ultra Fast']].map(([tier, label]) => `<button type="button" class="small" id="codex-speed-${tier}" aria-pressed="${speed === tier}" title="${lv?.profile ? '当前使用 profile，请在对应配置中设置速度' : '设为默认速度；重新打开 Codex 后生效'}" onclick="saveCodexSpeed('${tier}')" ${speedLocked ? 'disabled' : ''}>${label}</button>`).join('')}
-      </dd></div>` : ''}
+    ${isCodex ? `<div><dt>推理强度</dt><dd>${esc(reasoning || '客户端默认')}</dd></div>` : ''}
     </dl><details class="connection-details"${connectionExpanded[curApp] ? ' open' : ''} ontoggle="connectionExpanded['${curApp}']=this.open"><summary>连接配置</summary><div class="mode-grid">
     <article class="mode-card ${direct ? 'selected' : ''}"><div class="top"><h2>${isCodex ? 'Codex 直连' : '直连渠道'}</h2>${modeBadge(direct)}</div><p>${direct ? esc(directName) : '客户端直接请求上游，不经过本地路由'}</p><p class="mono">${esc(direct && lv?.base_url ? lv.base_url : '从下方渠道卡片选择接入')}</p></article>
     <article class="mode-card ${inRouter ? 'selected' : ''}"><div class="top"><h2>${isCodex ? 'Mixrouter 路由' : '路由模式'}</h2>${modeBadge(inRouter)}</div><p>经本地代理按精确槽位与已登记模型分发，按会话保持渠道粘性</p><p class="mono">${esc(inRouter ? lv.base_url || routerBase() : routerBase() || '等待后端提供路由地址')}</p></article>
     </div><p class="config-line">${esc(APPS[curApp].cfg)} · ${stateLabel}${lv?.wire_api ? ' · 协议 ' + esc(lv.wire_api) : ''}${lv?.model ? ' · 配置模型 ' + esc(lv.model) : ''}${isCodex ? ' · 实际渠道 ' + esc(configuredName) : cur ? ' · 库内选中 ' + esc(cur === (state.router?.id || '@router') ? '路由模式' : selected?.name || cur) : ''}</p>
     <p class="integration-note">切换会写入客户端配置，原文件自动备份。${curApp === 'claude' ? 'Claude Code 需重启会话生效。' : '首次接入或切换直连需重新打开 Codex；路由槽位调整从下一次请求生效。'}</p></details>`;
 }
-async function saveCodexSpeed(tier) {
+// 渠道卡片上的黄/紫闪电:手动声明这条渠道的模型支持 Fast / Ultra Fast,
+// 同时把 Codex 的默认速度设为对应档。声明按模型名写入目录,同名模型的其他渠道共享。
+async function declareProviderSpeed(id, tier) {
   const live = state?.live?.codex;
   if (!online || !live || live.error || live.profile || savingCodexSpeed) return;
   savingCodexSpeed = true;
   renderProviders();
   try {
-    const result = await api('/api/codex/config', { method: 'POST',
-      body: JSON.stringify({ action: 'service_tier', service_tier: tier, revision: live.revision }) });
+    const result = await api('/api/providers/' + encodeURIComponent(id) + '/speed', { method: 'POST',
+      body: JSON.stringify({ tier, revision: live.revision }) });
     state.live.codex = result.codex;
-    toastWithBackupWarnings(`${tier === 'ultrafast' ? 'Ultra Fast' : 'Fast'} 已设为默认，重新打开 Codex 后生效。`, result);
-    renderSlots();
+    const prov = (state.providers?.codex || []).find(item => item.id === id);
+    if (prov) prov.speed_tiers = result.declared;
+    toastWithBackupWarnings(`${tier === 'ultrafast' ? 'Ultra Fast' : 'Fast'} 已声明并设为默认速度，重新打开 Codex 后生效。`, result);
+    refresh();
     renderOverviewPage();
   } catch (e) {
-    toast('速度设置未保存：' + e.message, 'err');
+    toast('速度声明未保存：' + e.message, 'err');
   } finally {
     savingCodexSpeed = false;
     renderProviders();
@@ -178,11 +176,8 @@ function renderProviders() {
   $('empty-action').textContent = ps.length ? '清除筛选' : '＋ 新建渠道';
   $('empty-action').onclick = ps.length ? () => { $('provider-search').value = ''; $('provider-filter').value = 'all'; renderProviders(); $('provider-search').focus(); } : () => openProvider();
   const liveHtml = liveLine();
-  const speedFocus = document.activeElement?.id?.startsWith('codex-speed-') ? document.activeElement.id : '';
-  if ($('liveinfo').innerHTML !== liveHtml && (!$('liveinfo').contains(document.activeElement) || speedFocus)) {
+  if ($('liveinfo').innerHTML !== liveHtml && !$('liveinfo').contains(document.activeElement))
     $('liveinfo').innerHTML = liveHtml;
-    if (speedFocus) $(speedFocus)?.focus();
-  }
   const lv = state.live?.[curApp], curId = state.current?.[curApp];
   // 可用性按渠道 id 索引一次,卡片里按 id 取。只读,来自 /api/health
   // (liveHealth 可能还没回来或读失败;冷却已移除,/api/state 的 cooldowns 恒为空表)。
@@ -290,6 +285,13 @@ function renderProviders() {
       : claudeInRouter ? '把此渠道写入 Claude 配置并退出路由模式（清掉 mixr- 槽位别名），原文件自动备份'
       : isCur ? '把此渠道重新写入 Claude 配置，原文件自动备份'
       : '把此渠道写入 Claude 配置（直连），原文件自动备份';
+    // 手动速度声明:黄闪电=Fast(priority)、紫闪电=Ultra Fast。点击会同时声明并设为默认速度,
+    // 声明按模型名写进 Codex 目录(同名模型共享),不改其它模型能力。
+    const speedTiers = Array.isArray(p.speed_tiers) ? p.speed_tiers : [];
+    const speedLocked = !online || !!lv?.profile || savingCodexSpeed;
+    const speedControl = isCodexGroup ? `<span class="provider-speed-actions" role="group" aria-label="手动声明速度档">${[
+      ['fast', 'Fast'], ['ultrafast', 'Ultra Fast'],
+    ].map(([tier, label]) => `<button type="button" class="small provider-icon-action provider-speed-action ${tier}" id="provider-speed-${esc(p.id)}-${tier}" data-action="speed-${tier}" data-provider="${esc(p.id)}" aria-pressed="${speedTiers.includes(tier)}" onclick="declareProviderSpeed(${arg},'${tier}')" ${speedLocked ? 'disabled' : ''} title="${lv?.profile ? '当前使用 profile，请在对应配置里设置速度' : `声明${label}：把这条渠道的模型写进 Codex 能力目录并设为默认速度；按模型名生效，同名模型的其他渠道共享，重新打开 Codex 后生效`}" aria-label="声明并开启 ${label}"><span class="icon" aria-hidden="true"><svg viewBox="0 0 20 20" fill="currentColor"><path d="M11 1 3 11h5l-1 8 8-10h-5z"/></svg></span><span class="sr-only">声明并开启 ${label}</span></button>`).join('')}</span>` : '';
     // Codex 两种接入动作始终可见,不受保存偏好影响;当前状态只改变样式与说明。
     // 只能走路由的 Claude 渠道仍用说明标签,不摆一个禁用的主按钮。
     const switchControl = isCodexGroup
@@ -315,7 +317,7 @@ function renderProviders() {
 
       </div>
       <div class="provider-meta mono keyrow"><span class="key-label">Key</span>${account}${tline}${pline}</div>
-      <div class="foot provider-actions">${switchControl}${syncControl}
+      <div class="foot provider-actions">${speedControl}${switchControl}${syncControl}
         <button class="small provider-icon-action" data-action="test" data-provider="${esc(p.id)}" onclick="testProvider(${arg})" ${!online || t?.wait ? 'disabled' : ''} title="${testLabel}：由 Mixrouter 发起一次真实请求" aria-label="${testLabel}"><span class="icon" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m7 4 9 6-9 6z"/></svg></span><span class="sr-only">${testLabel}</span></button>
         <button class="small provider-icon-action" data-action="probe" data-provider="${esc(p.id)}" onclick="probeModels(${arg})" ${!online || mp?.wait ? 'disabled' : ''} title="${isCodexGroup ? '路由器测活' : '测活'}：对每个模型各发一次真实请求，会消耗额度" aria-label="${isCodexGroup ? '路由器测活' : '测活'}"><span class="icon" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 10h4l2-5 4 10 2-5h4"/></svg></span><span class="sr-only">${isCodexGroup ? '路由器测活' : '测活'}</span></button>
         <button class="small provider-icon-action" data-action="edit" data-provider="${esc(p.id)}" onclick="openProvider(${arg})" title="编辑渠道" aria-label="编辑"><span class="icon" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m12 4 4 4M4 12l9-9 4 4-9 9-5 1z"/></svg></span><span class="sr-only">编辑</span></button>

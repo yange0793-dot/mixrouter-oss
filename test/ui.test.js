@@ -235,6 +235,20 @@ async function harness(data = fixture(), opts = {}) {
         return { ok: true, json: async () => ({ ok: true, slots: structuredClone(slots),
           ...(body.codex ? { live: { codex: structuredClone(opts.slotLive || data.live.codex) } } : {}) }) };
       }
+      const speedRoute = /^\/api\/providers\/([^/]+)\/speed$/.exec(url);
+      if (speedRoute && options.method === 'POST') {
+        if (body.revision !== data.live.codex.revision) return { ok: false, status: 409, json: async () => ({ error: 'Codex config changed; reload first' }) };
+        const prov = data.providers.codex.find(item => item.id === speedRoute[1]);
+        if (!prov) return { ok: false, status: 404, json: async () => ({ error: '渠道不存在' }) };
+        const tiers = new Set(prov.speed_tiers || []);
+        tiers.add('fast');
+        if (body.tier === 'ultrafast') tiers.add('ultrafast');
+        prov.speed_tiers = ['fast', 'ultrafast'].filter(tier => tiers.has(tier));
+        Object.assign(data.live.codex, { service_tier: body.tier, fast_mode: true,
+          ultrafast_mode: body.tier === 'ultrafast', revision: 'codex-speed-' + body.tier });
+        return { ok: true, json: async () => ({ ok: true, tier: body.tier, declared: prov.speed_tiers,
+          restart_required: true, codex: structuredClone(data.live.codex) }) };
+      }
       if (url === '/api/codex/config') {
         if (options.method === 'POST') {
           if (body.revision !== data.live.codex.revision) return { ok: false, status: 409, json: async () => ({ error: 'Codex config changed; reload first' }) };
@@ -1429,7 +1443,8 @@ test('Codex reads the actual direct provider despite a stale library selection',
   const h = await harness(codexDirectFixture());
   h.run("setApp('codex')");
   const summary = h.get('liveinfo').innerHTML;
-  for (const expected of ['Beta', 'gpt-test', 'xhigh', 'Fast']) assert.ok(summary.includes(expected), expected);
+  for (const expected of ['Beta', 'gpt-test', 'xhigh']) assert.ok(summary.includes(expected), expected);
+  assert.doesNotMatch(summary, /codex-speed-|Ultra Fast/, '速度档只留在渠道卡片上，不在摘要里重复一组按钮');
   assert.equal(h.get('drift-banner').classList.contains('show'), false);
   const card = h.get('prov-grid').innerHTML.match(/<article\b[^>]*data-provider="o1"[^>]*>[\s\S]*?<\/article>/)?.[0];
   assert.ok(card, 'actual direct provider is present');
@@ -1455,31 +1470,29 @@ test('Codex direct main and reviewer selectors show real names and save independ
   assert.equal(h.requests.some(r => r.url === '/api/slots' && r.method !== 'GET'), false);
 });
 
-test('Codex speed buttons save exclusive persistent defaults and never toggle the selected mode off', async () => {
+test('Codex 渠道卡片用黄/紫闪电声明速度档并设为默认,摘要区不再重复按钮', async () => {
   const data = codexDirectFixture();
   const h = await harness(data);
   h.run("setApp('codex')");
-  const pressed = tier => h.get('liveinfo').innerHTML
-    .includes(`id="codex-speed-${tier}" aria-pressed="true"`);
-  assert.equal(pressed('fast'), true);
-  assert.equal(pressed('ultrafast'), false);
-  h.get('codex-speed-ultrafast').parentElement = h.get('liveinfo');
-  h.get('codex-speed-ultrafast').focus();
-  await h.run("saveCodexSpeed('ultrafast')");
-  assert.deepEqual(h.requests.findLast(r => r.method === 'POST').body,
-    { action: 'service_tier', service_tier: 'ultrafast', revision: 'codex-one' });
-  assert.equal(pressed('ultrafast'), true);
+  const pressed = tier => new RegExp(`id="provider-speed-o1-${tier}"[^>]*aria-pressed="true"`)
+    .test(h.get('prov-grid').innerHTML);
   assert.equal(pressed('fast'), false);
-  await h.run("saveCodexSpeed('fast')");
-  await h.run("saveCodexSpeed('fast')");
-  assert.equal(pressed('fast'), true);
+  assert.equal(pressed('ultrafast'), false);
+  h.get('provider-speed-o1-ultrafast').focus();
+  await h.run("declareProviderSpeed('o1','ultrafast')");
+  assert.deepEqual(h.requests.findLast(r => r.method === 'POST').body,
+    { tier: 'ultrafast', revision: 'codex-one' });
+  assert.equal(pressed('fast'), true, 'Ultra Fast 同时声明两档');
+  assert.equal(pressed('ultrafast'), true);
+  assert.equal(h.run('state.live.codex.service_tier'), 'ultrafast');
+  await h.run("declareProviderSpeed('o1','fast')");
   assert.equal(h.run('state.live.codex.ultrafast_mode'), false);
   assert.equal(h.run('state.live.codex.model'), 'gpt-test');
   assert.equal(h.run('state.live.codex.model_reasoning_effort'), 'xhigh');
   const count = h.requests.length;
   h.run('online = false; renderProviders()');
-  await h.run("saveCodexSpeed('ultrafast')");
-  assert.equal(h.requests.length, count);
+  await h.run("declareProviderSpeed('o1','ultrafast')");
+  assert.equal(h.requests.length, count, '离线时不发声明请求');
 });
 
 test('Codex direct custom reviewer survives polling, can follow main, and is disabled offline or under profile', async () => {

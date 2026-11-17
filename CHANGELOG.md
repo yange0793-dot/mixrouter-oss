@@ -14,6 +14,9 @@
   10 秒缓存，VPN 开关与端口变化自动适应；非 macOS 或读取失败回直连，PAC 不解析。
 - 历史图片精简：在「设置与备份」开启，发送前把较早的内联图片替换为文字占位，
   覆盖 Codex Responses、Chat Completions 与 Claude Messages，不改本地会话与原图。
+- Codex 渠道卡片新增手动速度声明：黄闪电声明 Fast、紫闪电声明 Ultra Fast，并同时设为
+  客户端默认速度；声明按模型名写进 Codex 能力目录，同名模型的多条渠道共享。原先
+  「推理强度」摘要里的 Fast / Ultra Fast 按钮移除，速度入口只留在渠道卡片上。
 
 #### 修复
 

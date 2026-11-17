@@ -628,3 +628,37 @@ test('Codex 热路径配置与模型目录源文件按文件签名缓存,变化�
     fs.readFileSync = realRead;
   }
 });
+
+test('手动速度声明只补 service_tiers / additional_speed_tiers，不猜其他能力', () => {
+  const directory = fs.mkdtempSync(path.join(temporary, 'speed-declared-'));
+  const file = path.join(directory, 'config.toml');
+  fs.writeFileSync(path.join(directory, 'catalog.json'), JSON.stringify({ models: [model] }));
+  const document = config.parse('model_catalog_json = "catalog.json"\n');
+  const slots = [{ alias: 'mixr-main', model: 'unknown-model', provider: 'native', enabled: true, name: 'main' }];
+
+  const routed = JSON.parse(config.prepareCatalog(file, document, slots, {
+    'unknown-model': ['fast', 'ultrafast'],
+  }).content).models.find(item => item.slug === 'mixr-main');
+  assert.deepEqual(routed.service_tiers.map(tier => tier.id), ['priority', 'ultrafast']);
+  assert.deepEqual(routed.additional_speed_tiers, ['fast']);
+  assert.equal(routed.x_mixrouter.capabilities_known, false, '速度声明不等于模型能力已知');
+  assert.deepEqual(routed.supported_reasoning_levels, []);
+
+  const fastOnly = JSON.parse(config.prepareCatalog(file, document, slots, {
+    'unknown-model': ['fast'],
+  }).content).models.find(item => item.slug === 'mixr-main');
+  assert.deepEqual(fastOnly.service_tiers.map(tier => tier.id), ['priority']);
+
+  const direct = JSON.parse(config.prepareDirectCatalog(file, document, ['unknown-model'], {
+    'unknown-model': ['fast'],
+  }).content).models.find(item => item.slug === 'unknown-model');
+  assert.deepEqual(direct.service_tiers.map(tier => tier.id), ['priority']);
+  assert.deepEqual(direct.additional_speed_tiers, ['fast']);
+
+  const canonical = { ...model, slug: 'known-model', service_tiers: [{ id: 'priority', name: 'Fast' }] };
+  fs.writeFileSync(path.join(directory, 'catalog.json'), JSON.stringify({ models: [canonical] }));
+  const merged = JSON.parse(config.prepareDirectCatalog(file, document, ['known-model'], {
+    'known-model': ['fast', 'ultrafast'],
+  }).content).models.find(item => item.slug === 'known-model');
+  assert.deepEqual(merged.service_tiers.map(tier => tier.id), ['priority', 'ultrafast'], '已有声明不重复，只补缺的档');
+});
