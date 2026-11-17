@@ -537,7 +537,7 @@ test('次级操作收为具名图标按钮,原 small/data-action/onclick 与危�
     assert.ok(button, `Codex 卡片有 ${label} 声明按钮`);
     assert.match(button, /class="[^"]*\bprovider-icon-action\b/);
     assert.match(button, /aria-pressed="(?:true|false)"/);
-    assert.ok(button.includes(`aria-label="声明并开启 ${label}"`));
+    assert.ok(button.includes(`aria-label="开启 ${label}"`));
     assert.ok(button.includes(`onclick="declareProviderSpeed(${h.run('handlerArg(' + JSON.stringify('o2') + ')')},'${tier}')"`));
   }
   assert.doesNotMatch(cardOf(h, 'a1'), /data-action="speed-/, 'Claude 卡片不出现 Codex 速度声明');

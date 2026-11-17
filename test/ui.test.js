@@ -240,13 +240,11 @@ async function harness(data = fixture(), opts = {}) {
         if (body.revision !== data.live.codex.revision) return { ok: false, status: 409, json: async () => ({ error: 'Codex config changed; reload first' }) };
         const prov = data.providers.codex.find(item => item.id === speedRoute[1]);
         if (!prov) return { ok: false, status: 404, json: async () => ({ error: '渠道不存在' }) };
-        const tiers = new Set(prov.speed_tiers || []);
-        tiers.add('fast');
-        if (body.tier === 'ultrafast') tiers.add('ultrafast');
-        prov.speed_tiers = ['fast', 'ultrafast'].filter(tier => tiers.has(tier));
-        Object.assign(data.live.codex, { service_tier: body.tier, fast_mode: true,
-          ultrafast_mode: body.tier === 'ultrafast', revision: 'codex-speed-' + body.tier });
-        return { ok: true, json: async () => ({ ok: true, tier: body.tier, declared: prov.speed_tiers,
+        if (body.mode === '') delete prov.speed_tiers;
+        else prov.speed_tiers = body.mode === 'ultrafast' ? ['fast', 'ultrafast'] : ['fast'];
+        Object.assign(data.live.codex, { service_tier: body.mode, fast_mode: !!body.mode,
+          ultrafast_mode: body.mode === 'ultrafast', revision: 'codex-speed-' + (body.mode || 'off') });
+        return { ok: true, json: async () => ({ ok: true, mode: body.mode, declared: prov.speed_tiers || [],
           restart_required: true, codex: structuredClone(data.live.codex) }) };
       }
       if (url === '/api/codex/config') {
@@ -1481,11 +1479,17 @@ test('Codex 渠道卡片用黄/紫闪电声明速度档并设为默认,摘要区
   h.get('provider-speed-o1-ultrafast').focus();
   await h.run("declareProviderSpeed('o1','ultrafast')");
   assert.deepEqual(h.requests.findLast(r => r.method === 'POST').body,
-    { tier: 'ultrafast', revision: 'codex-one' });
-  assert.equal(pressed('fast'), true, 'Ultra Fast 同时声明两档');
+    { mode: 'ultrafast', revision: 'codex-one' });
+  assert.equal(pressed('fast'), false, '一次只亮当前档');
   assert.equal(pressed('ultrafast'), true);
   assert.equal(h.run('state.live.codex.service_tier'), 'ultrafast');
+  await h.run("declareProviderSpeed('o1','ultrafast')");
+  assert.deepEqual(h.requests.findLast(r => r.method === 'POST').body,
+    { mode: '', revision: 'codex-speed-ultrafast' }, '再点一次关闭');
+  assert.equal(pressed('ultrafast'), false, '关闭后光消失');
+  assert.equal(h.run('state.live.codex.service_tier'), '');
   await h.run("declareProviderSpeed('o1','fast')");
+  assert.equal(pressed('fast'), true);
   assert.equal(h.run('state.live.codex.ultrafast_mode'), false);
   assert.equal(h.run('state.live.codex.model'), 'gpt-test');
   assert.equal(h.run('state.live.codex.model_reasoning_effort'), 'xhigh');

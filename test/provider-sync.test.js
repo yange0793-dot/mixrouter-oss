@@ -250,7 +250,7 @@ test('地址换算只动路径:/v1 不拼进查询串,同址匹配忽略查询�
 
 function list(value) { return JSON.parse(JSON.stringify(value)); }
 
-test('渠道卡片闪电:声明速度档并写默认速度,声明与目录一起落盘', async t => {
+test('渠道卡片闪电:点击声明并写默认速度,再点关闭并撤声明', async t => {
   const cfg = process.env.MIXR_CODEX_CONFIG;
   const managed = path.join(TMP, 'mixrouter-model-catalog.json');
   t.after(() => {
@@ -267,7 +267,7 @@ test('渠道卡片闪电:声明速度档并写默认速度,声明与目录一起
   assert.equal(live.connection_mode, 'direct');
   assert.equal(live.direct_provider_id, 'cspeed1');
 
-  const first = await request('/api/providers/cspeed1/speed', 'POST', { tier: 'fast', revision: live.revision });
+  const first = await request('/api/providers/cspeed1/speed', 'POST', { mode: 'fast', revision: live.revision });
   assert.equal(first.status, 200);
   assert.deepEqual(first.json.declared, ['fast']);
   assert.equal(first.json.codex.service_tier, 'fast');
@@ -283,17 +283,33 @@ test('渠道卡片闪电:声明速度档并写默认速度,声明与目录一起
   }
 
   // 配置版本过期:声明回滚,不留下"只亮灯不生效"的状态
-  const stale = await request('/api/providers/cspeed1/speed', 'POST', { tier: 'ultrafast', revision: 'stale' });
+  const stale = await request('/api/providers/cspeed1/speed', 'POST', { mode: 'ultrafast', revision: 'stale' });
   assert.equal(stale.status, 409);
   assert.deepEqual(list(diskStore().codex)[0].speed_tiers, ['fast']);
 
-  const second = await request('/api/providers/cspeed1/speed', 'POST', { tier: 'ultrafast', revision: mod.liveState().codex.revision });
+  const second = await request('/api/providers/cspeed1/speed', 'POST', { mode: 'ultrafast', revision: mod.liveState().codex.revision });
   assert.equal(second.status, 200);
   assert.deepEqual(second.json.declared, ['fast', 'ultrafast']);
   assert.equal(second.json.codex.ultrafast_mode, true);
   const upgraded = JSON.parse(fs.readFileSync(managed, 'utf8')).models.find(item => item.slug === 'gpt-x');
   assert.deepEqual(upgraded.service_tiers.map(tier => tier.id), ['priority', 'ultrafast']);
 
-  assert.equal((await request('/api/providers/psync1/speed', 'POST', { tier: 'fast', revision: 'x' })).status, 400);
-  assert.equal((await request('/api/providers/nope/speed', 'POST', { tier: 'fast', revision: 'x' })).status, 404);
+  const off = await request('/api/providers/cspeed1/speed', 'POST', { mode: '', revision: mod.liveState().codex.revision });
+  assert.equal(off.status, 200);
+  assert.deepEqual(off.json.declared, []);
+  assert.equal(off.json.codex.service_tier, '');
+  assert.equal(off.json.codex.fast_mode, false);
+  assert.equal(off.json.codex.ultrafast_mode, false);
+  assert.equal(list(diskStore().codex)[0].speed_tiers, undefined, '关闭时撤销渠道声明');
+  const closed = fs.readFileSync(cfg, 'utf8');
+  assert.doesNotMatch(closed, /^service_tier\s*=/m);
+  assert.match(closed, /^fast_mode = false$/m);
+  assert.match(closed, /^ultrafast_mode = false$/m);
+  for (const slug of ['gpt-x', 'gpt-y']) {
+    const entry = JSON.parse(fs.readFileSync(managed, 'utf8')).models.find(item => item.slug === slug);
+    assert.equal(entry.service_tiers, undefined, slug + ' 的声明随关闭一起消失');
+  }
+
+  assert.equal((await request('/api/providers/psync1/speed', 'POST', { mode: 'fast', revision: 'x' })).status, 400);
+  assert.equal((await request('/api/providers/nope/speed', 'POST', { mode: 'fast', revision: 'x' })).status, 404);
 });

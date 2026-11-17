@@ -81,19 +81,27 @@ function liveLine() {
     <p class="integration-note">切换会写入客户端配置，原文件自动备份。${curApp === 'claude' ? 'Claude Code 需重启会话生效。' : '首次接入或切换直连需重新打开 Codex；路由槽位调整从下一次请求生效。'}</p></details>`;
 }
 // 渠道卡片上的黄/紫闪电:手动声明这条渠道的模型支持 Fast / Ultra Fast,
-// 同时把 Codex 的默认速度设为对应档。声明按模型名写入目录,同名模型的其他渠道共享。
+// 同时把 Codex 的默认速度设为对应档;再次点击当前档 = 关闭并撤掉声明。
+// 声明按模型名写入目录,同名模型的其他渠道共享。
+const providerSpeedMode = speedTiers => Array.isArray(speedTiers) && speedTiers.includes('ultrafast') ? 'ultrafast'
+  : Array.isArray(speedTiers) && speedTiers.includes('fast') ? 'fast' : '';
 async function declareProviderSpeed(id, tier) {
   const live = state?.live?.codex;
   if (!online || !live || live.error || live.profile || savingCodexSpeed) return;
+  const prov = (state.providers?.codex || []).find(item => item.id === id);
+  const mode = providerSpeedMode(prov?.speed_tiers) === tier ? '' : tier;
   savingCodexSpeed = true;
   renderProviders();
   try {
     const result = await api('/api/providers/' + encodeURIComponent(id) + '/speed', { method: 'POST',
-      body: JSON.stringify({ tier, revision: live.revision }) });
+      body: JSON.stringify({ mode, revision: live.revision }) });
     state.live.codex = result.codex;
-    const prov = (state.providers?.codex || []).find(item => item.id === id);
-    if (prov) prov.speed_tiers = result.declared;
-    toastWithBackupWarnings(`${tier === 'ultrafast' ? 'Ultra Fast' : 'Fast'} 已声明并设为默认速度，重新打开 Codex 后生效。`, result);
+    if (prov) {
+      if (result.declared.length) prov.speed_tiers = result.declared;
+      else delete prov.speed_tiers;
+    }
+    const label = tier === 'ultrafast' ? 'Ultra Fast' : 'Fast';
+    toastWithBackupWarnings(mode ? `${label} 已声明并设为默认速度，重新打开 Codex 后生效。` : `${label} 已关闭。`, result);
     refresh();
     renderOverviewPage();
   } catch (e) {
@@ -287,11 +295,11 @@ function renderProviders() {
       : '把此渠道写入 Claude 配置（直连），原文件自动备份';
     // 手动速度声明:黄闪电=Fast(priority)、紫闪电=Ultra Fast。点击会同时声明并设为默认速度,
     // 声明按模型名写进 Codex 目录(同名模型共享),不改其它模型能力。
-    const speedTiers = Array.isArray(p.speed_tiers) ? p.speed_tiers : [];
+    const speedMode = providerSpeedMode(p.speed_tiers);
     const speedLocked = !online || !!lv?.profile || savingCodexSpeed;
     const speedControl = isCodexGroup ? `<span class="provider-speed-actions" role="group" aria-label="手动声明速度档">${[
       ['fast', 'Fast'], ['ultrafast', 'Ultra Fast'],
-    ].map(([tier, label]) => `<button type="button" class="small provider-icon-action provider-speed-action ${tier}" id="provider-speed-${esc(p.id)}-${tier}" data-action="speed-${tier}" data-provider="${esc(p.id)}" aria-pressed="${speedTiers.includes(tier)}" onclick="declareProviderSpeed(${arg},'${tier}')" ${speedLocked ? 'disabled' : ''} title="${lv?.profile ? '当前使用 profile，请在对应配置里设置速度' : `声明${label}：把这条渠道的模型写进 Codex 能力目录并设为默认速度；按模型名生效，同名模型的其他渠道共享，重新打开 Codex 后生效`}" aria-label="声明并开启 ${label}"><span class="icon" aria-hidden="true"><svg viewBox="0 0 20 20" fill="currentColor"><path d="M11 1 3 11h5l-1 8 8-10h-5z"/></svg></span><span class="sr-only">声明并开启 ${label}</span></button>`).join('')}</span>` : '';
+    ].map(([tier, label]) => `<button type="button" class="small provider-icon-action provider-speed-action ${tier}" id="provider-speed-${esc(p.id)}-${tier}" data-action="speed-${tier}" data-provider="${esc(p.id)}" aria-pressed="${speedMode === tier}" onclick="declareProviderSpeed(${arg},'${tier}')" ${speedLocked ? 'disabled' : ''} title="${lv?.profile ? '当前使用 profile，请在对应配置里设置速度' : `点击开启 ${label} 并设为默认速度；再次点击关闭。声明按模型名生效，同名模型的其他渠道共享，重新打开 Codex 后生效`}" aria-label="${speedMode === tier ? `关闭 ${label}` : `开启 ${label}`}"><span class="icon" aria-hidden="true"><svg viewBox="0 0 20 20" fill="currentColor"><path d="M11 1 3 11h5l-1 8 8-10h-5z"/></svg></span><span class="sr-only">${speedMode === tier ? `关闭 ${label}` : `开启 ${label}`}</span></button>`).join('')}</span>` : '';
     // Codex 两种接入动作始终可见,不受保存偏好影响;当前状态只改变样式与说明。
     // 只能走路由的 Claude 渠道仍用说明标签,不摆一个禁用的主按钮。
     const switchControl = isCodexGroup

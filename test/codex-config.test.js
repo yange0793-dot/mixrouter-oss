@@ -347,8 +347,18 @@ test('Codex speed selection persists both switches across direct and routed mode
   }
   const text = fs.readFileSync(codexFile, 'utf8');
   assert.throws(() => router.updateCodexConfig({ action: 'service_tier', service_tier: 'off',
-    revision: router.liveState().codex.revision }), /fast 或 ultrafast/);
+    revision: router.liveState().codex.revision }), /fast、ultrafast 或关闭/);
   assert.equal(fs.readFileSync(codexFile, 'utf8'), text);
+  const off = router.updateCodexConfig({ action: 'service_tier', service_tier: null,
+    revision: router.liveState().codex.revision });
+  assert.equal(off.restart_required, true);
+  assert.equal(off.codex.service_tier, '');
+  assert.equal(off.codex.fast_mode, false);
+  assert.equal(off.codex.ultrafast_mode, false);
+  const closed = config.read(codexFile).document;
+  assert.equal(closed.get('service_tier'), undefined, '关闭后删除 service_tier，而不是留一个空值');
+  assert.equal(closed.get('features', 'fast_mode'), false);
+  assert.equal(closed.get('features', 'ultrafast_mode'), false);
 });
 
 test('direct catalog recovers an unknown placeholder from an auto/<id> declaration', () => {
