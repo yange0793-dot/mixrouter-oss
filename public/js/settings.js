@@ -18,9 +18,10 @@ function settingsStatus(box, text, tone = '') {
   box.classList.toggle('is-err', tone === 'err');
 }
 // 读取进行中:数据区标 aria-busy,对应的顶栏按钮禁用。顶栏按钮没有 id,按它调用的函数找。
+// 外壳会把 .head > .actions 搬进 #topbar-page-actions,不能再限定在 #view-settings 里。
 function settingsBusy(areaId, fn, busy) {
   $(areaId)?.setAttribute('aria-busy', busy ? 'true' : 'false');
-  const button = document.querySelector(`#view-settings button[onclick="${fn}()"]`);
+  const button = document.querySelector(`button[onclick="${fn}()"]`);
   if (button) button.disabled = busy;
 }
 const imageSlimFields = {
@@ -72,7 +73,10 @@ async function loadImageSlim(discardDraft = false) {
   try {
     const res = await api('/api/image-slim');
     renderImageSlim(res, keepDraft);
-    settingsStatus(box, keepDraft ? '已更新统计；有未保存修改' : `已读取 · ${fmtWhen(imageSlimReadAt)}`);
+    // 设置文件坏掉时服务端按默认值启动并带回 error:不能显示成"已读取正常设置",
+    // 否则用户改一项再保存就会把原文件覆盖掉,还不知道自己为什么丢设置。
+    if (res.error) settingsStatus(box, `${res.error}。当前按默认值显示；保存会覆盖该文件。`, 'err');
+    else settingsStatus(box, keepDraft ? '已更新统计；有未保存修改' : `已读取 · ${fmtWhen(imageSlimReadAt)}`);
   } catch (e) {
     $('image-slim-stats').classList.toggle('is-stale', !!imageSlimReadAt);
     settingsStatus(box, `读取失败：${e.message}。${imageSlimDirty ? '草稿已保留；' : ''}${imageSlimReadAt ? `统计停在 ${fmtWhen(imageSlimReadAt)}；` : ''}请重新读取。`, imageSlimReadAt ? 'stale' : 'err');

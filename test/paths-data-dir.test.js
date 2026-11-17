@@ -175,11 +175,19 @@ test('clearDataDirPointer:只删指针文件,第二次返回 false;缓存同步�
 // ---------------------------------------------------------------- 清单
 
 test('RUNTIME_DATA_FILES 只列运行数据,不包含代码与目录', () => {
-  for (const name of ['providers.json', 'routes.json', 'slots.json', 'sessions.json', 'client-managed.json']) {
+  for (const name of ['providers.json', 'routes.json', 'slots.json', 'sessions.json', 'client-managed.json', 'image-slim.json']) {
     assert.ok(paths.RUNTIME_DATA_FILES.includes(name), `数据文件清单缺少 ${name}`);
   }
   assert.deepEqual(paths.RUNTIME_DATA_DIRS, ['logs']);
   for (const banned of ['mixrouter.js', 'lib', 'public', '.run', '.git']) {
     assert.ok(!paths.RUNTIME_DATA_FILES.includes(banned), `清单不该包含 ${banned}`);
+  }
+});
+
+test('禁止清单里的每个运行数据文件都跟着数据目录迁移', () => {
+  // 两份清单一个决定「发布物里不许出现」,一个决定「mixctl data-dir 迁移/部署备份要带上」。
+  // 新加运行数据文件时只改前者的静默后果:换数据目录后该设置直接丢失。
+  for (const name of paths.FORBIDDEN_IN_RELEASE.filter(item => item.endsWith('.json'))) {
+    assert.ok(paths.RUNTIME_DATA_FILES.includes(name), `迁移清单缺少运行数据文件 ${name}`);
   }
 });

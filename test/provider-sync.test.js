@@ -170,19 +170,82 @@ test('同址副本已存在时就地更新:保留 id、启用状态与本地接�
   assert.equal(list(diskStore().codex).length, 1);
 });
 
-test('Claude 渠道没有模型名 → 400,不落库', async () => {
-  mod._state.store.claude = [claudeProvider({ models: [] })];
-  const before = fs.existsSync(path.join(TMP, 'providers.json')) ? fs.readFileSync(path.join(TMP, 'providers.json'), 'utf8') : null;
-  const r = await request('/api/providers/psync1/sync', 'POST');
-  assert.equal(r.status, 400);
-  assert.match(r.json.error, /模型名/);
-  const after = fs.existsSync(path.join(TMP, 'providers.json')) ? fs.readFileSync(path.join(TMP, 'providers.json'), 'utf8') : null;
-  assert.equal(after, before, '被拒绝的同步不改渠道库文件');
+test('Claude 渠道没有模型名(或 models 被手工改成非数组)→ 400,不落库', async () => {
+  for (const models of [[], 'gpt-should-be-ignored', null]) {
+    mod._state.store.claude = [claudeProvider({ models })];
+    const before = fs.existsSync(path.join(TMP, 'providers.json')) ? fs.readFileSync(path.join(TMP, 'providers.json'), 'utf8') : null;
+    const r = await request('/api/providers/psync1/sync', 'POST');
+    assert.equal(r.status, 400, `models=${JSON.stringify(models)} 应 400 而不是 500`);
+    assert.match(r.json.error, /模型名/);
+    const after = fs.existsSync(path.join(TMP, 'providers.json')) ? fs.readFileSync(path.join(TMP, 'providers.json'), 'utf8') : null;
+    assert.equal(after, before, '被拒绝的同步不改渠道库文件');
+  }
 });
 
 test('不存在的渠道 → 404', async () => {
   const r = await request('/api/providers/nope/sync', 'POST');
   assert.equal(r.status, 404);
+});
+
+test('同一上游挂多条账号:只更新 Key/名称对得上的那条,对不上就新建', async () => {
+  const pair = (id, name, key) => ({ id, name, base_url: 'https://multi.example/v1', api_key: key,
+    enabled: true, model: 'm', models: ['m'], wire_api: 'responses', codex_mode: 'direct' });
+  const source = extra => ({ id: 'pmulti', name: 'A', base_url: 'https://multi.example',
+    api_key: 'sk-b', enabled: true, models: ['m'], ...extra });
+
+  // 1) 两个同址账号,源 Key 命中 B → 只更新 B
+  mod._state.store.codex = [pair('cA', 'A', 'sk-a'), pair('cB', 'B', 'sk-b')];
+  mod._state.store.claude = [source()];
+  const byKey = await request('/api/providers/pmulti/sync', 'POST');
+  assert.equal(byKey.json.action, 'updated');
+  let codex = list(diskStore().codex);
+  assert.equal(codex.length, 2);
+  assert.deepEqual(codex.map(p => p.id).sort(), ['cA', 'cB']);
+  assert.equal(codex.find(p => p.id === 'cB').api_key, 'sk-b');
+
+  // 2) Key 都不匹配、名称唯一匹配 A → 仍认领 A,不新建
+  mod._state.store.codex = [pair('cA', 'A', 'sk-a'), pair('cB', 'B', 'sk-b')];
+  mod._state.store.claude = [source({ name: 'A', api_key: 'sk-rotated' })];
+  const byName = await request('/api/providers/pmulti/sync', 'POST');
+  assert.equal(byName.json.action, 'updated');
+  codex = list(diskStore().codex);
+  assert.equal(codex.length, 2);
+  assert.equal(codex.find(p => p.id === 'cA').api_key, 'sk-rotated');
+
+  // 3) Key 与名称都对不上 → 不覆盖任何一条,另建一份
+  mod._state.store.codex = [pair('cA', 'A', 'sk-a'), pair('cB', 'B', 'sk-b')];
+  mod._state.store.claude = [source({ name: 'C', api_key: 'sk-c' })];
+  const fresh = await request('/api/providers/pmulti/sync', 'POST');
+  assert.equal(fresh.json.action, 'created');
+  codex = list(diskStore().codex);
+  assert.equal(codex.length, 3);
+  assert.equal(codex.find(p => p.id === 'cA').api_key, 'sk-a');
+  assert.equal(codex.find(p => p.id === 'cB').api_key, 'sk-b');
+});
+
+test('源渠道没填代理/Key 清单时保留目标端原值,不清空', async () => {
+  mod._state.store.codex = [codexProvider({
+    id: 'ckeep', base_url: 'https://pair.example/v1', proxy_url: 'http://127.0.0.1:7890',
+    keys: [{ id: 'k1', label: '一号', key: 'sk-one' }, { id: 'k2', label: '二号', key: 'sk-two' }],
+    active_key: 'k2', api_key: 'sk-two',
+  })];
+  mod._state.store.claude = [claudeProvider({ keys: undefined, active_key: undefined })];
+  const r = await request('/api/providers/psync1/sync', 'POST');
+  assert.equal(r.json.action, 'updated');
+  const copy = list(diskStore().codex)[0];
+  assert.equal(copy.proxy_url, 'http://127.0.0.1:7890', '源端没填代理不能把目标端能用的出口清掉');
+  assert.deepEqual(copy.keys.map(k => k.id), ['k1', 'k2']);
+  assert.equal(copy.active_key, 'k2');
+  assert.equal(copy.api_key, 'sk-two');
+});
+
+test('地址换算只动路径:/v1 不拼进查询串,同址匹配忽略查询串与主机大小写', () => {
+  const { syncBaseUrl, findSyncTarget } = require('../lib/provider-sync');
+  assert.equal(syncBaseUrl('https://h/v1?x=1', 'codex'), 'https://h/v1?x=1', '已带 /v1 不重复拼');
+  assert.equal(syncBaseUrl('https://h?x=1', 'codex'), 'https://h/v1?x=1', '/v1 补在 ? 之前');
+  assert.equal(syncBaseUrl('https://h/v1?x=1#f', 'claude'), 'https://h?x=1#f', '去 /v1 不碰查询串与片段');
+  assert.ok(findSyncTarget([{ base_url: 'https://H/v1?y=2' }], { base_url: 'https://h' }, 'codex'),
+    '同一条上游的查询串与主机大小写不该造出第二份副本');
 });
 
 function list(value) { return JSON.parse(JSON.stringify(value)); }

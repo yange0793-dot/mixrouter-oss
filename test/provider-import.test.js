@@ -193,3 +193,14 @@ test('未知字段不会进入合并结果', () => {
   const provider = merged.claude[0];
   for (const key of ['evil', 'keys']) assert.equal(Object.hasOwn(provider, key), false);
 });
+
+test('自家 providers.json 往返保留 Codex 候选模型列表', () => {
+  const { draft } = previewProviderImport(emptyStore(), {
+    version: 2, claude: [], codex: [{
+      name: 'C', base_url: 'https://c.example', api_key: 'sk-c', model: 'gpt-x',
+      models: ['gpt-x', 'gpt-y'], wire_api: 'responses',
+    }],
+  });
+  const provider = mergeProviderImport(emptyStore(), draft).codex[0];
+  assert.deepEqual(provider.models, ['gpt-x', 'gpt-y']);
+});

@@ -351,6 +351,83 @@ test('Codex speed selection persists both switches across direct and routed mode
   assert.equal(fs.readFileSync(codexFile, 'utf8'), text);
 });
 
+test('direct catalog recovers an unknown placeholder from an auto/<id> declaration', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mixr-catalog-auto-'));
+  try {
+    const file = path.join(dir, 'config.toml');
+    fs.writeFileSync(file, 'model_catalog_json = "mixrouter-model-catalog.json"\n');
+    fs.writeFileSync(path.join(dir, 'mixrouter-model-catalog.json'), JSON.stringify({ models: [
+      { slug: 'gpt-x', x_mixrouter: { capabilities_known: false } },
+    ] }));
+    fs.writeFileSync(path.join(dir, 'mixrouter-model-catalog.source.json'),
+      JSON.stringify({ source: path.join(dir, 'catalog.json') }));
+    fs.writeFileSync(path.join(dir, 'catalog.json'), JSON.stringify({ models: [
+      { ...model, slug: 'auto/gpt-x', service_tiers: [{ id: 'priority', name: 'Fast' }] },
+    ] }));
+    const prepared = config.prepareDirectCatalog(file, config.parse(fs.readFileSync(file, 'utf8')), ['gpt-x']);
+    const generated = JSON.parse(prepared.content).models.find(item => item.slug === 'gpt-x');
+    assert.deepEqual(generated.service_tiers, [{ id: 'priority', name: 'Fast' }],
+      '恢复声明是 auto/<id> 时也要顶掉旧占位');
+    assert.notEqual(generated.x_mixrouter?.capabilities_known, false);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('原始模型目录被删后同步不再抛裸 ENOENT(用托管副本里的原始模型继续)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mixr-catalog-source-'));
+  try {
+    const file = path.join(dir, 'config.toml');
+    fs.writeFileSync(file, 'model_catalog_json = "mixrouter-model-catalog.json"\n');
+    fs.writeFileSync(path.join(dir, 'mixrouter-model-catalog.json'), JSON.stringify({ models: [
+      { slug: 'gpt-x', display_name: 'X', visibility: 'list' },
+      { slug: 'mixr-main', display_name: 'main', visibility: 'list' },
+    ] }));
+    fs.writeFileSync(path.join(dir, 'mixrouter-model-catalog.source.json'),
+      JSON.stringify({ source: path.join(dir, 'gone.json') }));
+    const prepared = config.prepareDirectCatalog(file, config.parse(fs.readFileSync(file, 'utf8')), ['gpt-x']);
+    const generated = JSON.parse(prepared.content).models.find(item => item.slug === 'gpt-x');
+    assert.equal(generated.visibility, 'list', '原目录没了也要能继续同步,不能每次保存都 500');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('一条 base_url 非法的 Codex 渠道不拖垮整份状态读取', () => {
+  const file = path.join(temporary, 'state-invalid-base.toml');
+  fs.writeFileSync(file, 'model_provider = "mixr-good"\n[model_providers.mixr-good]\n'
+    + 'base_url = "https://good.example/v1"\nwire_api = "responses"\nexperimental_bearer_token = "sk-good"\n');
+  const providers = [
+    { id: 'bad', name: 'Bad', base_url: 'https://bad.example/v1?x=1', api_key: 'sk-bad' },
+    { id: 'good', name: 'Good', base_url: 'https://good.example', api_key: 'sk-good', model: 'm', models: [] },
+  ];
+  const st = config.state(file, { current: 'good', providers, routerURL: 'http://127.0.0.1:8787', routerToken: 't', slots: [] });
+  assert.equal(st.error, undefined, '非法渠道只该被跳过,不该让整份状态读取失败');
+  assert.equal(st.match, true);
+  assert.equal(st.direct_provider_id, 'good');
+});
+
+test('CRLF 配置照常解析,写回保持原换行', () => {
+  const text = 'model = "a"\r\n[model_providers.mixr-x]\r\nname = "X"\r\n';
+  assert.equal(config.parse(text).get('model'), 'a');
+  const patched = config.patch(text, { top: { model_provider: 'mixr-x' },
+    section: 'mixr-x', provider: { base_url: 'https://x.example/v1' } });
+  assert.equal(config.parse(patched).get('model_provider'), 'mixr-x');
+  assert.equal(config.parse(patched).get('model_providers', 'mixr-x', 'base_url'), 'https://x.example/v1');
+  assert.match(patched, /\r\n/, '写回沿用原文件的 CRLF,不混入裸 LF');
+  for (const line of patched.split('\r\n').slice(0, -1)) assert.doesNotMatch(line, /\n/);
+});
+
+test('点号键写 features 时继续用点号键,内联表则明确拒绝而不是写重复表', () => {
+  const dotted = config.patch('features.web_search_request = true\n',
+    { tables: [{ parts: ['features'], values: { fast_mode: true } }] });
+  assert.match(dotted, /features\.fast_mode = true/);
+  assert.doesNotMatch(dotted, /^\[features\]/m, '点号键已定义隐式表,不能再追加同名表头');
+  const document = config.parse(dotted);
+  assert.equal(document.get('features', 'fast_mode'), true);
+  assert.equal(document.get('features', 'web_search_request'), true);
+
+  assert.throws(() => config.patch('features = { web_search_request = true }\n',
+    { tables: [{ parts: ['features'], values: { fast_mode: true } }] }), /已定义为值/,
+  '内联表不能从外面追加键,必须报错而不是写坏 config.toml');
+});
+
 test('Codex preserves providers referenced by profiles and blocks ambiguous profile writes', () => {
   const text = '[model_providers.mixr-old]\nname = "Old"\n[profiles.ci]\nmodel_provider = "mixr-old"\n';
   const patched = config.patch(text, { top: { model_provider: 'mixr-new' }, section: 'mixr-new', provider: { name: 'New' } });

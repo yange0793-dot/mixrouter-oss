@@ -383,6 +383,42 @@ test('keeping more turns or images than available preserves the complete history
   }
 });
 
+test('工具结果上附着的文字(system-reminder)不算新回合', () => {
+  const body = { messages: [
+    { role: 'user', content: [{ type: 'text', text: 'task one' }, image('anthropic')] },
+    { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }] },
+    { role: 'user', content: [
+      { type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: 'ok' }] },
+      { type: 'text', text: '<system-reminder>todo stale</system-reminder>' },
+    ] },
+    { role: 'assistant', content: [{ type: 'text', text: 'done' }] },
+    { role: 'user', content: [{ type: 'text', text: 'task two' }, image('anthropic')] },
+  ] };
+  const stats = slimImages(body, 'anthropic', enabled({ keep_last_turns: 1 }));
+  assert.equal(stats.images_removed, 0, '上一轮刚完成的截图仍在保留窗口内');
+  assert.equal(body.messages[0].content[1].type, 'image');
+});
+
+test('坏掉的 image-slim.json 不阻止服务启动,并在接口里说明原因', async () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { createImageSlimApi } = require('../lib/http/image-slim-api');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mixr-image-slim-'));
+  const file = path.join(dir, 'image-slim.json');
+  fs.writeFileSync(file, '{"enabled": true, "keep_last": 2.5}');
+  try {
+    let api;
+    assert.doesNotThrow(() => { api = createImageSlimApi({ file }); }, '可选设置坏掉不能让代理与控制台都起不来');
+    let payload = null;
+    await api.handler({ req: { method: 'GET', headers: {} }, url: new URL('http://127.0.0.1/api/image-slim'),
+      readObject: async () => ({}), send: (status, body) => { payload = { status, body }; } });
+    assert.equal(payload.status, 200);
+    assert.equal(payload.body.settings.enabled, false, '坏文件按默认(关闭)处理');
+    assert.match(payload.body.error, /未加载/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('only replaced blocks are serialized for byte accounting', () => {
   const output = [image('responses')];
   const body = { input: [
@@ -397,4 +433,16 @@ test('only replaced blocks are serialized for byte accounting', () => {
   const stats = slimImages(body, 'responses', enabled({ keep_last_turns: 0 }));
   assert.equal(stats.images_removed, 1);
   assert.equal(stats.bytes_saved, before - bytes(output[0]));
+});
+
+test('占位文本比图片还大时不替换,也不产生负的节省字节', () => {
+  const body = { messages: [
+    { role: 'user', content: [{ type: 'text', text: 'old' }, image('anthropic', 'YQ==')] },
+    { role: 'user', content: [{ type: 'text', text: 'next' }] },
+    { role: 'user', content: [{ type: 'text', text: 'current' }] },
+  ] };
+  const stats = slimImages(body, 'anthropic', enabled({ keep_last_turns: 1, min_bytes: 0 }));
+  assert.equal(stats.images_removed, 0, '替换后更大的小图应原样保留');
+  assert.equal(stats.bytes_saved, 0);
+  assert.equal(body.messages[0].content[1].type, 'image');
 });

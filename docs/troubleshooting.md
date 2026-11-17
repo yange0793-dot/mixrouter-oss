@@ -201,10 +201,12 @@ curl -sS -o /dev/null -w '%{http_code}\n' -x http://127.0.0.1:7890 https://<上�
 
 **"浏览器能上"不算数**:VPN 的系统代理模式下,只有主动读 macOS 代理设置的程序(浏览器)
 才走 VPN。mixrouter 的每条出站都显式传自己的 agent(`lib/upstream-proxy.js` 的
-`transportAgent`),系统代理对它无效;`NODE_USE_ENV_PROXY=1` 配 `https_proxy` 也一样——
+`transportAgent`),默认不读系统代理;`NODE_USE_ENV_PROXY=1` 配 `https_proxy` 也一样——
 实测不传 agent 时 200,显式传 agent 时握手失败,而 mixrouter 恰恰每条都传。两者是两条不同的路。
+例外是渠道显式写 `proxy_url: "system"`:每次出站前读 macOS 当前代理(10 秒缓存),
+VPN 开关与端口变化自动适应,读取失败回直连。
 
-处置:给这个渠道补 `proxy_url`,只改它的出口:
+处置:给这个渠道补 `proxy_url`,只改它的出口(`"system"` 表示跟随系统代理):
 
 ```bash
 curl -sS -X PUT http://127.0.0.1:8788/api/providers/<渠道ID> \

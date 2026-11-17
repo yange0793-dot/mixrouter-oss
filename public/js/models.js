@@ -144,7 +144,10 @@ function renderCodexConfig() {
     ['上下文窗口', context ? `${Number(context).toLocaleString()} tokens${explicit ? '（显式配置）' : '（本地模型目录）'}` : '未声明，由 Codex 决定'],
   ];
   const warnings = (live.warnings || []).map(warning => `<li>${esc(warning)}</li>`).join('');
-  $('codex-config-details').innerHTML = `<details class="prov-help"><summary>上下文窗口与生效范围</summary><dl class="config-facts">${facts.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join('')}</dl>${warnings ? `<ul class="config-warnings">${warnings}</ul>` : ''}<p class="hint">路由请求即时使用当前落点；已打开的 Codex 客户端会缓存模型标签，新客户端读取同步列表。命令行、profile 或项目配置可能覆盖全局默认。</p></details>`;
+  const html = `<details class="prov-help"><summary>上下文窗口与生效范围</summary><dl class="config-facts">${facts.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join('')}</dl>${warnings ? `<ul class="config-warnings">${warnings}</ul>` : ''}<p class="hint">路由请求即时使用当前落点；已打开的 Codex 客户端会缓存模型标签，新客户端读取同步列表。命令行、profile 或项目配置可能覆盖全局默认。</p></details>`;
+  // 每 5 秒轮询都重写会把展开状态与焦点打回收起;内容没变就不动 DOM。
+  const box = $('codex-config-details');
+  if (box.innerHTML !== html) box.innerHTML = html;
 }
 // 阈值草稿绑定到用户开始编辑时读到的磁盘版本。轮询只更新事实,不能替草稿领取新 revision。
 function codexCompactGate() {

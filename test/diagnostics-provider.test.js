@@ -95,6 +95,17 @@ test('provider diagnostics choose configured chat/responses protocol and explici
   }
 });
 
+test('provider diagnostics accept proxy_url=system', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mixr-provider-sysproxy-'));
+  try {
+    const provider = { id: 'sys', name: 'Sys', base_url: 'https://sys.example', api_key: SECRET,
+      enabled: true, models: ['m'], proxy_url: 'system' };
+    fs.writeFileSync(path.join(root, 'providers.json'), JSON.stringify({ claude: [provider], codex: [] }));
+    const loaded = loadProvider({ MIXR_DATA_DIR: root }, { ...BASE, provider: 'sys' });
+    assert.equal(loaded.provider.proxy_url, 'system');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('provider diagnostics validate config without selecting other providers', async t => {
   assert.throws(() => loadProvider({}, BASE), /MIXR_DATA_DIR/);
   const f = await fixture(t, (req, res) => res.end('{}'), { enabled: false });

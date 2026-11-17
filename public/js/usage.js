@@ -495,8 +495,12 @@ function setUsageStatus(value) {
   loadUsage();
 }
 function clearUsageFilters() {
-  if (!usageState.app && !usageState.provider && !usageState.model && !usageState.status && !usageState.statusCode && !usageState.search) return;
+  // 先取消搜索防抖:输入后 350ms 内点「清除筛选」时,定时器会把刚输入的词又应用回来。
   clearTimeout(usageState.searchTimer);
+  if (!usageState.app && !usageState.provider && !usageState.model && !usageState.status && !usageState.statusCode && !usageState.search) {
+    if ($('usage-search')) $('usage-search').value = '';
+    return;
+  }
   usageState.app = '';
   usageState.provider = '';
   usageState.model = '';

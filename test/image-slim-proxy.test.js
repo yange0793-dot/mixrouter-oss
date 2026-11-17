@@ -238,6 +238,25 @@ for (const route of [...ROUTES,
     assert.equal(log.image_bytes_saved, rawBodies[0].length - rawBodies[1].length, 'logged savings match actual upstream bytes');
 });
 
+test('count_tokens 在转换线上按精简后的体积估算', async () => {
+  await imageSlim({ ...DEFAULTS, enabled: true });
+  const route = { ...ROUTES[1], endpoint: '/v1/messages/count_tokens' };   // Claude → Responses
+  const body = history('anthropic', route.model);
+  delete body.stream;
+  const before = mock.requests.length;
+  const response = await request(proxy, 'POST', route.endpoint, body);
+  assert.equal(response.status, 200, response.text);
+  assert.equal(mock.requests.length, before, '转换线 count_tokens 不打上游');
+  const { slimImages } = require('../lib/image-slim');
+  const slimmed = JSON.parse(JSON.stringify(body));
+  slimImages(slimmed, 'anthropic', { ...DEFAULTS, enabled: true });
+  const expected = Math.max(1, Math.ceil(Buffer.byteLength(JSON.stringify(slimmed)) / 4));
+  const estimated = JSON.parse(response.text).input_tokens;
+  assert.equal(estimated, expected, '按出站(精简后)体积估算');
+  assert.ok(estimated < Math.ceil(Buffer.byteLength(JSON.stringify(body)) / 4),
+    '已经替换掉的图片字节不能算进 input_tokens');
+});
+
 test('keep_last unions with protected turns; zero completed turns still protects the whole current turn', async () => {
   const route = ROUTES[3], body = history(route.format, route.model);
   for (const [patch, removed] of [

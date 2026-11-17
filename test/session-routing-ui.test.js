@@ -410,6 +410,17 @@ test('弹窗保存后立即回写列表概要,并发的后台刷新不会拿旧�
   assert.equal(h.data.sessions[0].routing.keys.a2, 'k3');
 });
 
+test('草稿未改但服务端版本变了:冲突条照样提示,不写"草稿一致"', async () => {
+  const h = await harness();
+  await h.open('alpha001');
+  assert.equal(h.run('routingDirty'), false);
+  h.data.sessions[0].routing_revision = 'sr-other';
+  await h.run('refresh()');
+  assert.equal(h.get('routing-conflict').classList.contains('show'), true, '版本漂移即使草稿干净也要提示');
+  assert.match(h.get('routing-msg').textContent, /已被其他改动更新/);
+  assert.doesNotMatch(h.get('routing-msg').textContent, /草稿与上次读取一致/);
+});
+
 test('版本冲突(409)保留草稿并列出差异,不静默覆盖也不假装保存成功', async () => {
   const h = await harness();
   await h.open('alpha001');

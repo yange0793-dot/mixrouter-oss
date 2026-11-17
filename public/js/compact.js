@@ -243,7 +243,10 @@ async function saveCompact() {
     const result = await api('/api/compact', { method: 'POST', body: JSON.stringify({ ...(app === 'codex' ? { app } : {}), provider, model, ...(keySupported ? { key_id } : {}), expected_revision }) });
     responseOk = true;   // 请求本身成功了;后面若因响应不完整而抛,也不该说成"没发生过"
     if (!result.compact) throw new Error('服务端未返回压缩配置');
-    if (keySupported && (!compactKeySupported(result.compact) || result.compact.selection?.key_id !== key_id)) {
+    // 跟随渠道当前 Key(key_id 为空)时服务端可能因渠道没有可用 Key 而给出 selection=null,
+    // 这是合法的"没有固定 Key",不能拿 undefined !== '' 判成服务端没确认。
+    if (keySupported && (!compactKeySupported(result.compact)
+        || (!!key_id && result.compact.selection?.key_id !== key_id))) {
       state[app === 'codex' ? 'codex_compact' : 'compact'] = result.compact;
       compactDirty = true; renderCompactCurrent(); renderCompactKeys(); updateCompactStatus();
       // 请求成功了,但服务端没确认 Key 选择 —— 写盘与加载都无从确认,只能如实标"未确认"。

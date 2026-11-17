@@ -201,6 +201,16 @@ test('固定 Key(pinned)与压缩专用 Key 永远不换', () => {
   assert.equal(fb.select({ provider: p, keyChoice: c, sessionKey: 'fresh', model: 'm' }).key_id, 'k2');
 });
 
+test('pinned/压缩专用 Key 成功后不把会话粘性改到它', () => {
+  const { fb } = fixture();
+  const p = provider();
+  const c = choice(p);
+  fb.success({ provider: p, key_id: 'k2', model: 'm', sessionKey: 's1', pinned: true });
+  const next = fb.select({ provider: p, keyChoice: c, sessionKey: 's1', model: 'm' });
+  assert.equal(next.key_id, c.key_id, '普通请求不该被压缩专用 Key 接管');
+  assert.notEqual(next.fallback && next.fallback.reason, 'sticky');
+});
+
 test('会话粘性按 provider+session 隔离,不同会话互不影响', () => {
   const { fb } = fixture();
   const p = provider();

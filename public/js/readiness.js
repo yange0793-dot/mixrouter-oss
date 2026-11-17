@@ -995,6 +995,11 @@
 
   function readinessSetImportText(value) {
     readinessState.importText = String(value ?? '');
+    // 内容改了,上次预览的令牌/结果立即作废:确认导入必须基于当前文本重新预览,
+    // 否则会把编辑前的旧内容合并进渠道库。(这里不重绘,避免打断正在输入的焦点。)
+    readinessState.importPreview = null;
+    readinessState.importToken = '';
+    readinessState.importError = '';
   }
 
   async function readinessImportPreview() {

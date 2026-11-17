@@ -584,3 +584,40 @@ test('单条事件超过 4MB 还不闭合:丢弃残段,后续帧在分隔符处�
   assert.strictEqual(st.finished, true, '重新对齐后的终态事件仍要认出');
   assert.strictEqual(st.terminal, 'completed');
 });
+
+// ---------------------------------------------------------------- 输出序号缺一半
+// 同一 item 的早期事件只带 item_id、done 才带 output_index 的上游形状:
+// 键必须归一到同一个,否则正文会重发一遍、工具调用会变成两个 tool_use。
+test('output_index 只在 done 出现:正文不重复,同一次工具调用不拆成两块', async () => {
+  {
+    const up = upstreamFake(); const res = sink();
+    const p = relay(up, res, { mayRetry: false });
+    up.write(sse({ type: 'response.created', response: { id: 'r1', model: 'gpt-6-astra' } }));
+    up.write(sse({ type: 'response.output_item.added', item: { type: 'message', id: 'm1' } }));
+    up.write(sse({ type: 'response.output_text.delta', item_id: 'm1', delta: 'hello' }));
+    up.write(sse({ type: 'response.output_text.done', output_index: 0, item_id: 'm1', text: 'hello' }));
+    up.write(sse({ type: 'response.output_item.done', output_index: 0, item: { type: 'message', id: 'm1' } }));
+    up.write(sse({ type: 'response.completed', response: { id: 'r1', model: 'gpt-6-astra', usage: {} } }));
+    up.end();
+    await p;
+    const deltas = parseSse(res.text)
+      .filter(e => e.name === 'content_block_delta' && e.json?.delta?.type === 'text_delta')
+      .map(e => e.json.delta.text);
+    assert.deepEqual(deltas, ['hello'], 'done 自带的全文不能因为换了键就再发一遍');
+  }
+  {
+    const up = upstreamFake(); const res = sink();
+    const p = relay(up, res, { mayRetry: false });
+    up.write(sse({ type: 'response.created', response: { id: 'r1', model: 'gpt-6-astra' } }));
+    up.write(sse({ type: 'response.output_item.added', item: { type: 'function_call', call_id: 'c1', name: 'Write' } }));
+    up.write(sse({ type: 'response.function_call_arguments.delta', item_id: 'c1', delta: '{"p":"a"}' }));
+    up.write(sse({ type: 'response.output_item.done', output_index: 0, item: { type: 'function_call', call_id: 'c1', name: 'Write' } }));
+    up.write(sse({ type: 'response.completed', response: { id: 'r1', model: 'gpt-6-astra', usage: {} } }));
+    up.end();
+    await p;
+    const starts = parseSse(res.text)
+      .filter(e => e.name === 'content_block_start' && e.json?.content_block?.type === 'tool_use');
+    assert.equal(starts.length, 1, '同一次工具调用不能发两个 tool_use');
+    assert.equal(starts[0].json.content_block.id, 'c1');
+  }
+});

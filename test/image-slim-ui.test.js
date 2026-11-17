@@ -304,3 +304,13 @@ test('页面刷新或关闭时未保存草稿触发离开提醒，保存后不�
   unload();
   assert.equal(prevented, 1);
 });
+
+test('设置文件加载失败时如实显示原因,不冒充已读取', async () => {
+  const h = harness();
+  h.respond(async () => ({ settings: { ...defaults },
+    stats: { requests: 0, images_removed: 0, bytes_saved: 0 },
+    error: '图片精简设置未加载（/tmp/image-slim.json）：未知图片精简设置: future_flag' }));
+  await h.run('loadImageSlim()');
+  assert.match(h.get('image-slim-status').textContent, /未加载.*保存会覆盖该文件/);
+  assert.equal(h.get('image-slim-status').classList.contains('is-err'), true);
+});

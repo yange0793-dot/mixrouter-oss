@@ -139,7 +139,11 @@ function renderRoutingStatus() {
   const refs = routingStaleOf(routingGroup(), routingDraft);
   $('routing-refs').classList.toggle('show', refs.length > 0);
   $('routing-refs-list').innerHTML = refs.map(x => `<div class="rt-note warn">· ${esc(x)}</div>`).join('');
-  const conflict = routingConflict || (routingDirty && routingRevision !== (routingSession.routing_revision || ''));
+  // 版本漂移与"草稿脏"是两件事:轮询带回的服务端版本变了,即便本地草稿没改,
+  // 这次保存也一定会 409;必须先摆冲突条,不能继续写"草稿与上次读取一致"。
+  const serverRevision = routingSession.routing_revision;
+  const revisionMoved = routingRevision != null && typeof serverRevision === 'string' && serverRevision !== routingRevision;
+  const conflict = routingConflict || revisionMoved || (routingDirty && routingRevision !== (serverRevision || ''));
   $('routing-conflict').classList.toggle('show', conflict);
   $('routing-conflict-list').innerHTML = conflict ? routingDiff(routingSession.routing).map(x => `<div class="rt-note">· ${esc(x)}</div>`).join('') : '';
   $('routing-msg').textContent = routingError ? routingError
@@ -408,6 +412,9 @@ async function loadRouting() {
       if (!res || res.routing == null || res.revision == null || typeof res.routing !== 'object' || Array.isArray(res.routing))
         throw new Error('响应缺少完整的 routing/revision 字段');
       routingDraft = routingClone(res.routing); routingRevision = res.revision; routingDirty = false; routingError = '';
+      // 以这次 GET 为权威刷新列表项里的那份:否则列表恰好是旧快照时,一打开就误报冲突。
+      routingSession.routing = routingClone(res.routing);
+      routingSession.routing_revision = res.revision;
       routingModelEdit = null;
       renderRoutingEditor(); renderRoutingStatus();
     } catch (e) {

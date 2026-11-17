@@ -541,3 +541,10 @@ test('无 I/O:require 本模块不产生副作用(不抛、导出齐全、无计
     assert.ok(k in fresh, `缺导出 ${k}`);
   }
 });
+
+test('Claude 渠道只有 model(或模型列表为空)时,槽位默认模型不回落成别名', () => {
+  const store = { claude: [{ id: 'pc', name: '只有 model', models: [], model: 'm-only', enabled: true }], codex: [] };
+  const hit = T({ store }).resolveSlot({ claude: { main: { provider: 'pc', model: '' } }, codex: {} }, 'claude', 'mixr-main');
+  assert.equal(hit.model, 'm-only');
+  assert.equal(hit.rule.model, 'm-only');
+});

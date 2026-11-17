@@ -229,11 +229,47 @@ test('parseSystemProxy:读取 HTTPS/HTTP 系统代理,关闭项与 PAC 不猜', 
   assert.equal(parseSystemProxy('HTTPEnable : 0\nHTTPSEnable : 0'), '', '都关掉 = 直连');
   assert.equal(parseSystemProxy('ProxyAutoConfigEnable : 1'), '', 'PAC 不解析');
   assert.equal(parseSystemProxy(''), '');
+  // 启用但主机为空:不能把下一行的键名当成主机名拼出一个假代理。
+  assert.equal(parseSystemProxy('HTTPSEnable : 1\nHTTPSProxy : \nHTTPSPort : 7891\n'), '');
+  assert.equal(parseSystemProxy('HTTPSEnable : 1\nHTTPSProxy :\nHTTPSPort : 7891\n'), '',
+    '冒号后为空、没有空格时同样不能跨行匹配');
 });
 
 test('channelProxyUrl:proxy_url=system 跟随传入的系统代理,VPN 关掉即直连', () => {
   assert.equal(channelProxyUrl({ proxy_url: 'system' }, 'http://127.0.0.1:7890'), 'http://127.0.0.1:7890');
   assert.equal(channelProxyUrl({ proxy_url: ' SYSTEM ' }, ''), '', '系统没有代理时必须回直连,不能拼出一个假地址');
+});
+
+test('没有 proxy_url 的渠道不为系统代理探测付出 scutil 阻塞', () => {
+  // 默认参数一旦写成 systemProxyUrl(),每次出站都会先同步 spawn scutil;这里把 10 秒缓存
+  // 强制过期,只有「按需读取」的实现能让普通渠道一次都不调用。
+  const childProcess = require('node:child_process');
+  const realExec = childProcess.execFileSync, realNow = Date.now;
+  let calls = 0;
+  childProcess.execFileSync = () => { calls++; return 'HTTPEnable : 0\nHTTPSEnable : 0\n'; };
+  Date.now = () => realNow() + 3600_000;
+  try {
+    assert.equal(channelProxyUrl({}), '');
+    assert.equal(channelProxyUrl({ proxy_url: 'http://127.0.0.1:7890' }), 'http://127.0.0.1:7890');
+    assert.equal(calls, 0, '普通渠道不该调用系统代理探测');
+  } finally { Date.now = realNow; childProcess.execFileSync = realExec; }
+});
+
+test('proxy_url=system 且系统无代理时回直连,不改走全局隧道', () => {
+  const childProcess = require('node:child_process');
+  const realExec = childProcess.execFileSync, realNow = Date.now;
+  const oldEnv = process.env.MIXR_UPSTREAM_PROXY;
+  childProcess.execFileSync = () => 'HTTPEnable : 0\nHTTPSEnable : 0\n';
+  Date.now = () => realNow() + 7200_000;          // 让系统代理缓存必然过期
+  process.env.MIXR_UPSTREAM_PROXY = 'http://127.0.0.1:8';
+  try {
+    assert.equal(upstreamAgent('http:', { proxy_url: 'system' }), undefined,
+      '文档承诺「VPN 关掉即直连」,不能被 MIXR_UPSTREAM_PROXY 悄悄接管');
+  } finally {
+    Date.now = realNow; childProcess.execFileSync = realExec;
+    if (oldEnv === undefined) delete process.env.MIXR_UPSTREAM_PROXY;
+    else process.env.MIXR_UPSTREAM_PROXY = oldEnv;
+  }
 });
 
 test('upstreamAgent:direct > 渠道代理 > 环境变量 > 直连,并按代理 URL 复用同一个 agent', () => {
