@@ -672,3 +672,29 @@ test('手动速度声明只补 service_tiers / additional_speed_tiers，不猜�
   }).content).models.find(item => item.slug === 'known-model');
   assert.deepEqual(merged.service_tiers.map(tier => tier.id), ['priority', 'ultrafast'], '已有声明不重复，只补缺的档');
 });
+
+test('旧版本注入的占位速度档在关闭声明后清掉，源目录自身的声明确保留', () => {
+  const directory = fs.mkdtempSync(path.join(temporary, 'speed-legacy-'));
+  const managed = path.join(directory, 'mixrouter-model-catalog.json');
+  const document = config.parse('model_catalog_json = "mixrouter-model-catalog.json"\n');
+  const priority = [{ id: 'priority', name: 'Fast' }];
+  fs.writeFileSync(managed, JSON.stringify({ models: [
+    { slug: 'unknown-model', x_mixrouter: { capabilities_known: false },
+      service_tiers: priority, additional_speed_tiers: ['fast'] },
+    { slug: 'known-model', service_tiers: priority, additional_speed_tiers: ['fast'] },
+  ] }));
+  const direct = (models, declarations) => JSON.parse(config.prepareDirectCatalog(
+    path.join(directory, 'config.toml'), document, models, declarations).content).models;
+
+  const closed = direct(['unknown-model']);
+  assert.equal(closed.find(item => item.slug === 'unknown-model').service_tiers, undefined,
+    '占位条目没有源声明，旧注入的档位不能当成原始值留着');
+  const known = direct(['known-model']).find(item => item.slug === 'known-model');
+  assert.deepEqual(known.service_tiers, priority, '源目录自己声明的档位关闭渠道声明后仍保留');
+
+  const reopened = direct(['unknown-model'], { 'unknown-model': ['fast'] })
+    .find(item => item.slug === 'unknown-model');
+  assert.deepEqual(reopened.service_tiers.map(tier => tier.id), ['priority']);
+  assert.equal(reopened.x_mixrouter.speed_origin.service_tiers, null,
+    '重新声明时原始值记为 null，下一次关闭才能彻底还原');
+});
