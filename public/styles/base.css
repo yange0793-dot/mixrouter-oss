@@ -1338,9 +1338,9 @@ td .pin-sel { min-width: 135px; padding: 4px 6px; font-size: 13px; }
    so the rise animation replays on every new message. */
 #toast {
   position: fixed; right: 20px; bottom: 20px; z-index: 99;
-  display: none; max-width: min(440px, calc(100vw - 32px));
-  /* 纯文本提示,没有可点的内容:不能挡住右下角的卡片动作(闪电/应用路由/删除)。
-     否则刚点完「开启」,提示条正好盖住同一个按钮,紧接着点「关闭」就点不到。 */
+  /* 用户要求停用右下角浮动提示卡片:JS 仍把结果写进 #toast 供测试/排障读取,
+     但界面永远不显示它(内联 display:block 也被 !important 压住)。 */
+  display: none !important; max-width: min(440px, calc(100vw - 32px));
   pointer-events: none;
   padding: 11px 16px 11px 34px; background: var(--raised); color: var(--text);
   border: 1px solid var(--border); border-radius: var(--radius-lg);
