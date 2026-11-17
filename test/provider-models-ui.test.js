@@ -504,15 +504,15 @@ test('Codex 直连按实际渠道置顶,路由按 main 与其它槽引用置顶'
   }
 });
 
-test('五个次级操作收为具名图标按钮,原 small/data-action/onclick 与危险类保留', async () => {
+test('次级操作收为具名图标按钮,原 small/data-action/onclick 与危险类保留', async () => {
   const h = await harness();
   h.run("view = 'providers'; renderProviders()");
   const cases = [
     ['test', '测试', 'testProvider'], ['probe', '测活', 'probeModels'], ['edit', '编辑', 'openProvider'],
-    ['toggle', '停用', 'toggleProvider'], ['delete', '删除', 'delProvider'],
+    ['toggle', '停用', 'toggleProvider'], ['sync', '同步到 Codex', 'syncProvider'], ['delete', '删除', 'delProvider'],
   ];
   const checkActions = (card, id, labels = {}) => {
-    assert.equal((card.match(/<button\b[^>]*\bprovider-icon-action\b/g) || []).length, 5);
+    assert.equal((card.match(/<button\b[^>]*\bprovider-icon-action\b/g) || []).length, 6);
     for (const [action, defaultLabel, handler] of cases) {
       const label = labels[action] || defaultLabel;
       const button = card.match(new RegExp(`<button\\b[^>]*data-action="${action}"[^>]*>[\\s\\S]*?</button>`))?.[0];
@@ -530,7 +530,7 @@ test('五个次级操作收为具名图标按钮,原 small/data-action/onclick �
   };
   checkActions(cardOf(h, 'a1'), 'a1');
   h.run("curApp='codex'; renderProviders()");
-  checkActions(cardOf(h, 'o2'), 'o2', { test: '路由器检测', probe: '路由器测活', toggle: '启用' });
+  checkActions(cardOf(h, 'o2'), 'o2', { test: '路由器检测', probe: '路由器测活', toggle: '启用', sync: '同步到 Claude Code' });
 });
 
 test('Claude 路由模式:按客户端 env 实际写入的槽位标「路由在用」,按钮写明会退出路由', async () => {

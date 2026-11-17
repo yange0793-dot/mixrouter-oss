@@ -296,6 +296,13 @@ function renderProviders() {
       ? `<span class="provider-connect-actions"><button class="small ${activeRouter ? 'cur' : actualCodexMode === 'router' ? '' : 'primary'}" data-action="switch-router" data-provider="${esc(p.id)}" onclick="switchProvider(${arg},'router')" ${!online ? 'disabled' : ''} title="${activeRouter ? '当前通过此渠道使用路由；再次写入路由配置，原文件自动备份' : '经 Mixrouter 路由使用此渠道，原文件自动备份'}">应用路由</button><button class="small ${verified ? 'cur' : actualCodexMode === 'router' ? '' : 'primary'}" data-action="switch-direct" data-provider="${esc(p.id)}" onclick="switchProvider(${arg},'direct')" ${!online || codexDirectOff ? 'disabled' : ''} title="${codexDirectOff ? 'Chat 渠道不能写入 Codex 直连；请用「应用路由」' : verified ? '当前直连此渠道；再次写入直连配置，原文件自动备份' : 'Codex 直接连接此渠道，不经过 Mixrouter，原文件自动备份'}">应用直连</button></span>`
       : convOnly ? `<span class="tag route-only-tag" title="${switchTitle}">仅路由可用</span>`
       : `<button class="small ${verified ? 'cur' : claudeInRouter ? '' : 'primary'}" data-action="switch" data-provider="${esc(p.id)}" onclick="switchProvider(${arg})" ${locked ? 'disabled' : ''} title="${switchTitle}">${switchLabel}</button>`;
+    // 跨组同步:把这条渠道复制到另一组(Claude ↔ Codex)。同一台上游常在两处各填一遍,
+    // 点一下就带着地址、Key、模型、备注过去;同址渠道已存在时就地更新,不重复创建。
+    const syncApp = isCodexGroup ? 'claude' : 'codex';
+    const syncBlocked = !isCodexGroup && !(p.models || []).length;
+    const syncTitle = syncBlocked ? '该渠道没有登记模型名；先在编辑里补一个再同步到 Codex'
+      : `同步到 ${APPS[syncApp].label}：复制地址、Key、模型与备注；同址渠道已存在时更新它`;
+    const syncControl = `<button class="small provider-icon-action" data-action="sync" data-provider="${esc(p.id)}" onclick="syncProvider(${arg})" ${!online || syncBlocked ? 'disabled' : ''} title="${syncTitle}" aria-label="同步到 ${APPS[syncApp].label}"><span class="icon" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h11l-3-3M16 13H5l3 3"/></svg></span><span class="sr-only">同步到 ${APPS[syncApp].label}</span></button>`;
     return `<article class="card ${p.enabled ? '' : 'off'} ${verified || activeRouter || routedMain ? 'cur' : ''} ${isCur && !verified && !activeRouter ? 'sel' : ''}" data-provider="${esc(p.id)}" style="--avatar-h:${providerHue(p.id)}">
       <header class="top provider-identity">
         <span class="provider-avatar" aria-hidden="true">${esc(avatar)}</span>
@@ -308,7 +315,7 @@ function renderProviders() {
 
       </div>
       <div class="provider-meta mono keyrow"><span class="key-label">Key</span>${account}${tline}${pline}</div>
-      <div class="foot provider-actions">${switchControl}
+      <div class="foot provider-actions">${switchControl}${syncControl}
         <button class="small provider-icon-action" data-action="test" data-provider="${esc(p.id)}" onclick="testProvider(${arg})" ${!online || t?.wait ? 'disabled' : ''} title="${testLabel}：由 Mixrouter 发起一次真实请求" aria-label="${testLabel}"><span class="icon" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m7 4 9 6-9 6z"/></svg></span><span class="sr-only">${testLabel}</span></button>
         <button class="small provider-icon-action" data-action="probe" data-provider="${esc(p.id)}" onclick="probeModels(${arg})" ${!online || mp?.wait ? 'disabled' : ''} title="${isCodexGroup ? '路由器测活' : '测活'}：对每个模型各发一次真实请求，会消耗额度" aria-label="${isCodexGroup ? '路由器测活' : '测活'}"><span class="icon" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 10h4l2-5 4 10 2-5h4"/></svg></span><span class="sr-only">${isCodexGroup ? '路由器测活' : '测活'}</span></button>
         <button class="small provider-icon-action" data-action="edit" data-provider="${esc(p.id)}" onclick="openProvider(${arg})" title="编辑渠道" aria-label="编辑"><span class="icon" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m12 4 4 4M4 12l9-9 4 4-9 9-5 1z"/></svg></span><span class="sr-only">编辑</span></button>
@@ -717,6 +724,17 @@ async function toggleProvider(id) {
   if (!await askConfirm(p.enabled ? '停用共享渠道' : '启用共享渠道', `「${p.name}」属于 ${GROUPS[app]} 渠道库；修改会影响该组路由及复用此渠道的客户端。停用不会撤销已写入客户端的直连配置。`, p.enabled ? '停用' : '启用')) return;
   try { const res = await api('/api/providers/' + encodeURIComponent(id), { method: 'PUT', body: JSON.stringify({ app, enabled: !p.enabled }) }); toastWithBackupWarnings('渠道状态已更新', res); await refresh(); }
   catch (e) { toast('更新失败：' + e.message, 'err'); }
+}
+async function syncProvider(id) {
+  const app = providerGroup(), p = providers().find(x => x.id === id);
+  if (!p || !canConnect(app)) return;
+  const toApp = app === 'claude' ? 'codex' : 'claude';
+  try {
+    const res = await api('/api/providers/' + encodeURIComponent(id) + '/sync', { method: 'POST' });
+    const updated = res?.action === 'updated';
+    toastWithBackupWarnings(`${updated ? '已更新' : '已同步'} ${APPS[toApp].label} 渠道「${res?.name || p.name}」${updated ? '；同址渠道已存在，连接信息已覆盖' : ''}`, res);
+    await refresh();
+  } catch (e) { toast('同步失败：' + e.message, 'err'); }
 }
 async function delProvider(id) {
   const p = providers().find(x => x.id === id);

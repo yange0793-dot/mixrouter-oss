@@ -859,6 +859,21 @@ test('绕过出站代理读取并提交布尔值，不触碰客户端配置', as
   assert.equal(h.requests.some(r => /^\/api\/(switch|router)\//.test(r.url)), false);
 });
 
+test('渠道卡片可一键同步到另一组，请求打到 /sync 并保留当前页', async () => {
+  const h = await harness();
+  h.run("view = 'providers'; renderProviders()");
+  const cards = h.get('prov-grid').innerHTML;
+  assert.match(cards, /data-action="sync" data-provider="a1"[^>]*title="同步到 Codex/);
+  assert.match(cards, /data-action="sync" data-provider="a2"/, '停用渠道也能同步');
+  await h.run("syncProvider('a1')");
+  const req = h.requests.findLast(r => r.url === '/api/providers/a1/sync');
+  assert.equal(req?.method, 'POST');
+  assert.match(h.get('toast').textContent, /已同步 Codex 渠道「Alpha」/);
+  // 反向:Codex 卡片同步回 Claude Code
+  h.run("setApp('codex'); view = 'providers'; renderProviders()");
+  assert.match(h.get('prov-grid').innerHTML, /data-action="sync" data-provider="o1"[^>]*title="同步到 Claude Code/);
+});
+
 test('失败分类筛选独立于状态，清空时同时移除 err_class', async () => {
   const h = await harness();
   h.get('f-errclass').value = 'stream_aborted';
