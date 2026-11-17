@@ -1231,3 +1231,21 @@ test('备份行:文件名、大小、时间、摘要各有 class,摘要同时进
   assert.match(card, /<td class="mono bk-time" title="[^"]+">/);
   assert.match(card, /<td class="mono bk-sha">abcdef012345<\/td>/);
 });
+
+test('改绑到未登记旧模型的 Codex 渠道时带目标渠道模型;已登记则只改渠道', async () => {
+  const data = fixture();
+  data.providers.codex.push(
+    { id: 'o2', name: 'Gamma', base_url: 'https://gamma.example/v1', model: 'gpt-other', models: ['gpt-other'], wire_api: 'responses', enabled: true, keys: [] },
+    { id: 'o3', name: 'Delta', base_url: 'https://delta.example/v1', model: 'gpt-test', models: ['gpt-test'], wire_api: 'responses', enabled: true, keys: [] });
+  const h = await harness(data);
+  const session = "state.sessions.push({ key: 'sess-codex-pin', app: 'codex', bound: { provider: 'o1', model: 'gpt-test', pinned: false, source: 'auto' } })";
+  await h.run(session + "; pinSession('sess-codex-pin', 'o2')");
+  assert.deepEqual(h.requests.findLast(r => r.method === 'POST').body,
+    { provider: 'o2', model: 'gpt-other' }, '目标渠道没有旧模型 → 用它自己的 model,不把 o1 的模型发过去');
+  await h.run(session + "; pinSession('sess-codex-pin', 'o3')");
+  assert.deepEqual(h.requests.findLast(r => r.method === 'POST').body,
+    { provider: 'o3' }, '目标渠道登记了旧模型 → 保留绑定模型(同网关换账号)');
+  await h.run("state.sessions.push({ key: 'sess-claude-pin', app: 'claude', bound: { provider: 'a1', model: 'claude-special', pinned: false, source: 'auto' } }); pinSession('sess-claude-pin', 'a3')");
+  assert.deepEqual(h.requests.findLast(r => r.method === 'POST').body,
+    { provider: 'a3' }, 'Claude 侧不按清单顺序猜默认模型');
+});

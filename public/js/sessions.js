@@ -192,10 +192,25 @@ function actualExpectedProvider(s, bound = boundOf(s)) {
   return bound.provider || '';
 }
 const actualDiffers = s => { const a = actualOf(s), expected = actualExpectedProvider(s); return !!a?.provider && !!expected && a.provider !== expected; };
+// 改绑到另一条渠道时，绑定里记着的旧模型名对新渠道未必存在（Codex 每个渠道只有一个精确
+// model）。旧模型在目标渠道登记过就保留（同网关换账号）；否则带上目标渠道自己的模型，
+// 避免把 A 的模型名原样发给 B。Claude 侧不擅自换：型号清单的顺序不是"默认档位"，
+// 客户端请求的家族名通常可被网关直接接受。
+function pinModelFor(session, provider) {
+  const app = groupOfSession(session);
+  if (!provider || !session || app !== 'codex') return undefined;
+  const target = (state?.providers?.[app] || []).find(p => p.id === provider);
+  const old = String(boundOf(session).model || '');
+  if (!target?.model || !old) return undefined;
+  const declared = [target.model, ...(target.models || [])].filter(Boolean);
+  return declared.includes(old) ? undefined : target.model;
+}
 async function pinSession(key, provider) {
   if (!online) return toast('控制台离线，未改绑会话', 'err');
   try {
-    await api('/api/sessions/' + encodeURIComponent(key) + '/pin', { method: 'POST', body: JSON.stringify({ provider }) });
+    const model = pinModelFor(sessionByIdentity(key), provider);
+    const payload = model === undefined ? { provider } : { provider, model };
+    await api('/api/sessions/' + encodeURIComponent(key) + '/pin', { method: 'POST', body: JSON.stringify(payload) });
     toast(provider ? '已改绑该对话' : '已解除钉定,下次请求重新分配', 'ok');
     refresh();
   } catch (e) {
