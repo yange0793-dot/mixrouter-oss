@@ -190,7 +190,8 @@ test('Codex legacy main/reviewer preview follows production resolver and native 
 
 test('Codex TUI resolves duplicate legacy models through main and preserves priority tier', async () => {
   assert.equal((await put(activeSlots())).status, 200);
-  for (const provider of router._state.store.codex) provider.models = ['old-native'];
+  // Claude 卡片的速度档只作用于 Claude 转换线,不得改写 Codex 请求已有的档位。
+  for (const provider of router._state.store.codex) { provider.models = ['old-native']; provider.claude_speed_mode = 'ultrafast'; }
   const ua = 'codex-tui/0.167.0 (Mac OS 13.7.8; x86_64) ghostty/1.4.0 (codex-tui; 0.167.0)';
   const source = JSON.parse(fs.readFileSync(path.join(root, 'mixrouter-model-catalog.source.json'), 'utf8'));
   assert.equal(source.legacy_models['old-native'], 'mixr-main');

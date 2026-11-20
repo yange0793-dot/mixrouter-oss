@@ -658,6 +658,141 @@ test('非流式:messages 翻成 responses 发上游,响应翻回 Anthropic', asy
   assert.strictEqual(r.headers['x-mixrouter-provider'], 'astra');      // 渠道名经 safeHeader 只留 ASCII
 });
 
+test('Claude 速度档:responses 转换后写 service_tier,日志记实际值,关闭后不写', async t => {
+  const prov = mod._state.store.claude.find(p => p.id === 'p1');
+  t.after(() => { delete prov.claude_speed_mode; });
+  const body = { model: 'mixr-main', max_tokens: 64, output_config: { effort: 'high' },
+    messages: [{ role: 'user', content: 'hi' }] };
+  const send = () => rawRequest(proxyPort, 'POST', '/v1/messages', { body });
+  const assertUnchanged = seen => {
+    assert.strictEqual(seen.url, '/v1/responses');
+    assert.strictEqual(seen.body.model, 'gpt-6-astra');
+    assert.deepStrictEqual(seen.body.reasoning, { effort: 'high' }, '速度档不能改写 effort');
+  };
+
+  // 默认没有档位:不能凭空造 service_tier。
+  let r = await send();
+  assert.strictEqual(r.status, 200);
+  let seen = up.requests.at(-1);
+  assertUnchanged(seen);
+  assert.strictEqual(Object.hasOwn(seen.body, 'service_tier'), false);
+  assert.strictEqual(lastRequestLog().service_tier, undefined);
+
+  prov.claude_speed_mode = 'fast';
+  r = await send();
+  assert.strictEqual(r.status, 200);
+  seen = up.requests.at(-1);
+  assertUnchanged(seen);
+  assert.strictEqual(seen.body.service_tier, 'fast');
+  assert.strictEqual(lastRequestLog().service_tier, 'fast');
+
+  prov.claude_speed_mode = 'ultrafast';
+  r = await send();
+  assert.strictEqual(r.status, 200);
+  seen = up.requests.at(-1);
+  assertUnchanged(seen);
+  assert.strictEqual(seen.body.service_tier, 'ultrafast');
+  assert.strictEqual(lastRequestLog().service_tier, 'ultrafast');
+
+  delete prov.claude_speed_mode;
+  r = await send();
+  assert.strictEqual(r.status, 200);
+  seen = up.requests.at(-1);
+  assertUnchanged(seen);
+  assert.strictEqual(Object.hasOwn(seen.body, 'service_tier'), false, '关闭后不得残留旧档位');
+  assert.strictEqual(lastRequestLog().service_tier, undefined);
+});
+
+test('Claude 速度档不串模型/渠道:DeepSeek、同组另一个无档位渠道与原生 anthropic 都不带 service_tier', async t => {
+  const base = mod._state.store.claude.find(p => p.id === 'p1');
+  const other = { ...structuredClone(base), id: 'p2', name: 'other', claude_speed_mode: undefined };
+  delete other.claude_speed_mode;
+  const native = { ...structuredClone(base), id: 'p3', name: 'native', models: ['claude-native'],
+    claude_speed_mode: 'fast' };
+  delete native.wire_api; // 原生 Anthropic 上游:没有 service_tier 这个概念
+  const deepseek = { ...structuredClone(base), id: 'p4', name: 'deepseek', models: ['deepseek-v4.1-flash'],
+    claude_speed_mode: 'fast' };
+  mod._state.store.claude.push(other, native, deepseek);
+  const prevSlots = structuredClone(mod._state.slotMap);
+  t.after(() => {
+    mod._state.store.claude = mod._state.store.claude.filter(p => !['p2', 'p3', 'p4'].includes(p.id));
+    mod._state.slotMap = prevSlots;
+  });
+  const body = { model: 'mixr-main', max_tokens: 64, messages: [{ role: 'user', content: 'hi' }] };
+
+  // p1 有档位,p2 没有:落在 p2 的请求不能被 p1 的设置带上 tier。
+  mod._state.store.claude.find(p => p.id === 'p1').claude_speed_mode = 'ultrafast';
+  t.after(() => { delete mod._state.store.claude.find(p => p.id === 'p1').claude_speed_mode; });
+  mod._state.slotMap = { claude: { main: { provider: 'p2', model: 'gpt-6-astra[1M]' } }, codex: {} };
+  let before = up.requests.length;
+  let r = await rawRequest(proxyPort, 'POST', '/v1/messages', { body });
+  assert.strictEqual(r.status, 200);
+  let seen = up.requests[before];
+  assert.strictEqual(seen.url, '/v1/responses');
+  assert.strictEqual(Object.hasOwn(seen.body, 'service_tier'), false, '没有档位的渠道不得被邻居带上 tier');
+
+  // 原生 anthropic 渠道即使存量里有 claude_speed_mode,也不得写进请求体。
+  // 上游用一份真正的 Anthropic 整包回包,证明这条线是原样透传而不是本地转换。
+  up.setJsonBody({ id: 'msg_native', type: 'message', role: 'assistant', model: 'claude-native',
+    content: [{ type: 'text', text: 'native-ok' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } });
+  t.after(() => up.setJsonBody(null));
+  mod._state.slotMap = { claude: { main: { provider: 'p3', model: 'claude-native' } }, codex: {} };
+  before = up.requests.length;
+  r = await rawRequest(proxyPort, 'POST', '/v1/messages', { body });
+  assert.strictEqual(r.status, 200, r.text);
+  up.setJsonBody(null);
+  seen = up.requests[before];
+  assert.strictEqual(seen.url, '/v1/messages');
+  assert.strictEqual(Object.hasOwn(seen.body, 'service_tier'), false, '原生 anthropic 上游没有 service_tier');
+
+  // DeepSeek 渠道不认识 GPT 的 service_tier:即使存量里有档位也不得写进出站请求,
+  // 日志也不能记成"发过一个上游没见过的档"。
+  mod._state.slotMap = { claude: { main: { provider: 'p4', model: 'deepseek-v4.1-flash' } }, codex: {} };
+  before = up.requests.length;
+  r = await rawRequest(proxyPort, 'POST', '/v1/messages', { body });
+  assert.strictEqual(r.status, 200, r.text);
+  seen = up.requests[before];
+  assert.strictEqual(seen.url, '/v1/responses');
+  assert.strictEqual(Object.hasOwn(seen.body, 'service_tier'), false, 'DeepSeek 上游不能收到 GPT 速度档');
+  assert.strictEqual(lastRequestLog().service_tier, undefined);
+});
+
+test('Claude 速度档 failover:第二渠道没有档位时出站与终态日志都不留旧 tier', async t => {
+  const first = mod._state.store.claude.find(p => p.id === 'p1');
+  const second = { ...structuredClone(first), id: 'p2f', name: 'backup', api_key: 'sk-backup' };
+  delete second.claude_speed_mode;
+  mod._state.store.claude.push(second);
+  const prevSlots = structuredClone(mod._state.slotMap);
+  first.claude_speed_mode = 'fast';
+  mod._state.slotMap = { claude: { main: {
+    provider: 'p1', model: 'gpt-6-astra[1M]', strategy: 'priority',
+    pool: [{ provider: 'p2f', model: 'gpt-6-astra[1M]' }],
+  } }, codex: {} };
+  t.after(() => {
+    up.setFail(0);
+    mod._state.store.claude = mod._state.store.claude.filter(p => p.id !== 'p2f');
+    mod._state.slotMap = prevSlots;
+    delete first.claude_speed_mode;
+  });
+  // 第一渠道连续失败(初始 + 两次转换重试),第四发落到没有档位的备份渠道。
+  up.setFail(3);
+  const start = up.requests.length;
+  const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {
+    body: { model: 'mixr-main', max_tokens: 64, messages: [{ role: 'user', content: 'hi' }] },
+  });
+  assert.strictEqual(r.status, 200, r.text);
+  const attempts = up.requests.slice(start);
+  assert.strictEqual(attempts[0].headers.authorization, 'Bearer sk-conv');
+  assert.strictEqual(attempts[0].body.service_tier, 'fast', '第一发确实带档位');
+  const last = attempts.at(-1);
+  assert.strictEqual(last.headers.authorization, 'Bearer sk-backup', '最后一发必须落到备份渠道');
+  assert.strictEqual(Object.hasOwn(last.body, 'service_tier'), false, '备份渠道出站不能带第一发的 fast');
+  const log = lastRequestLog();
+  assert.strictEqual(log.status, 200);
+  assert.strictEqual(log.provider_id, 'p2f');
+  assert.strictEqual(log.service_tier, undefined, '终态日志不能留着第一发的 service_tier');
+});
+
 test('Responses 出站同时保留图片、工具和 high effort', async () => {
   const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {
     body: {

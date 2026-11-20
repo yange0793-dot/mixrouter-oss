@@ -54,7 +54,14 @@ Not a good fit:
 - **In-process protocol translation.** Models that only sit behind OpenAI-style endpoints can
   still serve Claude Code. Requests to a provider marked `wire_api: responses` are translated to
   Responses; `wire_api: chat` is translated to Chat Completions. No second proxy on the client
-  side.
+  side. The yellow/purple lightning buttons on a converted Claude provider set Fast / Ultra Fast
+  for that provider's later translated requests via upstream `service_tier`, only for GPT models
+  with official support for the selected tier (Fast: GPT-5.6 Sol, GPT-6.2 Astra/Sol, GPT-6 Astra,
+  GPT-6.1 Sol; Ultra Fast: GPT-6.2 Astra/Sol, GPT-6 Astra, GPT-6.1 Sol). Click the active tier
+  again to turn it off; no Claude Code restart is needed. DeepSeek and other gateways that do not
+  support the field show no entry. This changes neither the model nor reasoning effort and is not
+  a confirmation that the upstream honoured the tier; the upstream must support it and may charge
+  more.
 - **Session affinity, best effort.** Conversations from the same agent can use different keys
   on different providers, while a conversation is kept on one provider when possible. This is
   not a hard guarantee: key fallback, retries, manual pinning, and session overrides can all

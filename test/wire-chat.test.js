@@ -698,6 +698,58 @@ test('e2e 非流式:messages 翻成 chat 发上游,整包 JSON 翻回 Anthropic'
   assert.strictEqual(j.usage.cache_read_input_tokens, 4);
 });
 
+test('e2e Claude 速度档:chat 转换后写 service_tier,仅 GPT Astra/Sol,DeepSeek 与关闭不写', async t => {
+  const base = mod._state.store.claude.find(p => p.id === 'p1');
+  const gpt = { ...structuredClone(base), id: 'p-speed', name: 'gpt-chat', models: ['gpt-6.2-sol'] };
+  delete gpt.claude_speed_mode;
+  const deepseek = { ...structuredClone(base), id: 'p-ds', name: 'deepseek-chat',
+    models: ['deepseek-v4.1-flash'], claude_speed_mode: 'fast' };
+  mod._state.store.claude.push(gpt, deepseek);
+  const prevSlots = structuredClone(mod._state.slotMap);
+  t.after(() => {
+    mod._state.store.claude = mod._state.store.claude.filter(p => p.id !== 'p-speed' && p.id !== 'p-ds');
+    mod._state.slotMap = prevSlots;
+  });
+  const body = { model: 'mixr-main', max_tokens: 64, messages: [{ role: 'user', content: '你好' }] };
+  const send = () => rawRequest(proxyPort, 'POST', '/v1/messages', { body });
+
+  mod._state.slotMap = { claude: { main: { provider: 'p-speed', model: 'gpt-6.2-sol' } }, codex: {} };
+  let before = mock.requests.length;
+  let r = await send();
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(mock.requests[before].url, '/v1/chat/completions');
+  assert.strictEqual(mock.requests[before].body.model, 'gpt-6.2-sol', '速度档不能改写模型');
+  assert.strictEqual(Object.hasOwn(mock.requests[before].body, 'service_tier'), false);
+
+  gpt.claude_speed_mode = 'fast';
+  before = mock.requests.length;
+  r = await send();
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(mock.requests[before].body.model, 'gpt-6.2-sol');
+  assert.strictEqual(mock.requests[before].body.service_tier, 'fast');
+
+  gpt.claude_speed_mode = 'ultrafast';
+  before = mock.requests.length;
+  r = await send();
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(mock.requests[before].body.model, 'gpt-6.2-sol');
+  assert.strictEqual(mock.requests[before].body.service_tier, 'ultrafast');
+
+  delete gpt.claude_speed_mode;
+  before = mock.requests.length;
+  r = await send();
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(Object.hasOwn(mock.requests[before].body, 'service_tier'), false, '关闭后不得残留旧档位');
+
+  // DeepSeek 的 chat 兼容网关不认识 GPT 的 service_tier:存量里有档位也不得发出去。
+  mod._state.slotMap = { claude: { main: { provider: 'p-ds', model: 'deepseek-v4.1-flash' } }, codex: {} };
+  before = mock.requests.length;
+  r = await send();
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(mock.requests[before].body.model, 'deepseek-v4.1-flash');
+  assert.strictEqual(Object.hasOwn(mock.requests[before].body, 'service_tier'), false, 'DeepSeek 上游不能收到 GPT 速度档');
+});
+
 test('e2e 流式:客户端要流,收 Anthropic SSE 事件序列', async () => {
   const before = mock.requests.length;
   const r = await rawRequest(proxyPort, 'POST', '/v1/messages', {

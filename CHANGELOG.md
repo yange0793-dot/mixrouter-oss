@@ -3,6 +3,17 @@
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/);版本号遵循语义化版本。
 发布说明里只放摘要,细节与升级注意事项以本文件为准。
 
+## [未发布]
+
+#### 新增
+
+- Claude Code 的 Responses / Chat 转换渠道新增黄／紫闪电速度档：开启 Fast / Ultra Fast 后，
+  只为该渠道后续翻译请求写入上游 `service_tier`，再次点击当前档关闭，无需重启客户端。
+  按档位限定官方支持该档的 GPT 模型：Fast 为 GPT-5.6 Sol、GPT-6.2 Astra/Sol、GPT-6 Astra、
+  GPT-6.1 Sol；Ultra Fast 为 GPT-6.2 Astra/Sol、GPT-6 Astra、GPT-6.1 Sol。DeepSeek、GLM、
+  Qwen 等未支持该字段的渠道不显示入口也拒绝 API 设置，原生 Anthropic 与 Codex 配置不受影响；
+  实际出站模型不在白名单时逐请求跳过。上游须支持对应档位，可能产生额外费用。
+
 ## [3.12.0] - 2026-11-15
 
 #### 改进
