@@ -4,6 +4,7 @@ function routerBase(app = curApp) {
   return app === 'claude' ? (r.claude_base || r.url || '') : (r.codex_base || r.url || '');
 }
 const connectionExpanded = {};
+let savingClaudeSpeed = false;
 // 已保存的接入偏好优先;旧渠道沿用实际接入方式,新 Responses 渠道默认直连。
 function codexProviderMode(provider) {
   if (provider?.wire_api === 'chat') return 'router';
@@ -79,6 +80,51 @@ function liveLine() {
     <article class="mode-card ${inRouter ? 'selected' : ''}"><div class="top"><h2>${isCodex ? 'Mixrouter 路由' : '路由模式'}</h2>${modeBadge(inRouter)}</div><p>经本地代理按精确槽位与已登记模型分发，按会话保持渠道粘性</p><p class="mono">${esc(inRouter ? lv.base_url || routerBase() : routerBase() || '等待后端提供路由地址')}</p></article>
     </div><p class="config-line">${esc(APPS[curApp].cfg)} · ${stateLabel}${lv?.wire_api ? ' · 协议 ' + esc(lv.wire_api) : ''}${lv?.model ? ' · 配置模型 ' + esc(lv.model) : ''}${isCodex ? ' · 实际渠道 ' + esc(configuredName) : cur ? ' · 库内选中 ' + esc(cur === (state.router?.id || '@router') ? '路由模式' : selected?.name || cur) : ''}</p>
     <p class="integration-note">切换会写入客户端配置，原文件自动备份。${curApp === 'claude' ? 'Claude Code 需重启会话生效。' : '首次接入或切换直连需重新打开 Codex；路由槽位调整从下一次请求生效。'}</p></details>`;
+}
+// Claude 的 responses/chat 渠道把请求翻译后再发给上游,速度档就是翻译后请求的默认上游
+// service_tier。存在 provider.claude_speed_mode 里;原生 Anthropic 渠道没有这一档。
+// 能力边界与 lib/claude-speed.js 同口径,按档位分别判定:
+//   Fast      = GPT-5.6 Sol、GPT-6.2 Astra/Sol、GPT-6 Astra、GPT-6.1 Sol;
+//   Ultrafast = GPT-6.2 Astra/Sol、GPT-6 Astra、GPT-6.1 Sol(GPT-5.6 Sol 仅 Fast)。
+// DeepSeek/GLM/Qwen 等兼容网关不认识这个字段,不渲染速度按钮。
+const CLAUDE_SPEED_MODELS = {
+  fast: new Set(['gpt-5.6-sol', 'gpt-6.2-astra', 'gpt-6.2-sol', 'gpt-6-astra', 'gpt-6.1-sol']),
+  ultrafast: new Set(['gpt-6.2-astra', 'gpt-6.2-sol', 'gpt-6-astra', 'gpt-6.1-sol']),
+};
+const CLAUDE_SPEED_LABELS = { fast: 'Fast', ultrafast: 'Ultra Fast' };
+const claudeSpeedModel = (model, tier) => !!CLAUDE_SPEED_MODELS[tier] && CLAUDE_SPEED_MODELS[tier].has(
+  String(model || '').trim().replace(/\[[^\]]*\]\s*$/, '').toLowerCase());
+const providerClaudeSpeedTier = (provider, tier) =>
+  [provider?.model, ...(provider?.models || [])].some(model => claudeSpeedModel(model, tier));
+const providerClaudeSpeedModes = provider => Object.keys(CLAUDE_SPEED_MODELS)
+  .filter(tier => providerClaudeSpeedTier(provider, tier));
+const providerClaudeSpeedMode = provider => {
+  const mode = provider?.claude_speed_mode;
+  return (mode === 'fast' || mode === 'ultrafast') && providerClaudeSpeedTier(provider, mode) ? mode : '';
+};
+async function declareClaudeProviderSpeed(id, tier) {
+  if (!online || savingClaudeSpeed) return;
+  const prov = (state?.providers?.claude || []).find(item => item.id === id);
+  if (!prov) return;
+  const mode = providerClaudeSpeedMode(prov) === tier ? '' : tier;
+  savingClaudeSpeed = true;
+  renderProviders();
+  try {
+    const result = await api('/api/providers/' + encodeURIComponent(id) + '/claude-speed', { method: 'POST',
+      body: JSON.stringify({ mode }) });
+    const saved = result?.speed_mode === 'fast' || result?.speed_mode === 'ultrafast' ? result.speed_mode : '';
+    if (saved) prov.claude_speed_mode = saved;
+    else delete prov.claude_speed_mode;
+    const label = CLAUDE_SPEED_LABELS[tier] || tier;
+    toastWithBackupWarnings(saved
+      ? `${label} 已设为翻译后 GPT 请求的默认上游速度档；下一次请求按此发送，需上游支持该档，可能产生更高费用。`
+      : `${label} 已关闭；翻译后的 GPT 请求不再设置该默认速度档。`, result);
+  } catch (e) {
+    toast('速度档未保存：' + e.message, 'err');
+  } finally {
+    savingClaudeSpeed = false;
+    renderProviders();
+  }
 }
 // 渠道库布局:list(默认,高密度行式账本)或 grid(并列卡片)。偏好记在 localStorage,
 // 但读写全程兜底:隐私模式、旧浏览器或坏值都不能把渠道页带崩,读不到就退回默认。
@@ -262,6 +308,17 @@ function renderProviders() {
       : claudeInRouter ? '把此渠道写入 Claude 配置并退出路由模式（清掉 mixr- 槽位别名），原文件自动备份'
       : isCur ? '把此渠道重新写入 Claude 配置，原文件自动备份'
       : '把此渠道写入 Claude 配置（直连），原文件自动备份';
+    // 手动速度档:黄闪电=Fast、紫闪电=Ultra Fast,只出现在 Claude 的 responses/chat 转换渠道,
+    // 且按档位分别校验:渠道要登记过官方支持该档的 GPT 模型才显示对应按钮。
+    // 设置的是翻译后请求的默认上游 service_tier,下一次请求直接生效、无需重启;
+    // 这只是默认请求参数,上游是否支持该档由实际请求决定。
+    const claudeSpeedModes = !isCodexGroup && convOnly ? providerClaudeSpeedModes(p) : [];
+    const speedMode = providerClaudeSpeedMode(p);
+    const speedLocked = !online || savingClaudeSpeed;
+    const speedControl = claudeSpeedModes.length ? `<span class="provider-speed-actions" role="group" aria-label="翻译渠道速度档">${claudeSpeedModes.map(tier => {
+      const label = CLAUDE_SPEED_LABELS[tier];
+      return `<button type="button" class="small provider-icon-action provider-speed-action ${tier}" id="provider-speed-${esc(p.id)}-${tier}" data-action="speed-${tier}" data-provider="${esc(p.id)}" aria-pressed="${speedMode === tier}" onclick="declareClaudeProviderSpeed(${arg},'${tier}')" ${speedLocked ? 'disabled' : ''} title="${speedMode === tier ? `点击关闭 ${label}：当前为翻译后的 GPT 请求设置默认上游 service_tier=${tier}；需上游支持该档，可能产生更高费用` : `点击开启 ${label}：为翻译后的 GPT 请求设置默认上游 service_tier=${tier}；下一次请求按此发送，需上游支持该档，可能产生更高费用。再次点击关闭`}" aria-label="${speedMode === tier ? `关闭 ${label}：当前设置翻译后 GPT 请求的默认上游 service_tier=${tier}；需上游支持该档，可能产生更高费用` : `开启 ${label}：设置翻译后 GPT 请求的默认上游 service_tier=${tier}；需上游支持该档，可能产生更高费用`}"><span class="icon" aria-hidden="true"><svg viewBox="0 0 20 20" fill="currentColor"><path d="M11 1 3 11h5l-1 8 8-10h-5z"/></svg></span><span class="sr-only">${speedMode === tier ? `关闭 ${label}` : `开启 ${label}`}</span></button>`;
+    }).join('')}</span>` : '';
     // Codex 两种接入动作始终可见,不受保存偏好影响;当前状态只改变样式与说明。
     // 只能走路由的 Claude 渠道仍用说明标签,不摆一个禁用的主按钮。
     const switchControl = isCodexGroup
@@ -280,7 +337,7 @@ function renderProviders() {
 
       </div>
       <div class="provider-meta mono keyrow"><span class="key-label">Key</span>${account}${tline}${pline}</div>
-      <div class="foot provider-actions">${switchControl}
+      <div class="foot provider-actions">${speedControl}${switchControl}
         <button class="small provider-icon-action" data-action="test" data-provider="${esc(p.id)}" onclick="testProvider(${arg})" ${!online || t?.wait ? 'disabled' : ''} title="${testLabel}：由 Mixrouter 发起一次真实请求" aria-label="${testLabel}"><span class="icon" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m7 4 9 6-9 6z"/></svg></span><span class="sr-only">${testLabel}</span></button>
         <button class="small provider-icon-action" data-action="probe" data-provider="${esc(p.id)}" onclick="probeModels(${arg})" ${!online || mp?.wait ? 'disabled' : ''} title="${isCodexGroup ? '路由器测活' : '测活'}：对每个模型各发一次真实请求，会消耗额度" aria-label="${isCodexGroup ? '路由器测活' : '测活'}"><span class="icon" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 10h4l2-5 4 10 2-5h4"/></svg></span><span class="sr-only">${isCodexGroup ? '路由器测活' : '测活'}</span></button>
         <button class="small provider-icon-action" data-action="edit" data-provider="${esc(p.id)}" onclick="openProvider(${arg})" title="编辑渠道" aria-label="编辑"><span class="icon" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m12 4 4 4M4 12l9-9 4 4-9 9-5 1z"/></svg></span><span class="sr-only">编辑</span></button>

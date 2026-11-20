@@ -138,6 +138,24 @@ body[data-connection=offline] #prov-grid .card.sel { border-color: var(--border)
 #prov-grid .provider-actions .route-only-tag { margin-right: 6px; }
 #prov-grid .provider-connect-actions { display: inline-flex; flex: 0 0 auto; gap: 4px; margin-right: 6px; }
 #prov-grid .provider-connect-actions button { white-space: nowrap; }
+/* 手动速度档:黄=Fast,紫=Ultra Fast。默认不发光,开启后才点亮;再次点击关闭后回到默认。
+   只出现在 Claude 的 responses/chat 转换渠道,原生 Anthropic 渠道不渲染这组按钮。 */
+#prov-grid .provider-speed-actions { display: inline-flex; flex: 0 0 auto; gap: 1px; margin-right: 5px; }
+#prov-grid .provider-actions button.provider-speed-action.fast { color: #e5b53f; opacity: 0.5; }
+#prov-grid .provider-actions button.provider-speed-action.ultrafast { color: #b18cff; opacity: 0.5; }
+#prov-grid .provider-actions button.provider-speed-action:hover:not(:disabled) { opacity: 0.85; }
+/* 保存中/离线时两档一起停用;不发光的 .5 透明度太像可用态,Claude 卡片再压暗一档。 */
+body[data-client="claude"] #prov-grid .provider-actions button.provider-speed-action:disabled { opacity: 0.3; }
+#prov-grid .provider-actions button.provider-speed-action.fast[aria-pressed="true"] {
+  color: #f0c75a; opacity: 1;
+  background: rgba(229, 181, 63, 0.16); border-color: rgba(229, 181, 63, 0.55);
+  box-shadow: 0 0 9px rgba(240, 199, 90, 0.45);
+}
+#prov-grid .provider-actions button.provider-speed-action.ultrafast[aria-pressed="true"] {
+  color: #c4a5ff; opacity: 1;
+  background: rgba(177, 140, 255, 0.18); border-color: rgba(177, 140, 255, 0.55);
+  box-shadow: 0 0 9px rgba(196, 165, 255, 0.45);
+}
 #prov-grid .provider-actions button.provider-icon-action {
   display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
   width: 32px; height: 32px; padding: 0;

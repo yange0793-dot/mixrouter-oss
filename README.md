@@ -38,7 +38,11 @@
   明确失败并说明原因。前缀可以是渠道 id、渠道编辑里的「寻址别名」,或归一化后的渠道名。
 - **进程内协议互转**:只挂 OpenAI 型通道的模型也能直接给 Claude Code 用。渠道标
   `wire_api: responses` 就翻 Responses,标 `wire_api: chat` 就翻 Chat Completions,
-  客户端不用再挂第二个代理。
+  客户端不用再挂第二个代理。Claude 转换渠道卡片上的黄／紫闪电可分别设置 Fast / Ultra Fast,
+  只为该渠道后续翻译请求写入上游 `service_tier`;仅限官方支持对应档位的 GPT 模型
+  (Fast:GPT-5.6 Sol、GPT-6.2 Astra/Sol、GPT-6 Astra、GPT-6.1 Sol;Ultra Fast:GPT-6.2 Astra/Sol、
+  GPT-6 Astra、GPT-6.1 Sol)。再次点击当前档关闭,无需重启 Claude Code;DeepSeek 等未支持该字段的
+  渠道不显示入口。这不改变模型或推理强度,也不等于上游确认执行;须由上游支持该速度档,可能产生额外费用。
 - **会话粘性(尽力而为)**:同一 Agent 的多个对话可以落在不同渠道的不同 Key 上,并尽量
   让一个对话留在同一渠道。这不是硬保证:Key 失效换号、失败重试、手动改绑与会话覆盖
   都可能改变落点。

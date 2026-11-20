@@ -235,6 +235,19 @@ async function harness(data = fixture(), opts = {}) {
         return { ok: true, json: async () => ({ ok: true, slots: structuredClone(slots),
           ...(body.codex ? { live: { codex: structuredClone(opts.slotLive || data.live.codex) } } : {}) }) };
       }
+      const claudeSpeedRoute = /^\/api\/providers\/([^/]+)\/claude-speed$/.exec(url);
+      if (claudeSpeedRoute && options.method === 'POST') {
+        const prov = data.providers.claude.find(item => item.id === claudeSpeedRoute[1]);
+        if (!prov) return { ok: false, status: 404, json: async () => ({ error: '渠道不存在' }) };
+        const allowed = { fast: ['gpt-5.6-sol', 'gpt-6.2-astra', 'gpt-6.2-sol', 'gpt-6-astra', 'gpt-6.1-sol'],
+          ultrafast: ['gpt-6.2-astra', 'gpt-6.2-sol', 'gpt-6-astra', 'gpt-6.1-sol'] };
+        const mode = body.mode === 'fast' || body.mode === 'ultrafast' ? body.mode : '';
+        if (mode && !(allowed[mode] || []).some(model => (prov.models || []).includes(model)))
+          return { ok: false, status: 400, json: async () => ({ error: '该档位没有官方支持的 GPT 模型' }) };
+        if (mode) prov.claude_speed_mode = mode; else delete prov.claude_speed_mode;
+        return { ok: true, json: async () => ({ ok: true, mode, speed_mode: mode,
+          ...(mode ? { warnings: ['上游是否支持该速度档需以实际请求为准'] } : {}) }) };
+      }
       if (url === '/api/codex/config') {
         if (options.method === 'POST') {
           if (body.revision !== data.live.codex.revision) return { ok: false, status: 409, json: async () => ({ error: 'Codex config changed; reload first' }) };
@@ -1433,6 +1446,66 @@ test('Codex direct main and reviewer selectors show real names and save independ
   await h.run("saveCodexDirectModel('model','gpt-review')");
   assert.equal(h.run('state.live.codex.review_model'), 'gpt-test');
   assert.equal(h.requests.some(r => r.url === '/api/slots' && r.method !== 'GET'), false);
+});
+
+test('Claude 翻译渠道用黄/紫闪电设置默认上游速度档,仅限 GPT Astra/Sol,原生 Anthropic 与 DeepSeek 不显示', async () => {
+  const data = fixture();
+  data.providers.claude.push(
+    { id: 'c-conv', name: 'Claude via Responses', base_url: 'https://conv.example', models: ['gpt-6.2-astra'], wire_api: 'responses', enabled: true },
+    { id: 'c-chat', name: 'Claude via Chat', base_url: 'https://chat-conv.example', models: ['gpt-6.2-sol'], wire_api: 'chat', enabled: true },
+    { id: 'c-56', name: 'GPT-5.6 Sol', base_url: 'https://gpt56.example', models: ['gpt-5.6-sol'], wire_api: 'responses', enabled: true },
+    { id: 'c-ds', name: 'DeepSeek', base_url: 'https://deepseek.example', models: ['deepseek-v4.1-flash'], wire_api: 'responses', enabled: true },
+    { id: 'c-gpt4', name: 'Other GPT', base_url: 'https://gpt4.example', models: ['gpt-4o'], wire_api: 'responses', enabled: true },
+  );
+  const h = await harness(data);
+  h.run("setApp('claude')");
+  const grid = () => h.get('prov-grid').innerHTML;
+  const pressed = (id, tier) => new RegExp(`id="provider-speed-${id}-${tier}"[^>]*aria-pressed="true"`).test(grid());
+  // GPT-6.2 Astra/Sol 的 responses 与 chat 两种翻译渠道都显示两档。
+  for (const id of ['c-conv', 'c-chat']) {
+    assert.match(grid(), new RegExp(`id="provider-speed-${id}-fast"`), id + ' Fast');
+    assert.match(grid(), new RegExp(`id="provider-speed-${id}-ultrafast"`), id + ' Ultra Fast');
+  }
+  // GPT-5.6 Sol 官方只有 Fast,不能显示 Ultra Fast。
+  assert.match(grid(), /id="provider-speed-c-56-fast"/);
+  assert.doesNotMatch(grid(), /id="provider-speed-c-56-ultrafast"/);
+  // 原生 Anthropic、DeepSeek、以及不在支持列表里的 gpt-4o 都不显示。
+  for (const id of ['a1', 'a2', 'c-ds', 'c-gpt4']) {
+    assert.doesNotMatch(grid(), new RegExp(`id="provider-speed-${id}-`), id + ' 不应有速度档');
+  }
+  // 提示与无障碍文案说清语义、模型范围、上游支持条件和费用,不承诺已执行、不要求重启。
+  const button = grid().match(/<button[^>]*id="provider-speed-c-conv-fast"[^>]*>/)?.[0] || '';
+  for (const text of ['翻译后的 GPT 请求', 'service_tier=fast', '需上游支持该档', '可能产生更高费用']) assert.ok(button.includes(text), text);
+  assert.doesNotMatch(button, /已确认|重启/);
+  // Fast 开启:只提交 {mode},点亮 Fast,状态落到 claude_speed_mode。
+  await h.run("declareClaudeProviderSpeed('c-conv','fast')");
+  assert.deepEqual(h.requests.findLast(r => r.url === '/api/providers/c-conv/claude-speed').body, { mode: 'fast' });
+  assert.equal(pressed('c-conv', 'fast'), true);
+  assert.equal(pressed('c-conv', 'ultrafast'), false);
+  assert.equal(h.run('state.providers.claude.find(p => p.id === "c-conv").claude_speed_mode'), 'fast');
+  const onToast = h.get('toast').textContent;
+  for (const text of ['下一次请求', '翻译后 GPT 请求', '需上游支持该档', '可能产生更高费用']) assert.ok(onToast.includes(text), text);
+  assert.doesNotMatch(onToast, /已确认|重启/);
+  // 切到 Ultra Fast:同一时间只亮当前档。
+  await h.run("declareClaudeProviderSpeed('c-conv','ultrafast')");
+  assert.deepEqual(h.requests.findLast(r => r.url === '/api/providers/c-conv/claude-speed').body, { mode: 'ultrafast' });
+  assert.equal(pressed('c-conv', 'fast'), false);
+  assert.equal(pressed('c-conv', 'ultrafast'), true);
+  // 再点当前档 = 关闭。
+  await h.run("declareClaudeProviderSpeed('c-conv','ultrafast')");
+  assert.deepEqual(h.requests.findLast(r => r.url === '/api/providers/c-conv/claude-speed').body, { mode: '' });
+  assert.equal(pressed('c-conv', 'ultrafast'), false);
+  assert.equal(h.run('state.providers.claude.find(p => p.id === "c-conv").claude_speed_mode'), undefined);
+  // 保存中与离线都不发请求,按钮同时停用。
+  const count = h.requests.length;
+  h.run('savingClaudeSpeed = true; renderProviders()');
+  assert.equal(h.get('provider-speed-c-conv-fast').disabled, true);
+  await h.run("declareClaudeProviderSpeed('c-conv','fast')");
+  assert.equal(h.requests.length, count, '保存中不重复发请求');
+  h.run('savingClaudeSpeed = false; online = false; renderProviders()');
+  assert.equal(h.get('provider-speed-c-conv-fast').disabled, true);
+  await h.run("declareClaudeProviderSpeed('c-conv','fast')");
+  assert.equal(h.requests.length, count, '离线时不发请求');
 });
 
 test('Codex direct custom reviewer survives polling, can follow main, and is disabled offline or under profile', async () => {
